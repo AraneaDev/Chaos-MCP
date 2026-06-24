@@ -139,6 +139,37 @@ describe('createSandbox', () => {
     );
   });
 
+  it('accepts sandbox when workspace equals process cwd (Live-audit L1)', () => {
+    // Previously `isPathInside(absoluteWorkspace, absoluteCwd)` returned false
+    // when the two paths were equal (rel === ''). This blocked the legitimate
+    // case where the user's workspace IS the cwd (the most common case).
+    const cwd = process.cwd();
+    mockExistsSync.mockImplementation((path: string) => {
+      return path === `${SANDBOX_DIR}/src/utils/math.ts` || path === cwd;
+    });
+
+    expect(() => createSandbox('src/utils/math.ts', cwd)).not.toThrow();
+  });
+
+  it('strips trailing separator from ignorePatterns (Live-audit L2)', () => {
+    // Convention `["fixtures/"]` should exclude the `fixtures` directory
+    // segment, not silently fail because the segment lacks the trailing slash.
+    mockExistsSync.mockImplementation((path: string) => {
+      if (path === `${SANDBOX_DIR}/src/utils/math.ts`) return true;
+      return false;
+    });
+
+    createSandbox('src/utils/math.ts', TEST_PROJECT, ['fixtures/']);
+
+    const filter = mockCpSync.mock.calls[0][2]?.filter as (src: string) => boolean;
+    expect(filter).toBeDefined();
+
+    // `fixtures` segment should be excluded
+    expect(filter(`${TEST_PROJECT}/fixtures/data.json`)).toBe(false);
+    // Regular files should still be included
+    expect(filter(`${TEST_PROJECT}/src/utils/math.ts`)).toBe(true);
+  });
+
   it('does NOT symlink target/ for Rust builds (H1 regression)', () => {
     // Audit finding H1: target/ contains Rust build artifacts. Symlinking
     // would let mutation runs corrupt the host workspace's build cache.

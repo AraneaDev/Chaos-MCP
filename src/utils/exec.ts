@@ -137,8 +137,13 @@ export function runShell(
             return;
           }
 
-          // Timeout: execFile kills the child and sets signal='SIGTERM' + status=null.
-          if (result.signal === 'SIGTERM' && result.exit === null) {
+          // Timeout: execFile internally calls child.kill() when the configured
+          // timeout elapses, setting both signal='SIGTERM' AND killed=true.
+          // External kills (OOM killer, parent process SIGTERM) typically have
+          // signal='SIGTERM' but killed=false. Gating on `killed === true`
+          // distinguishes these so an external resource crash isn't misreported
+          // as a tool timeout. (Live-audit L3 fix.)
+          if (errnoError.killed === true && result.exit === null && result.signal) {
             reject(
               new ExecFailureError(
                 { ...result, code: 'TIMEOUT' },

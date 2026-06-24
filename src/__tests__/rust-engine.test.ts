@@ -143,6 +143,27 @@ describe('RustEngine', () => {
     expect(result.vulnerabilities[0].line).toBe(30);
   });
 
+  it('handles lowercase `timeout` lines from cargo-mutants text output (Live-audit L4)', async () => {
+    // cargo-mutants text output uses mixed case (`timeout`, `Timeout`),
+    // unlike its JSON output which uses uppercase.
+    const stdout = [
+      'CAUGHT   src/math.rs:10:9  replaced > with >=',
+      'timeout  src/math.rs:20:5  infinite loop in test',
+      'Timeout  src/math.rs:25:5  another hang',
+      'MISSED   src/math.rs:30:1  replaced + with -',
+    ].join('\n');
+
+    mockRunShell.mockResolvedValue(makeExecResult(stdout));
+
+    const result = await engine.run('src/math.rs');
+    // total = 4, killed = 3 (CAUGHT + 2 TIMEOUTs), survived = 1 (MISSED)
+    expect(result.totalMutants).toBe(4);
+    expect(result.killed).toBe(3);
+    expect(result.survived).toBe(1);
+    expect(result.vulnerabilities).toHaveLength(1);
+    expect(result.vulnerabilities[0].line).toBe(30);
+  });
+
   it('returns 100% score for zero mutants', async () => {
     mockRunShell.mockResolvedValue(makeExecResult(''));
 

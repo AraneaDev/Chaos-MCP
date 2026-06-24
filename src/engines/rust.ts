@@ -46,10 +46,14 @@ function parseCargoMutantsText(stdout: string, filePath: string): MutationResult
 
   for (const line of lines) {
     const trimmed = line.trim();
-    const isMissed = trimmed.startsWith('MISSED');
-    const isCaught = trimmed.startsWith('CAUGHT');
-    const isUncaught = trimmed.startsWith('UNCAUGHT');
-    const isTimeout = trimmed.startsWith('TIMEOUT');
+    const upper = trimmed.toUpperCase();
+    const isMissed = upper.startsWith('MISSED');
+    const isCaught = upper.startsWith('CAUGHT');
+    const isUncaught = upper.startsWith('UNCAUGHT');
+    // `cargo mutants` text output uses mixed case (`timeout`, `Timeout`),
+    // unlike its JSON output. Normalise to uppercase before matching.
+    // (Live-audit L4 fix.)
+    const isTimeout = upper.startsWith('TIMEOUT');
 
     if (!isMissed && !isCaught && !isUncaught && !isTimeout) continue;
 

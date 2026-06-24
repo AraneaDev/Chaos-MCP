@@ -61,6 +61,29 @@ All notable changes to Chaos-MCP are documented in this file.
 - Updated sandbox tests for `os.tmpdir()`, new symlinks, and `ignorePatterns`.
 - Updated integration tests for new schema properties and `additionalProperties: false`.
 
+### Added — Audit-Driven Hardening (`LOGIC-AUDIT.md` + `LIVE-AUDIT.md`)
+- **`invokeMutationTool` wrapper** (`src/utils/exec-classify.ts`) — new module centralises startup-failure classification (ENOENT / timeout / signal crash) so each engine's catch block shrinks from ~25 lines of duplicated scaffolding to a single instance check. Eliminated the duplication that allowed audit finding C1 (`err.status` vs `err.code`) to propagate to all 4 engines.
+- **`ExecFailureError.exit` reads `err.code`** (`src/utils/exec.ts`) — numeric exit codes are now correctly reported instead of always-null. Fixes Stryker exit-1 (config error) detection, Mutmut baseline-failure detection, and all `cargo mutants` / `go-mutesting` exit-code branches (audit C1).
+- **`C2` path-traversal guards** — handler-level check refuses `filePath` values whose `resolve(cwd, …)` escapes `cwd`; defense-in-depth check in `createSandbox` throws `Refusing to sandbox workspace outside process cwd` when `workspaceRoot` itself escapes `cwd`. Defends against an LLM being tricked into auditing host files outside the workspace (audit C2).
+- **`H1` Rust `target/` no longer symlinked** — Rust builds compile into a sandbox-local `target/`, leaving the host workspace's build cache intact (audit H1).
+- **`H2` Go baseline-failure detection** — when `go-mutesting` exits non-zero with zero parsed mutants, the engine now throws a baseline-failure error rather than silently reporting a fake 100% mutation score. Parser requires quoted paths on PASS/FAIL lines to distinguish mutants from baseline compiler-error output (audit H2).
+- **`H3` Rust TIMEOUT mutants counted as killed** — both TypeScript (Stryker) and Rust (cargo-mutants) engines count `Timeout` mutants as killed, consistent with Stryker's own semantics (audit H3).
+- **`H4` Python header / path disambiguation** — `parseMutmutResults` now requires a category emoji OR a parens-counted header line, AND rejects lines that look like file paths. Prevents mutant IDs like `survived_logic.py:7` from being misclassified as section headers (audit H4).
+- **`H5` concurrency validation** — `concurrency` must be an integer between 1 and 64 (Stryker worker cap). Non-integer / out-of-range values produce a clear MCP error (audit H5).
+- **`M1` `CompileError` / `RuntimeError` excluded from mutation score** — Stryker mutants with these statuses don't have a testable outcome; counting them in `total` would inflate scores (audit M1).
+- **`M2` `NoCoverage` mutants reported as vulnerabilities** — no test reached that code path; surfaced as first-class vulnerabilities with a dedicated description (audit M2).
+- **`M5` `lineScope` validation** — must be `{ start: integer ≥ 1, end: integer ≥ start }`. Invalid values are rejected (audit M5).
+- **`M6` segment-based `ignorePatterns` matching** — replaces substring matching so a pattern `test` doesn't over-eagerly exclude `latest.ts` (audit M6).
+- **`M7` `ignorePatterns` element-type check** — non-string array elements no longer silently filtered out (audit M7).
+- **`M8` `TOOL_DEFINITION` doc fix** — corrected schema descriptions to match actual behaviour (audit M8).
+
+### Fixed — Live-Audit (`LIVE-AUDIT.md`)
+- **`L1`** — `createSandbox` no longer refuses the legitimate case where `workspaceRoot === process.cwd()` (the most common case in real usage). The `isPathInside` helper now mirrors the handler's version.
+- **`L2`** — `ignorePatterns` with trailing separator (`["fixtures/"]`) is now normalised before segment matching, so the most common user convention works as expected.
+- **`L3`** — execFile TIMEOUT classification now requires `killed === true`, distinguishing real timeouts from external SIGTERM (e.g. OOM killer).
+- **`L4`** — `parseCargoMutantsText` now case-insensitively matches `timeout`, so lowercase outputs from `cargo mutants` text mode are correctly counted.
+- **`L5`** — dismissed after fact-check; the quoted-path gate on the go parser is intentional (preserves the H2 baseline-failure detection).
+
 ## [1.0.0] - 2024-06-24
 
 ### Added

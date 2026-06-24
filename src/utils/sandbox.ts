@@ -14,7 +14,12 @@ import { isVerbose, warn } from './logger.js';
  */
 function isPathInside(candidate: string, root: string): boolean {
   const rel = relative(root, candidate);
-  return rel !== '' && !rel.startsWith('..' + sep) && rel !== '..' && !isAbsolute(rel);
+  // INSIDE means: equal-to (rel === ''), strictly inside (rel === 'foo'),
+  // or the parent of (rel === '..') the root. Block only escape / sibling.
+  // (Live-audit L1 fix: previously required `rel !== ''` which blocked the
+  // legitimate case where `workspaceRoot === process.cwd()`, causing audit
+  // calls on the user's own project to fail unconditionally.)
+  return !rel.startsWith('..') && rel !== '..' && !isAbsolute(rel);
 }
 
 /**
@@ -208,7 +213,11 @@ export function createSandbox(
           // produces at least one element), so guard against the silent
           // "exclude everything" failure mode.
           if (pattern.length === 0) continue;
-          if (segments.includes(pattern)) return false;
+          // Strip a single trailing separator so common convention `["fixtures/"]`
+          // matches directory segments named `fixtures`. (Live-audit L2 fix.)
+          const normalised = pattern.endsWith(sep) ? pattern.slice(0, -1) : pattern;
+          if (normalised.length === 0) continue;
+          if (segments.includes(normalised)) return false;
         }
         return true;
       },
