@@ -1,0 +1,9 @@
+node_modules/
+build/
+coverage/
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+.stryker-tmp/
+.mutmut-cache/

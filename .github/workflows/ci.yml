@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  check:
+    name: Full Check Pipeline (Node ${{ matrix.node-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [18.x, 20.x, 22.x]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The `npm run check` script runs all four stages sequentially:
+      # build → lint → format:check → test
+      # Using it as a single step ensures the same pipeline runs in CI
+      # and locally. If any stage fails, subsequent stages are skipped
+      # and the job fails — which becomes a required status check.
+      - name: Run full check pipeline
+        run: npm run check
+
+      # Separate typecheck step — runs even if `npm run check` fails,
+      # so type errors are surfaced in CI logs regardless of which
+      # pipeline stage failed first.
+      - name: Typecheck
+        if: always()
+        run: npx tsc --noEmit

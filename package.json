@@ -1,0 +1,55 @@
+{
+  "name": "chaos-mcp",
+  "version": "1.1.0",
+  "description": "On-demand micro-mutation sandbox for AI test verification — maps holes in unit tests by running isolated mutation testing via the Model Context Protocol",
+  "type": "module",
+  "bin": {
+    "chaos-mcp": "./build/index.js"
+  },
+  "files": [
+    "build/"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "mutation-testing",
+    "stryker",
+    "mutmut",
+    "test-coverage",
+    "ai-tools",
+    "cli"
+  ],
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc && npm run postbuild",
+    "postbuild": "node -e \"const fs=require('fs');const p='./build/index.js';let c=fs.readFileSync(p,'utf-8');if(!c.startsWith('#!/usr/bin/env node')){fs.writeFileSync(p,'#!/usr/bin/env node\\n'+c);console.log('Shebang restored')}\" && node -e \"if(process.platform!=='win32')require('child_process').execSync('chmod +x ./build/index.js')\"",
+    "start": "node ./build/index.js",
+    "prepare": "npm run build",
+    "prepublishOnly": "npm run build && npm run check",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "lint": "eslint src/",
+    "lint:fix": "eslint src/ --fix",
+    "format": "prettier --write src/",
+    "format:check": "prettier --check src/",
+    "check": "npm run build && npm run lint && npm run format:check && npm run test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.1",
+    "@stryker-mutator/core": "^8.7.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.0.0",
+    "@types/node": "^20.11.0",
+    "eslint": "^9.0.0",
+    "eslint-config-prettier": "^10.0.0",
+    "prettier": "^3.2.0",
+    "typescript": "^5.3.3",
+    "typescript-eslint": "^8.0.0",
+    "vitest": "^3.0.0"
+  }
+}
