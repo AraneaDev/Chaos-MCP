@@ -5,9 +5,7 @@ import { runShell, ExecFailureError } from '../utils/exec.js';
  * Run a child process and return the captured ExecFailureError. The promise
  * must reject; if it resolves the helper throws so the failing test is loud.
  */
-async function expectRejection(
-  fn: () => Promise<unknown>,
-): Promise<ExecFailureError> {
+async function expectRejection(fn: () => Promise<unknown>): Promise<ExecFailureError> {
   try {
     await fn();
   } catch (err: unknown) {
@@ -28,18 +26,14 @@ async function expectRejection(
  */
 describe('runShell error propagation (C1 regression)', () => {
   it('captures numeric exit code 42 from a child process', async () => {
-    const caught = await expectRejection(() =>
-      runShell('node', ['-e', 'process.exit(42)']),
-    );
+    const caught = await expectRejection(() => runShell('node', ['-e', 'process.exit(42)']));
     expect(caught).toBeDefined();
     expect(caught.exit).toBe(42);
     expect(caught.signal).toBeNull();
   });
 
   it('captures exit code 1 from a failed child', async () => {
-    const caught = await expectRejection(() =>
-      runShell('node', ['-e', 'process.exit(1)']),
-    );
+    const caught = await expectRejection(() => runShell('node', ['-e', 'process.exit(1)']));
     expect(caught).toBeDefined();
     expect(caught.exit).toBe(1);
   });

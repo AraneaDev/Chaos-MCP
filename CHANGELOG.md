@@ -2,6 +2,28 @@
 
 All notable changes to Chaos-MCP are documented in this file.
 
+## [1.1.1] - 2026-06-24
+
+### Added — End-to-End Test Coverage + CI Integration
+- **`.github/workflows/e2e.yml`** — new opt-in E2E workflow. Triggers on `workflow_dispatch` (manual) OR `pull_request` labeled with `run-e2e`. Runs the full E2E suite (MCP audit pipeline + Stryker mutations). The `if:` condition gates on `github.event.action == 'labeled'` (not just label presence) to prevent spurious re-runs when a maintainer removes or re-edits the label.
+- **`src/__tests__/e2e-mcp.test.ts`** — real MCP audit pipeline E2E against a fixture. Spawns the server as a child process via full-stdio JSON-RPC, exercises the `audit_code_resilience` tool end-to-end against a real workspace. Leak detector is snapshot-relative (captures tmpdir contents in `beforeAll`, only flags dirs created *by this run*) so prior runs and parallel processes don't produce false positives.
+- **`src/__tests__/e2e-stryker.test.ts`** — real StrykerJS programmatic mutation test. Builds a temp fixture with a `divide()` function (intentional untested `b === 0` branch for kill-vs-survive mix), symlinks host `node_modules` so no `npm install` is needed in CI, invokes `new Stryker({ testRunner: 'vitest', ... }).runMutationTest()` and asserts at least one mutant killed + one surviving + a mutation score strictly between 0% and 100%. Has install-version detection that prints a `console.error` and skips if `@stryker-mutator/core` and `@stryker-mutator/vitest-runner` major versions are misaligned.
+
+### Added — L3 Negative-Arm Regression Coverage
+- **`src/__tests__/exec-error-l3.test.ts`** — regression test for the L3 fix (execFile TIMEOUT classification must require `killed === true` to distinguish real timeouts from external SIGTERM). Covers BOTH arms: positive (real timeout produces a TIMEOUT code) and negative (synthetic `(code: null, signal: 'SIGTERM', killed: false)` error must NOT be classified as TIMEOUT). Uses `vi.mock` + `vi.hoisted` (the ESM-safe pattern; `vi.spyOn` fails at runtime because Node ESM module exports are read-only).
+
+### Changed — Stryker Major Alignment
+- `@stryker-mutator/core` and `@stryker-mutator/vitest-runner` both bumped to v9.6.1 (were `^8.7.0` + `^9.6.1` mismatched). Allows `e2e-stryker.test.ts` to actually execute mutations in CI instead of skipping. TypeScript engine JSON parser handles Stryker v9's `mutation.json` schema identically (status / mutatorName / replacement / location.start.line) — no parser change required.
+
+### Changed — Tightened Test Lint Rules
+- Added `eslint-plugin-vitest` to `eslint.config.js` with two rules: `vitest/consistent-test-it` (enforces `it` consistency across the suite) and `vitest/no-conditional-expect` (forbids conditional assertions inside test bodies).
+
+### Fixed — Test Suite Hygiene
+- **`src/__tests__/exec-error.test.ts`** — removed the broken `vi.spyOn(cp, 'execFile')` block (which threw `TypeError: Cannot spy on export "execFile". Module namespace is not configurable in ESM` at runtime) and the duplicated L3 positive-arm test. File is now C1-regression-only.
+
+### Docs
+- **CONTRIBUTING.md** — added "End-to-End Testing" section documenting the two trigger paths (`workflow_dispatch` + `run-e2e` label), local invocation env vars (`E2E=1`, `E2E_STRYKER=1`), what each E2E test exercises, and when to trigger an E2E run.
+
 ## [1.1.0] - 2026-06-24
 
 ### Added — Engine Optimization

@@ -107,9 +107,7 @@ describe('Live-audit L3: runShell TIMEOUT classification', () => {
       return {} as cpType.ChildProcess;
     }) as never);
 
-    const caught = await expectRejection(() =>
-      runShell('node', ['-e', 'process.exit(0)']),
-    );
+    const caught = await expectRejection(() => runShell('node', ['-e', 'process.exit(0)']));
     expect(caught.code).not.toBe('TIMEOUT');
     expect(caught.signal).toBe('SIGTERM');
     // And not an empty/numeric exit either \u2014 fall-through to signal-crash

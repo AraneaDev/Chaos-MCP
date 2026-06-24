@@ -1,9 +1,6 @@
 import { BaseEngine, RunOptions, MutationResult } from './base.js';
 import { ExecFailureError } from '../utils/exec.js';
-import {
-  invokeMutationTool,
-  MutationToolStartupError,
-} from '../utils/exec-classify.js';
+import { invokeMutationTool, MutationToolStartupError } from '../utils/exec-classify.js';
 import { log, isVerbose } from '../utils/logger.js';
 
 /** Default timeout for cargo-mutants runs (5 minutes). */
@@ -152,11 +149,12 @@ export class RustEngine extends BaseEngine {
     let stderr: string;
 
     try {
-      const result = await invokeMutationTool('cargo-mutants', 'cargo', [
-        'mutants',
-        '--file',
-        fileName,
-      ], { cwd, timeoutMs });
+      const result = await invokeMutationTool(
+        'cargo-mutants',
+        'cargo',
+        ['mutants', '--file', fileName],
+        { cwd, timeoutMs },
+      );
       stdout = result.stdout;
       stderr = result.stderr;
     } catch (error: unknown) {

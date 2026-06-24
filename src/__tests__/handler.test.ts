@@ -613,7 +613,7 @@ describe('handleToolCall', () => {
 
   it('returns error when concurrency is not an integer (H5 regression)', async () => {
     const mockRun = vi.fn();
-    MockTSEngine.mockImplementation(() => ({ run: mockRun } as unknown as TypeScriptEngine));
+    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',
@@ -636,7 +636,7 @@ describe('handleToolCall', () => {
 
   it('returns error when concurrency is above the cap of 64 (H5 regression)', async () => {
     const mockRun = vi.fn();
-    MockTSEngine.mockImplementation(() => ({ run: mockRun } as unknown as TypeScriptEngine));
+    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',
@@ -656,7 +656,7 @@ describe('handleToolCall', () => {
 
   it('returns error when lineScope has start > end (M5 regression)', async () => {
     const mockRun = vi.fn();
-    MockTSEngine.mockImplementation(() => ({ run: mockRun } as unknown as TypeScriptEngine));
+    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',
@@ -676,7 +676,7 @@ describe('handleToolCall', () => {
 
   it('returns error when ignorePatterns contains non-string elements (M7 regression)', async () => {
     const mockRun = vi.fn();
-    MockTSEngine.mockImplementation(() => ({ run: mockRun } as unknown as TypeScriptEngine));
+    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',

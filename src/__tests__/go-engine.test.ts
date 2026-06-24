@@ -170,9 +170,7 @@ describe('GoEngine', () => {
       makeExecFailure({ exit: 1, stdout: baselineErrorStdout, stderr: '' }),
     );
 
-    await expect(engine.run('src/test.go')).rejects.toThrow(
-      /go-mutesting baseline failure/,
-    );
+    await expect(engine.run('src/test.go')).rejects.toThrow(/go-mutesting baseline failure/);
     await expect(engine.run('src/test.go')).rejects.toThrow(/no mutants parsed/);
   });
 

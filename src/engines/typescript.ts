@@ -2,10 +2,7 @@ import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { BaseEngine, RunOptions, MutationResult, Vulnerability } from './base.js';
 import { ExecFailureError } from '../utils/exec.js';
-import {
-  invokeMutationTool,
-  MutationToolStartupError,
-} from '../utils/exec-classify.js';
+import { invokeMutationTool, MutationToolStartupError } from '../utils/exec-classify.js';
 import { log, isVerbose } from '../utils/logger.js';
 
 /** Default timeout for Stryker runs (5 minutes). */

@@ -125,11 +125,7 @@ describe('createSandbox', () => {
 
     sandbox = createSandbox('src/main.py', TEST_PROJECT);
 
-    expect(mockSymlinkSync).toHaveBeenCalledWith(
-      TEST_PROJECT_VENV,
-      `${SANDBOX_DIR}/.venv`,
-      'dir',
-    );
+    expect(mockSymlinkSync).toHaveBeenCalledWith(TEST_PROJECT_VENV, `${SANDBOX_DIR}/.venv`, 'dir');
   });
 
   it('refuses to sandbox when workspace resolves outside process cwd (C2)', () => {

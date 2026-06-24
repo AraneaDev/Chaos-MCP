@@ -46,12 +46,9 @@ function checkNodeVersion(): void {
   const [currentMajor, currentMinor] = current.split('.').map(Number);
   const [minMajor, minMinor] = MIN_NODE_VERSION.split('.').map(Number);
 
-  if (
-    currentMajor < minMajor ||
-    (currentMajor === minMajor && currentMinor < minMinor)
-  ) {
- console.error(
- `chaos-mcp requires Node.js >= ${MIN_NODE_VERSION}, but you are running ${current}. ` +
+  if (currentMajor < minMajor || (currentMajor === minMajor && currentMinor < minMinor)) {
+    console.error(
+      `chaos-mcp requires Node.js >= ${MIN_NODE_VERSION}, but you are running ${current}. ` +
         `Please upgrade your Node.js runtime. See https://nodejs.org/ for downloads.`,
     );
     process.exit(1);
@@ -268,31 +265,31 @@ export async function handleToolCall(request: CallToolRequest, config?: ChaosCon
             ? new GoEngine()
             : new RustEngine();
 
-  // Provision a sandbox so mutation runs never touch the real workspace tree
-  // Parse ignorePatterns early so we can pass them to the sandbox.
-  // Audit finding M7: reject arrays containing non-string elements explicitly
-  // instead of silently filtering them out.
-  const earlyArgs = request.params.arguments ?? {};
-  let earlyIgnorePatterns: string[] | undefined;
-  if (earlyArgs.ignorePatterns !== undefined) {
-    if (
-      !Array.isArray(earlyArgs.ignorePatterns) ||
-      earlyArgs.ignorePatterns.some((v) => typeof v !== 'string')
-    ) {
-      return {
-        content: [
-          {
-            type: 'text',
-            text: 'ignorePatterns must be an array of strings. Example: [".test.ts", "fixtures/"].',
-          },
-        ],
-        isError: true,
-      };
+    // Provision a sandbox so mutation runs never touch the real workspace tree
+    // Parse ignorePatterns early so we can pass them to the sandbox.
+    // Audit finding M7: reject arrays containing non-string elements explicitly
+    // instead of silently filtering them out.
+    const earlyArgs = request.params.arguments ?? {};
+    let earlyIgnorePatterns: string[] | undefined;
+    if (earlyArgs.ignorePatterns !== undefined) {
+      if (
+        !Array.isArray(earlyArgs.ignorePatterns) ||
+        earlyArgs.ignorePatterns.some((v) => typeof v !== 'string')
+      ) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'ignorePatterns must be an array of strings. Example: [".test.ts", "fixtures/"].',
+            },
+          ],
+          isError: true,
+        };
+      }
+      earlyIgnorePatterns = earlyArgs.ignorePatterns as string[];
     }
-    earlyIgnorePatterns = earlyArgs.ignorePatterns as string[];
-  }
 
-  let sandbox;
+    let sandbox;
     try {
       sandbox = createSandbox(filePath, env.workspaceRoot, earlyIgnorePatterns);
     } catch {
@@ -474,7 +471,7 @@ export async function startServer(): Promise<void> {
 // ─── CLI flags ───────────────────────────────────────────────────────────────
 
 /** Application version, synced with package.json. */
-export const APP_VERSION = '1.1.0';
+export const APP_VERSION = '1.1.1';
 
 const HELP_TEXT = `chaos-mcp v${APP_VERSION} — On-demand micro-mutation sandbox for AI test verification
 

@@ -1,9 +1,6 @@
 import { BaseEngine, RunOptions, MutationResult } from './base.js';
 import { ExecFailureError } from '../utils/exec.js';
-import {
-  invokeMutationTool,
-  MutationToolStartupError,
-} from '../utils/exec-classify.js';
+import { invokeMutationTool, MutationToolStartupError } from '../utils/exec-classify.js';
 import { log, isVerbose } from '../utils/logger.js';
 
 /** Default timeout for go-mutesting runs (5 minutes). */

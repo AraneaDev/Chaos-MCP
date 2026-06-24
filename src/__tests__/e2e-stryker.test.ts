@@ -48,7 +48,8 @@ function detectCompat(): CompatReport {
     dependencies?: Record<string, string>;
     devDependencies?: Record<string, string>;
   };
-  const coreRange = pkg.dependencies?.['@stryker-mutator/core'] ?? pkg.devDependencies?.['@stryker-mutator/core'];
+  const coreRange =
+    pkg.dependencies?.['@stryker-mutator/core'] ?? pkg.devDependencies?.['@stryker-mutator/core'];
   const runnerRange =
     pkg.dependencies?.['@stryker-mutator/vitest-runner'] ??
     pkg.devDependencies?.['@stryker-mutator/vitest-runner'];

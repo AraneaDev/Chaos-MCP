@@ -118,9 +118,7 @@ export function runShell(
           // reported as exit=null. Always read `err.code` and gate on its type.)
           const exitCode = typeof errnoError.code === 'number' ? errnoError.code : null;
           const signal =
-            typeof errnoError.signal === 'string'
-              ? (errnoError.signal as NodeJS.Signals)
-              : null;
+            typeof errnoError.signal === 'string' ? (errnoError.signal as NodeJS.Signals) : null;
 
           const result: ExecResult = {
             stdout: stdoutStr,

@@ -122,3 +122,39 @@ Alternatively, for manual releases: `npm publish` (runs `prepublishOnly` which e
 ## CI
 
 The CI pipeline (`.github/workflows/ci.yml`) runs `npm run check` on Node.js 18.x, 20.x, and 22.x for all pushes and pull requests to `main`. All three Node versions must pass.
+
+## End-to-End Testing
+
+E2E tests are **opt-in** — they're slow and have environmental dependencies (spawn a real MCP server, run actual Stryker mutations), so they don't run on every PR. A separate workflow (`.github/workflows/e2e.yml`) runs them on demand.
+
+### Local invocation
+
+```bash
+E2E=1 npx vitest run src/__tests__/e2e-mcp.test.ts        # MCP audit pipeline (spawns server, runs audit_code_resilience against a fixture)
+E2E_STRYKER=1 npx vitest run src/__tests__/e2e-stryker.test.ts  # StrykerJS programmatic mutations (fixture + real Stryker run)
+```
+
+Both flags must be set explicitly — without them the tests compile-load but noop (the env-var gate is in the test file itself).
+
+### CI invocation (`.github/workflows/e2e.yml`)
+
+Two trigger paths for the same workflow:
+
+1. **Manual dispatch** — GitHub Actions tab → "E2E" workflow → "Run workflow" button.
+2. **Label-triggered** — add the `run-e2e` label to any PR. The `if:` condition gates on `github.event.action == 'labeled'` (not just label presence) so re-edits or removal of the label don't cause spurious re-runs.
+
+Both trigger paths run the full E2E suite (MCP pipeline + Stryker mutations) on Node 20.x with a 15-minute timeout.
+
+### When to trigger an E2E run
+
+- New engine implementation touching subprocess flow
+- Sandbox, config-loader, or handler changes
+- Stryker / Mutmut / cargo-mutants / go-mutesting major version bumps
+- Any change that could affect the full happy-path sandboxing + mutation-test cycle
+
+### What gets exercised
+
+- **`e2e-mcp.test.ts`** — full-stdio JSON-RPC conversation with a real MCP server child process. Verifies tool registration, schema validation, and the `audit_code_resilience` happy path against a fixture project (uses `os.tmpdir()` + sandbox isolation). Has a leak detector that snapshots the tmpdir in `beforeAll` and only flags dirs created *by this run* (snapshot-relative, not absolute).
+- **`e2e-stryker.test.ts`** — programmatic Stryker mutation test. Builds a temp fixture with a `divide()` function (intentional untested `b === 0` branch), symlinks the host's `node_modules` to avoid `npm install`, invokes `new Stryker({ testRunner: 'vitest', ... }).runMutationTest()`, and asserts at least one mutant killed + one surviving + a mutation score strictly between 0% and 100%.
+
+If `@stryker-mutator/core` and `@stryker-mutator/vitest-runner` majors get misaligned in `package.json`, the Stryker test self-skips with a `console.error` so the misconfiguration is loud in CI.

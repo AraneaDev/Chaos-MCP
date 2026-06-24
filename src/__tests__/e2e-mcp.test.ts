@@ -147,7 +147,8 @@ function hashFixture(rootDir: string): string {
   return hasher.digest('hex');
 }
 
-function walkForHash(dir: string, hasher: Hash): void {    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+function walkForHash(dir: string, hasher: Hash): void {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const fullPath = join(dir, entry.name);
     if (entry.isDirectory()) {
       walkForHash(fullPath, hasher);
