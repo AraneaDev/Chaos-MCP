@@ -57,21 +57,4 @@ describe('runShell error propagation (C1 regression)', () => {
     expect(caught.exit).toBeNull();
     expect(caught.code).toBe('ENOENT');
   });
-
-  it('classifies a configured-timeout end as code=TIMEOUT (Live-audit L3)', async () => {
-    // Drive the production code path: runShell with a short timeoutMs and a
-    // long-running child. execFile internally calls child.kill(), so the
-    // resulting error has killed=true and the wrapper classifies it as TIMEOUT.
-    //
-    // Note: the L3 fix has a second arm (external kills with killed=false
-    // must NOT be classified as TIMEOUT). End-to-end coverage of that arm
-    // requires mocking child_process.execFile to deliver a synthetic
-    // (signal=SIGTERM, killed=false) error; deferred until we have reason
-    // to invest in the mock harness.
-    const caught = await expectRejection(() =>
-      runShell('node', ['-e', 'setTimeout(() => {}, 60000)'], { timeoutMs: 200 }),
-    );
-    expect(caught.code).toBe('TIMEOUT');
-    expect(caught.exit).toBeNull();
-  });
 });

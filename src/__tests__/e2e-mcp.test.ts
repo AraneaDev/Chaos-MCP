@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawn, ChildProcess } from 'child_process';
 import {
   mkdtempSync,
+  mkdirSync,
   writeFileSync,
   rmSync,
   existsSync,
@@ -83,6 +84,9 @@ interface FixtureContext {
 function createFixture(): FixtureContext {
   const rootDir = mkdtempSync(join(tmpdir(), 'chaos-mcp-e2e-'));
   const srcDir = join(rootDir, 'src');
+  // mkdtempSync creates only the leaf directory; we must mkdirSync the
+  // subdirectory before writeFileSync into it.
+  mkdirSync(srcDir, { recursive: true });
 
   writeFileSync(
     join(rootDir, 'package.json'),
@@ -159,10 +163,16 @@ function walkForHash(dir: string, hasher: Hash): void {    for (const entry of r
 describe('chaos-mcp end-to-end (E2E)', () => {
   let fixture: FixtureContext;
   let server: ChildProcess;
+  // Snapshot of tmpdir contents collected BEFORE the audit_code_resilience
+  // call. Used to scope the cleanup-leak check to dirs created by THIS test
+  // run (other test runs / parallel processes may leave dirs around that
+  // have nothing to do with us).
+  let preTestTmpdirEntries: string[];
 
   beforeAll(() => {
     if (!E2E_ENABLED) return;
     fixture = createFixture();
+    preTestTmpdirEntries = readdirSync(tmpdir());
 
     const entry = resolve(process.cwd(), 'build', 'index.js');
     if (!existsSync(entry)) {
@@ -244,12 +254,17 @@ describe('chaos-mcp end-to-end (E2E)', () => {
     expect(postHash).toBe(fixture.preHash);
   });
 
-  it_e2e('sandbox cleanup: no leftover temp directories from chaos-mcp-*', () => {
-    // After the run, the OS tmpdir should not contain any chaos-mcp-* sandbox
-    // directories — verifies that the cleanup path runs even on errors.
-    const entries = readdirSync(tmpdir());
-    const leaked = entries.filter(
-      (name) => name.startsWith('chaos-mcp-') && statSync(join(tmpdir(), name)).isDirectory(),
+  it_e2e('sandbox cleanup: no NEW chaos-mcp-* directories left behind', () => {
+    // Compare tmpdir entries before and after. We only flag directories that
+    // did NOT exist when the test started — anything pre-existing (whether
+    // from prior runs, parallel processes, or vitest workers) is out of scope.
+    const postTestEntries = readdirSync(tmpdir());
+    const preSet = new Set(preTestTmpdirEntries);
+    const leaked = postTestEntries.filter(
+      (name) =>
+        !preSet.has(name) &&
+        name.startsWith('chaos-mcp-') &&
+        statSync(join(tmpdir(), name)).isDirectory(),
     );
     expect(leaked).toEqual([]);
   });
