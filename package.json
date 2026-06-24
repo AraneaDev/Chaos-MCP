@@ -39,11 +39,11 @@
     "check": "npm run build && npm run lint && npm run format:check && npm run test"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.1",
-    "@stryker-mutator/core": "^8.7.0"
+    "@modelcontextprotocol/sdk": "^1.0.1"
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",
+    "@stryker-mutator/core": "^9.6.1",
     "@stryker-mutator/vitest-runner": "^9.6.1",
     "@types/node": "^20.11.0",
     "eslint": "^9.0.0",

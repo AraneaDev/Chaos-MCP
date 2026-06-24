@@ -1,0 +1,73 @@
+name: E2E Tests
+
+# Gated E2E workflow \u2014 does NOT run on every PR.
+# Triggers:
+#   1. Manual dispatch via the Actions tab (`workflow_dispatch`).
+#   2. A pull request that has the `run-e2e` label applied by a maintainer
+#      after reviewing the changes (`pull_request: labeled`).
+#
+# Rationale: the E2E suite spawns the actual MCP server + StrykerJS as child
+# processes, taking 60-180s per test file. Running it on every PR would
+# double CI time without yielding actionable signal for small changes.
+# Maintainers request `run-e2e` after a visual review passes.
+on:
+  workflow_dispatch:
+  pull_request:
+    types: [labeled]
+
+jobs:
+  e2e:
+    name: E2E (audit pipeline + real Stryker mutations)
+    # Only fire on (a) manual dispatch or (b) PR labeled with `run-e2e`.
+    # The `action == 'labeled'` gate prevents spurious re-runs when a
+    # maintainer removes or re-applies the label.
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       github.event.action == 'labeled' &&
+       github.event.label.name == 'run-e2e')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      # E2E tests import from `../build/index.js` after a fresh build.
+      - name: Build
+        run: npm run build
+
+      # E2E #1: Spawn the actual MCP server against a tiny fixture and
+      # verify the audit_code_resilience pipeline + sandbox isolation +
+      # tempdir cleanup. Skipped unless `E2E=1`.
+      - name: 'E2E: MCP server audit pipeline'
+        run: npx vitest run src/__tests__/e2e-mcp.test.ts
+        env:
+          E2E: '1'
+
+      # E2E #2: Run real StrykerJS programmatic mutation testing against
+      # a fixture with intentional coverage gaps; assert the score is
+      # bounded (not 0%, not 100%) because the gap survives. Skipped
+      # unless `E2E_STRYKER=1`.
+      - name: 'E2E: StrykerJS programmatic mutations'
+        run: npx vitest run src/__tests__/e2e-stryker.test.ts
+        env:
+          E2E_STRYKER: '1'
+
+      # Diagnostic: surface Stryker-tmp / temp dirs in the job log if
+      # anything leaked (the in-process snapshots already catch this,
+      # but the log gives maintainers a sanity check post-hoc).
+      - name: Inspect tmpdir state
+        if: always()
+        run: |
+          echo "=== /tmp listing ==="
+          ls -la /tmp 2>/dev/null | head -50 || true
