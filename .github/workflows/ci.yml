@@ -42,3 +42,10 @@ jobs:
       - name: Typecheck
         if: always()
         run: npx tsc --noEmit
+
+      # Smoke test the CLI binary: verify --validate-config and
+      # --validate-config --strict exit with the expected codes and
+      # report warnings correctly to stderr.
+      - name: 'CLI: validate-config smoke tests'
+        if: always()
+        run: npx vitest run src/__tests__/cli-validate-config.test.ts

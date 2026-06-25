@@ -1,6 +1,5 @@
 import { BaseEngine, RunOptions, MutationResult } from './base.js';
-import { ExecFailureError } from '../utils/exec.js';
-import { invokeMutationTool, MutationToolStartupError } from '../utils/exec-classify.js';
+import { invokeMutationTool } from '../utils/exec-classify.js';
 import { log, isVerbose } from '../utils/logger.js';
 
 /** Default timeout for go-mutesting runs (5 minutes). */
@@ -40,7 +39,11 @@ function parseGoMutestingText(stdout: string, filePath: string): MutationResult 
   let killed = 0;
   const vulnerabilities: MutationResult['vulnerabilities'] = [];
 
-  for (const line of lines) {
+  for (const rawLine of lines) {
+    // Trim before prefix matching so leading whitespace doesn't cause
+    // undercounting (audit L8). Real go-mutesting outputs start at column 0,
+    // but defensive trimming costs nothing.
+    const line = rawLine.trim();
     // Lines look like: "PASS  \"/path/to/file.go:42:1\"" or "FAIL  \"/path/to/file.go:42:1\""
     // Real go-mutesting mutant lines are ALWAYS quoted paths (e.g.
     // `PASS  "/path/to/file.go:42:1"` or `FAIL  "/path/to/file.go:42:1"`).
@@ -106,7 +109,7 @@ function parseGoMutestingOutput(stdout: string, filePath: string): MutationResul
       killed,
       survived: survived || totalMutants - killed,
       mutationScore: `${mutationScore.toFixed(2)}%`,
-      vulnerabilities: (parsed.mutants || [])
+      vulnerabilities: parsed.mutants
         .filter((m) => m.status === 'SURVIVED' || m.status === 'survived')
         .map((m) => ({
           line: m.line ?? 0,
@@ -156,28 +159,24 @@ export class GoEngine extends BaseEngine {
       stdout = result.stdout;
       stderr = result.stderr;
     } catch (error: unknown) {
-      if (error instanceof MutationToolStartupError) {
-        throw new Error(error.message);
-      }
-      if (!(error instanceof ExecFailureError)) {
-        const message = error instanceof Error ? error.message : String(error);
-        throw new Error(`go-mutesting execution failed: ${message}`);
-      }
+      // Startup failures rethrow; non-ExecFailure errors wrap; otherwise we get
+      // a typed ExecFailureError back for the go-specific handling below.
+      const execErr = this.toExecFailure(error, 'go-mutesting');
 
       // Non-zero exit: go-mutesting exits 1 when mutants survive AND when
       // baseline `go test ./...` itself fails. If stdout is empty we treat it
       // as a baseline failure (no mutants parsed out), otherwise fall through
       // and parse the captured stdout.
-      stdout = error.stdout;
-      stderr = error.stderr;
+      stdout = execErr.stdout;
+      stderr = execErr.stderr;
       exitedNonZero = true;
-      failureExit = error.exit;
+      failureExit = execErr.exit;
 
       if (!stdout) {
         throw new Error(
-          `go-mutesting failed (exit ${error.exit}) with no parseable output. ` +
+          `go-mutesting failed (exit ${execErr.exit}) with no parseable output. ` +
             `This usually means the baseline test suite itself failed \u2014 run \`go test ./...\` and fix those first. ` +
-            `stderr: ${error.stderr?.slice(0, 500) ?? ''}`,
+            `stderr: ${execErr.stderr?.slice(0, 500) ?? ''}`,
         );
       }
     }

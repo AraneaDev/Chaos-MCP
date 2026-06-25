@@ -33,6 +33,13 @@ export interface EnvironmentInfo {
    */
   detectedRunner: string;
 
+  /**
+   * Detected Python package manager ('pip', 'uv', 'poetry', or '' for non-Python).
+   * Surfaces the project's dependency manager for diagnostics and future
+   * prebuild-command defaults.
+   */
+  packageManager: string;
+
   /** Absolute path to the resolved workspace root directory */
   workspaceRoot: string;
 }
@@ -50,7 +57,10 @@ export interface EnvironmentInfo {
  * @returns The detected project type.
  */
 export function detectProjectType(filePath: string): ProjectType {
-  if (/\.(ts|js|tsx|jsx)$/.test(filePath)) return 'typescript';
+  // Accept ESM/CJS variants (.mjs/.cjs/.mts/.cts) too — the runner detector
+  // already recognises vitest.config.mts/.mjs, so source files in those forms
+  // must be auditable rather than reported as unsupported.
+  if (/\.(c|m)?[jt]sx?$/.test(filePath)) return 'typescript';
   if (filePath.endsWith('.py')) return 'python';
   if (filePath.endsWith('.go')) return 'go';
   if (filePath.endsWith('.rs')) return 'rust';
@@ -72,17 +82,34 @@ const RUST_ROOT_MARKERS = ['Cargo.toml'] as const;
 const GO_ROOT_MARKERS = ['go.mod'] as const;
 
 /** Marker files that indicate a Python project root. */
-const PY_ROOT_MARKERS = ['pyproject.toml', 'setup.py', 'setup.cfg'] as const;
+const PY_ROOT_MARKERS = [
+  'pyproject.toml',
+  'setup.py',
+  'setup.cfg',
+  'uv.lock',
+  'poetry.lock',
+] as const;
 
 /**
  * Walk upward from `startDir` looking for a directory containing one of the
  * specified marker files. Returns the first matching directory, or `startDir`
  * if nothing is found within {@link MAX_WALK_DEPTH} levels.
  *
+ * When `boundary` is supplied, the walk checks `boundary` itself for a marker
+ * but never ascends above it. The sandbox refuses to copy a workspace outside
+ * `process.cwd()` (audit C2), so a workspace root resolved above cwd would make
+ * every audit fail at provisioning time. Passing cwd as the boundary keeps the
+ * detected root within the copyable tree.
+ *
  * @internal Exported for testing only.
  */
-export function resolveWorkspaceRoot(startDir: string, markers: readonly string[]): string {
+export function resolveWorkspaceRoot(
+  startDir: string,
+  markers: readonly string[],
+  boundary?: string,
+): string {
   let current = resolve(startDir);
+  const limit = boundary !== undefined ? resolve(boundary) : undefined;
 
   for (let depth = 0; depth < MAX_WALK_DEPTH; depth++) {
     for (const marker of markers) {
@@ -90,6 +117,9 @@ export function resolveWorkspaceRoot(startDir: string, markers: readonly string[
         return current;
       }
     }
+
+    // Stop at the boundary directory — do not ascend above it.
+    if (limit !== undefined && current === limit) break;
 
     const parent = dirname(current);
     // Reached filesystem root — stop
@@ -344,6 +374,38 @@ export function detectRawPythonRunner(workspaceRoot: string): string {
   return detectPythonTestRunner(workspaceRoot);
 }
 
+// ─── Python package manager detection ────────────────────────────────────────
+
+/**
+ * Detect the Python package manager from workspace signals.
+ *
+ * Priority order:
+ * 1. uv.lock exists → 'uv'
+ * 2. poetry.lock exists → 'poetry'
+ * 3. pyproject.toml contains [tool.uv] or [tool.uv.*] → 'uv'
+ * 4. pyproject.toml contains [tool.poetry] or [tool.poetry.*] → 'poetry'
+ * 5. Fallback: 'pip'
+ *
+ * @internal Exported for testing only.
+ */
+export function detectPythonPackageManager(workspaceRoot: string): string {
+  // Priority 1-2: lock files (fastest signal)
+  if (existsSync(join(workspaceRoot, 'uv.lock'))) return 'uv';
+  if (existsSync(join(workspaceRoot, 'poetry.lock'))) return 'poetry';
+
+  // Priority 3-4: pyproject.toml sections
+  const pyprojectContent = readTextSafe(join(workspaceRoot, 'pyproject.toml'));
+  if (pyprojectContent) {
+    // [tool.uv] or [tool.uv.sources] etc.
+    if (/\[tool\.uv\b/.test(pyprojectContent)) return 'uv';
+    // [tool.poetry] or [tool.poetry.dependencies] etc.
+    if (/\[tool\.poetry\b/.test(pyprojectContent)) return 'poetry';
+  }
+
+  // Priority 5: default
+  return 'pip';
+}
+
 // ─── Go test runner detection ────────────────────────────────────────────────
 
 /**
@@ -441,6 +503,7 @@ export function detectEnvironment(filePath: string): EnvironmentInfo {
       projectType,
       testRunner: 'unknown',
       detectedRunner: 'unknown',
+      packageManager: '',
       workspaceRoot: resolve('.'),
     };
   }
@@ -455,7 +518,10 @@ export function detectEnvironment(filePath: string): EnvironmentInfo {
         : projectType === 'go'
           ? GO_ROOT_MARKERS
           : RUST_ROOT_MARKERS;
-  const workspaceRoot = resolveWorkspaceRoot(fileDir, markers);
+  // Clamp the upward walk to the current working directory: the sandbox refuses
+  // to copy a workspace outside cwd, so a root resolved above cwd would break
+  // every audit. (Med#5: run-from-subdirectory previously failed at provisioning.)
+  const workspaceRoot = resolveWorkspaceRoot(fileDir, markers, process.cwd());
 
   // Detect the test runner for this workspace
   const testRunner =
@@ -479,10 +545,14 @@ export function detectEnvironment(filePath: string): EnvironmentInfo {
           ? detectRawGoRunner(workspaceRoot)
           : detectRawRustRunner(workspaceRoot);
 
+  // Detect Python package manager (only meaningful for Python projects)
+  const packageManager = projectType === 'python' ? detectPythonPackageManager(workspaceRoot) : '';
+
   return {
     projectType,
     testRunner,
     detectedRunner,
+    packageManager,
     workspaceRoot,
   };
 }

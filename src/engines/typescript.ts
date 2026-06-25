@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { BaseEngine, RunOptions, MutationResult, Vulnerability } from './base.js';
 import { ExecFailureError } from '../utils/exec.js';
@@ -46,34 +46,75 @@ interface StrykerMutantRecord {
  */
 function buildMutateArg(filePath: string, lineScope?: RunOptions['lineScope']): string {
   // No shell quoting — args are passed directly to execFile, not through a shell.
-  if (lineScope && lineScope.start > 0 && lineScope.end >= lineScope.start) {
+  // Fail closed on invalid scope: the handler validates args before they reach
+  // here, but this is defense-in-depth against silent full-file mutation.
+  // (Audit M12: previously invalid scopes were silently dropped, mutating
+  // the entire file without warning.)
+  if (lineScope) {
+    if (!Number.isInteger(lineScope.start) || lineScope.start < 1) {
+      throw new Error(`lineScope.start must be an integer >= 1, got ${lineScope.start}`);
+    }
+    if (!Number.isInteger(lineScope.end) || lineScope.end < lineScope.start) {
+      throw new Error(
+        `lineScope.end must be an integer >= start (${lineScope.start}), got ${lineScope.end}`,
+      );
+    }
     return `${filePath}:${lineScope.start}-${lineScope.end}`;
   }
   return filePath;
 }
 
 /**
- * Build the `--mutators` argument string for Stryker from allowlists and denylists.
+ * Build a StrykerJS v9 config file in the sandbox working directory when
+ * mutator configuration (denylist) is specified.
  *
- * Stryker syntax:
- *  - `--mutators ConditionalExpression,ArithmeticOperator`  (only these)
- *  - `--mutators !BooleanLiteral`                           (exclude this)
- *  - Combined: `--mutators ConditionalExpression,!StringLiteral`
+ * StrykerJS v9 removed the `--mutators` CLI flag from v8. Mutator
+ * configuration is now done exclusively via `stryker.config.json`.
+ * We write a minimal config with only the `mutators` key so the project's
+ * existing config (if any) is not clobbered — Stryker merges CLI args with
+ * the config file, and the config file is the authoritative source for
+ * mutator settings.
+ *
+ * **allowlist is not supported:** v9's config model requires toggling
+ * individual mutators off; there is no way to express "only these N mutators"
+ * without knowing the complete list of all mutator names. Users who need an
+ * allowlist should create their own `stryker.config.json`.
+ *
+ * Mutator names remain PascalCase as in v8 (e.g. "ConditionalExpression",
+ * "ArithmeticOperator"). Stryker validates them at runtime.
  */
-function buildMutatorsArg(allowlist?: string[], denylist?: string[]): string | null {
-  const parts: string[] = [];
+function writeStrykerMutatorConfig(cwd: string, denylist: string[]): void {
+  const configPath = join(cwd, 'stryker.config.json');
 
-  if (allowlist && allowlist.length > 0) {
-    parts.push(...allowlist);
-  }
-
-  if (denylist && denylist.length > 0) {
-    for (const name of denylist) {
-      parts.push(`!${name}`);
+  // Merge into any existing config rather than overwriting it. A blind write
+  // would discard the project's own stryker.config.json (testRunner, mutate
+  // globs, reporters, thresholds, plugins), silently running mutation under
+  // different settings than the user configured (audit Med#4).
+  let config: Record<string, unknown> = {};
+  if (existsSync(configPath)) {
+    try {
+      const parsed = JSON.parse(readFileSync(configPath, 'utf-8')) as unknown;
+      if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        config = parsed as Record<string, unknown>;
+      }
+    } catch {
+      // Unreadable / invalid existing config — fall back to a fresh object.
     }
   }
 
-  return parts.length > 0 ? parts.join(',') : null;
+  const existingMutators =
+    config.mutators !== null &&
+    typeof config.mutators === 'object' &&
+    !Array.isArray(config.mutators)
+      ? (config.mutators as Record<string, boolean>)
+      : {};
+  const mutators: Record<string, boolean> = { ...existingMutators };
+  for (const name of denylist) {
+    mutators[name] = false;
+  }
+  config.mutators = mutators;
+
+  writeFileSync(configPath, JSON.stringify(config), 'utf-8');
 }
 
 /**
@@ -89,7 +130,20 @@ export class TypeScriptEngine extends BaseEngine {
     const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
     const mutateArg = buildMutateArg(filePath, options?.lineScope);
-    const mutatorsArg = buildMutatorsArg(options?.mutatorAllowlist, options?.mutatorDenylist);
+
+    // StrykerJS v9 removed the `--mutators` CLI flag. We express denylists by
+    // writing a minimal stryker.config.json in the sandbox with the
+    // `mutators` key. Allowlists are not supported without a full config.
+    if (options?.mutatorAllowlist && options.mutatorAllowlist.length > 0) {
+      throw new Error(
+        'mutatorAllowlist is not supported in StrykerJS v9. ' +
+          'Use mutatorDenylist instead, or create a stryker.config.json with explicit mutator settings. ' +
+          `Requested allowlist: ${options.mutatorAllowlist.join(', ')}`,
+      );
+    }
+    if (options?.mutatorDenylist && options.mutatorDenylist.length > 0) {
+      writeStrykerMutatorConfig(cwd, options.mutatorDenylist);
+    }
 
     // ── Build the Stryker CLI arguments ──
     // Use --concurrency when provided; omit to let Stryker auto-detect CPU cores.
@@ -116,19 +170,22 @@ export class TypeScriptEngine extends BaseEngine {
       args.push('--concurrency', String(options.concurrency));
     }
 
-    if (mutatorsArg) {
-      args.push('--mutators', mutatorsArg);
-    }
+    // No denylist args to add — denylist is now expressed via stryker.config.json
 
-    // dryRun mode: Stryker validates the test suite passes without mutation testing
+    // dryRun mode (StrykerJS v9: renamed --dryRun to --dryRunOnly)
     if (options?.dryRun) {
-      args.push('--dryRun');
+      args.push('--dryRunOnly');
     }
 
     // incremental mode: reuse results from a previous run to skip unchanged mutants
     if (options?.incremental) {
       args.push('--incremental');
       args.push('--incrementalFile', '.stryker-incremental.json');
+    }
+
+    // per-mutant timeout: how long an individual mutant's test is allowed to run
+    if (typeof options?.perMutantTimeoutMs === 'number' && options.perMutantTimeoutMs > 0) {
+      args.push('--timeoutMs', String(options.perMutantTimeoutMs));
     }
 
     if (isVerbose()) {

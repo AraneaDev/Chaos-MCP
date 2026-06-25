@@ -2,7 +2,66 @@ import { mkdtempSync, cpSync, symlinkSync, rmSync, existsSync, statSync, readdir
 import { join, resolve, isAbsolute, relative, sep } from 'path';
 import { tmpdir } from 'os';
 import { randomUUID } from 'crypto';
-import { isVerbose, warn } from './logger.js';
+import { warn } from './logger.js';
+
+/**
+ * Registry of active sandbox directories that have not yet been cleaned up.
+ *
+ * When the process exits unexpectedly (SIGTERM, SIGINT, crash), registered
+ * handlers walk this set and remove every remaining sandbox so temp
+ * directories don't leak on disk. Normal cleanup via {@link SandboxContext.cleanup}
+ * removes entries from this set.
+ */
+const ACTIVE_SANDBOXES = new Set<string>();
+
+/** Guards against double-registration of process exit handlers. */
+let exitHandlerRegistered = false;
+
+/**
+ * Register process-wide handlers that remove any sandboxes left behind
+ * when the process terminates unexpectedly. The handlers use only
+ * synchronous operations because Node.js `exit` callbacks must be sync.
+ */
+function ensureExitHandler(): void {
+  if (exitHandlerRegistered) return;
+  exitHandlerRegistered = true;
+
+  const cleanupAll = (): void => {
+    for (const dir of ACTIVE_SANDBOXES) {
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch {
+        // Best-effort — OS will reclaim tmpdir() eventually
+      }
+    }
+    ACTIVE_SANDBOXES.clear();
+  };
+
+  // `process.on('exit')` fires when the event loop empties or process.exit() is
+  // called. Only synchronous operations are allowed in exit handlers.
+  process.on('exit', cleanupAll);
+
+  // SIGTERM, SIGINT, SIGHUP, and SIGQUIT: try to clean up before the OS
+  // kills the process. We call process.exit() after cleanup to let the
+  // `exit` handler also fire (it's idempotent — the set is already emptied
+  // by this point).
+  // (Audit M10: SIGHUP + SIGQUIT added — previously only SIGTERM/SIGINT
+  // were handled, so terminal-disconnect leaked sandboxes on disk.)
+  // Exit with the conventional 128 + signal-number code so a signal kill is
+  // not reported as a clean exit (0) to a supervising process.
+  const SIGNAL_NUMBERS: Record<string, number> = {
+    SIGHUP: 1,
+    SIGINT: 2,
+    SIGQUIT: 3,
+    SIGTERM: 15,
+  };
+  for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP', 'SIGQUIT'] as const) {
+    process.on(sig, () => {
+      cleanupAll();
+      process.exit(128 + SIGNAL_NUMBERS[sig]);
+    });
+  }
+}
 
 /**
  * Returns true when `candidate` is `root` itself, or a file/directory
@@ -14,12 +73,14 @@ import { isVerbose, warn } from './logger.js';
  */
 function isPathInside(candidate: string, root: string): boolean {
   const rel = relative(root, candidate);
-  // INSIDE means: equal-to (rel === ''), strictly inside (rel === 'foo'),
-  // or the parent of (rel === '..') the root. Block only escape / sibling.
+  // INSIDE means equal-to (rel === '') or strictly inside (rel === 'foo/…').
+  // A parent ('..'), sibling ('../foo'), or absolute-escape path is rejected.
+  // Note `!rel.startsWith('..')` already covers the bare '..' parent case, so
+  // no separate `rel !== '..'` check is needed (it would be dead code).
   // (Live-audit L1 fix: previously required `rel !== ''` which blocked the
   // legitimate case where `workspaceRoot === process.cwd()`, causing audit
   // calls on the user's own project to fail unconditionally.)
-  return !rel.startsWith('..') && rel !== '..' && !isAbsolute(rel);
+  return !rel.startsWith('..') && !isAbsolute(rel);
 }
 
 /**
@@ -53,7 +114,7 @@ const ALWAYS_EXCLUDE = new Set([
   'coverage',
   '.nyc_output',
   '.next',
-  'target', // Rust build artifacts (symlinked separately)
+  'target', // Rust build artifacts (excluded — NOT symlinked; audit H1)
 ]);
 
 /**
@@ -93,8 +154,11 @@ function safeSymlink(target: string, path: string): void {
   try {
     symlinkSync(target, path, 'dir');
   } catch (error: unknown) {
-    if (isWindows() && error instanceof Error) {
-      // EPERM on Windows → retry with junction (no admin privileges needed)
+    // On Windows: EPERM means regular symlinks need Administrator privileges.
+    // Retry with junction (directory hard-link) which doesn't require admin.
+    // On non-Windows: EPERM is a genuine filesystem error (e.g. NFS root_squash)
+    // — rethrow it directly; junction fallback does not exist on Linux/macOS.
+    if (isWindows()) {
       try {
         symlinkSync(target, path, 'junction');
         return;
@@ -110,9 +174,20 @@ function safeSymlink(target: string, path: string): void {
  * Estimate the size of a directory tree by summing file sizes.
  * Used as a pre-copy guard to warn on very large workspaces.
  *
- * Skips ALWAYS_EXCLUDE directories to match what cpSync will actually copy.
+ * Skips ALWAYS_EXCLUDE directories AND the caller's ignorePatterns so the
+ * estimate matches what cpSync will actually copy — otherwise the warning would
+ * fire for bytes that are never copied (audit Low#3).
  */
-function estimateWorkspaceSize(workspaceRoot: string): number {
+function estimateWorkspaceSize(workspaceRoot: string, ignorePatterns?: string[]): number {
+  // Normalise ignore patterns the same way the cpSync filter does: strip a
+  // single trailing separator and drop empties (which would match everything).
+  const excludeSegments = new Set<string>();
+  for (const pattern of ignorePatterns ?? []) {
+    if (pattern.length === 0) continue;
+    const normalised = pattern.endsWith(sep) ? pattern.slice(0, -1) : pattern;
+    if (normalised.length > 0) excludeSegments.add(normalised);
+  }
+
   try {
     const stack: string[] = [workspaceRoot];
     let total = 0;
@@ -130,6 +205,7 @@ function estimateWorkspaceSize(workspaceRoot: string): number {
       for (const entry of entries) {
         const fullPath = join(current, entry.name);
         if (ALWAYS_EXCLUDE.has(entry.name)) continue;
+        if (excludeSegments.has(entry.name)) continue;
 
         if (entry.isDirectory()) {
           stack.push(fullPath);
@@ -181,16 +257,20 @@ export function createSandbox(
   }
 
   // ── Pre-copy: warn on very large workspaces ──
-  // Only estimate in verbose mode (avoids full directory walk overhead in normal mode),
-  // but use warn() for the output so it's always visible when triggered.
-  if (isVerbose()) {
-    const size = estimateWorkspaceSize(absoluteWorkspace);
-    if (size > MAX_WORKSPACE_SIZE_BYTES) {
-      warn(
-        `Workspace is ~${(size / 1024 / 1024).toFixed(0)}MB — sandbox copy may be slow. ` +
-          'Consider using ignorePatterns to exclude large directories.',
-      );
-    }
+  // Always estimate and warn on large workspaces. Previously gated behind
+  // isVerbose() which suppressed the warning in normal mode when it was
+  // most useful (audit M13).
+  //
+  // Ensure exit handlers are registered so sandboxes are cleaned up on
+  // unexpected process termination.
+  ensureExitHandler();
+
+  const size = estimateWorkspaceSize(absoluteWorkspace, ignorePatterns);
+  if (size > MAX_WORKSPACE_SIZE_BYTES) {
+    warn(
+      `Workspace is ~${(size / 1024 / 1024).toFixed(0)}MB — sandbox copy may be slow. ` +
+        'Consider using ignorePatterns to exclude large directories.',
+    );
   }
 
   let success = false;
@@ -199,9 +279,19 @@ export function createSandbox(
     // Build the combined exclusion set: ALWAYS_EXCLUDE + user ignorePatterns
     const userExcludes = new Set(ignorePatterns ?? []);
 
+    // Absolute path of the audited file inside the workspace. The target and
+    // every directory on the path to it must NEVER be excluded — otherwise a
+    // target under a conventionally-named dir (build/, dist/, coverage/) or
+    // matched by an ignorePattern would be dropped and provisioning would fail
+    // with a confusing "target not found" (Med#7).
+    const absoluteTarget = resolve(absoluteWorkspace, targetFile);
+
     cpSync(absoluteWorkspace, sandboxDir, {
       recursive: true,
       filter: (src: string) => {
+        // Force-include the target file itself and any ancestor directory.
+        if (src === absoluteTarget || absoluteTarget.startsWith(src + sep)) return true;
+
         const segments = src.split(sep);
         const basename = segments[segments.length - 1] ?? '';
         if (ALWAYS_EXCLUDE.has(basename)) return false;
@@ -243,6 +333,7 @@ export function createSandbox(
     }
 
     success = true;
+    ACTIVE_SANDBOXES.add(sandboxDir);
     return {
       workDir: sandboxDir,
       targetFile,
@@ -251,6 +342,8 @@ export function createSandbox(
           rmSync(sandboxDir, { recursive: true, force: true });
         } catch {
           // Best-effort — OS will reclaim tmpdir() eventually
+        } finally {
+          ACTIVE_SANDBOXES.delete(sandboxDir);
         }
       },
     };

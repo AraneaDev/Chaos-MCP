@@ -18,14 +18,15 @@ import type { StrykerOptions, StrykerRunResult } from '@stryker-mutator/core';
  * against a tiny fixture project, asserting the resulting JSON report
  * reflects the fixture's intentional coverage gaps.
  *
- * Run with `E2E_STRYKER=1 npm test`. Otherwise silently skips (the test
- * is slow and depends on Stryker plugin/version compatibility).
+ * Run with `E2E_STRYKER=1 npm test`. Otherwise the heavy mutation test
+ * silently skips (it is slow and depends on Stryker plugin/version
+ * compatibility).
  *
  * Why opt-in:
  *   1. Stryker programmatic runs take 10-60s even for a one-file fixture.
- *   2. The plugin/core major-version compatibility check below will throw
- *      a clear error if E2E_STRYKER=1 is set against an incompatible pair,
- *      so misconfigurations surface immediately in CI.
+ *   2. The cheap always-on canary in this file (see `it_canary` below)
+ *      THROWS if E2E_STRYKER=1 is set against an incompatible pair, so
+ *      misconfigurations fail loudly in CI rather than silently skipping.
  */
 
 const E2E_STRYKER_ENABLED = process.env.E2E_STRYKER === '1';
@@ -80,15 +81,24 @@ function detectCompat(): CompatReport {
 }
 
 const compat = detectCompat();
+
+// Always-on canary: cheap, runs even when E2E_STRYKER is unset. THROWS
+// when E2E_STRYKER=1 is set but the plugin/core pair is misaligned, so
+// misconfigured CI fails loudly instead of silently skipping the heavy
+// test via it.skip + console.error.
+const it_canary = it;
+
+// Heavy test: only runs when env + compat are both good.
+const it_heavy = E2E_STRYKER_ENABLED && compat.compatible ? it : it.skip;
+
 if (E2E_STRYKER_ENABLED && !compat.compatible) {
-  // Loud in CI: an explicit opt-in that silently skips defeats the purpose.
-  // Go to stderr so CI runners surface it in red alongside test failures.
+  // Surface to stderr so CI runners see it; the canary below is the
+  // authoritative failure path (no silent skip).
   console.error(
     `[e2e-stryker] E2E_STRYKER=1 set but plugin incompatible — ${compat.reason}. ` +
       'To run this test, align @stryker-mutator/core and @stryker-mutator/vitest-runner to the same major version.',
   );
 }
-const it_e2e = E2E_STRYKER_ENABLED && compat.compatible ? it : it.skip;
 
 // ─── FIXTURE ─────────────────────────────────────────────────────────────────
 
@@ -166,7 +176,7 @@ function createStrykerFixture(): StrykerFixture {
   };
 }
 
-// ─── TEST ────────────────────────────────────────────────────────────────────
+// ─── TESTS ───────────────────────────────────────────────────────────────────
 
 describe('StrykerJS programmatic E2E', () => {
   let fixture: StrykerFixture;
@@ -180,7 +190,33 @@ describe('StrykerJS programmatic E2E', () => {
     if (fixture) fixture.remove();
   });
 
-  it_e2e(
+  // ── Loud canary ────────────────────────────────────────────────────────────
+  // Always runs. When the user opts in via E2E_STRYKER=1 but the
+  // installed plugin/core pair is misaligned, this THROWS — failing
+  // the test suite loudly rather than silently skipping the heavy
+  // mutation run via it.skip + console.error. The thrown Error path
+  // avoids `expect()` inside a conditional (vitest/no-conditional-expect)
+  // by making the failure an uncaught throw that vitest records as a
+  // test failure.
+  it_canary('fails loudly when E2E_STRYKER=1 is set but plugin/core is misaligned', () => {
+    if (!E2E_STRYKER_ENABLED) {
+      // No opt-in → silent no-op (the test still runs, just passes
+      // without exercising anything).
+      return;
+    }
+    if (!compat.compatible) {
+      throw new Error(
+        `[e2e-stryker] E2E_STRYKER=1 set but plugin/core misaligned — ${compat.reason}. ` +
+          'Align @stryker-mutator/core and @stryker-mutator/vitest-runner to the same major version, ' +
+          'OR unset E2E_STRYKER if you do not intend to run this E2E.',
+      );
+    }
+    // compat true + opt-in → silent pass (the heavy test below will
+    // exercise the actual mutation run).
+  });
+
+  // ── Heavy mutation test ────────────────────────────────────────────────────
+  it_heavy(
     'runs real mutation testing and reflects intentional coverage gaps in the score',
     async () => {
       const reportPath = join(fixture.rootDir, 'reports', 'mutation', 'mutation.json');
@@ -224,7 +260,7 @@ describe('StrykerJS programmatic E2E', () => {
         (m) => m.status === 'Survived' || m.status === 'NoCoverage',
       ).length;
 
-      // The b === 0 branch is intentionally untested \u2192 at least one surviving
+      // The b === 0 branch is intentionally untested → at least one surviving
       // mutant is expected.
       expect(killed).toBeGreaterThanOrEqual(1);
       expect(survived).toBeGreaterThanOrEqual(1);

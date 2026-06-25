@@ -1,4 +1,4 @@
-import { execFile } from 'child_process';
+import { execFile, exec } from 'child_process';
 import { log, isVerbose } from './logger.js';
 
 /**
@@ -47,6 +47,95 @@ export class ExecFailureError extends Error {
 
 /** Default per-command timeout (5 minutes), matching engine defaults. */
 const DEFAULT_TIMEOUT_MS = 300_000;
+
+/**
+ * Run a shell command string (e.g. "npm run build", "go build ./...") inside
+ * a child process with `shell: true`, capturing stdout and stderr.
+ *
+ * This is the shell-mode counterpart of {@link runShell}, which uses `execFile`
+ * with an explicit argument array (no shell interpolation). Use this when the
+ * command needs shell features like glob expansion, pipes, or PATH resolution.
+ *
+ * Resolves with an {@link ExecResult} when the shell exits with code 0.
+ * Rejects with an {@link ExecFailureError} when the shell exits non-zero,
+ * is killed by a signal, or times out.
+ *
+ * @param command - Full shell command string (e.g. "npm run build").
+ * @param options - cwd and timeoutMs.
+ */
+export function runShellCommand(
+  command: string,
+  options: { cwd?: string; timeoutMs?: number } = {},
+): Promise<ExecResult> {
+  const { cwd = process.cwd(), timeoutMs = DEFAULT_TIMEOUT_MS } = options;
+
+  if (isVerbose()) {
+    log(`exec-shell: ${command}  (cwd=${cwd}, timeout=${timeoutMs}ms)`);
+  }
+
+  return new Promise((resolve, reject) => {
+    exec(
+      command,
+      {
+        cwd,
+        timeout: timeoutMs,
+        encoding: 'utf-8',
+        maxBuffer: 10 * 1024 * 1024, // 10 MB stdout/stderr cap
+        windowsHide: true,
+      },
+      (err, stdout, stderr) => {
+        const stdoutStr = stdout ?? '';
+        const stderrStr = stderr ?? '';
+
+        if (err) {
+          // child_process.exec error shape: code (number|null), killed (boolean),
+          // signal (string|null). Unlike execFile, `code` is always the numeric
+          // exit code on non-zero exit (never 'ENOENT' — that surfaces as a
+          // thrown error before the callback).
+          const execErr = err as NodeJS.ErrnoException & {
+            killed?: boolean;
+            signal?: NodeJS.Signals | string;
+          };
+
+          const exitCode = typeof execErr.code === 'number' ? execErr.code : null;
+          const procSignal =
+            typeof execErr.signal === 'string' ? (execErr.signal as NodeJS.Signals) : null;
+
+          const result: ExecResult = {
+            stdout: stdoutStr,
+            stderr: stderrStr,
+            exit: exitCode,
+            signal: procSignal,
+          };
+
+          // Timeout detection: Node sets killed=true + signal when the timeout
+          // elapses. Gating on `killed === true` (not just `signal`) distinguishes
+          // internal timeouts from external kills (OOM, SIGTERM from parent).
+          if (execErr.killed === true && result.exit === null && result.signal) {
+            reject(
+              new ExecFailureError(
+                { ...result, code: 'TIMEOUT' },
+                `Shell command timed out after ${timeoutMs}ms: ${command}`,
+              ),
+            );
+            return;
+          }
+
+          // Non-zero exit — surface with captured output.
+          reject(
+            new ExecFailureError(
+              { ...result, code: String(result.exit ?? 'SIGNAL') },
+              `Shell command exited with ${result.signal ? `signal ${result.signal}` : `code ${result.exit}`}: ${command}`,
+            ),
+          );
+          return;
+        }
+
+        resolve({ stdout: stdoutStr, stderr: stderrStr, exit: 0, signal: null });
+      },
+    );
+  });
+}
 
 /**
  * Run a child process asynchronously, capturing stdout and stderr.

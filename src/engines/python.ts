@@ -110,7 +110,8 @@ export function parseMutmutResults(resultsText: string, filePath: string): Mutat
     // so mutant IDs like `survived_logic.py:7` (no emoji, no parens) continue
     // to be correctly classified as surviving-mutant ID lines, satisfying the
     // H4 regression test.
-    const looksLikePath = /\.[a-z0-9]+:\d+\s*$/i.test(trimmed) || /[/\\]/.test(trimmed);
+    const looksLikePath =
+      /\.[a-z0-9]+:\d+\s*$/i.test(trimmed) || /[/\\]/.test(trimmed) || /\.[a-z]+\b/i.test(trimmed);
     const hasParensCount = /\(\d+\)/.test(trimmed);
     const isHeader = (label: string, emoji: string): boolean => {
       if (!new RegExp(`^${label}\\b`, 'i').test(trimmed)) return false;
@@ -155,13 +156,16 @@ export function parseMutmutResults(resultsText: string, filePath: string): Mutat
 
   // If the header count says N survived but we only captured M IDs, trust the
   // header count for the summary but still report whatever IDs we parsed.
-  const survivedCount = Math.max(survived, survivingIds.length);
+  // Suspicious mutants are treated as surviving (ambiguous outcome = potential
+  // hole). Include them in survivedCount so the score and summary reflect them.
+  // (Audit M11: previously suspicious mutants were in totalMutants but not
+  // in survivedCount, making the score lower without explanation.)
+  const survivedCount = Math.max(survived, survivingIds.length) + suspicious;
 
   // Total = survived + killed + timeout + skipped + suspicious
   // Timeouts are counted as KILLED — the mutant caused the test suite to hang,
   // which means the test suite detected it (consistent with Stryker's behavior).
-  // Suspicious mutants are treated as surviving (ambiguous outcome = potential hole).
-  const totalMutants = survivedCount + killed + timeout + skipped + suspicious;
+  const totalMutants = survivedCount + killed + timeout + skipped;
   const effectiveKilled = killed + timeout;
 
   const score = totalMutants > 0 ? ((effectiveKilled / totalMutants) * 100).toFixed(2) : '100.00';
@@ -181,8 +185,18 @@ export function parseMutmutResults(resultsText: string, filePath: string): Mutat
     });
   }
 
-  // If no individual IDs were captured but we know some survived, add a summary entry
-  if (survivingIds.length === 0 && survivedCount > 0) {
+  // Emit a summary entry for suspicious mutants so the user can see why the score dropped.
+  if (suspicious > 0) {
+    vulnerabilities.push({
+      line: 0,
+      replacement: 'Suspicious Mutation',
+      description: `${suspicious} suspicious mutant(s) detected. The test suite produced ambiguous results \u2014 this may indicate flaky tests or an unstable mutation. Run \`mutmut results\` for details.`,
+    });
+  }
+
+  // Only fire for actual Survived-category mutants with no IDs captured;
+  // suspicious mutants get their own vulnerability entry above (audit M11).
+  if (survivingIds.length === 0 && survived > 0) {
     vulnerabilities.push({
       line: 0,
       replacement: 'Arithmetic/Logical Mutation',
@@ -241,8 +255,12 @@ export class PythonEngine extends BaseEngine {
     }
 
     // Step 1: Run mutmut against the target file.
+    // Capture stdout — newer mutmut versions may emit results inline,
+    // letting us skip the separate `mutmut results` call.
+    let runStdout = '';
     try {
-      await invokeMutationTool('mutmut', 'mutmut', runArgs, { cwd, timeoutMs });
+      const runResult = await invokeMutationTool('mutmut', 'mutmut', runArgs, { cwd, timeoutMs });
+      runStdout = runResult.stdout;
     } catch (error: unknown) {
       if (error instanceof MutationToolStartupError) {
         // Standard startup failures (not installed, timeout, signal crash)
@@ -260,6 +278,18 @@ export class PythonEngine extends BaseEngine {
       }
 
       throw error instanceof Error ? error : new Error(`mutmut execution failed: ${String(error)}`);
+    }
+
+    // Step 1.5: Check if mutmut run stdout already contains parseable results.
+    // mutmut v3+ may emit category headers inline, saving a subprocess call.
+    if (runStdout) {
+      const inlineResult = parseMutmutResults(runStdout, filePath);
+      if (inlineResult.totalMutants > 0) {
+        if (isVerbose()) {
+          log('PythonEngine: parsed results from mutmut run stdout, skipping mutmut results call');
+        }
+        return inlineResult;
+      }
     }
 
     // Step 2: Retrieve results via `mutmut results` (text output).

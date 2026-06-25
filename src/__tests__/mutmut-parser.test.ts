@@ -40,14 +40,18 @@ describe('parseMutmutResults', () => {
     ].join('\n');
     const result = parseMutmutResults(output, target);
 
-    // survived(2) + killed(3) + timeout(1) + skipped(0) + suspicious(1) = 7
+    // survivedCount = max(2, 2) + suspicious(1) = 3
+    // totalMutants = 3 + 3(killed) + 1(timeout) + 0(skipped) = 7
     expect(result.totalMutants).toBe(7);
     // killed includes timeouts: 3 + 1 = 4
     expect(result.killed).toBe(4);
-    expect(result.survived).toBe(2);
-    expect(result.vulnerabilities).toHaveLength(2);
+    // survived now includes suspicious (M11): 2 + 1 = 3
+    expect(result.survived).toBe(3);
+    // 2 individual survivors + 1 suspicious summary = 3 vulnerabilities
+    expect(result.vulnerabilities).toHaveLength(3);
     expect(result.vulnerabilities[0].line).toBe(15);
     expect(result.vulnerabilities[1].line).toBe(32);
+    expect(result.vulnerabilities[2].replacement).toBe('Suspicious Mutation');
   });
 
   it('does not match a mutant ID whose path starts with a category keyword (H4 regression)', () => {
@@ -73,15 +77,22 @@ describe('parseMutmutResults', () => {
     expect(result.mutationScore).toBe('66.67%');
   });
 
-  it('treats suspicious mutants as surviving', () => {
+  it('treats suspicious mutants as surviving (M11 regression)', () => {
     const output = ['Suspicious 🤨 (3)', 'Killed 🎉 (7)'].join('\n');
     const result = parseMutmutResults(output, target);
 
+    // survivedCount = max(survived_header, IDs) + suspicious = 0 + 3 = 3
+    // totalMutants = survived(3) + killed(7) + timeout(0) + skipped(0) = 10
     expect(result.totalMutants).toBe(10);
     expect(result.killed).toBe(7);
-    expect(result.survived).toBe(0); // suspicious not counted as survived
-    // But suspicious IS in total, lowering the score: 7/10 = 70%
+    // Suspicious mutants now contribute to the survived count
+    expect(result.survived).toBe(3);
+    // score = 7/10 = 70%
     expect(result.mutationScore).toBe('70.00%');
+    // Should emit a summary entry for suspicious mutants
+    expect(result.vulnerabilities).toHaveLength(1);
+    expect(result.vulnerabilities[0].replacement).toBe('Suspicious Mutation');
+    expect(result.vulnerabilities[0].description).toContain('3 suspicious mutant(s)');
   });
 
   it('parses with text-only labels (no emoji fallback)', () => {
@@ -153,5 +164,53 @@ describe('parseMutmutResults', () => {
     // No count in header, but 1 ID captured → survived = max(0, 1) = 1
     expect(result.survived).toBe(1);
     expect(result.vulnerabilities).toHaveLength(1);
+  });
+
+  it('resets currentCategory on blank lines between categories', () => {
+    const output = [
+      'Survived 🙂 (2)',
+      '  src/calc.py:10',
+      '', // blank line resets category
+      'Some random text that is not a header',
+      '',
+      'Killed 🎉 (1)',
+    ].join('\n');
+    const result = parseMutmutResults(output, target);
+    // survived=2 (from header), 1 ID captured, killed=1
+    expect(result.survived).toBe(2);
+    expect(result.killed).toBe(1);
+    expect(result.vulnerabilities).toHaveLength(1);
+  });
+
+  it('handles Survived header with parens count but no emoji', () => {
+    const output = 'Survived (4)\nKilled 🎉 (2)';
+    const result = parseMutmutResults(output, target);
+    // Survived matched via parens count (fallback), Killed via emoji
+    expect(result.survived).toBe(4);
+    expect(result.killed).toBe(2);
+  });
+
+  it('does not match Survived-(digits) as a header when it looks like a path', () => {
+    // A line like "Survived.py (3)" is a path-like name with parens count.
+    // The looksLikePath gate should prevent it being classified as a header.
+    const output = ['Survived.py (3)'].join('\n');
+    const result = parseMutmutResults(output, target);
+    expect(result.survived).toBe(0);
+    expect(result.totalMutants).toBe(0);
+  });
+
+  it('extracts line number from complex mutant ID paths', () => {
+    const output = ['Survived 🙂 (1)', '  src/utils/helper:42'].join('\n');
+    const result = parseMutmutResults(output, target);
+    // extractLineFromId should match ":42" in "src/utils/helper:42"
+    expect(result.vulnerabilities[0].line).toBe(42);
+  });
+
+  it('handles header with parens count but no emoji for Skipped category', () => {
+    const output = 'Skipped (5)\nSurvived 🙂 (0)\nKilled 🎉 (0)';
+    const result = parseMutmutResults(output, target);
+    // Skipped matched via parens count fallback; contributes to totalMutants
+    // totalMutants = survivedCount(0) + killed(0) + timeout(0) + skipped(5) = 5
+    expect(result.totalMutants).toBe(5);
   });
 });

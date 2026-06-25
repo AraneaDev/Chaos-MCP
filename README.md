@@ -13,8 +13,8 @@ Chaos-MCP is an [MCP (Model Context Protocol)](https://modelcontextprotocol.io/)
 - **4 Languages Supported** — TypeScript/JavaScript (StrykerJS), Python (Mutmut), Go (go-mutesting), Rust (cargo-mutants)
 - **Sandbox Isolation** — all mutation runs execute in temporary directories; your real workspace is never touched
 - **Auto-Detection** — automatically detects project type, test runner, and workspace root
-- **Async & Non-Blocking** — all subprocess execution uses async `execFile` (no event loop blocking)
-- **Rich Tool Schema** — supports line scoping, mutator allow/denylists, concurrency control, dry-run mode, incremental runs, and output format selection
+- **Async Subprocesses** — all mutation-tool execution uses async `execFile`/`exec` (subprocess runs never block the event loop; the one-time sandbox copy is synchronous)
+- **Rich Tool Schema** — supports line scoping, mutator denylists, concurrency control, dry-run mode, incremental runs, and output format selection
 - **Cross-Platform** — works on macOS, Linux, and Windows (with junction fallback for symlinks)
 
 ## 📦 Installation
@@ -85,37 +85,29 @@ The server exposes a single tool: `audit_code_resilience`.
 
 ### 3. Interpret the Results
 
-**JSON output (default):**
+The output is **bundled and deduplicated** to stay token-efficient: mutants are grouped by line (with a per-line count of each mutator type), `survivors` (tests ran but didn't catch) and `noCoverage` (no test reached the mutant) are reported separately at line+mutator granularity, and the explanatory note appears once instead of being repeated for every mutant. Because the split is per-mutator, the same line can appear in both lists (e.g. a live expression that survived next to an unreachable fallback that no test reached).
+
+**JSON output (default — emitted as a single compact line):**
 ```json
 {
   "target": "src/utils/math.ts",
-  "totalMutants": 12,
-  "killed": 11,
-  "survived": 1,
   "mutationScore": "91.67%",
-  "vulnerabilities": [
-    {
-      "line": 42,
-      "replacement": "ConditionalExpression",
-      "description": "Logical mutation via [ConditionalExpression] survived. Your tests did not catch this change."
-    }
-  ]
+  "summary": { "total": 12, "killed": 11, "survived": 1 },
+  "survivors": [
+    { "line": 42, "mutators": { "ConditionalExpression": 1 } }
+  ],
+  "noCoverage": [],
+  "note": "survivors: mutants your tests ran but did not kill. noCoverage: mutants no test reached (per line+mutator, so a line may appear here and in survivors). mutators = type→count. Add or strengthen tests targeting these."
 }
 ```
 
 **Text output** (`"outputFormat": "text"`):
 ```
 Chaos-MCP Audit Report: src/utils/math.ts
-══════════════════════════════════════════════════
-  Total mutants:  12
-  Killed:         11
-  Survived:       1
-  Mutation score: 91.67%
-
-⚠️  1 surviving mutant(s) found:
-
-  Line 42: [ConditionalExpression]
-    Logical mutation via [ConditionalExpression] survived. Your tests did not catch this change.
+Mutation score: 91.67% (11/12 killed, 1 survived)
+Survivors (line: mutators):
+  42: ConditionalExpression
+Add or strengthen tests targeting these lines to kill the survivors.
 ```
 
 ## 🛠️ Tool Parameters
@@ -125,7 +117,7 @@ Chaos-MCP Audit Report: src/utils/math.ts
 | `filePath` | `string` | ✅ | Workspace-relative path to the file (`.ts`, `.js`, `.tsx`, `.jsx`, `.py`, `.go`, `.rs`) |
 | `timeoutMs` | `number` | ❌ | Max run time in ms (default: 300000 / 5 min) |
 | `lineScope` | `{ start, end }` | ❌ | 1-based line range (StrykerJS only) |
-| `mutatorAllowlist` | `string[]` | ❌ | Stryker mutator names to include |
+| `mutatorAllowlist` | `string[]` | ❌ | ⚠ Not supported in StrykerJS v9 — ignored (use `mutatorDenylist`) |
 | `mutatorDenylist` | `string[]` | ❌ | Stryker mutator names to exclude |
 | `concurrency` | `number` | ❌ | Parallel mutation workers (StrykerJS only) |
 | `dryRun` | `boolean` | ❌ | Validate test suite only, no mutations (StrykerJS only) |
@@ -148,6 +140,10 @@ Create a `chaos-mcp.config.json` in your workspace root for default settings:
 ```
 
 Tool call arguments override config defaults.
+
+### Enabling `prebuildCommand`
+
+The `prebuildCommand` tool argument runs an arbitrary shell command inside the sandbox, which can reach outside it. It is **disabled by default**. Enable it explicitly with `"allowPrebuild": true` in `chaos-mcp.config.json`, or by setting the `CHAOS_MCP_ALLOW_PREBUILD=1` environment variable. Auto-detected prebuilds for Go (`go mod download`) and Rust (`cargo check`) run without this flag.
 
 ## 🏃 Supported Test Runners (Auto-Detected)
 

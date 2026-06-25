@@ -25,9 +25,10 @@ vi.mock('os', () => ({
 vi.mock('../utils/logger.js', () => ({
   log: vi.fn(),
   isVerbose: vi.fn().mockReturnValue(false),
+  warn: vi.fn(),
 }));
 
-import { mkdtempSync, cpSync, symlinkSync, rmSync, existsSync } from 'fs';
+import { mkdtempSync, cpSync, symlinkSync, rmSync, existsSync, statSync, readdirSync } from 'fs';
 import { tmpdir } from 'os';
 import { resolve } from 'path';
 import { createSandbox, SandboxContext } from '../utils/sandbox.js';
@@ -133,6 +134,8 @@ describe('createSandbox', () => {
     expect(() => createSandbox('src/utils/math.ts', '/etc')).toThrow(
       /Refusing to sandbox workspace outside process cwd/,
     );
+    // Also pin the second half of the message so its string literal is covered.
+    expect(() => createSandbox('src/utils/math.ts', '/etc')).toThrow(/is not inside/);
   });
 
   it('accepts sandbox when workspace equals process cwd (Live-audit L1)', () => {
@@ -164,6 +167,37 @@ describe('createSandbox', () => {
     expect(filter(`${TEST_PROJECT}/fixtures/data.json`)).toBe(false);
     // Regular files should still be included
     expect(filter(`${TEST_PROJECT}/src/utils/math.ts`)).toBe(true);
+  });
+
+  it('never excludes the target file or its ancestor dirs, even under an excluded name', () => {
+    // 'build' is in ALWAYS_EXCLUDE, but here it is an ancestor of the audited
+    // target. Excluding it would drop the file and fail provisioning. The
+    // target and every directory on the path to it must be force-included.
+    mockExistsSync.mockImplementation((path: string) => {
+      return path === `${SANDBOX_DIR}/build/gen.ts`;
+    });
+
+    createSandbox('build/gen.ts', TEST_PROJECT);
+
+    const filter = mockCpSync.mock.calls[0][2]?.filter as (src: string) => boolean;
+    expect(filter(`${TEST_PROJECT}/build`)).toBe(true);
+    expect(filter(`${TEST_PROJECT}/build/gen.ts`)).toBe(true);
+    // A different 'build' dir that is NOT on the path to the target stays excluded.
+    expect(filter(`${TEST_PROJECT}/src/build`)).toBe(false);
+  });
+
+  it('never excludes the target when an ignorePattern matches an ancestor segment', () => {
+    mockExistsSync.mockImplementation((path: string) => {
+      return path === `${SANDBOX_DIR}/fixtures/keep.ts`;
+    });
+
+    createSandbox('fixtures/keep.ts', TEST_PROJECT, ['fixtures']);
+
+    const filter = mockCpSync.mock.calls[0][2]?.filter as (src: string) => boolean;
+    expect(filter(`${TEST_PROJECT}/fixtures`)).toBe(true);
+    expect(filter(`${TEST_PROJECT}/fixtures/keep.ts`)).toBe(true);
+    // An unrelated 'fixtures' dir is still excluded.
+    expect(filter(`${TEST_PROJECT}/other/fixtures`)).toBe(false);
   });
 
   it('does NOT symlink target/ for Rust builds (H1 regression)', () => {
@@ -220,6 +254,15 @@ describe('createSandbox', () => {
 
     expect(() => createSandbox('src/utils/math.ts', TEST_PROJECT)).toThrow(
       /Sandbox provisioning failed/,
+    );
+    // Pin the rest of the message (target filename + workspace root) so its
+    // string literals are covered.
+    expect(() => createSandbox('src/utils/math.ts', TEST_PROJECT)).toThrow(
+      /target file "src\/utils\/math\.ts" was not found in the copied workspace/,
+    );
+    // The second line of the message (its own string literal).
+    expect(() => createSandbox('src/utils/math.ts', TEST_PROJECT)).toThrow(
+      new RegExp(`Workspace root: ${TEST_PROJECT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`),
     );
   });
 
@@ -282,5 +325,487 @@ describe('createSandbox', () => {
     expect(filter(`${TEST_PROJECT}/src`)).toBe(true);
     expect(filter(`${TEST_PROJECT}/src/utils/math.ts`)).toBe(true);
     expect(filter(`${TEST_PROJECT}/package.json`)).toBe(true);
+  });
+
+  // ─── Exit cleanup handler ──────────────────────────────────────────────────
+
+  it('cleanup() removes sandbox from active registry', async () => {
+    mockExistsSync.mockImplementation((path: string) => {
+      return path === `${SANDBOX_DIR}/src/utils/math.ts`;
+    });
+
+    sandbox = createSandbox('src/utils/math.ts', TEST_PROJECT);
+
+    // First cleanup should succeed
+    sandbox.cleanup();
+    expect(mockRmSync).toHaveBeenCalledWith(SANDBOX_DIR, {
+      recursive: true,
+      force: true,
+    });
+
+    // Second cleanup should be a no-op (directory already removed from registry)
+    mockRmSync.mockClear();
+    sandbox.cleanup();
+    // rmSync is still called (best-effort), but the active-sandbox delete
+    // in the finally block doesn't throw even if the dir is gone
+    expect(mockRmSync).toHaveBeenCalledTimes(1);
+  });
+
+  // ─── safeSymlink and Windows junction fallback ──────────────────────────
+
+  it('retries with junction on Windows EPERM, surfaces error on Linux', () => {
+    mockExistsSync.mockImplementation((path: string) => {
+      if (path === `${SANDBOX_DIR}/src/utils/math.ts`) return true;
+      if (path === TEST_PROJECT_NODE_MODULES) return true;
+      return false;
+    });
+
+    mockSymlinkSync.mockImplementationOnce(() => {
+      throw Object.assign(new Error('EPERM'), { code: 'EPERM' });
+    });
+
+    expect(() => createSandbox('src/utils/math.ts', TEST_PROJECT)).toThrow('EPERM');
+  });
+
+  it('ensureExitHandler does not double-register on subsequent sandbox creations', async () => {
+    const processOnSpy = vi.spyOn(process, 'on');
+    processOnSpy.mockClear();
+
+    // Create sandbox twice with fresh module
+    vi.resetModules();
+    const freshSandbox = await import('../utils/sandbox.js');
+    mockMkdtempSync.mockReturnValue(SANDBOX_DIR);
+    mockExistsSync.mockImplementation((path: string) => {
+      return path === `${SANDBOX_DIR}/src/utils/math.ts`;
+    });
+
+    freshSandbox.createSandbox('src/utils/math.ts', TEST_PROJECT);
+    const firstRegistrations = processOnSpy.mock.calls.filter((call) =>
+      ['SIGTERM', 'SIGINT', 'SIGHUP', 'SIGQUIT', 'exit'].includes(call[0] as string),
+    ).length;
+
+    processOnSpy.mockClear();
+    freshSandbox.createSandbox('src/utils/math.ts', TEST_PROJECT);
+    const secondRegistrations = processOnSpy.mock.calls.filter((call) =>
+      ['SIGTERM', 'SIGINT', 'SIGHUP', 'SIGQUIT', 'exit'].includes(call[0] as string),
+    ).length;
+
+    // Second sandbox creation should NOT re-register handlers (exitHandlerRegistered guard)
+    expect(secondRegistrations).toBe(0);
+    expect(firstRegistrations).toBeGreaterThan(0);
+  });
+
+  // ─── estimateWorkspaceSize tests ─────────────────────────────────────────
+
+  it('warns on workspaces larger than 200MB', async () => {
+    const { warn } = await import('../utils/logger.js');
+    const mockedWarn = vi.mocked(warn);
+    mockedWarn.mockClear();
+
+    // Mock readdirSync to return a directory with a giant file
+    vi.mocked(readdirSync).mockReturnValueOnce([
+      { name: 'src', isDirectory: () => true, isFile: () => false },
+    ] as never);
+    vi.mocked(readdirSync).mockReturnValueOnce([
+      { name: 'giant.bin', isDirectory: () => false, isFile: () => true },
+    ] as never);
+    vi.mocked(statSync).mockReturnValueOnce({
+      size: 250 * 1024 * 1024,
+    } as never);
+
+    mockExistsSync.mockImplementation((path: string) => {
+      return path === `${SANDBOX_DIR}/src/utils/math.ts`;
+    });
+
+    createSandbox('src/utils/math.ts', TEST_PROJECT);
+
+    expect(mockedWarn).toHaveBeenCalledWith(expect.stringContaining('MB'));
+    // Second half of the warning string (its own literal).
+    expect(mockedWarn).toHaveBeenCalledWith(
+      expect.stringContaining('Consider using ignorePatterns'),
+    );
+  });
+
+  it('does not count ALWAYS_EXCLUDE directories toward the size estimate', async () => {
+    const { warn } = await import('../utils/logger.js');
+    const mockedWarn = vi.mocked(warn);
+    mockedWarn.mockClear();
+
+    // Root contains only node_modules (excluded) holding a 250MB file. The
+    // estimator must skip node_modules entirely; a mutant that drops the
+    // ALWAYS_EXCLUDE guard would recurse into it and warn. Path-based
+    // implementations (not Once-queues) so nothing leaks into later tests.
+    vi.mocked(readdirSync).mockImplementation((p: unknown) =>
+      String(p).endsWith('node_modules')
+        ? ([{ name: 'giant.bin', isDirectory: () => false, isFile: () => true }] as never)
+        : ([{ name: 'node_modules', isDirectory: () => true, isFile: () => false }] as never),
+    );
+    vi.mocked(statSync).mockReturnValue({ size: 250 * 1024 * 1024 } as never);
+
+    mockExistsSync.mockImplementation((path: string) => {
+      return path === `${SANDBOX_DIR}/src/utils/math.ts`;
+    });
+
+    createSandbox('src/utils/math.ts', TEST_PROJECT);
+
+    const mbWarnings = mockedWarn.mock.calls.filter(
+      (call) => typeof call[0] === 'string' && (call[0] as string).includes('MB'),
+    );
+    expect(mbWarnings).toHaveLength(0);
+
+    // Reset implementations so the path-based mocks don't bleed into later tests.
+    vi.mocked(readdirSync).mockReset();
+    vi.mocked(statSync).mockReset();
+  });
+
+  it('does not count user ignorePatterns directories toward the size estimate', async () => {
+    const { warn } = await import('../utils/logger.js');
+    const mockedWarn = vi.mocked(warn);
+    mockedWarn.mockClear();
+
+    // Root holds only a user-ignored 'huge' dir with a 250MB file. Since the
+    // copy will skip it, the size estimate must skip it too — otherwise the
+    // warning fires for bytes that are never copied.
+    vi.mocked(readdirSync).mockImplementation((p: unknown) =>
+      String(p).endsWith('huge')
+        ? ([{ name: 'giant.bin', isDirectory: () => false, isFile: () => true }] as never)
+        : ([{ name: 'huge', isDirectory: () => true, isFile: () => false }] as never),
+    );
+    vi.mocked(statSync).mockReturnValue({ size: 250 * 1024 * 1024 } as never);
+
+    mockExistsSync.mockImplementation((path: string) => {
+      return path === `${SANDBOX_DIR}/src/utils/math.ts`;
+    });
+
+    createSandbox('src/utils/math.ts', TEST_PROJECT, ['huge']);
+
+    const mbWarnings = mockedWarn.mock.calls.filter(
+      (call) => typeof call[0] === 'string' && (call[0] as string).includes('MB'),
+    );
+    expect(mbWarnings).toHaveLength(0);
+
+    vi.mocked(readdirSync).mockReset();
+    vi.mocked(statSync).mockReset();
+  });
+
+  it('does not warn on workspaces under 200MB', async () => {
+    const { warn } = await import('../utils/logger.js');
+    const mockedWarn = vi.mocked(warn);
+    mockedWarn.mockClear();
+
+    vi.mocked(readdirSync).mockReturnValueOnce([
+      { name: 'src', isDirectory: () => true, isFile: () => false },
+    ] as never);
+    vi.mocked(readdirSync).mockReturnValueOnce([
+      { name: 'small.ts', isDirectory: () => false, isFile: () => true },
+    ] as never);
+    vi.mocked(statSync).mockReturnValueOnce({ size: 1000 } as never);
+
+    mockExistsSync.mockImplementation((path: string) => {
+      return path === `${SANDBOX_DIR}/src/utils/math.ts`;
+    });
+
+    createSandbox('src/utils/math.ts', TEST_PROJECT);
+
+    // No MB warning should have been emitted
+    const warnCalls = mockedWarn.mock.calls.filter(
+      (call) => typeof call[0] === 'string' && (call[0] as string).includes('MB'),
+    );
+    expect(warnCalls).toHaveLength(0);
+  });
+
+  // ─── Exit handler signals ───────────────────────────────────────────────
+
+  it('registers handlers for SIGTERM, SIGINT, SIGHUP, and SIGQUIT', async () => {
+    // Reset sandbox module state so exitHandlerRegistered starts fresh
+    vi.resetModules();
+    const freshSandbox = await import('../utils/sandbox.js');
+
+    // Re-mock fs/crypto/os for the fresh module
+    const processOnSpy = vi.spyOn(process, 'on');
+
+    freshSandbox.createSandbox('src/utils/math.ts', TEST_PROJECT);
+
+    const signalRegs = processOnSpy.mock.calls.filter(
+      (call) =>
+        call[0] === 'SIGTERM' ||
+        call[0] === 'SIGINT' ||
+        call[0] === 'SIGHUP' ||
+        call[0] === 'SIGQUIT',
+    );
+    expect(signalRegs).toHaveLength(4);
+  });
+
+  // ─── ignorePatterns edge cases ──────────────────────────────────────────
+
+  it('skips empty ignorePatterns', () => {
+    mockExistsSync.mockImplementation((path: string) => {
+      return path === `${SANDBOX_DIR}/src/utils/math.ts`;
+    });
+
+    createSandbox('src/utils/math.ts', TEST_PROJECT, ['', 'fixtures', '']);
+
+    const filter = mockCpSync.mock.calls[0][2]?.filter as (src: string) => boolean;
+    // Empty patterns are skipped, fixtures is still excluded
+    expect(filter(`${TEST_PROJECT}/fixtures/data.json`)).toBe(false);
+    expect(filter(`${TEST_PROJECT}/src/utils/math.ts`)).toBe(true);
+  });
+
+  it('excludes by segment containing trailing separator in ignorePattern', () => {
+    mockExistsSync.mockImplementation((path: string) => {
+      return path === `${SANDBOX_DIR}/src/utils/math.ts`;
+    });
+
+    createSandbox('src/utils/math.ts', TEST_PROJECT, ['dist/', 'build/']);
+
+    const filter = mockCpSync.mock.calls[0][2]?.filter as (src: string) => boolean;
+    expect(filter(`${TEST_PROJECT}/dist/bundle.js`)).toBe(false);
+    expect(filter(`${TEST_PROJECT}/build/output.js`)).toBe(false);
+    expect(filter(`${TEST_PROJECT}/src/dist-utils.js`)).toBe(true);
+  });
+
+  // ─── estimateWorkspaceSize error-catch paths ─────────────────────────────
+
+  it('estimateWorkspaceSize handles readdirSync errors gracefully', () => {
+    mockExistsSync.mockImplementation((path: string) => {
+      return path === `${SANDBOX_DIR}/src/utils/math.ts`;
+    });
+
+    // Simulate a permission error when reading a directory
+    vi.mocked(readdirSync).mockImplementationOnce(() => {
+      throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+    });
+
+    // Should not throw — estimateWorkspaceSize catches readdirSync errors
+    expect(() => createSandbox('src/utils/math.ts', TEST_PROJECT)).not.toThrow();
+  });
+
+  it('estimateWorkspaceSize handles statSync errors gracefully', () => {
+    mockExistsSync.mockImplementation((path: string) => {
+      return path === `${SANDBOX_DIR}/src/utils/math.ts`;
+    });
+
+    // First readdirSync: return a dir with a file
+    vi.mocked(readdirSync).mockReturnValueOnce([
+      { name: 'src', isDirectory: () => true, isFile: () => false },
+    ] as never);
+    vi.mocked(readdirSync).mockReturnValueOnce([
+      { name: 'broken.txt', isDirectory: () => false, isFile: () => true },
+    ] as never);
+    // statSync throws for 'broken.txt'
+    vi.mocked(statSync).mockImplementationOnce(() => {
+      throw Object.assign(new Error('ENOENT: file removed during scan'), { code: 'ENOENT' });
+    });
+
+    // Should not throw — estimateWorkspaceSize catches statSync errors
+    expect(() => createSandbox('src/utils/math.ts', TEST_PROJECT)).not.toThrow();
+  });
+
+  // ─── isPathInside edge cases ─────────────────────────────────────────────
+
+  it('rejects workspace that is parent of cwd (rel === "..")', () => {
+    // isPathInside should reject when the workspace resolves to the parent of cwd
+    const parentCwd = resolve(process.cwd(), '..');
+    mockExistsSync.mockImplementation((path: string) => {
+      return path === `${SANDBOX_DIR}/src/utils/math.ts`;
+    });
+
+    expect(() => createSandbox('src/utils/math.ts', parentCwd)).toThrow(
+      /Refusing to sandbox workspace outside process cwd/,
+    );
+  });
+
+  it('rejects workspace that is a sibling directory of cwd (rel starts with ..)', () => {
+    // isPathInside should reject sibling directories (rel = '../sibling')
+    const siblingDir = resolve(process.cwd(), '..', 'sibling-project');
+    mockExistsSync.mockImplementation((path: string) => {
+      return path === `${SANDBOX_DIR}/src/utils/math.ts`;
+    });
+
+    expect(() => createSandbox('src/utils/math.ts', siblingDir)).toThrow(
+      /Refusing to sandbox workspace outside process cwd/,
+    );
+  });
+
+  // ─── !success finally cleanup path ────────────────────────────────────
+
+  it('cleans up sandbox when cpSync throws (success stays false)', () => {
+    mockExistsSync.mockImplementation((path: string) => {
+      return path === `${SANDBOX_DIR}/src/utils/math.ts`;
+    });
+
+    // cpSync throws before symlinks/target-check run, so success never becomes true.
+    // Use mockImplementationOnce so the throwing impl does not leak into later
+    // tests (vi.clearAllMocks resets call history but NOT implementations).
+    mockCpSync.mockImplementationOnce(() => {
+      throw new Error('EACCES: permission denied on cpSync');
+    });
+
+    // estimateWorkspaceSize's outer try/catch returns 0 cleanly even when
+    // readdirSync returns undefined (for-of undefined throws TypeError which
+    // is caught). The cpSync throw is the only error that escapes createSandbox.
+    expect(() => createSandbox('src/utils/math.ts', TEST_PROJECT)).toThrow(/EACCES/);
+
+    // The finally block must call rmSync to clean up the partially created sandbox
+    expect(mockRmSync).toHaveBeenCalledWith(
+      SANDBOX_DIR,
+      expect.objectContaining({ recursive: true, force: true }),
+    );
+  });
+
+  // ─── Mutation hardening ──────────────────────────────────────────────────
+
+  it('does not delete the sandbox on a successful provision (success flag)', () => {
+    mockExistsSync.mockImplementation((path: string) => {
+      if (path === `${SANDBOX_DIR}/src/utils/math.ts`) return true;
+      return false;
+    });
+
+    createSandbox('src/utils/math.ts', TEST_PROJECT);
+
+    // The finally block only removes the dir when success === false; a healthy
+    // run must leave it in place for the caller to use.
+    expect(mockRmSync).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    '.svn',
+    '.stryker-tmp',
+    '.mutmut-cache',
+    '__pycache__',
+    '.pytest_cache',
+    '.tox',
+    '.venv',
+    'venv',
+    '.env',
+    'dist',
+    'coverage',
+    '.nyc_output',
+    '.next',
+    'target',
+  ])('filter excludes the always-excluded directory %s', (dir) => {
+    createSandbox('src/utils/math.ts', TEST_PROJECT);
+    const filter = mockCpSync.mock.calls[0][2]?.filter as (src: string) => boolean;
+    expect(filter(`${TEST_PROJECT}/${dir}`)).toBe(false);
+    // A sibling whose name merely contains the token is NOT excluded.
+    expect(filter(`${TEST_PROJECT}/${dir}-keep/file.ts`)).toBe(true);
+  });
+
+  it('symlinks each SYMLINK_DIRS entry that exists (node_modules, .venv, venv)', () => {
+    mockExistsSync.mockImplementation((path: string) => {
+      if (path === `${SANDBOX_DIR}/src/utils/math.ts`) return true;
+      return (
+        path === TEST_PROJECT_NODE_MODULES ||
+        path === TEST_PROJECT_VENV ||
+        path === `${TEST_PROJECT}/venv`
+      );
+    });
+
+    createSandbox('src/utils/math.ts', TEST_PROJECT);
+
+    const linked = mockSymlinkSync.mock.calls.map((c) => String(c[0]));
+    expect(linked).toContain(TEST_PROJECT_NODE_MODULES);
+    expect(linked).toContain(TEST_PROJECT_VENV);
+    expect(linked).toContain(`${TEST_PROJECT}/venv`);
+  });
+
+  it('does not exclude everything when an ignorePattern is only a separator', () => {
+    mockExistsSync.mockImplementation((path: string) => {
+      return path === `${SANDBOX_DIR}/src/utils/math.ts`;
+    });
+
+    createSandbox('src/utils/math.ts', TEST_PROJECT, ['/']);
+
+    const filter = mockCpSync.mock.calls[0][2]?.filter as (src: string) => boolean;
+    // A "/" pattern normalises to "" and must be skipped, not treated as a
+    // segment that matches every path.
+    expect(filter(`${TEST_PROJECT}/src/utils/math.ts`)).toBe(true);
+  });
+
+  it('warns with the computed size and does not warn exactly at the threshold', async () => {
+    const { warn } = await import('../utils/logger.js');
+    const mockedWarn = vi.mocked(warn);
+
+    mockExistsSync.mockImplementation((path: string) => {
+      return path === `${SANDBOX_DIR}/src/utils/math.ts`;
+    });
+
+    // Exactly at the 200MB cap → strictly-greater-than guard must NOT warn.
+    mockedWarn.mockClear();
+    vi.mocked(readdirSync).mockReturnValueOnce([
+      { name: 'big.bin', isDirectory: () => false, isFile: () => true },
+    ] as never);
+    vi.mocked(statSync).mockReturnValueOnce({ size: 200 * 1024 * 1024 } as never);
+    createSandbox('src/utils/math.ts', TEST_PROJECT);
+    expect(mockedWarn.mock.calls.filter((c) => String(c[0]).includes('MB'))).toHaveLength(0);
+
+    // 300MB → warns, and the human-readable size is computed correctly.
+    mockedWarn.mockClear();
+    vi.mocked(readdirSync).mockReturnValueOnce([
+      { name: 'big.bin', isDirectory: () => false, isFile: () => true },
+    ] as never);
+    vi.mocked(statSync).mockReturnValueOnce({ size: 300 * 1024 * 1024 } as never);
+    createSandbox('src/utils/math.ts', TEST_PROJECT);
+    expect(mockedWarn).toHaveBeenCalledWith(expect.stringContaining('~300MB'));
+  });
+
+  // ─── Exit/signal handler bodies (previously NoCoverage) ───────────────────
+
+  it('exit handler removes every active sandbox and clears the registry', async () => {
+    vi.resetModules();
+    const fresh = await import('../utils/sandbox.js');
+    const onSpy = vi.spyOn(process, 'on');
+
+    mockMkdtempSync.mockReturnValue(SANDBOX_DIR);
+    mockExistsSync.mockImplementation((path: string) => {
+      return path === `${SANDBOX_DIR}/src/utils/math.ts`;
+    });
+    fresh.createSandbox('src/utils/math.ts', TEST_PROJECT);
+
+    const exitCall = onSpy.mock.calls.find((c) => c[0] === 'exit');
+    if (!exitCall) throw new Error('exit handler was not registered');
+    const exitHandler = exitCall[1] as () => void;
+
+    mockRmSync.mockClear();
+    exitHandler();
+    // cleanupAll() rmSync's the registered sandbox dir.
+    expect(mockRmSync).toHaveBeenCalledWith(
+      SANDBOX_DIR,
+      expect.objectContaining({ recursive: true, force: true }),
+    );
+
+    // Running it again is idempotent — the registry was cleared, so no rmSync.
+    mockRmSync.mockClear();
+    exitHandler();
+    expect(mockRmSync).not.toHaveBeenCalled();
+  });
+
+  it('signal handler cleans up then exits with 128 + signal number', async () => {
+    vi.resetModules();
+    const fresh = await import('../utils/sandbox.js');
+    const onSpy = vi.spyOn(process, 'on');
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+
+    mockMkdtempSync.mockReturnValue(SANDBOX_DIR);
+    mockExistsSync.mockImplementation((path: string) => {
+      return path === `${SANDBOX_DIR}/src/utils/math.ts`;
+    });
+    fresh.createSandbox('src/utils/math.ts', TEST_PROJECT);
+
+    const sigCall = onSpy.mock.calls.find((c) => c[0] === 'SIGTERM');
+    if (!sigCall) throw new Error('SIGTERM handler was not registered');
+    const sigHandler = sigCall[1] as () => void;
+
+    mockRmSync.mockClear();
+    sigHandler();
+    expect(mockRmSync).toHaveBeenCalledWith(
+      SANDBOX_DIR,
+      expect.objectContaining({ recursive: true, force: true }),
+    );
+    // Conventional exit code for a SIGTERM (15) kill is 128 + 15 = 143, so the
+    // process doesn't masquerade as a clean exit (0).
+    expect(exitSpy).toHaveBeenCalledWith(143);
+
+    exitSpy.mockRestore();
   });
 });

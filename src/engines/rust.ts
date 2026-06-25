@@ -1,6 +1,5 @@
 import { BaseEngine, RunOptions, MutationResult } from './base.js';
-import { ExecFailureError } from '../utils/exec.js';
-import { invokeMutationTool, MutationToolStartupError } from '../utils/exec-classify.js';
+import { invokeMutationTool } from '../utils/exec-classify.js';
 import { log, isVerbose } from '../utils/logger.js';
 
 /** Default timeout for cargo-mutants runs (5 minutes). */
@@ -104,7 +103,7 @@ function parseCargoMutantsOutput(stdout: string, filePath: string): MutationResu
         killed: caught,
         survived: missed,
         mutationScore: `${total > 0 ? ((caught / total) * 100).toFixed(2) : '100.00'}%`,
-        vulnerabilities: (parsed.mutants || [])
+        vulnerabilities: parsed.mutants
           .filter(
             (m) =>
               !m.caught &&
@@ -112,8 +111,11 @@ function parseCargoMutantsOutput(stdout: string, filePath: string): MutationResu
           )
           .map((m) => ({
             line: m.line ?? 0,
+            // Use `||` (not `??`) so empty-string descriptions fall back to the
+            // default. `??` only catches null/undefined; empty string would
+            // otherwise produce an empty replacement string in the report.
             replacement:
-              m.description?.split(' ').slice(0, 3).join(' ') ?? 'Rust Mutation Operator',
+              m.description?.split(' ').slice(0, 3).join(' ') || 'Rust Mutation Operator',
             description: `Mutation survived at line ${m.line ?? 'unknown'}. The Rust test suite did not catch this change.`,
           })),
       };
@@ -140,9 +142,11 @@ export class RustEngine extends BaseEngine {
     const cwd = options?.workDir ?? process.cwd();
     const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
-    const fileName = filePath.split('/').pop() ?? filePath;
+    // cargo-mutants `--file` is a glob matched against the source path. Pass the
+    // full workspace-relative path (Med#9) so the run is scoped to exactly this
+    // file — a bare basename would also match same-named files in other dirs.
     if (isVerbose()) {
-      log(`RustEngine: cargo mutants --file "${fileName}"`);
+      log(`RustEngine: cargo mutants --file "${filePath}"`);
     }
 
     let stdout: string;
@@ -152,32 +156,28 @@ export class RustEngine extends BaseEngine {
       const result = await invokeMutationTool(
         'cargo-mutants',
         'cargo',
-        ['mutants', '--file', fileName],
+        ['mutants', '--file', filePath],
         { cwd, timeoutMs },
       );
       stdout = result.stdout;
       stderr = result.stderr;
     } catch (error: unknown) {
-      if (error instanceof MutationToolStartupError) {
-        throw new Error(error.message);
-      }
-      if (!(error instanceof ExecFailureError)) {
-        const message = error instanceof Error ? error.message : String(error);
-        throw new Error(`cargo-mutants execution failed: ${message}`);
-      }
+      // Startup failures rethrow; non-ExecFailure errors wrap; otherwise we get
+      // a typed ExecFailureError back for the rust-specific handling below.
+      const execErr = this.toExecFailure(error, 'cargo-mutants');
 
       // Non-zero exit: cargo-mutants exits non-zero when mutants survive OR
       // when the baseline `cargo test` itself fails. If stdout is empty we
       // treat it as a baseline failure (no mutants parsed out); otherwise
       // fall through and parse the captured stdout.
-      stdout = error.stdout;
-      stderr = error.stderr;
+      stdout = execErr.stdout;
+      stderr = execErr.stderr;
 
       if (!stdout) {
         throw new Error(
-          `cargo-mutants failed (exit ${error.exit}) with no parseable output. ` +
+          `cargo-mutants failed (exit ${execErr.exit}) with no parseable output. ` +
             `This usually means the baseline test suite itself failed \u2014 run \`cargo test\` and fix those first. ` +
-            `stderr: ${error.stderr?.slice(0, 500) ?? ''}`,
+            `stderr: ${execErr.stderr?.slice(0, 500) ?? ''}`,
         );
       }
     }

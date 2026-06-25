@@ -1,3 +1,6 @@
+import { ExecFailureError } from '../utils/exec.js';
+import { MutationToolStartupError } from '../utils/exec-classify.js';
+
 /**
  * Describes a single surviving mutant — a logical fault the test suite failed to catch.
  */
@@ -122,6 +125,38 @@ export interface RunOptions {
    * Example: ['*.test.ts', 'fixtures/', 'snapshots/']
    */
   ignorePatterns?: string[];
+
+  /**
+   * Per-mutant timeout in milliseconds — how long an individual mutant's
+   * test run is allowed before being considered a timeout (and killed).
+   *
+   * **Supported by:** StrykerJS (via `--timeoutMs`).
+   * **Ignored by:** Mutmut, go-mutesting, cargo-mutants.
+   *
+   * Distinct from {@link timeoutMs} (total run cap). Use this to prevent
+   * a single slow mutant from hanging the entire mutation run.
+   *
+   * Default: StrykerJS default (typically 5000ms per mutant).
+   * Example: 10000 for 10 seconds per mutant.
+   */
+  perMutantTimeoutMs?: number;
+
+  /**
+   * Shell command to run in the sandbox BEFORE mutation testing begins.
+   * Use this to compile or build the target so the mutation tool has
+   * working artifacts.
+   *
+   * Runs inside the sandbox working directory via `child_process.exec`
+   * (shell: true). The sandbox is provisioned and the workspace is in
+   * place — this is your chance to run `npm run build`, `npx tsc`,
+   * `go build ./...`, `cargo build`, etc.
+   *
+   * On failure, the tool returns an error before any mutation tools
+   * are invoked. The sandbox is always cleaned up.
+   *
+   * Example: "npm run build"
+   */
+  prebuildCommand?: string;
 }
 
 /**
@@ -138,4 +173,25 @@ export abstract class BaseEngine {
    * @throws Error if the underlying tool is not installed or crashes.
    */
   abstract run(filePath: string, options?: RunOptions): Promise<MutationResult>;
+
+  /**
+   * Normalise an error caught from `invokeMutationTool` into a recoverable
+   * {@link ExecFailureError}, or throw for non-recoverable cases.
+   *
+   * Shared by engines whose non-ExecFailure handling differs only by the tool
+   * name in the wrapped message (go-mutesting, cargo-mutants):
+   *  - {@link MutationToolStartupError} → rethrown as a plain Error (verbatim).
+   *  - any other non-{@link ExecFailureError} → wrapped as `<toolName> execution failed: …`.
+   *  - an {@link ExecFailureError} → returned for engine-specific exit-code handling.
+   */
+  protected toExecFailure(error: unknown, toolName: string): ExecFailureError {
+    if (error instanceof MutationToolStartupError) {
+      throw new Error(error.message);
+    }
+    if (!(error instanceof ExecFailureError)) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`${toolName} execution failed: ${message}`);
+    }
+    return error;
+  }
 }

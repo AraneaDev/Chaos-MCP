@@ -7,3 +7,6 @@ coverage/
 !.env.example
 .stryker-tmp/
 .mutmut-cache/
+reports/
+docs/superpowers/
+.superpowers/
