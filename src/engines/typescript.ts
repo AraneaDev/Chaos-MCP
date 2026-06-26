@@ -69,26 +69,28 @@ function sliceSource(source: string, loc: StrykerMutantRecord['location']): stri
 }
 
 /**
- * Build the `--mutate` argument for Stryker, optionally scoped to a line range.
- *
- * Stryker supports `--mutate "src/file.ts:1-100"` syntax for line-range scoping.
+ * Build the `--mutate` argument for Stryker, optionally scoped to one or more
+ * 1-based inclusive line ranges. Stryker accepts a comma-separated list where
+ * each entry may carry a `:startLine-endLine` suffix:
+ *   "src/file.ts:1-5,src/file.ts:20-25"
  */
-function buildMutateArg(filePath: string, lineScope?: RunOptions['lineScope']): string {
+function buildMutateArg(filePath: string, ranges?: { start: number; end: number }[]): string {
   // No shell quoting — args are passed directly to execFile, not through a shell.
   // Fail closed on invalid scope: the handler validates args before they reach
-  // here, but this is defense-in-depth against silent full-file mutation.
-  // (Audit M12: previously invalid scopes were silently dropped, mutating
-  // the entire file without warning.)
-  if (lineScope) {
-    if (!Number.isInteger(lineScope.start) || lineScope.start < 1) {
-      throw new Error(`lineScope.start must be an integer >= 1, got ${lineScope.start}`);
-    }
-    if (!Number.isInteger(lineScope.end) || lineScope.end < lineScope.start) {
-      throw new Error(
-        `lineScope.end must be an integer >= start (${lineScope.start}), got ${lineScope.end}`,
-      );
-    }
-    return `${filePath}:${lineScope.start}-${lineScope.end}`;
+  // here, but this is defense-in-depth against silent full-file mutation
+  // (audit M12). Each range is validated independently.
+  if (ranges && ranges.length > 0) {
+    return ranges
+      .map((r) => {
+        if (!Number.isInteger(r.start) || r.start < 1) {
+          throw new Error(`lineScope.start must be an integer >= 1, got ${r.start}`);
+        }
+        if (!Number.isInteger(r.end) || r.end < r.start) {
+          throw new Error(`lineScope.end must be an integer >= start (${r.start}), got ${r.end}`);
+        }
+        return `${filePath}:${r.start}-${r.end}`;
+      })
+      .join(',');
   }
   return filePath;
 }
@@ -158,7 +160,9 @@ export class TypeScriptEngine extends BaseEngine {
     const cwd = options?.workDir ?? process.cwd();
     const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
-    const mutateArg = buildMutateArg(filePath, options?.lineScope);
+    const effectiveRanges =
+      options?.lineRanges ?? (options?.lineScope ? [options.lineScope] : undefined);
+    const mutateArg = buildMutateArg(filePath, effectiveRanges);
 
     // StrykerJS v9 removed the `--mutators` CLI flag. We express denylists by
     // writing a minimal stryker.config.json in the sandbox with the

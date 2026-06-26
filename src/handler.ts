@@ -12,6 +12,7 @@ import { runShellCommand } from './utils/exec.js';
 import { ChaosConfig } from './utils/config-loader.js';
 import { log, isVerbose } from './utils/logger.js';
 import { formatResultAsText, formatResultAsJson } from './format.js';
+import { computeChangedRanges } from './utils/git-diff.js';
 
 /**
  * Returns true when `candidate` is `root` itself, or a path strictly inside
@@ -125,6 +126,23 @@ export function validateToolArgs(args: ToolArgs): CallToolResult | null {
     ) {
       return toolError(
         'lineScope must be { start: integer >= 1, end: integer >= start }. Example: { start: 10, end: 45 }.',
+      );
+    }
+  }
+
+  // ── diffBase: non-empty string, not option-like, not with lineScope ──
+  if (args.diffBase !== undefined) {
+    if (typeof args.diffBase !== 'string' || args.diffBase.trim().length === 0) {
+      return toolError(
+        'diffBase must be a non-empty string: "HEAD", "staged", or a git ref. Example: "HEAD".',
+      );
+    }
+    if (args.diffBase.startsWith('-')) {
+      return toolError('diffBase must not start with "-" (it would be mistaken for a git option).');
+    }
+    if (args.lineScope !== undefined) {
+      return toolError(
+        'diffBase and lineScope are mutually exclusive — use one or the other, not both.',
       );
     }
   }
@@ -348,6 +366,55 @@ export async function handleToolCall(
     const argError = validateToolArgs(earlyArgs);
     if (argError) return argError;
 
+    // ── Diff-aware scoping (A2): compute changed ranges on the REAL tree
+    // before the (expensive) sandbox copy, so "no changes" can short-circuit.
+    let diffRanges: { start: number; end: number }[] | undefined;
+    let scopeNote: string | undefined;
+    const diffBase = typeof earlyArgs.diffBase === 'string' ? earlyArgs.diffBase : undefined;
+    if (diffBase) {
+      const diff = await computeChangedRanges(targetFile, env.workspaceRoot, diffBase);
+      switch (diff.kind) {
+        case 'not-a-repo':
+          return toolError(
+            `diffBase requires a git work tree, but "${env.workspaceRoot}" is not one. ` +
+              'Remove diffBase or run inside a git repository.',
+          );
+        case 'bad-ref':
+          return toolError(
+            `diffBase "${diff.ref}" could not be resolved as a git ref (merge-base failed).`,
+          );
+        case 'no-changes': {
+          // Short-circuit: nothing changed, so skip the sandbox + engine entirely.
+          const empty = {
+            target: targetFile,
+            totalMutants: 0,
+            killed: 0,
+            survived: 0,
+            mutationScore: '100.00%',
+            vulnerabilities: [],
+            scopeNote: `No changed lines in ${targetFile} vs ${diffBase}; nothing to mutate.`,
+          };
+          const text =
+            earlyArgs.outputFormat === 'text'
+              ? formatResultAsText(empty)
+              : formatResultAsJson(empty);
+          return { content: [{ type: 'text', text }] };
+        }
+        case 'untracked':
+          // File is new/untracked — every line is "changed", so mutate the
+          // whole file, but tell the caller why it wasn't line-scoped.
+          scopeNote = `${targetFile} is untracked in git vs ${diffBase}; mutated the whole file.`;
+          break;
+        case 'ranges':
+          if (projectType === 'typescript') {
+            diffRanges = diff.ranges;
+          } else {
+            scopeNote = `diffBase scoping is not supported for ${projectType}; mutated the whole file.`;
+          }
+          break;
+      }
+    }
+
     // Provision a sandbox so mutation runs never touch the real workspace tree.
     let sandbox;
     try {
@@ -385,6 +452,7 @@ export async function handleToolCall(
       }
 
       const runOptions = buildRunOptions(args, cfg, env, sandbox.workDir, projectType);
+      if (diffRanges) runOptions.lineRanges = diffRanges;
 
       // ── Run prebuild command in the sandbox (before any mutation tool) ──
       const prebuildCmd = resolvePrebuildCommand(args, env, projectType);
@@ -430,6 +498,7 @@ export async function handleToolCall(
 
       // Apply output format to the final response
       const auditResults = await engine.run(targetFile, runOptions);
+      if (scopeNote) auditResults.scopeNote = scopeNote;
       const text =
         runOptions.outputFormat === 'text'
           ? formatResultAsText(auditResults)

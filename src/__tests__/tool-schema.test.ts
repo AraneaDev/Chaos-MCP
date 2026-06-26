@@ -21,6 +21,7 @@ describe('TOOL_DEFINITION contract', () => {
       ignorePatterns: 'array',
       prebuildCommand: 'string',
       perMutantTimeoutMs: 'number',
+      diffBase: 'string',
     };
     const props = TOOL_DEFINITION.inputSchema.properties as Record<string, { type: string }>;
     // Exactly these keys — no more, no fewer.
@@ -76,5 +77,11 @@ describe('TOOL_DEFINITION contract', () => {
     // The `additionalProperties: false` BooleanLiteral is security-relevant —
     // it rejects unknown args at the MCP boundary.
     expect(TOOL_DEFINITION.inputSchema.additionalProperties).toBe(false);
+  });
+
+  it('advertises the diffBase string parameter', () => {
+    const props = TOOL_DEFINITION.inputSchema.properties as Record<string, { type: string }>;
+    expect(props.diffBase).toBeDefined();
+    expect(props.diffBase.type).toBe('string');
   });
 });

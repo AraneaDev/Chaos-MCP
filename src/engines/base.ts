@@ -33,6 +33,12 @@ export interface MutationResult {
   mutationScore: string;
   /** Details of each surviving mutant */
   vulnerabilities: Vulnerability[];
+  /**
+   * Optional human-readable note about scoping decisions for this run (e.g.
+   * "no changed lines", or "diff scoping unsupported for this language;
+   * whole file mutated"). Surfaced in the formatted output when present.
+   */
+  scopeNote?: string;
 }
 
 /**
@@ -78,6 +84,14 @@ export interface RunOptions {
    * **Not supported by:** Mutmut (Python engine ignores this).
    */
   lineScope?: { start: number; end: number };
+
+  /**
+   * Multiple 1-based inclusive line ranges to constrain mutation to (the
+   * diff-aware superset of {@link lineScope}). When set, takes precedence over
+   * `lineScope`. **StrykerJS only** — emitted as comma-separated `--mutate`
+   * patterns. Ignored by Mutmut, go-mutesting, cargo-mutants.
+   */
+  lineRanges?: { start: number; end: number }[];
 
   /**
    * Restrict which Stryker mutator names to use.

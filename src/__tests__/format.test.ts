@@ -277,7 +277,9 @@ describe('A1 mutation detail (changes)', () => {
   it('trims leading/trailing whitespace in change strings (kills .trim mutant, line 44)', () => {
     const json = JSON.parse(
       formatResultAsJson(
-        baseResult([{ line: 1, mutator: 'M', description: 'survived', original: '  a > b  ', mutated: 'c' }]),
+        baseResult([
+          { line: 1, mutator: 'M', description: 'survived', original: '  a > b  ', mutated: 'c' },
+        ]),
       ),
     );
     expect(json.survivors[0].changes).toEqual(['a > b → c']);
@@ -308,7 +310,13 @@ describe('A1 mutation detail (changes)', () => {
   it('renders changes on no-coverage lines in text output (kills no-coverage suffix mutant, line 132)', () => {
     const text = formatResultAsText(
       baseResult([
-        { line: 9, mutator: 'M', description: 'No test reached this line (NoCoverage).', original: 'x', mutated: 'y' },
+        {
+          line: 9,
+          mutator: 'M',
+          description: 'No test reached this line (NoCoverage).',
+          original: 'x',
+          mutated: 'y',
+        },
       ]),
     );
     expect(text).toContain('No-coverage mutants (line: mutators):');
@@ -327,6 +335,29 @@ describe('A1 mutation detail (changes)', () => {
     expect(json.survivors[0].changes).toEqual(['a → b']);
     expect(json.noCoverage[0].changes).toBeUndefined();
     expect(json.note).toContain('changes = sampled');
+  });
+});
+
+describe('A2 scopeNote', () => {
+  it('includes scopeNote in JSON when present', () => {
+    const r = baseResult([]);
+    r.scopeNote = 'No changed lines in src/x.ts vs HEAD; nothing to mutate.';
+    const json = JSON.parse(formatResultAsJson(r));
+    expect(json.scopeNote).toBe('No changed lines in src/x.ts vs HEAD; nothing to mutate.');
+  });
+
+  it('omits scopeNote from JSON when absent', () => {
+    const json = JSON.parse(formatResultAsJson(baseResult([])));
+    expect('scopeNote' in json).toBe(false);
+  });
+
+  it('prints a Scope line in text output when present', () => {
+    const r = baseResult([]);
+    r.scopeNote = 'diffBase scoping is not supported for go; mutated the whole file.';
+    const text = formatResultAsText(r);
+    expect(text).toContain(
+      'Scope: diffBase scoping is not supported for go; mutated the whole file.',
+    );
   });
 });
 

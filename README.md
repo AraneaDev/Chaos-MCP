@@ -83,9 +83,18 @@ The server exposes a single tool: `audit_code_resilience`.
 }
 ```
 
+**Scope to just your uncommitted changes:**
+```json
+{
+  "filePath": "src/utils/math.ts",
+  "diffBase": "HEAD"
+}
+```
+Mutation-tests only the lines you've changed since the last commit.
+
 ### 3. Interpret the Results
 
-The output is **bundled and deduplicated** to stay token-efficient: mutants are grouped by line (with a per-line count of each mutator type), `survivors` (tests ran but didn't catch) and `noCoverage` (no test reached the mutant) are reported separately at line+mutator granularity, and the explanatory note appears once instead of being repeated for every mutant. Because the split is per-mutator, the same line can appear in both lists (e.g. a live expression that survived next to an unreachable fallback that no test reached). Survivors and no-coverage entries also include a `changes` sample — a capped, deduped list of `original → mutated` edits — for TypeScript and Rust targets (best-effort; absent for Go/Python, which don't expose per-mutant detail).
+The output is **bundled and deduplicated** to stay token-efficient: mutants are grouped by line (with a per-line count of each mutator type), `survivors` (tests ran but didn't catch) and `noCoverage` (no test reached the mutant) are reported separately at line+mutator granularity, and the explanatory note appears once instead of being repeated for every mutant. Because the split is per-mutator, the same line can appear in both lists (e.g. a live expression that survived next to an unreachable fallback that no test reached). Survivors and no-coverage entries also include a `changes` sample — a capped, deduped list of `original → mutated` edits — for TypeScript and Rust targets (best-effort; absent for Go/Python, which don't expose per-mutant detail). When `diffBase` is used, the output may include a `scopeNote` (a top-level JSON field / a `Scope:` text line) reporting scoping decisions — e.g. a skipped run when nothing changed, or a whole-file fallback for Go/Python/Rust targets.
 
 **JSON output (default — emitted as a single compact line):**
 ```json
@@ -117,6 +126,7 @@ Add or strengthen tests targeting these lines to kill the survivors.
 | `filePath` | `string` | ✅ | Workspace-relative path to the file (`.ts`, `.js`, `.tsx`, `.jsx`, `.py`, `.go`, `.rs`) |
 | `timeoutMs` | `number` | ❌ | Max run time in ms (default: 300000 / 5 min) |
 | `lineScope` | `{ start, end }` | ❌ | 1-based line range (StrykerJS only) |
+| `diffBase` | `string` | ❌ | Auto-scope mutation to git-changed lines. `"HEAD"` (uncommitted), `"staged"`, or a git ref (e.g. `"main"`, via merge-base). Mutually exclusive with `lineScope`. Line-level scoping is StrykerJS-only; other languages run whole-file with a note. No changes vs base → run skipped. |
 | `mutatorAllowlist` | `string[]` | ❌ | ⚠ Not supported in StrykerJS v9 — ignored (use `mutatorDenylist`) |
 | `mutatorDenylist` | `string[]` | ❌ | Stryker mutator names to exclude |
 | `concurrency` | `number` | ❌ | Parallel mutation workers (StrykerJS only) |

@@ -116,6 +116,15 @@ export const TOOL_DEFINITION = {
           'from hanging the entire mutation run. Default: StrykerJS default (~5000ms). ' +
           'Example: 10000 for a 10-second per-mutant ceiling.',
       },
+      diffBase: {
+        type: 'string',
+        description:
+          'Auto-scope mutation to only the lines changed in git. The value selects the base to diff against: ' +
+          '"HEAD" (all uncommitted changes), "staged" (staged changes only), or any git ref/branch/SHA ' +
+          '(e.g. "main", resolved via merge-base with HEAD). Mutually exclusive with lineScope. ' +
+          'Line-level scoping is StrykerJS-only; Go/Python/Rust targets run whole-file with a note. ' +
+          'If the file has no changes vs the base, the run is skipped. Example: "HEAD"',
+      },
     },
     required: ['filePath'],
     additionalProperties: false,

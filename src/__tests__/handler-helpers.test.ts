@@ -81,6 +81,29 @@ describe('validateToolArgs', () => {
   ])('accepts lineScope=%p', (v) => {
     expect(validateToolArgs({ lineScope: v })).toBeNull();
   });
+
+  // ── diffBase ──
+  it('rejects non-string diffBase', () => {
+    expect(validateToolArgs({ diffBase: 5 })?.isError).toBe(true);
+  });
+
+  it('rejects empty/whitespace diffBase', () => {
+    expect(validateToolArgs({ diffBase: '   ' })?.isError).toBe(true);
+  });
+
+  it('rejects diffBase starting with "-" (ref safety)', () => {
+    expect(validateToolArgs({ diffBase: '--output=/etc/passwd' })?.isError).toBe(true);
+  });
+
+  it('rejects diffBase together with lineScope', () => {
+    expect(validateToolArgs({ diffBase: 'HEAD', lineScope: { start: 1, end: 2 } })?.isError).toBe(
+      true,
+    );
+  });
+
+  it('accepts a valid diffBase alone', () => {
+    expect(validateToolArgs({ diffBase: 'HEAD' })).toBeNull();
+  });
 });
 
 describe('buildRunOptions', () => {

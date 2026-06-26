@@ -20,6 +20,7 @@ export interface MutationResultShape {
     original?: string;
     mutated?: string;
   }[];
+  scopeNote?: string;
 }
 
 /** Matches the NoCoverage marker engines embed in a vulnerability description. */
@@ -114,6 +115,10 @@ export function formatResultAsText(result: MutationResultShape): string {
     `Mutation score: ${result.mutationScore} (${result.killed}/${result.totalMutants} killed, ${result.survived} survived)`,
   ];
 
+  if (result.scopeNote) {
+    lines.push(`Scope: ${result.scopeNote}`);
+  }
+
   if (survivors.length === 0 && noCoverage.length === 0) {
     lines.push('✅ No surviving mutants — your tests caught all mutations.');
     return lines.join('\n');
@@ -148,7 +153,7 @@ export function formatResultAsJson(result: MutationResultShape): string {
   const hasChanges = [...survivors, ...noCoverage].some((g) => g.changes);
   const baseNote =
     'survivors: mutants your tests ran but did not kill. noCoverage: mutants no test reached (per line+mutator, so a line may appear here and in survivors). mutators = type→count. Add or strengthen tests targeting these.';
-  return JSON.stringify({
+  const payload: Record<string, unknown> = {
     target: result.target,
     mutationScore: result.mutationScore,
     summary: { total: result.totalMutants, killed: result.killed, survived: result.survived },
@@ -159,5 +164,7 @@ export function formatResultAsJson(result: MutationResultShape): string {
       : hasChanges
         ? `${baseNote} changes = sampled original→mutated edits for that line (capped).`
         : baseNote,
-  });
+  };
+  if (result.scopeNote) payload.scopeNote = result.scopeNote;
+  return JSON.stringify(payload);
 }

@@ -980,6 +980,40 @@ describe('TypeScriptEngine', () => {
     expect(result.vulnerabilities[0].original).toBe('a >\nb');
   });
 
+  // ─── A2: lineRanges multi-range scoping ─────────────────────────────────
+
+  it('A2: emits one --mutate range for a single lineScope (unchanged behavior)', async () => {
+    mockRunShell.mockResolvedValue(makeExecResult());
+    mockReadFileSync.mockReturnValue(makeJsonReport([]));
+    await engine.run('src/app.ts', { lineScope: { start: 10, end: 20 } });
+    const argList = mockRunShell.mock.calls[0]?.[1] as string[];
+    expect(argArgsContain(argList, '--mutate', 'src/app.ts:10-20')).toBe(true);
+  });
+
+  it('A2: emits comma-joined --mutate patterns for multiple lineRanges', async () => {
+    mockRunShell.mockResolvedValue(makeExecResult());
+    mockReadFileSync.mockReturnValue(makeJsonReport([]));
+    await engine.run('src/app.ts', {
+      lineRanges: [
+        { start: 3, end: 5 },
+        { start: 20, end: 20 },
+      ],
+    });
+    const argList = mockRunShell.mock.calls[0]?.[1] as string[];
+    expect(argArgsContain(argList, '--mutate', 'src/app.ts:3-5,src/app.ts:20-20')).toBe(true);
+  });
+
+  it('A2: lineRanges takes precedence over lineScope', async () => {
+    mockRunShell.mockResolvedValue(makeExecResult());
+    mockReadFileSync.mockReturnValue(makeJsonReport([]));
+    await engine.run('src/app.ts', {
+      lineScope: { start: 1, end: 2 },
+      lineRanges: [{ start: 40, end: 44 }],
+    });
+    const argList = mockRunShell.mock.calls[0]?.[1] as string[];
+    expect(argArgsContain(argList, '--mutate', 'src/app.ts:40-44')).toBe(true);
+  });
+
   it('does not emit the NoCoverage heads-up when there are zero NoCoverage mutants', async () => {
     const { isVerbose, log } = await import('../utils/logger.js');
     vi.mocked(isVerbose).mockReturnValue(true);

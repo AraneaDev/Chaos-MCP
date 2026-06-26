@@ -49,6 +49,10 @@ vi.mock('../utils/exec.js', async () => {
   };
 });
 
+vi.mock('../utils/git-diff.js', () => ({
+  computeChangedRanges: vi.fn(),
+}));
+
 // Mock logger for verbose logging tests
 vi.mock('../utils/logger.js', () => ({
   enableVerbose: vi.fn(),
@@ -65,6 +69,7 @@ import { createSandbox } from '../utils/sandbox.js';
 import { runShellCommand } from '../utils/exec.js';
 import { isVerbose, log } from '../utils/logger.js';
 import { existsSync } from 'fs';
+import { computeChangedRanges } from '../utils/git-diff.js';
 
 const MockTSEngine = vi.mocked(TypeScriptEngine);
 const MockGoEngine = vi.mocked(GoEngine);
@@ -74,6 +79,7 @@ const mockRunShellCommand = vi.mocked(runShellCommand);
 const mockIsVerbose = vi.mocked(isVerbose);
 const mockLog = vi.mocked(log);
 const mockExistsSync = vi.mocked(existsSync);
+const mockComputeChangedRanges = vi.mocked(computeChangedRanges);
 
 function makeRequest(name: string, args: Record<string, unknown>): CallToolRequest {
   return {
@@ -2877,5 +2883,131 @@ describe('handleToolCall', () => {
     );
     expect(response.isError).toBeUndefined();
     expect(mockRun).toHaveBeenCalled();
+  });
+
+  describe('diffBase dispatch', () => {
+    const tsEnv = {
+      projectType: 'typescript' as const,
+      testRunner: 'vitest',
+      detectedRunner: 'vitest',
+      workspaceRoot: '/workspace',
+    };
+
+    it('errors when the workspace is not a git repo', async () => {
+      mockDetectEnv.mockReturnValue(tsEnv);
+      mockComputeChangedRanges.mockResolvedValue({ kind: 'not-a-repo' });
+      const res = await handleToolCall(
+        makeRequest('audit_code_resilience', { filePath: 'src/x.ts', diffBase: 'HEAD' }),
+      );
+      expect(res.isError).toBe(true);
+      expect((res.content[0] as { text: string }).text).toMatch(/git work tree/i);
+    });
+
+    it('errors for an unresolvable ref', async () => {
+      mockDetectEnv.mockReturnValue(tsEnv);
+      mockComputeChangedRanges.mockResolvedValue({ kind: 'bad-ref', ref: 'nope' });
+      const res = await handleToolCall(
+        makeRequest('audit_code_resilience', { filePath: 'src/x.ts', diffBase: 'nope' }),
+      );
+      expect(res.isError).toBe(true);
+      expect((res.content[0] as { text: string }).text).toMatch(/nope/);
+    });
+
+    it('short-circuits with an empty scoped result when nothing changed (engine not run)', async () => {
+      const mockRun = vi.fn();
+      MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+      mockDetectEnv.mockReturnValue(tsEnv);
+      mockComputeChangedRanges.mockResolvedValue({ kind: 'no-changes' });
+      const res = await handleToolCall(
+        makeRequest('audit_code_resilience', { filePath: 'src/x.ts', diffBase: 'HEAD' }),
+      );
+      expect(res.isError).toBeUndefined();
+      const json = JSON.parse((res.content[0] as { text: string }).text);
+      expect(json.summary.total).toBe(0);
+      expect(json.scopeNote).toMatch(/no changed lines/i);
+      expect(mockRun).not.toHaveBeenCalled();
+    });
+
+    it('ranges → TypeScript: propagates lineRanges to the engine', async () => {
+      const mockRun = vi.fn().mockResolvedValue({
+        target: 'src/x.ts',
+        totalMutants: 1,
+        killed: 1,
+        survived: 0,
+        mutationScore: '100.00%',
+        vulnerabilities: [],
+      });
+      MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+      mockDetectEnv.mockReturnValue(tsEnv);
+      mockComputeChangedRanges.mockResolvedValue({
+        kind: 'ranges',
+        ranges: [{ start: 3, end: 5 }],
+      });
+
+      await handleToolCall(
+        makeRequest('audit_code_resilience', { filePath: 'src/x.ts', diffBase: 'HEAD' }),
+      );
+
+      expect(mockRun).toHaveBeenCalled();
+      const runOpts = mockRun.mock.calls[0][1] as { lineRanges?: { start: number; end: number }[] };
+      expect(runOpts.lineRanges).toEqual([{ start: 3, end: 5 }]);
+    });
+
+    it('ranges → non-TypeScript: runs whole file and attaches a scopeNote', async () => {
+      const mockRun = vi.fn().mockResolvedValue({
+        target: 'src/x.go',
+        totalMutants: 1,
+        killed: 1,
+        survived: 0,
+        mutationScore: '100.00%',
+        vulnerabilities: [],
+      });
+      MockGoEngine.mockImplementation(() => ({ run: mockRun }) as unknown as GoEngine);
+      mockDetectEnv.mockReturnValue({
+        projectType: 'go',
+        testRunner: 'go test',
+        detectedRunner: 'go test',
+        workspaceRoot: '/workspace',
+      });
+      mockComputeChangedRanges.mockResolvedValue({
+        kind: 'ranges',
+        ranges: [{ start: 1, end: 2 }],
+      });
+
+      const res = await handleToolCall(
+        makeRequest('audit_code_resilience', { filePath: 'src/x.go', diffBase: 'HEAD' }),
+      );
+
+      expect(mockRun).toHaveBeenCalled();
+      const json = JSON.parse((res.content[0] as { text: string }).text);
+      expect(json.scopeNote).toMatch(/not supported for go/i);
+      // The Go engine receives NO line scoping (whole-file run).
+      const runOpts = mockRun.mock.calls[0][1] as { lineRanges?: unknown };
+      expect(runOpts.lineRanges).toBeUndefined();
+    });
+
+    it('untracked file → runs whole file with an explanatory scopeNote and no line scoping', async () => {
+      const mockRun = vi.fn().mockResolvedValue({
+        target: 'src/x.ts',
+        totalMutants: 1,
+        killed: 1,
+        survived: 0,
+        mutationScore: '100.00%',
+        vulnerabilities: [],
+      });
+      MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+      mockDetectEnv.mockReturnValue(tsEnv);
+      mockComputeChangedRanges.mockResolvedValue({ kind: 'untracked' });
+
+      const res = await handleToolCall(
+        makeRequest('audit_code_resilience', { filePath: 'src/x.ts', diffBase: 'HEAD' }),
+      );
+
+      expect(mockRun).toHaveBeenCalled();
+      const runOpts = mockRun.mock.calls[0][1] as { lineRanges?: unknown };
+      expect(runOpts.lineRanges).toBeUndefined();
+      const json = JSON.parse((res.content[0] as { text: string }).text);
+      expect(json.scopeNote).toMatch(/untracked/i);
+    });
   });
 });
