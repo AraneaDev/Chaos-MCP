@@ -89,7 +89,7 @@ src/
 3. Use `runShell()` from `src/utils/exec.ts` for async subprocess execution
 4. Add file extension to `detectProjectType` in `project-detector.ts`
 5. Add test runner detection (e.g. `detect<Lang>TestRunner`) if applicable
-6. Add dispatch case in `handleToolCall` in `index.ts`
+6. Add an `ENGINE_REGISTRY` entry in `src/engines/registry.ts` (`make`, `configKey`, `supportsLineScope`, optional `prebuild`) and a config section in `config-loader.ts`
 7. Add tests in `src/__tests__/<lang>-engine.test.ts`
 8. Run `npm run check` to verify everything passes
 

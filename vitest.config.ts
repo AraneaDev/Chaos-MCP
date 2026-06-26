@@ -1,8 +1,9 @@
 import { defineConfig } from 'vitest/config';
 
 // Default config: runs the FULL suite (unit + e2e/spawn tests) for `npm test`
-// and `npm run check`. Mutation testing uses vitest.unit.config.ts instead
-// (see stryker.config.json) so it can exclude the spawn/e2e tests.
+// and `npm run check`. Self-mutation-testing runs the BUILT tool against its
+// own source via scripts/audit-self.js and scripts/meta-test.js (not a Stryker
+// config in this repo).
 export default defineConfig({
   test: {
     include: ['src/__tests__/**/*.test.ts'],
