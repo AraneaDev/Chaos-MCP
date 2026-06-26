@@ -8,6 +8,13 @@
  */
 
 import type { MutationResult } from './engines/base.js';
+import type { SupportedProjectType } from './engines/registry.js';
+import { enrichGroup, SEVERITY_RANK, type Severity, type Enrichment } from './enrich.js';
+
+export interface EnrichContext {
+  projectType: SupportedProjectType;
+  sourceLines?: string[];
+}
 
 /** Matches the NoCoverage marker engines embed in a vulnerability description. */
 const NO_COVERAGE_RE = /no test reached|nocoverage/i;
@@ -83,6 +90,38 @@ function compactSurvivors(result: MutationResult): {
   return { survivors: groupByLine(survivorsByLine), noCoverage: groupByLine(noCoverageByLine) };
 }
 
+/** A LineGroup augmented with its enrichment fields (severity, why, hint, context). */
+type EnrichedGroup = LineGroup & Enrichment;
+
+/**
+ * Enrich + re-rank line groups: attach severity/why/hint/context to each group,
+ * then sort severity-descending, line-ascending. Returns the enriched groups
+ * plus the worst severity seen and whether any group was unclassified.
+ */
+function enrichGroups(
+  groups: LineGroup[],
+  enrich: EnrichContext,
+): { groups: EnrichedGroup[]; worst: Severity; hasUnknown: boolean } {
+  const enriched: EnrichedGroup[] = groups.map((g) => ({
+    ...g,
+    ...enrichGroup({
+      line: g.line,
+      mutators: g.mutators,
+      changes: g.changes,
+      projectType: enrich.projectType,
+      sourceLines: enrich.sourceLines,
+    }),
+  }));
+  enriched.sort((a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity] || a.line - b.line);
+  let worst: Severity = 'unknown';
+  let hasUnknown = false;
+  for (const g of enriched) {
+    if (SEVERITY_RANK[g.severity] > SEVERITY_RANK[worst]) worst = g.severity;
+    if (g.severity === 'unknown') hasUnknown = true;
+  }
+  return { groups: enriched, worst, hasUnknown };
+}
+
 /** Render a `{ ConditionalExpression: 2, LogicalOperator: 1 }` map as "ConditionalExpression×2, LogicalOperator". */
 function formatMutators(mutators: Record<string, number>): string {
   return Object.entries(mutators)
@@ -94,38 +133,48 @@ function formatMutators(mutators: Record<string, number>): string {
  * Format a MutationResult as a compact, human-readable text summary.
  * Used when the caller requests `outputFormat: 'text'`.
  */
-export function formatResultAsText(result: MutationResult): string {
-  const { survivors, noCoverage } = compactSurvivors(result);
+export function formatResultAsText(result: MutationResult, enrich?: EnrichContext): string {
+  const compact = compactSurvivors(result);
+  let survivors = compact.survivors;
+  let noCoverage = compact.noCoverage;
   const lines: string[] = [
     `Chaos-MCP Audit Report: ${result.target}`,
     `Mutation score: ${result.mutationScore} (${result.killed}/${result.totalMutants} killed, ${result.survived} survived)`,
   ];
-
-  if (result.scopeNote) {
-    lines.push(`Scope: ${result.scopeNote}`);
-  }
+  if (result.scopeNote) lines.push(`Scope: ${result.scopeNote}`);
 
   if (survivors.length === 0 && noCoverage.length === 0) {
     lines.push('No surviving mutants — your tests caught all mutations.');
     return lines.join('\n');
   }
 
+  if (enrich) {
+    survivors = enrichGroups(survivors, enrich).groups;
+    noCoverage = enrichGroups(noCoverage, enrich).groups;
+  }
+
+  const renderGroup = (g: LineGroup): void => {
+    const suffix = g.changes ? `  (${g.changes.join('; ')})` : '';
+    const e = g as Partial<Enrichment>;
+    if (enrich && e.severity) {
+      lines.push(`  ${g.line}: [${e.severity}] ${formatMutators(g.mutators)}${suffix}`);
+      lines.push(`     why: ${e.why}`);
+      lines.push(`     hint: ${e.hint}`);
+      if (e.context) lines.push(`     context: ${e.context.join(' | ')}`);
+    } else {
+      lines.push(`  ${g.line}: ${formatMutators(g.mutators)}${suffix}`);
+    }
+  };
+
   if (survivors.length > 0) {
     lines.push(`Survivors (line: mutators):`);
-    for (const s of survivors) {
-      const suffix = s.changes ? `  (${s.changes.join('; ')})` : '';
-      lines.push(`  ${s.line}: ${formatMutators(s.mutators)}${suffix}`);
-    }
+    survivors.forEach(renderGroup);
   }
   if (noCoverage.length > 0) {
     lines.push(`No-coverage mutants (line: mutators):`);
-    for (const n of noCoverage) {
-      const suffix = n.changes ? `  (${n.changes.join('; ')})` : '';
-      lines.push(`  ${n.line}: ${formatMutators(n.mutators)}${suffix}`);
-    }
+    noCoverage.forEach(renderGroup);
   }
   lines.push('Add or strengthen tests targeting these lines to kill the survivors.');
-
   return lines.join('\n');
 }
 
@@ -133,16 +182,38 @@ export function formatResultAsText(result: MutationResult): string {
  * Format a MutationResult as a compact JSON payload (single-line, deduplicated).
  * Used for the default `outputFormat: 'json'`.
  */
-export function formatResultAsJson(result: MutationResult): string {
-  const { survivors, noCoverage } = compactSurvivors(result);
+export function formatResultAsJson(result: MutationResult, enrich?: EnrichContext): string {
+  const compact = compactSurvivors(result);
+  let { survivors, noCoverage } = compact;
   const clean = survivors.length === 0 && noCoverage.length === 0;
   const hasChanges = [...survivors, ...noCoverage].some((g) => g.changes);
+
+  let worstSeverity: Severity | undefined;
+  let enrichNote: string | undefined;
+  if (enrich) {
+    const s = enrichGroups(survivors, enrich);
+    const n = enrichGroups(noCoverage, enrich);
+    survivors = s.groups;
+    noCoverage = n.groups;
+    if (survivors.length > 0) worstSeverity = s.worst;
+    if (s.hasUnknown || n.hasUnknown) {
+      enrichNote =
+        "some mutants could not be classified — this language's mutation tool doesn't expose per-mutant operator detail (severity reported as \"unknown\").";
+    }
+  }
+
   const baseNote =
     'survivors: mutants your tests ran but did not kill. noCoverage: mutants no test reached (per line+mutator, so a line may appear here and in survivors). mutators = type→count. Add or strengthen tests targeting these.';
+  const summary: Record<string, unknown> = {
+    total: result.totalMutants,
+    killed: result.killed,
+    survived: result.survived,
+  };
+  if (worstSeverity) summary.worstSeverity = worstSeverity;
   const payload: Record<string, unknown> = {
     target: result.target,
     mutationScore: result.mutationScore,
-    summary: { total: result.totalMutants, killed: result.killed, survived: result.survived },
+    summary,
     survivors,
     noCoverage,
     note: clean
@@ -151,6 +222,7 @@ export function formatResultAsJson(result: MutationResult): string {
         ? `${baseNote} changes = sampled original→mutated edits for that line (capped).`
         : baseNote,
   };
+  if (enrichNote) payload.enrichNote = enrichNote;
   if (result.scopeNote) payload.scopeNote = result.scopeNote;
   return JSON.stringify(payload);
 }
