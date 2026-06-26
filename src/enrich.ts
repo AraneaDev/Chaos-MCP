@@ -116,5 +116,42 @@ export const MUTATOR_SEMANTICS: Record<string, MutatorSemantic> = {
   },
 };
 
+/**
+ * Keyword rules for inferring a canonical category from a Rust (cargo-mutants)
+ * change description like "replace > with >=". Order matters: logical before
+ * equality before arithmetic, so `&&`/`||` aren't shadowed by a stray operator
+ * char in the surrounding text.
+ */
+const RUST_DESCRIPTION_RULES: { test: RegExp; category: string }[] = [
+  { test: /&&|\|\|/, category: 'LogicalOperator' },
+  { test: /[<>]=?|==|!=/, category: 'EqualityOperator' },
+  { test: /\b(true|false)\b/, category: 'BooleanLiteral' },
+  { test: /[+\-*/%]/, category: 'ArithmeticOperator' },
+];
+
+/**
+ * Normalize an engine-specific mutator into a canonical category present in
+ * {@link MUTATOR_SEMANTICS}, or `'unknown'`.
+ *
+ * - TypeScript: StrykerJS names ARE canonical — direct table lookup.
+ * - Rust: infer from `changeText` (cargo-mutants packs the operator there).
+ * - Go / Python: coarse labels with no per-mutant operator — always `'unknown'`.
+ */
+export function canonicalizeMutator(
+  rawMutator: string,
+  projectType: SupportedProjectType,
+  changeText?: string,
+): string {
+  if (projectType === 'typescript') {
+    return rawMutator in MUTATOR_SEMANTICS ? rawMutator : 'unknown';
+  }
+  if (projectType === 'rust' && changeText) {
+    for (const rule of RUST_DESCRIPTION_RULES) {
+      if (rule.test.test(changeText)) return rule.category;
+    }
+  }
+  return 'unknown';
+}
+
 // Referenced by later tasks (kept here to centralize the type import).
 export type { SupportedProjectType };
