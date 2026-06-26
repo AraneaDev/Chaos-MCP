@@ -2,6 +2,12 @@
 
 All notable changes to Chaos-MCP are documented in this file.
 
+## [Unreleased]
+
+### Added — Survivor Enrichment (`enrich` flag)
+
+- **`enrich` boolean tool argument** — opt-in flag that augments each surviving / no-coverage line in the audit output with four deterministic enrichment fields: `severity` (`high`/`medium`/`low`) derived from the mutator's semantics, a `why` explanation of why the coverage gap is dangerous, a `hint` describing what kind of test would kill it, and a `context` snippet of surrounding source lines. Survivors are re-ranked severity-first so the most critical gaps appear at the top of the report. The flag is off by default (output is byte-identical when `enrich` is absent or `false`) to avoid adding unwanted tokens to the response. Applies to all supported languages: TypeScript targets produce the richest output (StrykerJS exposes per-mutant operator detail); Go and Python targets degrade gracefully — `severity` is reported as `"unknown"` and an `enrichNote` is added to the JSON payload when per-mutant classification is not possible. Source-file reads for context snippets fail gracefully (degrade to no `context` field) rather than failing the audit.
+
 ## [1.1.1] - 2026-06-24
 
 ### Added — End-to-End Test Coverage + CI Integration

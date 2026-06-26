@@ -71,9 +71,19 @@ The primary tool is `audit_code_resilience` (the batch tool `triage_test_coverag
   "concurrency": 4,
   "incremental": true,
   "ignorePatterns": ["fixtures/", "snapshots/"],
-  "outputFormat": "text"
+  "outputFormat": "text",
+  "enrich": true
 }
 ```
+
+**Get enriched, severity-ranked guidance on survivors:**
+```json
+{
+  "filePath": "src/utils/math.ts",
+  "enrich": true
+}
+```
+When `enrich` is true each surviving / no-coverage line is augmented with four fields: a `severity` rating (`high`, `medium`, or `low`) based on the mutator's semantics (e.g. boundary operators and logical operators rank high), a `why` explanation of why the gap is dangerous, a `hint` describing the kind of test that would kill it, and a `context` snippet of the surrounding source lines. Survivors are then re-ranked severity-first so the most critical gaps appear first. Enrichment is opt-in (adds tokens to the response) and applies to all languages — though TypeScript targets produce the richest output because StrykerJS exposes per-mutant operator detail; Go and Python targets report `severity: "unknown"` and omit context snippets when the mutation tool does not expose sufficient per-mutant detail.
 
 **Scope to just your uncommitted changes:**
 ```json
@@ -141,6 +151,7 @@ Add or strengthen tests targeting these lines to kill the survivors.
 | `outputFormat` | `"json"` \| `"text"` | No | Output format (default: `"json"`) |
 | `incremental` | `boolean` | No | Reuse previous run results (StrykerJS only) |
 | `ignorePatterns` | `string[]` | No | Substring patterns to exclude from sandbox copy |
+| `enrich` | `boolean` | No | If true, annotate each survivor with severity, why-it-matters, a test hint, and source context — and rank severity-first. Opt-in; adds tokens. Richest for TypeScript; Go/Python degrade to `severity: "unknown"`. Default: `false` |
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for development setup and the full parameter semantics.
 

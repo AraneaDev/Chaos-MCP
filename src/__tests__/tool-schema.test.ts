@@ -23,6 +23,7 @@ describe('TOOL_DEFINITION contract', () => {
       perMutantTimeoutMs: 'number',
       diffBase: 'string',
       baseline: 'object',
+      enrich: 'boolean',
     };
     const props = TOOL_DEFINITION.inputSchema.properties as Record<string, { type: string }>;
     // Exactly these keys — no more, no fewer.

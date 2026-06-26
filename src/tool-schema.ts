@@ -138,6 +138,15 @@ export const TOOL_DEFINITION = {
           noCoverage: { type: 'array', items: { type: 'object' } },
         },
       },
+      enrich: {
+        type: 'boolean',
+        description:
+          'If true, augment each surviving / no-coverage line with deterministic guidance: ' +
+          'severity (high/medium/low based on mutator semantics), a "why it matters" explanation, ' +
+          'a test-writing hint, and a source-context snippet — and rank survivors severity-first. ' +
+          'Adds tokens; default false (output unchanged). Richest for TypeScript; Go/Python report ' +
+          'severity "unknown" (their tools expose less per-mutant detail). Example: true',
+      },
     },
     required: ['filePath'],
     additionalProperties: false,

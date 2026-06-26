@@ -1,5 +1,5 @@
 import { resolve, isAbsolute, relative, join } from 'path';
-import { existsSync, realpathSync } from 'fs';
+import { existsSync, realpathSync, readFileSync } from 'fs';
 import type { CallToolRequest, CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { BaseEngine, RunOptions, MutationResult } from './engines/base.js';
 import { ENGINE_REGISTRY, type SupportedProjectType } from './engines/registry.js';
@@ -8,7 +8,7 @@ import { createSandbox } from './utils/sandbox.js';
 import { runShellCommand } from './utils/exec.js';
 import { ChaosConfig } from './utils/config-loader.js';
 import { log, isVerbose } from './utils/logger.js';
-import { formatResultAsText, formatResultAsJson } from './format.js';
+import { formatResultAsText, formatResultAsJson, type EnrichContext } from './format.js';
 import { computeChangedRanges } from './utils/git-diff.js';
 import {
   parseBaseline,
@@ -227,6 +227,14 @@ function validateBaselineArg(args: ToolArgs): string | null {
   return null;
 }
 
+/** enrich: must be a boolean when present. */
+function validateEnrichArg(args: ToolArgs): string | null {
+  if (args.enrich !== undefined && typeof args.enrich !== 'boolean') {
+    return 'enrich must be a boolean. Example: true.';
+  }
+  return null;
+}
+
 /** Ordered per-field validators run by {@link validateToolArgs}. */
 const TOOL_ARG_VALIDATORS: ((args: ToolArgs) => string | null)[] = [
   validatePerMutantTimeoutMs,
@@ -235,6 +243,7 @@ const TOOL_ARG_VALIDATORS: ((args: ToolArgs) => string | null)[] = [
   validateLineScopeArg,
   validateDiffBaseArg,
   validateBaselineArg,
+  validateEnrichArg,
 ];
 
 /** Normalise an unknown into a well-formed `{ start, end }` lineScope, or `undefined`. */
@@ -360,6 +369,27 @@ export function resolvePrebuildCommand(
     return prebuild.command;
   }
   return null;
+}
+
+/**
+ * Build the enrichment context for the formatters, or `undefined` when the
+ * caller did not opt in. Reads the (already workspace-validated) real-tree
+ * source file for context snippets; a read failure degrades to no snippets
+ * rather than failing the audit.
+ */
+export function buildEnrichContext(
+  args: ToolArgs,
+  resolvedFile: string,
+  projectType: SupportedProjectType,
+): EnrichContext | undefined {
+  if (args.enrich !== true) return undefined;
+  let sourceLines: string[] | undefined;
+  try {
+    sourceLines = readFileSync(resolvedFile, 'utf8').split(/\r?\n/);
+  } catch {
+    sourceLines = undefined;
+  }
+  return { projectType, sourceLines };
 }
 
 export interface AuditFileInput {
@@ -530,8 +560,10 @@ function formatAuditOutput(
   projectType: SupportedProjectType,
   baselineKeys: MutantKey[] | undefined,
   targetFile: string,
+  enrichCtx: EnrichContext | undefined,
 ): CallToolResult {
   if (baselineKeys) {
+    // verify-mode delta keeps its own formatters; enrichment is not applied here.
     const delta = computeVerifyDelta(baselineKeys, auditResults);
     const verifyText =
       args.outputFormat === 'text'
@@ -542,8 +574,8 @@ function formatAuditOutput(
 
   const text =
     args.outputFormat === 'text'
-      ? formatResultAsText(auditResults)
-      : formatResultAsJson(auditResults);
+      ? formatResultAsText(auditResults, enrichCtx)
+      : formatResultAsJson(auditResults, enrichCtx);
 
   const content: { type: 'text'; text: string }[] = [{ type: 'text', text }];
 
@@ -720,7 +752,8 @@ export async function handleToolCall(
         throw error;
       }
       if (scopeNote) auditResults.scopeNote = scopeNote;
-      return formatAuditOutput(auditResults, args, projectType, baselineKeys, targetFile);
+      const enrichCtx = buildEnrichContext(args, resolvedFile, projectType);
+      return formatAuditOutput(auditResults, args, projectType, baselineKeys, targetFile, enrichCtx);
     } finally {
       // Always clean up the sandbox, even if the engine threw
       sandbox.cleanup();
