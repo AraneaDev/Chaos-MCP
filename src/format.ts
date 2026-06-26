@@ -7,21 +7,7 @@
  * collapse duplicate mutators to counts, and state the explanation once.
  */
 
-export interface MutationResultShape {
-  target: string;
-  totalMutants: number;
-  killed: number;
-  survived: number;
-  mutationScore: string;
-  vulnerabilities: {
-    line: number;
-    mutator: string;
-    description: string;
-    original?: string;
-    mutated?: string;
-  }[];
-  scopeNote?: string;
-}
+import type { MutationResult } from './engines/base.js';
 
 /** Matches the NoCoverage marker engines embed in a vulnerability description. */
 const NO_COVERAGE_RE = /no test reached|nocoverage/i;
@@ -73,7 +59,7 @@ function groupByLine(byLine: Map<number, LineAcc>): LineGroup[] {
     });
 }
 
-function compactSurvivors(result: MutationResultShape): {
+function compactSurvivors(result: MutationResult): {
   survivors: LineGroup[];
   noCoverage: LineGroup[];
 } {
@@ -108,7 +94,7 @@ function formatMutators(mutators: Record<string, number>): string {
  * Format a MutationResult as a compact, human-readable text summary.
  * Used when the caller requests `outputFormat: 'text'`.
  */
-export function formatResultAsText(result: MutationResultShape): string {
+export function formatResultAsText(result: MutationResult): string {
   const { survivors, noCoverage } = compactSurvivors(result);
   const lines: string[] = [
     `Chaos-MCP Audit Report: ${result.target}`,
@@ -147,7 +133,7 @@ export function formatResultAsText(result: MutationResultShape): string {
  * Format a MutationResult as a compact JSON payload (single-line, deduplicated).
  * Used for the default `outputFormat: 'json'`.
  */
-export function formatResultAsJson(result: MutationResultShape): string {
+export function formatResultAsJson(result: MutationResult): string {
   const { survivors, noCoverage } = compactSurvivors(result);
   const clean = survivors.length === 0 && noCoverage.length === 0;
   const hasChanges = [...survivors, ...noCoverage].some((g) => g.changes);

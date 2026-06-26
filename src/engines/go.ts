@@ -101,7 +101,17 @@ function parseGoMutestingOutput(stdout: string, filePath: string): MutationResul
 
   // JSON output available
   if (parsed.stats && parsed.mutants) {
-    const { totalMutants = 0, killed = 0, survived = 0, mutationScore = 100 } = parsed.stats;
+    // Coerce defensively: go-mutesting's JSON is external input, so a missing
+    // OR non-numeric field must not reach arithmetic / `.toFixed` (which would
+    // throw on a string and be reported as an opaque engine failure). The TS
+    // and Rust engines already recompute their score from integer counts; this
+    // brings Go in line. `num(v, d)` falls back to `d` for any non-number.
+    const num = (v: unknown, d: number): number =>
+      typeof v === 'number' && !Number.isNaN(v) ? v : d;
+    const totalMutants = num(parsed.stats.totalMutants, 0);
+    const killed = num(parsed.stats.killed, 0);
+    const survived = num(parsed.stats.survived, 0);
+    const mutationScore = num(parsed.stats.mutationScore, 100);
 
     return {
       target: filePath,

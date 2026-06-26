@@ -1,11 +1,8 @@
 import { resolve, isAbsolute, relative, join } from 'path';
 import { existsSync, realpathSync } from 'fs';
 import type { CallToolRequest, CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { TypeScriptEngine } from './engines/typescript.js';
-import { PythonEngine } from './engines/python.js';
-import { GoEngine } from './engines/go.js';
-import { RustEngine } from './engines/rust.js';
 import { BaseEngine, RunOptions, MutationResult } from './engines/base.js';
+import { ENGINE_REGISTRY, type SupportedProjectType } from './engines/registry.js';
 import { detectProjectType, detectEnvironment, EnvironmentInfo } from './utils/project-detector.js';
 import { createSandbox } from './utils/sandbox.js';
 import { runShellCommand } from './utils/exec.js';
@@ -88,7 +85,9 @@ const STRYKER_ONLY_OPTIONS = [
  * will ignore. Empty for TypeScript targets (the engine that supports them).
  */
 function ignoredOptionsFor(projectType: ProjectType, args: ToolArgs): string[] {
-  if (projectType === 'typescript') return [];
+  // StrykerJS (the TypeScript engine, configKey 'stryker') is the only engine
+  // that honours these options; every other engine silently ignores them.
+  if (ENGINE_REGISTRY[projectType as SupportedProjectType]?.configKey === 'stryker') return [];
   return STRYKER_ONLY_OPTIONS.filter((opt) => args[opt] !== undefined);
 }
 
@@ -101,28 +100,43 @@ function ignoredOptionsFor(projectType: ProjectType, args: ToolArgs): string[] {
  * validated earlier), plus perMutantTimeoutMs and prebuildCommand.
  */
 export function validateToolArgs(args: ToolArgs): CallToolResult | null {
+  // Each validator returns an error message for the first malformed argument it
+  // owns, or null. Run in a fixed order so the first failure reported is stable.
   // Note: `args.key !== undefined` already covers the "absent key" case (an
   // absent key reads as undefined), so a separate `'key' in args` guard would
   // be redundant.
+  for (const validate of TOOL_ARG_VALIDATORS) {
+    const message = validate(args);
+    if (message !== null) return toolError(message);
+  }
+  return null;
+}
 
-  // ── perMutantTimeoutMs: must be a positive number ──
+/** perMutantTimeoutMs: must be a positive number. */
+function validatePerMutantTimeoutMs(args: ToolArgs): string | null {
   if (
     args.perMutantTimeoutMs !== undefined &&
     (typeof args.perMutantTimeoutMs !== 'number' || args.perMutantTimeoutMs <= 0)
   ) {
-    return toolError('perMutantTimeoutMs must be a positive number. Example: 10000.');
+    return 'perMutantTimeoutMs must be a positive number. Example: 10000.';
   }
+  return null;
+}
 
-  // ── prebuildCommand: must be a non-empty string ──
+/** prebuildCommand: must be a non-empty string. */
+function validatePrebuildCommand(args: ToolArgs): string | null {
   if (
     args.prebuildCommand !== undefined &&
     (typeof args.prebuildCommand !== 'string' ||
       (args.prebuildCommand as string).trim().length === 0)
   ) {
-    return toolError('prebuildCommand must be a non-empty string. Example: "npm run build".');
+    return 'prebuildCommand must be a non-empty string. Example: "npm run build".';
   }
+  return null;
+}
 
-  // ── concurrency: integer 1..64 (H5) ──
+/** concurrency: integer 1..64 (H5). */
+function validateConcurrencyArg(args: ToolArgs): string | null {
   if (
     args.concurrency !== undefined &&
     (typeof args.concurrency !== 'number' ||
@@ -130,94 +144,136 @@ export function validateToolArgs(args: ToolArgs): CallToolResult | null {
       args.concurrency < 1 ||
       args.concurrency > 64)
   ) {
-    return toolError('concurrency must be an integer between 1 and 64 (Stryker workers).');
+    return 'concurrency must be an integer between 1 and 64 (Stryker workers).';
   }
-
-  // ── lineScope: {start: int >=1, end: int >= start} (M5) ──
-  if (args.lineScope !== undefined) {
-    const ls = args.lineScope as Record<string, unknown> | null;
-    if (
-      ls === null ||
-      typeof ls !== 'object' ||
-      Array.isArray(ls) ||
-      typeof ls.start !== 'number' ||
-      typeof ls.end !== 'number' ||
-      !Number.isInteger(ls.start) ||
-      !Number.isInteger(ls.end) ||
-      ls.start < 1 ||
-      ls.end < ls.start
-    ) {
-      return toolError(
-        'lineScope must be { start: integer >= 1, end: integer >= start }. Example: { start: 10, end: 45 }.',
-      );
-    }
-  }
-
-  // ── diffBase: non-empty string, not option-like, not with lineScope ──
-  if (args.diffBase !== undefined) {
-    if (typeof args.diffBase !== 'string' || args.diffBase.trim().length === 0) {
-      return toolError(
-        'diffBase must be a non-empty string: "HEAD", "staged", or a git ref. Example: "HEAD".',
-      );
-    }
-    if (args.diffBase.startsWith('-')) {
-      return toolError('diffBase must not start with "-" (it would be mistaken for a git option).');
-    }
-    if (args.lineScope !== undefined) {
-      return toolError(
-        'diffBase and lineScope are mutually exclusive — use one or the other, not both.',
-      );
-    }
-  }
-
-  // ── baseline (verify mode): object with survivors/noCoverage arrays; ──
-  // mutually exclusive with diffBase and lineScope; must hold ≥1 (line, mutator). ──
-  if (args.baseline !== undefined) {
-    const b = args.baseline as Record<string, unknown> | null;
-    if (b === null || typeof b !== 'object' || Array.isArray(b)) {
-      return toolError(
-        'baseline must be an object with optional "survivors" and "noCoverage" arrays from a prior run.',
-      );
-    }
-    if (args.diffBase !== undefined || args.lineScope !== undefined) {
-      return toolError(
-        'baseline is mutually exclusive with diffBase and lineScope — use only one at a time.',
-      );
-    }
-    let pairCount = 0;
-    for (const key of ['survivors', 'noCoverage'] as const) {
-      const arr = b[key];
-      if (arr === undefined) continue;
-      if (!Array.isArray(arr)) {
-        return toolError(`baseline.${key} must be an array of { line, mutators } objects.`);
-      }
-      for (const g of arr) {
-        const entry = g as Record<string, unknown> | null;
-        if (
-          entry === null ||
-          typeof entry !== 'object' ||
-          Array.isArray(entry) ||
-          !Number.isInteger(entry.line) ||
-          (entry.line as number) < 1 ||
-          typeof entry.mutators !== 'object' ||
-          entry.mutators === null ||
-          Array.isArray(entry.mutators)
-        ) {
-          return toolError(
-            'each baseline entry must be { line: integer >= 1, mutators: object of mutator→count }.',
-          );
-        }
-        pairCount += Object.keys(entry.mutators as Record<string, unknown>).length;
-      }
-    }
-    if (pairCount === 0) {
-      return toolError(
-        'baseline must contain at least one (line, mutator) entry across survivors/noCoverage.',
-      );
-    }
-  }
-
   return null;
+}
+
+/** lineScope: { start: int >= 1, end: int >= start } (M5). */
+function validateLineScopeArg(args: ToolArgs): string | null {
+  if (args.lineScope === undefined) return null;
+  const ls = args.lineScope as Record<string, unknown> | null;
+  if (
+    ls === null ||
+    typeof ls !== 'object' ||
+    Array.isArray(ls) ||
+    typeof ls.start !== 'number' ||
+    typeof ls.end !== 'number' ||
+    !Number.isInteger(ls.start) ||
+    !Number.isInteger(ls.end) ||
+    ls.start < 1 ||
+    ls.end < ls.start
+  ) {
+    return 'lineScope must be { start: integer >= 1, end: integer >= start }. Example: { start: 10, end: 45 }.';
+  }
+  return null;
+}
+
+/** diffBase: non-empty string, not option-like, not combined with lineScope. */
+function validateDiffBaseArg(args: ToolArgs): string | null {
+  if (args.diffBase === undefined) return null;
+  if (typeof args.diffBase !== 'string' || args.diffBase.trim().length === 0) {
+    return 'diffBase must be a non-empty string: "HEAD", "staged", or a git ref. Example: "HEAD".';
+  }
+  if (args.diffBase.startsWith('-')) {
+    return 'diffBase must not start with "-" (it would be mistaken for a git option).';
+  }
+  if (args.lineScope !== undefined) {
+    return 'diffBase and lineScope are mutually exclusive — use one or the other, not both.';
+  }
+  return null;
+}
+
+/**
+ * baseline (verify mode): object with optional survivors/noCoverage arrays;
+ * mutually exclusive with diffBase and lineScope; must hold ≥1 (line, mutator).
+ */
+function validateBaselineArg(args: ToolArgs): string | null {
+  if (args.baseline === undefined) return null;
+  const b = args.baseline as Record<string, unknown> | null;
+  if (b === null || typeof b !== 'object' || Array.isArray(b)) {
+    return 'baseline must be an object with optional "survivors" and "noCoverage" arrays from a prior run.';
+  }
+  if (args.diffBase !== undefined || args.lineScope !== undefined) {
+    return 'baseline is mutually exclusive with diffBase and lineScope — use only one at a time.';
+  }
+  let pairCount = 0;
+  for (const key of ['survivors', 'noCoverage'] as const) {
+    const arr = b[key];
+    if (arr === undefined) continue;
+    if (!Array.isArray(arr)) {
+      return `baseline.${key} must be an array of { line, mutators } objects.`;
+    }
+    for (const g of arr) {
+      const entry = g as Record<string, unknown> | null;
+      if (
+        entry === null ||
+        typeof entry !== 'object' ||
+        Array.isArray(entry) ||
+        !Number.isInteger(entry.line) ||
+        (entry.line as number) < 1 ||
+        typeof entry.mutators !== 'object' ||
+        entry.mutators === null ||
+        Array.isArray(entry.mutators)
+      ) {
+        return 'each baseline entry must be { line: integer >= 1, mutators: object of mutator→count }.';
+      }
+      pairCount += Object.keys(entry.mutators as Record<string, unknown>).length;
+    }
+  }
+  if (pairCount === 0) {
+    return 'baseline must contain at least one (line, mutator) entry across survivors/noCoverage.';
+  }
+  return null;
+}
+
+/** Ordered per-field validators run by {@link validateToolArgs}. */
+const TOOL_ARG_VALIDATORS: ((args: ToolArgs) => string | null)[] = [
+  validatePerMutantTimeoutMs,
+  validatePrebuildCommand,
+  validateConcurrencyArg,
+  validateLineScopeArg,
+  validateDiffBaseArg,
+  validateBaselineArg,
+];
+
+/** Normalise an unknown into a well-formed `{ start, end }` lineScope, or `undefined`. */
+function normalizeLineScope(v: unknown): { start: number; end: number } | undefined {
+  if (
+    typeof v === 'object' &&
+    v !== null &&
+    !Array.isArray(v) &&
+    typeof (v as Record<string, unknown>).start === 'number' &&
+    typeof (v as Record<string, unknown>).end === 'number'
+  ) {
+    const ls = v as { start: number; end: number };
+    return { start: ls.start, end: ls.end };
+  }
+  return undefined;
+}
+
+/** True for an integer in StrykerJS's accepted concurrency range (1..64). */
+function isValidConcurrency(v: unknown): v is number {
+  return typeof v === 'number' && Number.isInteger(v) && v >= 1 && v <= 64;
+}
+
+/** True for a positive (> 0) duration in milliseconds. */
+function isPositiveMs(v: unknown): v is number {
+  return typeof v === 'number' && v > 0;
+}
+
+/** First valid concurrency among arg then config fallback, else `undefined`. */
+function resolveConcurrency(arg: unknown, fallback: unknown): number | undefined {
+  if (isValidConcurrency(arg)) return arg;
+  if (isValidConcurrency(fallback)) return fallback;
+  return undefined;
+}
+
+/** First positive-ms value among arg then config fallback, else `undefined`. */
+function resolvePositiveMs(arg: unknown, fallback: unknown): number | undefined {
+  if (isPositiveMs(arg)) return arg;
+  if (isPositiveMs(fallback)) return fallback;
+  return undefined;
 }
 
 /**
@@ -233,25 +289,18 @@ export function buildRunOptions(
 ): RunOptions {
   // Extract engine-specific config for the current project type.
   // Precedence: args > engine-specific config section > global config defaults.
-  const engCfg =
-    projectType === 'typescript'
-      ? cfg.stryker
-      : projectType === 'python'
-        ? cfg.mutmut
-        : projectType === 'go'
-          ? cfg.go
-          : projectType === 'rust'
-            ? cfg.rust
-            : undefined;
+  const configKey = ENGINE_REGISTRY[projectType as SupportedProjectType]?.configKey;
+  const engCfg = configKey ? cfg[configKey] : undefined;
 
   // testRunner must come from the section that matches the engine being run.
   // Previously stryker.testRunner was consulted first for ALL project types,
   // so a Python audit could receive Stryker's runner (e.g. "vitest") and pass
-  // it to mutmut (audit Med#2). Pick the engine-appropriate section only.
+  // it to mutmut (audit Med#2). Only the Stryker/Mutmut sections carry a
+  // testRunner; the timeout-only Go/Rust sections don't (→ undefined, as before).
   const engineTestRunner =
-    projectType === 'typescript'
+    configKey === 'stryker'
       ? cfg.stryker?.testRunner
-      : projectType === 'python'
+      : configKey === 'mutmut'
         ? cfg.mutmut?.testRunner
         : undefined;
 
@@ -262,17 +311,7 @@ export function buildRunOptions(
       typeof args.timeoutMs === 'number' && args.timeoutMs > 0
         ? args.timeoutMs
         : (engCfg?.timeoutMs ?? cfg.defaultTimeoutMs),
-    lineScope:
-      typeof args.lineScope === 'object' &&
-      args.lineScope !== null &&
-      !Array.isArray(args.lineScope) &&
-      typeof (args.lineScope as Record<string, unknown>).start === 'number' &&
-      typeof (args.lineScope as Record<string, unknown>).end === 'number'
-        ? {
-            start: (args.lineScope as Record<string, number>).start,
-            end: (args.lineScope as Record<string, number>).end,
-          }
-        : undefined,
+    lineScope: normalizeLineScope(args.lineScope),
     // mutatorAllowlist is intentionally NOT propagated. StrykerJS v9 cannot
     // express an allowlist, so the TS engine rejects it; sourcing it here (from
     // args OR config) would make every TS run throw (High#3). Left undefined so
@@ -281,30 +320,16 @@ export function buildRunOptions(
     mutatorDenylist: Array.isArray(args.mutatorDenylist)
       ? (args.mutatorDenylist as string[]).filter((v) => typeof v === 'string')
       : (cfg.stryker?.mutatorDenylist ?? cfg.mutatorDenylist),
-    concurrency:
-      typeof args.concurrency === 'number' &&
-      Number.isInteger(args.concurrency) &&
-      args.concurrency >= 1 &&
-      args.concurrency <= 64
-        ? args.concurrency
-        : (() => {
-            const c = cfg.stryker?.concurrency ?? cfg.concurrency;
-            if (typeof c === 'number' && Number.isInteger(c) && c >= 1 && c <= 64) return c;
-            return undefined;
-          })(),
+    concurrency: resolveConcurrency(args.concurrency, cfg.stryker?.concurrency ?? cfg.concurrency),
     dryRun: typeof args.dryRun === 'boolean' ? args.dryRun : cfg.stryker?.dryRun,
     outputFormat:
       args.outputFormat === 'text' || args.outputFormat === 'json' ? args.outputFormat : undefined,
     incremental:
       typeof args.incremental === 'boolean' ? args.incremental : cfg.stryker?.incremental,
-    perMutantTimeoutMs:
-      typeof args.perMutantTimeoutMs === 'number' && args.perMutantTimeoutMs > 0
-        ? args.perMutantTimeoutMs
-        : (() => {
-            const p = cfg.stryker?.perMutantTimeoutMs ?? cfg.perMutantTimeoutMs;
-            if (typeof p === 'number' && p > 0) return p;
-            return undefined;
-          })(),
+    perMutantTimeoutMs: resolvePositiveMs(
+      args.perMutantTimeoutMs,
+      cfg.stryker?.perMutantTimeoutMs ?? cfg.perMutantTimeoutMs,
+    ),
     ignorePatterns: Array.isArray(args.ignorePatterns)
       ? (args.ignorePatterns as string[]).filter((v) => typeof v === 'string')
       : undefined,
@@ -328,12 +353,11 @@ export function resolvePrebuildCommand(
   // NOT auto-run: `.venv` is symlinked into the sandbox from the host, so an
   // install would mutate the user's real virtual environment (High#2). The
   // symlinked environment is already populated; callers who genuinely need a
-  // rebuild can pass an explicit prebuildCommand.
-  if (projectType === 'go' && existsSync(join(env.workspaceRoot, 'go.mod'))) {
-    return 'go mod download';
-  }
-  if (projectType === 'rust' && existsSync(join(env.workspaceRoot, 'Cargo.toml'))) {
-    return 'cargo check';
+  // rebuild can pass an explicit prebuildCommand. Go (`go mod download`) and
+  // Rust (`cargo check`) declare their auto-prebuild in the engine registry.
+  const prebuild = ENGINE_REGISTRY[projectType as SupportedProjectType]?.prebuild;
+  if (prebuild && existsSync(join(env.workspaceRoot, prebuild.marker))) {
+    return prebuild.command;
   }
   return null;
 }
@@ -391,14 +415,150 @@ export async function auditFile(input: AuditFileInput): Promise<MutationResult> 
 }
 
 /** Construct the engine for a (supported) project type. */
-export function makeEngine(projectType: Exclude<ProjectType, 'unsupported'>): BaseEngine {
-  return projectType === 'typescript'
-    ? new TypeScriptEngine()
-    : projectType === 'python'
-      ? new PythonEngine()
-      : projectType === 'go'
-        ? new GoEngine()
-        : new RustEngine();
+export function makeEngine(projectType: SupportedProjectType): BaseEngine {
+  return ENGINE_REGISTRY[projectType].make();
+}
+
+/**
+ * The resolved mutation scope for a run, or a ready-to-return tool result when
+ * the request should short-circuit (diff errors, or a no-changes skip).
+ */
+type ScopeResolution =
+  | { kind: 'result'; result: CallToolResult }
+  | {
+      kind: 'scope';
+      diffRanges?: { start: number; end: number }[];
+      scopeNote?: string;
+      baselineKeys?: MutantKey[];
+    };
+
+/**
+ * Resolve the line scope for a run from the diff-aware ({@link diffBase}, A2)
+ * and verify-mode ({@link baseline}, A3) arguments. Runs on the REAL tree
+ * before the (expensive) sandbox copy so a "no changes" diff can short-circuit
+ * without provisioning. Returns `{ kind: 'result' }` to return immediately
+ * (diff error or no-changes skip) or `{ kind: 'scope' }` with the resolved
+ * ranges / note / baseline keys to continue. `diffBase` and `baseline` are
+ * mutually exclusive (enforced by {@link validateToolArgs}), so they never
+ * both produce ranges.
+ */
+async function computeScope(
+  earlyArgs: ToolArgs,
+  targetFile: string,
+  env: EnvironmentInfo,
+  projectType: SupportedProjectType,
+): Promise<ScopeResolution> {
+  let diffRanges: { start: number; end: number }[] | undefined;
+  let scopeNote: string | undefined;
+
+  const diffBase = typeof earlyArgs.diffBase === 'string' ? earlyArgs.diffBase : undefined;
+  if (diffBase) {
+    const diff = await computeChangedRanges(targetFile, env.workspaceRoot, diffBase);
+    switch (diff.kind) {
+      case 'not-a-repo':
+        return {
+          kind: 'result',
+          result: toolError(
+            `diffBase requires a git work tree, but "${env.workspaceRoot}" is not one. ` +
+              'Remove diffBase or run inside a git repository.',
+          ),
+        };
+      case 'bad-ref':
+        return {
+          kind: 'result',
+          result: toolError(
+            `diffBase "${diff.ref}" could not be resolved as a git ref (merge-base failed).`,
+          ),
+        };
+      case 'no-changes': {
+        // Short-circuit: nothing changed, so skip the sandbox + engine entirely.
+        const empty = {
+          target: targetFile,
+          totalMutants: 0,
+          killed: 0,
+          survived: 0,
+          mutationScore: '100.00%',
+          vulnerabilities: [],
+          scopeNote: `No changed lines in ${targetFile} vs ${diffBase}; nothing to mutate.`,
+        };
+        const text =
+          earlyArgs.outputFormat === 'text' ? formatResultAsText(empty) : formatResultAsJson(empty);
+        return { kind: 'result', result: { content: [{ type: 'text', text }] } };
+      }
+      case 'untracked':
+        // File is new/untracked — every line is "changed", so mutate the
+        // whole file, but tell the caller why it wasn't line-scoped.
+        scopeNote = `${targetFile} is untracked in git vs ${diffBase}; mutated the whole file.`;
+        break;
+      case 'ranges':
+        if (ENGINE_REGISTRY[projectType].supportsLineScope) {
+          diffRanges = diff.ranges;
+        } else {
+          scopeNote = `diffBase scoping is not supported for ${projectType}; mutated the whole file.`;
+        }
+        break;
+    }
+  }
+
+  // ── Verify mode (A3): parse the prior-run baseline and derive the re-run
+  // scope from its lines (TS only; non-TS runs whole-file then filters). ──
+  let baselineKeys: MutantKey[] | undefined;
+  if (
+    earlyArgs.baseline &&
+    typeof earlyArgs.baseline === 'object' &&
+    !Array.isArray(earlyArgs.baseline)
+  ) {
+    baselineKeys = parseBaseline(earlyArgs.baseline as BaselineInput);
+    if (ENGINE_REGISTRY[projectType].supportsLineScope) {
+      // Reuse the A2 scope channel (`diffRanges` → runOptions.lineRanges).
+      // baseline is mutually exclusive with diffBase, so this never collides.
+      diffRanges = baselineLines(baselineKeys).map((l) => ({ start: l, end: l }));
+    }
+  }
+
+  return { kind: 'scope', diffRanges, scopeNote, baselineKeys };
+}
+
+/**
+ * Format a completed audit into the MCP tool response: verify-mode delta when a
+ * baseline was supplied, otherwise the standard report plus a trailing note for
+ * any StrykerJS-only options the resolved engine ignored (audit Low#5).
+ */
+function formatAuditOutput(
+  auditResults: MutationResult,
+  args: ToolArgs,
+  projectType: SupportedProjectType,
+  baselineKeys: MutantKey[] | undefined,
+  targetFile: string,
+): CallToolResult {
+  if (baselineKeys) {
+    const delta = computeVerifyDelta(baselineKeys, auditResults);
+    const verifyText =
+      args.outputFormat === 'text'
+        ? formatVerifyResultAsText(targetFile, delta)
+        : formatVerifyResultAsJson(targetFile, delta);
+    return { content: [{ type: 'text', text: verifyText }] };
+  }
+
+  const text =
+    args.outputFormat === 'text'
+      ? formatResultAsText(auditResults)
+      : formatResultAsJson(auditResults);
+
+  const content: { type: 'text'; text: string }[] = [{ type: 'text', text }];
+
+  // Surface options the resolved engine silently ignores so the caller knows
+  // they had no effect (audit Low#5). Kept as a separate trailing content
+  // block so it never corrupts the JSON/text payload above.
+  const ignored = ignoredOptionsFor(projectType, args);
+  if (ignored.length > 0) {
+    content.push({
+      type: 'text',
+      text: `Note: the following option(s) are StrykerJS-only and were ignored for this ${projectType} target: ${ignored.join(', ')}.`,
+    });
+  }
+
+  return { content };
 }
 
 /**
@@ -488,70 +648,11 @@ export async function handleToolCall(
     const argError = validateToolArgs(earlyArgs);
     if (argError) return argError;
 
-    // ── Diff-aware scoping (A2): compute changed ranges on the REAL tree
-    // before the (expensive) sandbox copy, so "no changes" can short-circuit.
-    let diffRanges: { start: number; end: number }[] | undefined;
-    let scopeNote: string | undefined;
-    const diffBase = typeof earlyArgs.diffBase === 'string' ? earlyArgs.diffBase : undefined;
-    if (diffBase) {
-      const diff = await computeChangedRanges(targetFile, env.workspaceRoot, diffBase);
-      switch (diff.kind) {
-        case 'not-a-repo':
-          return toolError(
-            `diffBase requires a git work tree, but "${env.workspaceRoot}" is not one. ` +
-              'Remove diffBase or run inside a git repository.',
-          );
-        case 'bad-ref':
-          return toolError(
-            `diffBase "${diff.ref}" could not be resolved as a git ref (merge-base failed).`,
-          );
-        case 'no-changes': {
-          // Short-circuit: nothing changed, so skip the sandbox + engine entirely.
-          const empty = {
-            target: targetFile,
-            totalMutants: 0,
-            killed: 0,
-            survived: 0,
-            mutationScore: '100.00%',
-            vulnerabilities: [],
-            scopeNote: `No changed lines in ${targetFile} vs ${diffBase}; nothing to mutate.`,
-          };
-          const text =
-            earlyArgs.outputFormat === 'text'
-              ? formatResultAsText(empty)
-              : formatResultAsJson(empty);
-          return { content: [{ type: 'text', text }] };
-        }
-        case 'untracked':
-          // File is new/untracked — every line is "changed", so mutate the
-          // whole file, but tell the caller why it wasn't line-scoped.
-          scopeNote = `${targetFile} is untracked in git vs ${diffBase}; mutated the whole file.`;
-          break;
-        case 'ranges':
-          if (projectType === 'typescript') {
-            diffRanges = diff.ranges;
-          } else {
-            scopeNote = `diffBase scoping is not supported for ${projectType}; mutated the whole file.`;
-          }
-          break;
-      }
-    }
-
-    // ── Verify mode (A3): parse the prior-run baseline and derive the re-run
-    // scope from its lines (TS only; non-TS runs whole-file then filters). ──
-    let baselineKeys: MutantKey[] | undefined;
-    if (
-      earlyArgs.baseline &&
-      typeof earlyArgs.baseline === 'object' &&
-      !Array.isArray(earlyArgs.baseline)
-    ) {
-      baselineKeys = parseBaseline(earlyArgs.baseline as BaselineInput);
-      if (projectType === 'typescript') {
-        // Reuse the A2 scope channel (`diffRanges` → runOptions.lineRanges).
-        // baseline is mutually exclusive with diffBase, so this never collides.
-        diffRanges = baselineLines(baselineKeys).map((l) => ({ start: l, end: l }));
-      }
-    }
+    // Resolve the line scope (diff-aware A2 + verify-mode A3) on the REAL tree
+    // before the sandbox copy, so a "no changes" diff can short-circuit.
+    const scope = await computeScope(earlyArgs, targetFile, env, projectType);
+    if (scope.kind === 'result') return scope.result;
+    const { diffRanges, scopeNote, baselineKeys } = scope;
 
     // Provision a sandbox so mutation runs never touch the real workspace tree.
     let sandbox;
@@ -568,14 +669,7 @@ export async function handleToolCall(
       const cfg = config ?? {};
 
       if (isVerbose()) {
-        const engCfg =
-          projectType === 'typescript'
-            ? cfg.stryker
-            : projectType === 'python'
-              ? cfg.mutmut
-              : projectType === 'go'
-                ? cfg.go
-                : cfg.rust;
+        const engCfg = cfg[ENGINE_REGISTRY[projectType].configKey];
         log('Tool call: audit_code_resilience');
         log(`  filePath: ${filePath}`);
         log(`  projectType: ${projectType}`);
@@ -626,33 +720,7 @@ export async function handleToolCall(
         throw error;
       }
       if (scopeNote) auditResults.scopeNote = scopeNote;
-      if (baselineKeys) {
-        const delta = computeVerifyDelta(baselineKeys, auditResults);
-        const verifyText =
-          args.outputFormat === 'text'
-            ? formatVerifyResultAsText(targetFile, delta)
-            : formatVerifyResultAsJson(targetFile, delta);
-        return { content: [{ type: 'text', text: verifyText }] };
-      }
-      const text =
-        args.outputFormat === 'text'
-          ? formatResultAsText(auditResults)
-          : formatResultAsJson(auditResults);
-
-      const content: { type: 'text'; text: string }[] = [{ type: 'text', text }];
-
-      // Surface options the resolved engine silently ignores so the caller knows
-      // they had no effect (audit Low#5). Kept as a separate trailing content
-      // block so it never corrupts the JSON/text payload above.
-      const ignored = ignoredOptionsFor(projectType, args);
-      if (ignored.length > 0) {
-        content.push({
-          type: 'text',
-          text: `Note: the following option(s) are StrykerJS-only and were ignored for this ${projectType} target: ${ignored.join(', ')}.`,
-        });
-      }
-
-      return { content };
+      return formatAuditOutput(auditResults, args, projectType, baselineKeys, targetFile);
     } finally {
       // Always clean up the sandbox, even if the engine threw
       sandbox.cleanup();

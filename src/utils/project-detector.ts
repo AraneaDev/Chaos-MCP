@@ -59,11 +59,11 @@ export interface EnvironmentInfo {
 export function detectProjectType(filePath: string): ProjectType {
   // Accept ESM/CJS variants (.mjs/.cjs/.mts/.cts) too — the runner detector
   // already recognises vitest.config.mts/.mjs, so source files in those forms
-  // must be auditable rather than reported as unsupported.
-  if (/\.(c|m)?[jt]sx?$/.test(filePath)) return 'typescript';
-  if (filePath.endsWith('.py')) return 'python';
-  if (filePath.endsWith('.go')) return 'go';
-  if (filePath.endsWith('.rs')) return 'rust';
+  // must be auditable rather than reported as unsupported. Extensions are
+  // mutually exclusive, so iteration order over LANGUAGE_DETECTORS is moot.
+  for (const type of LANGUAGE_DETECTOR_TYPES) {
+    if (LANGUAGE_DETECTORS[type].matches(filePath)) return type;
+  }
   return 'unsupported';
 }
 
@@ -484,6 +484,62 @@ export function detectRawRustRunner(workspaceRoot: string): string {
   return detectRustTestRunner(workspaceRoot);
 }
 
+// ─── Per-language detection registry ─────────────────────────────────────────
+
+/**
+ * Per-language detection metadata. Single source of truth for "what languages
+ * are supported and how each is detected", replacing the parallel
+ * `projectType === '…'` ternary chains previously inlined in
+ * {@link detectProjectType} and {@link detectEnvironment}. The execution-side
+ * counterpart lives in engines/registry.ts.
+ */
+interface LanguageDetector {
+  /** True when the target file belongs to this language (by extension). */
+  matches: (filePath: string) => boolean;
+  /** Root-marker files used to resolve the workspace root. */
+  markers: readonly string[];
+  /** Stryker/mutmut-compatible test-runner detection. */
+  testRunner: (workspaceRoot: string) => string;
+  /** Raw runner/orchestrator detection, for diagnostics (e.g. 'bun', 'tox'). */
+  rawRunner: (workspaceRoot: string) => string;
+  /** Package-manager detection — only meaningful for Python today. */
+  packageManager?: (workspaceRoot: string) => string;
+}
+
+const LANGUAGE_DETECTORS: Record<Exclude<ProjectType, 'unsupported'>, LanguageDetector> = {
+  typescript: {
+    matches: (p) => /\.(c|m)?[jt]sx?$/.test(p),
+    markers: JS_ROOT_MARKERS,
+    testRunner: detectJsTestRunner,
+    rawRunner: detectRawJsRunner,
+  },
+  python: {
+    matches: (p) => p.endsWith('.py'),
+    markers: PY_ROOT_MARKERS,
+    testRunner: detectPythonTestRunner,
+    rawRunner: detectRawPythonRunner,
+    packageManager: detectPythonPackageManager,
+  },
+  go: {
+    matches: (p) => p.endsWith('.go'),
+    markers: GO_ROOT_MARKERS,
+    testRunner: detectGoTestRunner,
+    rawRunner: detectRawGoRunner,
+  },
+  rust: {
+    matches: (p) => p.endsWith('.rs'),
+    markers: RUST_ROOT_MARKERS,
+    testRunner: detectRustTestRunner,
+    rawRunner: detectRawRustRunner,
+  },
+};
+
+/** Detection order — preserves the original typescript→python→go→rust sequence. */
+const LANGUAGE_DETECTOR_TYPES = Object.keys(LANGUAGE_DETECTORS) as Exclude<
+  ProjectType,
+  'unsupported'
+>[];
+
 // ─── Main detection entry point ──────────────────────────────────────────────
 
 /**
@@ -508,45 +564,23 @@ export function detectEnvironment(filePath: string): EnvironmentInfo {
     };
   }
 
-  // Resolve the workspace root from the file's directory
-  const fileDir = dirname(resolve(filePath));
-  const markers =
-    projectType === 'typescript'
-      ? JS_ROOT_MARKERS
-      : projectType === 'python'
-        ? PY_ROOT_MARKERS
-        : projectType === 'go'
-          ? GO_ROOT_MARKERS
-          : RUST_ROOT_MARKERS;
+  const detector = LANGUAGE_DETECTORS[projectType];
+
+  // Resolve the workspace root from the file's directory.
   // Clamp the upward walk to the current working directory: the sandbox refuses
   // to copy a workspace outside cwd, so a root resolved above cwd would break
   // every audit. (Med#5: run-from-subdirectory previously failed at provisioning.)
-  const workspaceRoot = resolveWorkspaceRoot(fileDir, markers, process.cwd());
+  const fileDir = dirname(resolve(filePath));
+  const workspaceRoot = resolveWorkspaceRoot(fileDir, detector.markers, process.cwd());
 
-  // Detect the test runner for this workspace
-  const testRunner =
-    projectType === 'typescript'
-      ? detectJsTestRunner(workspaceRoot)
-      : projectType === 'python'
-        ? detectPythonTestRunner(workspaceRoot)
-        : projectType === 'go'
-          ? detectGoTestRunner(workspaceRoot)
-          : detectRustTestRunner(workspaceRoot);
+  // Stryker/mutmut-compatible runner, plus the raw runner/orchestrator so
+  // EnvironmentInfo.detectedRunner captures the actual signal (e.g. 'bun',
+  // 'tox', 'nox', 'ginkgo') even when testRunner maps to a compatible value.
+  const testRunner = detector.testRunner(workspaceRoot);
+  const detectedRunner = detector.rawRunner(workspaceRoot);
 
-  // Use raw detection so EnvironmentInfo.detectedRunner captures the actual
-  // runner/orchestrator (e.g. 'bun', 'tox', 'nox', 'ginkgo') even when
-  // testRunner maps to a mutation-tool-compatible value.
-  const detectedRunner =
-    projectType === 'typescript'
-      ? detectRawJsRunner(workspaceRoot)
-      : projectType === 'python'
-        ? detectRawPythonRunner(workspaceRoot)
-        : projectType === 'go'
-          ? detectRawGoRunner(workspaceRoot)
-          : detectRawRustRunner(workspaceRoot);
-
-  // Detect Python package manager (only meaningful for Python projects)
-  const packageManager = projectType === 'python' ? detectPythonPackageManager(workspaceRoot) : '';
+  // Package manager is only meaningful for languages that declare a detector.
+  const packageManager = detector.packageManager ? detector.packageManager(workspaceRoot) : '';
 
   return {
     projectType,

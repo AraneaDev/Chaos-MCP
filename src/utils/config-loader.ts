@@ -232,6 +232,23 @@ function parseTimeoutOnlyConfig(raw: unknown): { timeoutMs?: number } | undefine
 }
 
 /**
+ * Per-engine config sections, in one place. Replaces the parallel per-section
+ * dispatch previously repeated in {@link buildConfig} and {@link validateConfig}.
+ * `key` mirrors `EngineDescriptor.configKey` in engines/registry.ts. Adding a
+ * language adds one entry here.
+ */
+const ENGINE_CONFIG_SECTIONS: {
+  key: 'stryker' | 'mutmut' | 'go' | 'rust';
+  knownKeys: Set<string>;
+  parse: (raw: unknown) => object | undefined;
+}[] = [
+  { key: 'stryker', knownKeys: KNOWN_STRYKER_KEYS, parse: parseStrykerConfig },
+  { key: 'mutmut', knownKeys: KNOWN_MUTMUT_KEYS, parse: parseMutmutConfig },
+  { key: 'go', knownKeys: KNOWN_GO_KEYS, parse: parseTimeoutOnlyConfig },
+  { key: 'rust', knownKeys: KNOWN_RUST_KEYS, parse: parseTimeoutOnlyConfig },
+];
+
+/**
  * Read and parse a JSON config file, returning the raw object.
  * Throws on I/O errors, invalid JSON, or non-object results.
  * @internal
@@ -298,10 +315,13 @@ function buildConfig(raw: Record<string, unknown>): ChaosConfig {
     result.allowPrebuild = raw.allowPrebuild;
   }
 
-  result.stryker = parseStrykerConfig(raw.stryker);
-  result.mutmut = parseMutmutConfig(raw.mutmut);
-  result.go = parseTimeoutOnlyConfig(raw.go);
-  result.rust = parseTimeoutOnlyConfig(raw.rust);
+  for (const section of ENGINE_CONFIG_SECTIONS) {
+    // Each parser returns its own section shape; the table erases the precise
+    // per-key linkage, so assign through an index signature. Behaviour is
+    // identical to the previous explicit per-section assignments (the key is
+    // always set, to the parsed section or undefined).
+    (result as Record<string, unknown>)[section.key] = section.parse(raw[section.key]);
+  }
 
   return result;
 }
@@ -343,10 +363,9 @@ export function validateConfig(configPath?: string): { config: ChaosConfig; warn
   }
 
   // ── Validate engine sections ──
-  validateEngineSection(raw.stryker, 'stryker', KNOWN_STRYKER_KEYS, warnings);
-  validateEngineSection(raw.mutmut, 'mutmut', KNOWN_MUTMUT_KEYS, warnings);
-  validateEngineSection(raw.go, 'go', KNOWN_GO_KEYS, warnings);
-  validateEngineSection(raw.rust, 'rust', KNOWN_RUST_KEYS, warnings);
+  for (const section of ENGINE_CONFIG_SECTIONS) {
+    validateEngineSection(raw[section.key], section.key, section.knownKeys, warnings);
+  }
 
   // ── Validate global fields ──
   if ('defaultTimeoutMs' in raw && typeof raw.defaultTimeoutMs !== 'number') {

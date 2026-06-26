@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { formatResultAsText, formatResultAsJson } from '../format.js';
-import type { MutationResultShape } from '../format.js';
+import type { MutationResult } from '../engines/base.js';
 
-type Vuln = MutationResultShape['vulnerabilities'][number];
+type Vuln = MutationResult['vulnerabilities'][number];
 
 /** A description that matches the NoCoverage marker regex in format.ts. */
 const NO_COVERAGE_DESC = 'no test reached this mutant';
@@ -11,7 +11,7 @@ function vuln(line: number, mutator: string, description = 'survived mutant'): V
   return { line, mutator, description };
 }
 
-function result(overrides: Partial<MutationResultShape> = {}): MutationResultShape {
+function result(overrides: Partial<MutationResult> = {}): MutationResult {
   return {
     target: 'src/foo.ts',
     totalMutants: 10,
@@ -141,7 +141,7 @@ describe('formatResultAsText', () => {
   });
 });
 
-function baseResult(vulns: MutationResultShape['vulnerabilities']): MutationResultShape {
+function baseResult(vulns: MutationResult['vulnerabilities']): MutationResult {
   return {
     target: 'src/x.ts',
     totalMutants: 10,
