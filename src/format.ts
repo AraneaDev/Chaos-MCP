@@ -13,30 +13,71 @@ export interface MutationResultShape {
   killed: number;
   survived: number;
   mutationScore: string;
-  vulnerabilities: { line: number; replacement: string; description: string }[];
+  vulnerabilities: {
+    line: number;
+    mutator: string;
+    description: string;
+    original?: string;
+    mutated?: string;
+  }[];
 }
 
 /** Matches the NoCoverage marker engines embed in a vulnerability description. */
 const NO_COVERAGE_RE = /no test reached|nocoverage/i;
 
+/** Max distinct change-strings shown per line group before truncation. */
+const CHANGES_CAP = 3;
+
 interface LineGroup {
   line: number;
   mutators: Record<string, number>;
+  changes?: string[];
 }
 
-/** Group a set of vulnerabilities by line into sorted {line, mutators} entries. */
-function groupByLine(byLine: Map<number, Record<string, number>>): LineGroup[] {
+interface LineAcc {
+  mutators: Record<string, number>;
+  changes: Set<string>;
+}
+
+/** Build a single-line "original → mutated" change string, degrading gracefully. */
+function buildChange(original?: string, mutated?: string): string | undefined {
+  const norm = (s?: string) => (s === undefined ? '' : s.replace(/\s+/g, ' ').trim());
+  const o = norm(original);
+  const m = norm(mutated);
+  if (o && m) return `${o} → ${m}`;
+  if (m) return m; // mutated-only (e.g. Rust description) or empty original
+  if (o) return o; // mutated empty — surface the original at least
+  return undefined;
+}
+
+/** Cap a change set to CHANGES_CAP distinct entries, appending a "…N more" sentinel. */
+function capChanges(set: Set<string>): string[] | undefined {
+  if (set.size === 0) return undefined;
+  const all = [...set];
+  if (all.length <= CHANGES_CAP) return all;
+  const shown = all.slice(0, CHANGES_CAP);
+  shown.push(`…${all.length - CHANGES_CAP} more`);
+  return shown;
+}
+
+/** Group accumulated line entries into sorted {line, mutators, changes?} groups. */
+function groupByLine(byLine: Map<number, LineAcc>): LineGroup[] {
   return [...byLine.entries()]
     .sort((a, b) => a[0] - b[0])
-    .map(([line, mutators]) => ({ line, mutators }));
+    .map(([line, acc]) => {
+      const group: LineGroup = { line, mutators: acc.mutators };
+      const changes = capChanges(acc.changes);
+      if (changes) group.changes = changes;
+      return group;
+    });
 }
 
 function compactSurvivors(result: MutationResultShape): {
   survivors: LineGroup[];
   noCoverage: LineGroup[];
 } {
-  const survivorsByLine = new Map<number, Record<string, number>>();
-  const noCoverageByLine = new Map<number, Record<string, number>>();
+  const survivorsByLine = new Map<number, LineAcc>();
+  const noCoverageByLine = new Map<number, LineAcc>();
 
   for (const v of result.vulnerabilities) {
     // NoCoverage mutants are grouped separately AND at the same (line, mutator)
@@ -45,9 +86,11 @@ function compactSurvivors(result: MutationResultShape): {
     // next to a live `.filter`), so reporting a bare line number would wrongly
     // imply the whole line is uncovered.
     const target = NO_COVERAGE_RE.test(v.description) ? noCoverageByLine : survivorsByLine;
-    const ops = target.get(v.line) ?? {};
-    ops[v.replacement] = (ops[v.replacement] ?? 0) + 1;
-    target.set(v.line, ops);
+    const acc = target.get(v.line) ?? { mutators: {}, changes: new Set<string>() };
+    acc.mutators[v.mutator] = (acc.mutators[v.mutator] ?? 0) + 1;
+    const change = buildChange(v.original, v.mutated);
+    if (change) acc.changes.add(change);
+    target.set(v.line, acc);
   }
 
   return { survivors: groupByLine(survivorsByLine), noCoverage: groupByLine(noCoverageByLine) };
@@ -79,13 +122,15 @@ export function formatResultAsText(result: MutationResultShape): string {
   if (survivors.length > 0) {
     lines.push(`Survivors (line: mutators):`);
     for (const s of survivors) {
-      lines.push(`  ${s.line}: ${formatMutators(s.mutators)}`);
+      const suffix = s.changes ? `  (${s.changes.join('; ')})` : '';
+      lines.push(`  ${s.line}: ${formatMutators(s.mutators)}${suffix}`);
     }
   }
   if (noCoverage.length > 0) {
     lines.push(`No-coverage mutants (line: mutators):`);
     for (const n of noCoverage) {
-      lines.push(`  ${n.line}: ${formatMutators(n.mutators)}`);
+      const suffix = n.changes ? `  (${n.changes.join('; ')})` : '';
+      lines.push(`  ${n.line}: ${formatMutators(n.mutators)}${suffix}`);
     }
   }
   lines.push('Add or strengthen tests targeting these lines to kill the survivors.');
@@ -100,6 +145,9 @@ export function formatResultAsText(result: MutationResultShape): string {
 export function formatResultAsJson(result: MutationResultShape): string {
   const { survivors, noCoverage } = compactSurvivors(result);
   const clean = survivors.length === 0 && noCoverage.length === 0;
+  const hasChanges = [...survivors, ...noCoverage].some((g) => g.changes);
+  const baseNote =
+    'survivors: mutants your tests ran but did not kill. noCoverage: mutants no test reached (per line+mutator, so a line may appear here and in survivors). mutators = type→count. Add or strengthen tests targeting these.';
   return JSON.stringify({
     target: result.target,
     mutationScore: result.mutationScore,
@@ -108,6 +156,8 @@ export function formatResultAsJson(result: MutationResultShape): string {
     noCoverage,
     note: clean
       ? 'No surviving mutants — the test suite caught every mutation.'
-      : 'survivors: mutants your tests ran but did not kill. noCoverage: mutants no test reached (per line+mutator, so a line may appear here and in survivors). mutators = type→count. Add or strengthen tests targeting these.',
+      : hasChanges
+        ? `${baseNote} changes = sampled original→mutated edits for that line (capped).`
+        : baseNote,
   });
 }

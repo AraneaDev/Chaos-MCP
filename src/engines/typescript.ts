@@ -40,6 +40,35 @@ interface StrykerMutantRecord {
 }
 
 /**
+ * Slice the original source span a mutant replaced, from the report's embedded
+ * file source. 1-based lines/columns, exclusive end column. Returns undefined
+ * (never throws) when the location falls outside the source.
+ */
+function sliceSource(source: string, loc: StrykerMutantRecord['location']): string | undefined {
+  const lines = source.split('\n');
+  const { start, end } = loc;
+  if (
+    start.line < 1 ||
+    end.line < 1 ||
+    start.line > lines.length ||
+    end.line > lines.length ||
+    start.column < 1 ||
+    end.column < 1
+  ) {
+    return undefined;
+  }
+  if (start.line === end.line) {
+    return lines[start.line - 1].slice(start.column - 1, end.column - 1);
+  }
+  const parts: string[] = [lines[start.line - 1].slice(start.column - 1)];
+  for (let ln = start.line + 1; ln < end.line; ln++) {
+    parts.push(lines[ln - 1]);
+  }
+  parts.push(lines[end.line - 1].slice(0, end.column - 1));
+  return parts.join('\n');
+}
+
+/**
  * Build the `--mutate` argument for Stryker, optionally scoped to a line range.
  *
  * Stryker supports `--mutate "src/file.ts:1-100"` syntax for line-range scoping.
@@ -253,12 +282,17 @@ export class TypeScriptEngine extends BaseEngine {
       throw new Error(`Failed to parse Stryker JSON report: ${message}`);
     }
 
-    // Collect all mutants across all files
+    // Collect all mutants across all files, keeping each mutant's file source
+    // so we can slice the original span it replaced.
     const mutants: StrykerMutantRecord[] = [];
+    const sourceById = new Map<string, string>();
     if (raw.files) {
       for (const fileData of Object.values(raw.files)) {
         if (Array.isArray(fileData.mutants)) {
-          mutants.push(...fileData.mutants);
+          for (const m of fileData.mutants) {
+            mutants.push(m);
+            if (typeof fileData.source === 'string') sourceById.set(m.id, fileData.source);
+          }
         }
       }
     }
@@ -282,14 +316,27 @@ export class TypeScriptEngine extends BaseEngine {
     // means no test reached that code path and is therefore an actionable hole.
     const vulnerabilities: Vulnerability[] = validMutants
       .filter((m) => m.status === 'Survived' || m.status === 'NoCoverage')
-      .map((m) => ({
-        line: m.location.start.line,
-        replacement: m.mutatorName,
-        description:
-          m.status === 'NoCoverage'
-            ? `No test reached this line (NoCoverage). Consider adding tests covering this branch.`
-            : `Logical mutation via [${m.mutatorName}] survived. Your tests did not catch this change.`,
-      }));
+      .map((m) => {
+        const vuln: Vulnerability = {
+          line: m.location.start.line,
+          mutator: m.mutatorName,
+          description:
+            m.status === 'NoCoverage'
+              ? `No test reached this line (NoCoverage). Consider adding tests covering this branch.`
+              : `Logical mutation via [${m.mutatorName}] survived. Your tests did not catch this change.`,
+        };
+        if (m.replacement) vuln.mutated = m.replacement;
+        const source = sourceById.get(m.id);
+        if (source !== undefined) {
+          try {
+            const original = sliceSource(source, m.location);
+            if (original) vuln.original = original;
+          } catch {
+            // best-effort — leave original unset
+          }
+        }
+        return vuln;
+      });
 
     // Log a heads-up when NoCoverage mutants are present (these lower the score
     // and now show up as explicit vulnerabilities — previously they were silent).

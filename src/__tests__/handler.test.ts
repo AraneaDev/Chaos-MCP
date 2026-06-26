@@ -661,7 +661,7 @@ describe('handleToolCall', () => {
       survived: 1,
       mutationScore: '66.67%',
       vulnerabilities: [
-        { line: 42, replacement: 'ConditionalExpression', description: 'Mutation survived.' },
+        { line: 42, mutator: 'ConditionalExpression', description: 'Mutation survived.' },
       ],
     });
 
@@ -811,12 +811,12 @@ describe('handleToolCall', () => {
     survived: 4,
     mutationScore: '60.00%',
     vulnerabilities: [
-      { line: 42, replacement: 'ConditionalExpression', description: 'Logical mutation survived.' },
-      { line: 42, replacement: 'ConditionalExpression', description: 'Logical mutation survived.' },
-      { line: 42, replacement: 'LogicalOperator', description: 'Logical mutation survived.' },
+      { line: 42, mutator: 'ConditionalExpression', description: 'Logical mutation survived.' },
+      { line: 42, mutator: 'ConditionalExpression', description: 'Logical mutation survived.' },
+      { line: 42, mutator: 'LogicalOperator', description: 'Logical mutation survived.' },
       {
         line: 99,
-        replacement: 'StringLiteral',
+        mutator: 'StringLiteral',
         description: 'No test reached this line (NoCoverage). Consider adding tests.',
       },
     ],
@@ -890,12 +890,12 @@ describe('handleToolCall', () => {
             vulnerabilities: [
               {
                 line: 113,
-                replacement: 'MethodExpression',
+                mutator: 'MethodExpression',
                 description: 'Logical mutation survived.',
               },
               {
                 line: 113,
-                replacement: 'ArrayDeclaration',
+                mutator: 'ArrayDeclaration',
                 description: 'No test reached this line (NoCoverage). Consider adding tests.',
               },
             ],

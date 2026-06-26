@@ -67,7 +67,7 @@ function parseGoMutestingText(stdout: string, filePath: string): MutationResult 
     } else {
       vulnerabilities.push({
         line: mutantLine,
-        replacement: 'Go Mutation Operator',
+        mutator: 'Go Mutation Operator',
         description: `Mutation survived at line ${mutantLine}. The go test suite did not catch this change.`,
       });
     }
@@ -113,7 +113,7 @@ function parseGoMutestingOutput(stdout: string, filePath: string): MutationResul
         .filter((m) => m.status === 'SURVIVED' || m.status === 'survived')
         .map((m) => ({
           line: m.line ?? 0,
-          replacement: m.mutator ?? 'Go Mutation Operator',
+          mutator: m.mutator ?? 'Go Mutation Operator',
           description: `Mutation survived at line ${m.line ?? 'unknown'}. The go test suite did not catch this change.`,
         })),
     };

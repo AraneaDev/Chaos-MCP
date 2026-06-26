@@ -51,7 +51,7 @@ describe('parseMutmutResults', () => {
     expect(result.vulnerabilities).toHaveLength(3);
     expect(result.vulnerabilities[0].line).toBe(15);
     expect(result.vulnerabilities[1].line).toBe(32);
-    expect(result.vulnerabilities[2].replacement).toBe('Suspicious Mutation');
+    expect(result.vulnerabilities[2].mutator).toBe('Suspicious Mutation');
   });
 
   it('does not match a mutant ID whose path starts with a category keyword (H4 regression)', () => {
@@ -91,7 +91,7 @@ describe('parseMutmutResults', () => {
     expect(result.mutationScore).toBe('70.00%');
     // Should emit a summary entry for suspicious mutants
     expect(result.vulnerabilities).toHaveLength(1);
-    expect(result.vulnerabilities[0].replacement).toBe('Suspicious Mutation');
+    expect(result.vulnerabilities[0].mutator).toBe('Suspicious Mutation');
     expect(result.vulnerabilities[0].description).toContain('3 suspicious mutant(s)');
   });
 

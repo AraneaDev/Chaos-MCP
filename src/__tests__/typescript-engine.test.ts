@@ -879,6 +879,107 @@ describe('TypeScriptEngine', () => {
     vi.mocked(isVerbose).mockReturnValue(false);
   });
 
+  // ─── A1: original / mutated population ─────────────────────────────────
+
+  it('A1: populates original (sliced from source) and mutated (replacement)', () => {
+    mockReadFileSync.mockReturnValue(
+      JSON.stringify({
+        files: {
+          'src/x.ts': {
+            source: 'const x = a > b;\n',
+            mutants: [
+              {
+                id: '1',
+                mutatorName: 'ConditionalExpression',
+                replacement: 'a >= b',
+                location: { start: { line: 1, column: 11 }, end: { line: 1, column: 16 } },
+                status: 'Survived',
+              },
+            ],
+          },
+        },
+      }),
+    );
+    const result = engine.parseReport('/wd', 'src/x.ts');
+    const vuln = result.vulnerabilities.find((v) => v.line === 1);
+    expect(vuln?.original).toBe('a > b');
+    expect(vuln?.mutated).toBe('a >= b');
+  });
+
+  it('A1: omits original (no throw) when location is out of range, still sets mutated', () => {
+    mockReadFileSync.mockReturnValue(
+      JSON.stringify({
+        files: {
+          'src/x.ts': {
+            source: 'short\n',
+            mutants: [
+              {
+                id: '2',
+                mutatorName: 'BooleanLiteral',
+                replacement: 'false',
+                location: { start: { line: 99, column: 1 }, end: { line: 99, column: 5 } },
+                status: 'Survived',
+              },
+            ],
+          },
+        },
+      }),
+    );
+    const result = engine.parseReport('/wd', 'src/x.ts');
+    const vuln = result.vulnerabilities.find((v) => v.mutator === 'BooleanLiteral');
+    expect(vuln?.original).toBeUndefined();
+    expect(vuln?.mutated).toBe('false');
+  });
+
+  it('A1: leaves original/mutated unset when replacement is empty and span unsliceable', () => {
+    // Mirrors the existing makeJsonReport fixtures (column 0, empty replacement).
+    mockReadFileSync.mockReturnValue(
+      JSON.stringify({
+        files: {
+          'src/x.ts': {
+            source: 'const x = 1;',
+            mutants: [
+              {
+                id: '3',
+                mutatorName: 'ArithmeticOperator',
+                replacement: '',
+                location: { start: { line: 1, column: 0 }, end: { line: 1, column: 10 } },
+                status: 'Survived',
+              },
+            ],
+          },
+        },
+      }),
+    );
+    const result = engine.parseReport('/wd', 'src/x.ts');
+    const vuln = result.vulnerabilities[0];
+    expect(vuln.original).toBeUndefined();
+    expect(vuln.mutated).toBeUndefined();
+  });
+
+  it('A1: slices a multi-line original span across lines', () => {
+    mockReadFileSync.mockReturnValue(
+      JSON.stringify({
+        files: {
+          'src/x.ts': {
+            source: 'a >\nb',
+            mutants: [
+              {
+                id: '1',
+                mutatorName: 'ConditionalExpression',
+                replacement: 'a >= b',
+                location: { start: { line: 1, column: 1 }, end: { line: 2, column: 2 } },
+                status: 'Survived',
+              },
+            ],
+          },
+        },
+      }),
+    );
+    const result = engine.parseReport('/wd', 'src/x.ts');
+    expect(result.vulnerabilities[0].original).toBe('a >\nb');
+  });
+
   it('does not emit the NoCoverage heads-up when there are zero NoCoverage mutants', async () => {
     const { isVerbose, log } = await import('../utils/logger.js');
     vi.mocked(isVerbose).mockReturnValue(true);

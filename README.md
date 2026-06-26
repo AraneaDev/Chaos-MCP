@@ -85,7 +85,7 @@ The server exposes a single tool: `audit_code_resilience`.
 
 ### 3. Interpret the Results
 
-The output is **bundled and deduplicated** to stay token-efficient: mutants are grouped by line (with a per-line count of each mutator type), `survivors` (tests ran but didn't catch) and `noCoverage` (no test reached the mutant) are reported separately at line+mutator granularity, and the explanatory note appears once instead of being repeated for every mutant. Because the split is per-mutator, the same line can appear in both lists (e.g. a live expression that survived next to an unreachable fallback that no test reached).
+The output is **bundled and deduplicated** to stay token-efficient: mutants are grouped by line (with a per-line count of each mutator type), `survivors` (tests ran but didn't catch) and `noCoverage` (no test reached the mutant) are reported separately at line+mutator granularity, and the explanatory note appears once instead of being repeated for every mutant. Because the split is per-mutator, the same line can appear in both lists (e.g. a live expression that survived next to an unreachable fallback that no test reached). Survivors and no-coverage entries also include a `changes` sample — a capped, deduped list of `original → mutated` edits — for TypeScript and Rust targets (best-effort; absent for Go/Python, which don't expose per-mutant detail).
 
 **JSON output (default — emitted as a single compact line):**
 ```json
@@ -94,10 +94,10 @@ The output is **bundled and deduplicated** to stay token-efficient: mutants are 
   "mutationScore": "91.67%",
   "summary": { "total": 12, "killed": 11, "survived": 1 },
   "survivors": [
-    { "line": 42, "mutators": { "ConditionalExpression": 1 } }
+    { "line": 42, "mutators": { "ConditionalExpression": 1 }, "changes": ["a > b → a >= b"] }
   ],
   "noCoverage": [],
-  "note": "survivors: mutants your tests ran but did not kill. noCoverage: mutants no test reached (per line+mutator, so a line may appear here and in survivors). mutators = type→count. Add or strengthen tests targeting these."
+  "note": "survivors: mutants your tests ran but did not kill. noCoverage: mutants no test reached (per line+mutator, so a line may appear here and in survivors). mutators = type→count. Add or strengthen tests targeting these. changes = sampled original→mutated edits for that line (capped)."
 }
 ```
 
@@ -106,7 +106,7 @@ The output is **bundled and deduplicated** to stay token-efficient: mutants are 
 Chaos-MCP Audit Report: src/utils/math.ts
 Mutation score: 91.67% (11/12 killed, 1 survived)
 Survivors (line: mutators):
-  42: ConditionalExpression
+  42: ConditionalExpression  (a > b → a >= b)
 Add or strengthen tests targeting these lines to kill the survivors.
 ```
 

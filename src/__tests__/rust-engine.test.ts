@@ -256,7 +256,7 @@ describe('RustEngine', () => {
     expect(result.survived).toBe(1);
     expect(result.mutationScore).toBe('50.00%');
     expect(result.vulnerabilities[0].line).toBe(42);
-    expect(result.vulnerabilities[0].replacement).toBe('replace == with');
+    expect(result.vulnerabilities[0].mutator).toBe('replace == with');
   });
 
   it('handles JSON with missing summary properties and missing mutant descriptions', async () => {
@@ -270,7 +270,7 @@ describe('RustEngine', () => {
     expect(result.survived).toBe(0);
     expect(result.mutationScore).toBe('100.00%');
     expect(result.vulnerabilities[0].line).toBe(0);
-    expect(result.vulnerabilities[0].replacement).toBe('Rust Mutation Operator');
+    expect(result.vulnerabilities[0].mutator).toBe('Rust Mutation Operator');
   });
 
   it('falls back to text parsing when JSON has no summary/mutants', async () => {
@@ -451,7 +451,7 @@ describe('RustEngine', () => {
     });
     mockRunShell.mockResolvedValue(makeExecResult(stdout));
     const result = await engine.run('src/main.rs');
-    expect(result.vulnerabilities[0].replacement).toBe('Rust Mutation Operator');
+    expect(result.vulnerabilities[0].mutator).toBe('Rust Mutation Operator');
   });
 
   // ─── Mutation hardening: JSON filter precision + summary math + verbose ────
@@ -524,7 +524,7 @@ describe('RustEngine', () => {
       makeExecResult('MISSED   src/billing.rs:42:5  replaced >= with >'),
     );
     const result = await engine.run('src/billing.rs');
-    expect(result.vulnerabilities[0].replacement).toBe('Rust Mutation Operator');
+    expect(result.vulnerabilities[0].mutator).toBe('Rust Mutation Operator');
     expect(result.vulnerabilities[0].description).toBe(
       'Mutation survived at line 42. The Rust test suite did not catch this change.',
     );
@@ -586,5 +586,34 @@ describe('RustEngine', () => {
     const result = await engine.run('src/main.rs');
     expect(result.totalMutants).toBe(1);
     expect(result.vulnerabilities[0].line).toBe(3);
+  });
+
+  it('A1: text path sets mutated from the cargo-mutants description', async () => {
+    const stdout = 'MISSED   src/lib.rs:42:9: replace add -> sub with Default::default()\n';
+    mockRunShell.mockResolvedValue(makeExecResult(stdout));
+    const result = await engine.run('src/lib.rs');
+    const vuln = result.vulnerabilities.find((v) => v.line === 42);
+    expect(vuln?.mutated).toBe('replace add -> sub with Default::default()');
+    expect(vuln?.original).toBeUndefined();
+  });
+
+  it('A1: JSON path sets mutated from the description', async () => {
+    const stdout = JSON.stringify({
+      summary: { caught: 1, missed: 1, total: 2 },
+      mutants: [
+        {
+          file: 'src/lib.rs',
+          line: 7,
+          description: 'replace foo -> bar',
+          caught: false,
+          status: 'MISSED',
+        },
+        { file: 'src/lib.rs', line: 8, description: 'kept', caught: true, status: 'CAUGHT' },
+      ],
+    });
+    mockRunShell.mockResolvedValue(makeExecResult(stdout));
+    const result = await engine.run('src/lib.rs');
+    const vuln = result.vulnerabilities.find((v) => v.line === 7);
+    expect(vuln?.mutated).toBe('replace foo -> bar');
   });
 });

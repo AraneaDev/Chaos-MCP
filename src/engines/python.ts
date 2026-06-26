@@ -177,7 +177,7 @@ export function parseMutmutResults(resultsText: string, filePath: string): Mutat
     const lineNum = extractLineFromId(id);
     vulnerabilities.push({
       line: lineNum,
-      replacement: 'Arithmetic/Logical Mutation',
+      mutator: 'Arithmetic/Logical Mutation',
       description:
         lineNum > 0
           ? `Mutated code at line ${lineNum} (mutant "${id}") bypassed the test suite. Your tests did not catch this change.`
@@ -189,7 +189,7 @@ export function parseMutmutResults(resultsText: string, filePath: string): Mutat
   if (suspicious > 0) {
     vulnerabilities.push({
       line: 0,
-      replacement: 'Suspicious Mutation',
+      mutator: 'Suspicious Mutation',
       description: `${suspicious} suspicious mutant(s) detected. The test suite produced ambiguous results \u2014 this may indicate flaky tests or an unstable mutation. Run \`mutmut results\` for details.`,
     });
   }
@@ -199,7 +199,7 @@ export function parseMutmutResults(resultsText: string, filePath: string): Mutat
   if (survivingIds.length === 0 && survived > 0) {
     vulnerabilities.push({
       line: 0,
-      replacement: 'Arithmetic/Logical Mutation',
+      mutator: 'Arithmetic/Logical Mutation',
       description: `${survivedCount} mutant(s) survived the test suite. Run \`mutmut results\` and \`mutmut show <id>\` for details.`,
     });
   }

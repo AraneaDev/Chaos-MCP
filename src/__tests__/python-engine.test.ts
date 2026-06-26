@@ -546,9 +546,7 @@ describe('PythonEngine', () => {
     const result = await engine.run('src/calc.py');
     expect(result.survived).toBe(2);
     expect(result.totalMutants).toBe(10);
-    const suspiciousVuln = result.vulnerabilities.find(
-      (v) => v.replacement === 'Suspicious Mutation',
-    );
+    const suspiciousVuln = result.vulnerabilities.find((v) => v.mutator === 'Suspicious Mutation');
     expect(suspiciousVuln?.description).toContain('2 suspicious mutant(s)');
   });
 
@@ -593,13 +591,13 @@ describe('PythonEngine', () => {
       makeExecResult(mutmutResults({ survived: 1, killed: 1, survivedIds: ['a.py:3'] })),
     );
     const withIds = await engine.run('src/calc.py');
-    expect(withIds.vulnerabilities[0].replacement).toBe('Arithmetic/Logical Mutation');
+    expect(withIds.vulnerabilities[0].mutator).toBe('Arithmetic/Logical Mutation');
 
     vi.clearAllMocks();
     mockRunShell.mockResolvedValueOnce(makeExecResult());
     mockRunShell.mockResolvedValueOnce(makeExecResult(mutmutResults({ survived: 3, killed: 7 })));
     const noIds = await engine.run('src/calc.py');
-    expect(noIds.vulnerabilities[0].replacement).toBe('Arithmetic/Logical Mutation');
+    expect(noIds.vulnerabilities[0].mutator).toBe('Arithmetic/Logical Mutation');
   });
 
   it('does not log the command when verbose mode is off', async () => {

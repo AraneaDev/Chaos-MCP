@@ -224,7 +224,7 @@ describe('GoEngine', () => {
     expect(result.survived).toBe(1);
     expect(result.mutationScore).toBe('50.00%');
     expect(result.vulnerabilities[0].line).toBe(42);
-    expect(result.vulnerabilities[0].replacement).toBe('ConditionalsBoundary');
+    expect(result.vulnerabilities[0].mutator).toBe('ConditionalsBoundary');
   });
 
   it('handles JSON with missing stats properties and missing mutant lines/mutators', async () => {
@@ -237,7 +237,7 @@ describe('GoEngine', () => {
     expect(result.survived).toBe(1);
     expect(result.mutationScore).toBe('100.00%');
     expect(result.vulnerabilities[0].line).toBe(0);
-    expect(result.vulnerabilities[0].replacement).toBe('Go Mutation Operator');
+    expect(result.vulnerabilities[0].mutator).toBe('Go Mutation Operator');
   });
 
   it('falls back to text parsing when JSON has no stats/mutants', async () => {
@@ -437,7 +437,7 @@ describe('GoEngine', () => {
   it('labels a text-parsed survivor with the operator and full description', async () => {
     mockRunShell.mockResolvedValue(makeExecResult('FAIL  "/path/src/billing.go:42:1"'));
     const result = await engine.run('src/billing.go');
-    expect(result.vulnerabilities[0].replacement).toBe('Go Mutation Operator');
+    expect(result.vulnerabilities[0].mutator).toBe('Go Mutation Operator');
     expect(result.vulnerabilities[0].description).toBe(
       'Mutation survived at line 42. The go test suite did not catch this change.',
     );

@@ -8,9 +8,13 @@ export interface Vulnerability {
   /** 1-based line number where the surviving mutant was injected */
   line: number;
   /** Name/type of the mutation operator applied (e.g., "ConditionalExpression") */
-  replacement: string;
+  mutator: string;
   /** Human-readable explanation of why this mutant is a problem */
   description: string;
+  /** Original source span the mutant replaced (best-effort; may be absent). */
+  original?: string;
+  /** Replacement code or mutation description (best-effort; may be absent). */
+  mutated?: string;
 }
 
 /**

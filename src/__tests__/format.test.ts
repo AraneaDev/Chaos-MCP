@@ -7,8 +7,8 @@ type Vuln = MutationResultShape['vulnerabilities'][number];
 /** A description that matches the NoCoverage marker regex in format.ts. */
 const NO_COVERAGE_DESC = 'no test reached this mutant';
 
-function vuln(line: number, replacement: string, description = 'survived mutant'): Vuln {
-  return { line, replacement, description };
+function vuln(line: number, mutator: string, description = 'survived mutant'): Vuln {
+  return { line, mutator, description };
 }
 
 function result(overrides: Partial<MutationResultShape> = {}): MutationResultShape {
@@ -138,6 +138,195 @@ describe('formatResultAsText', () => {
         'Add or strengthen tests targeting these lines to kill the survivors.',
       ].join('\n'),
     );
+  });
+});
+
+function baseResult(vulns: MutationResultShape['vulnerabilities']): MutationResultShape {
+  return {
+    target: 'src/x.ts',
+    totalMutants: 10,
+    killed: 7,
+    survived: 3,
+    mutationScore: '70.00%',
+    vulnerabilities: vulns,
+  };
+}
+
+describe('A1 mutation detail (changes)', () => {
+  it('emits original → mutated when both present', () => {
+    const json = JSON.parse(
+      formatResultAsJson(
+        baseResult([
+          {
+            line: 42,
+            mutator: 'ConditionalExpression',
+            description: 'survived',
+            original: 'a > b',
+            mutated: 'a >= b',
+          },
+        ]),
+      ),
+    );
+    expect(json.survivors[0].changes).toEqual(['a > b → a >= b']);
+  });
+
+  it('emits mutated alone when original absent (Rust case)', () => {
+    const json = JSON.parse(
+      formatResultAsJson(
+        baseResult([
+          { line: 5, mutator: 'Rust', description: 'survived', mutated: 'replace foo -> bar' },
+        ]),
+      ),
+    );
+    expect(json.survivors[0].changes).toEqual(['replace foo -> bar']);
+  });
+
+  it('omits changes entirely when no detail present', () => {
+    const json = JSON.parse(
+      formatResultAsJson(
+        baseResult([{ line: 9, mutator: 'BooleanLiteral', description: 'survived' }]),
+      ),
+    );
+    expect(json.survivors[0].changes).toBeUndefined();
+  });
+
+  it('dedupes identical changes on a line', () => {
+    const json = JSON.parse(
+      formatResultAsJson(
+        baseResult([
+          { line: 1, mutator: 'M', description: 'survived', original: 'x', mutated: 'y' },
+          { line: 1, mutator: 'M', description: 'survived', original: 'x', mutated: 'y' },
+        ]),
+      ),
+    );
+    expect(json.survivors[0].changes).toEqual(['x → y']);
+  });
+
+  it('caps at 3 distinct changes with a …N more sentinel', () => {
+    const vulns = ['a', 'b', 'c', 'd', 'e'].map((c) => ({
+      line: 1,
+      mutator: 'M',
+      description: 'survived',
+      original: c,
+      mutated: c + '!',
+    }));
+    const json = JSON.parse(formatResultAsJson(baseResult(vulns)));
+    expect(json.survivors[0].changes).toHaveLength(4);
+    expect(json.survivors[0].changes[3]).toBe('…2 more');
+  });
+
+  it('normalizes whitespace/newlines to a single line', () => {
+    const json = JSON.parse(
+      formatResultAsJson(
+        baseResult([
+          {
+            line: 1,
+            mutator: 'M',
+            description: 'survived',
+            original: 'a  >\n  b',
+            mutated: 'a >= b',
+          },
+        ]),
+      ),
+    );
+    expect(json.survivors[0].changes).toEqual(['a > b → a >= b']);
+  });
+
+  it('renders changes inline in text format', () => {
+    const text = formatResultAsText(
+      baseResult([
+        {
+          line: 42,
+          mutator: 'ConditionalExpression',
+          description: 'survived',
+          original: 'a > b',
+          mutated: 'a >= b',
+        },
+      ]),
+    );
+    expect(text).toContain('42: ConditionalExpression  (a > b → a >= b)');
+  });
+
+  it('emits original alone when mutated absent', () => {
+    const json = JSON.parse(
+      formatResultAsJson(
+        baseResult([
+          { line: 3, mutator: 'BlockStatement', description: 'survived', original: 'doStuff()' },
+        ]),
+      ),
+    );
+    expect(json.survivors[0].changes).toEqual(['doStuff()']);
+  });
+
+  it('adds the changes clause to the JSON note only when detail is present', () => {
+    const withDetail = JSON.parse(
+      formatResultAsJson(
+        baseResult([
+          { line: 1, mutator: 'M', description: 'survived', original: 'a', mutated: 'b' },
+        ]),
+      ),
+    );
+    expect(withDetail.note).toContain('changes = sampled');
+
+    const noDetail = JSON.parse(
+      formatResultAsJson(baseResult([{ line: 1, mutator: 'M', description: 'survived' }])),
+    );
+    expect(noDetail.note).not.toContain('changes = sampled');
+  });
+
+  it('trims leading/trailing whitespace in change strings (kills .trim mutant, line 44)', () => {
+    const json = JSON.parse(
+      formatResultAsJson(
+        baseResult([{ line: 1, mutator: 'M', description: 'survived', original: '  a > b  ', mutated: 'c' }]),
+      ),
+    );
+    expect(json.survivors[0].changes).toEqual(['a > b → c']);
+  });
+
+  it('shows all 3 distinct changes with no sentinel at the cap boundary (kills <= mutant, line 57)', () => {
+    const vulns = ['a', 'b', 'c'].map((c) => ({
+      line: 1,
+      mutator: 'M',
+      description: 'survived',
+      original: c,
+      mutated: c + '!',
+    }));
+    const json = JSON.parse(formatResultAsJson(baseResult(vulns)));
+    expect(json.survivors[0].changes).toEqual(['a → a!', 'b → b!', 'c → c!']);
+  });
+
+  it('joins multiple change strings with "; " in text output (kills join-separator mutant, line 125)', () => {
+    const text = formatResultAsText(
+      baseResult([
+        { line: 7, mutator: 'M', description: 'survived', original: 'a', mutated: 'b' },
+        { line: 7, mutator: 'M', description: 'survived', original: 'c', mutated: 'd' },
+      ]),
+    );
+    expect(text).toContain('7: M×2  (a → b; c → d)');
+  });
+
+  it('renders changes on no-coverage lines in text output (kills no-coverage suffix mutant, line 132)', () => {
+    const text = formatResultAsText(
+      baseResult([
+        { line: 9, mutator: 'M', description: 'No test reached this line (NoCoverage).', original: 'x', mutated: 'y' },
+      ]),
+    );
+    expect(text).toContain('No-coverage mutants (line: mutators):');
+    expect(text).toContain('9: M  (x → y)');
+  });
+
+  it('adds the note clause when only one of several groups has detail (kills .some→.every mutant, line 148)', () => {
+    const json = JSON.parse(
+      formatResultAsJson(
+        baseResult([
+          { line: 1, mutator: 'M', description: 'survived', original: 'a', mutated: 'b' },
+          { line: 2, mutator: 'M', description: 'No test reached this line (NoCoverage).' },
+        ]),
+      ),
+    );
+    expect(json.survivors[0].changes).toEqual(['a → b']);
+    expect(json.noCoverage[0].changes).toBeUndefined();
+    expect(json.note).toContain('changes = sampled');
   });
 });
 

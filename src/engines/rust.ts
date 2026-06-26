@@ -1,4 +1,4 @@
-import { BaseEngine, RunOptions, MutationResult } from './base.js';
+import { BaseEngine, RunOptions, MutationResult, Vulnerability } from './base.js';
 import { invokeMutationTool } from '../utils/exec-classify.js';
 import { log, isVerbose } from '../utils/logger.js';
 
@@ -62,15 +62,20 @@ function parseCargoMutantsText(stdout: string, filePath: string): MutationResult
       continue;
     }
 
-    // Extract line number from "MISSED   src/file.rs:42:9" or "UNCAUGHT src/file.rs:42:9"
-    const lineMatch = trimmed.match(/:(\d+):/);
-    const mutantLine = lineMatch ? parseInt(lineMatch[1], 10) : 0;
+    // Extract line number and trailing description from
+    // "MISSED   src/file.rs:42:9: replace add -> sub with ..." (the description
+    // separator may be a colon or spaces).
+    const locMatch = trimmed.match(/:(\d+):\d+:?\s*(.*)$/);
+    const mutantLine = locMatch ? parseInt(locMatch[1], 10) : 0;
+    const desc = locMatch && locMatch[2] ? locMatch[2].trim() : '';
 
-    vulnerabilities.push({
+    const vuln: Vulnerability = {
       line: mutantLine,
-      replacement: 'Rust Mutation Operator',
+      mutator: 'Rust Mutation Operator',
       description: `Mutation survived at line ${mutantLine}. The Rust test suite did not catch this change.`,
-    });
+    };
+    if (desc) vuln.mutated = desc;
+    vulnerabilities.push(vuln);
   }
 
   const survived = total - killed;
@@ -109,15 +114,16 @@ function parseCargoMutantsOutput(stdout: string, filePath: string): MutationResu
               !m.caught &&
               (m.status === 'MISSED' || m.status === 'missed' || m.status === 'UNCAUGHT'),
           )
-          .map((m) => ({
-            line: m.line ?? 0,
-            // Use `||` (not `??`) so empty-string descriptions fall back to the
-            // default. `??` only catches null/undefined; empty string would
-            // otherwise produce an empty replacement string in the report.
-            replacement:
-              m.description?.split(' ').slice(0, 3).join(' ') || 'Rust Mutation Operator',
-            description: `Mutation survived at line ${m.line ?? 'unknown'}. The Rust test suite did not catch this change.`,
-          })),
+          .map((m) => {
+            const vuln: Vulnerability = {
+              line: m.line ?? 0,
+              // `||` (not `??`) so empty-string descriptions fall back to the default label.
+              mutator: m.description?.split(' ').slice(0, 3).join(' ') || 'Rust Mutation Operator',
+              description: `Mutation survived at line ${m.line ?? 'unknown'}. The Rust test suite did not catch this change.`,
+            };
+            if (m.description) vuln.mutated = m.description;
+            return vuln;
+          }),
       };
     }
   } catch {
