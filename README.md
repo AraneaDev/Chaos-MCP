@@ -2,11 +2,12 @@
 
 > On-demand micro-mutation sandbox for AI test verification — maps holes in unit tests by running isolated mutation testing via the Model Context Protocol.
 
-[![CI](https://github.com/codebuff/chaos-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/codebuff/chaos-mcp/actions/workflows/ci.yml)
-[![npm version](https://img.shields.io/npm/v/chaos-mcp.svg)](https://www.npmjs.com/package/chaos-mcp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+[![status: in development](https://img.shields.io/badge/status-in%20development-orange.svg)](#)
 
-Chaos-MCP is an [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server that exposes a single tool — `audit_code_resilience` — which runs isolated mutation testing against a target source file to identify weaknesses in the local test suite. It intentionally injects logical faults (like changing `>` to `>=`) and checks whether your tests catch them. Surviving mutants indicate test coverage holes.
+> ⚠️ **Pre-release / in active development.** Chaos-MCP is **not yet published to npm** and is **not on a public host** — it currently lives in a private [Forgejo](https://forgejo.org/) repository. Install from source (see [Installation](#-installation)). Any `npm install -g` / `npx` commands in this README describe the planned published experience and do not work yet.
+
+Chaos-MCP is an [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server that exposes two tools — `audit_code_resilience` (audit a single file) and `triage_test_coverage` (rank a whole tree weakest-first) — which run isolated mutation testing against your source to find weaknesses in the local test suite. It intentionally injects logical faults (like changing `>` to `>=`) and checks whether your tests catch them. Surviving mutants indicate test coverage holes.
 
 ## ✨ Features
 
@@ -19,48 +20,39 @@ Chaos-MCP is an [MCP (Model Context Protocol)](https://modelcontextprotocol.io/)
 
 ## 📦 Installation
 
-### As an MCP Server (for AI clients)
+While in development, the only supported install path is **from source** — clone the private repo, build, and register the built entrypoint with your MCP client.
 
 ```bash
-npm install -g chaos-mcp
-```
-
-Or use directly via `npx`:
-
-```bash
-npx chaos-mcp
-```
-
-### For Local Development
-
-```bash
-git clone https://github.com/codebuff/chaos-mcp
-cd chaos-mcp
+git clone https://forgejo.aranea.dev/AraneaDevelopment/ChaosMCP.git
+cd ChaosMCP
 npm install
-npm run build
+npm run build      # compiles to build/index.js
 ```
+
+Register it with an MCP client (Claude Code example):
+
+```bash
+claude mcp add chaos-mcp -- node /absolute/path/to/ChaosMCP/build/index.js
+```
+
+> **Planned (not available yet):** once published, install will be `npm install -g chaos-mcp` or run on demand via `npx chaos-mcp`. These do not work until the package ships to npm.
 
 ## 🚀 Quick Start
 
 ### 1. Start the Server
 
+Normally your MCP client launches the server for you (see [Installation](#-installation)). To run it directly from a source checkout:
+
 ```bash
-# If installed globally
-chaos-mcp
-
-# If installed locally
-npm start
-
-# With verbose logging
-chaos-mcp --verbose
-
-# With a config file
-chaos-mcp --config ./chaos-mcp.config.json
+# From the repo root, after `npm run build`
+npm start                                  # → node build/index.js
+node build/index.js --verbose              # diagnostic logging to stderr
+node build/index.js --config ./chaos-mcp.config.json
 ```
 
 ### 2. Call the Tool from Your MCP Client
 
-The server exposes a single tool: `audit_code_resilience`.
+The primary tool is `audit_code_resilience` (the batch tool `triage_test_coverage` is documented [below](#-batch-triage--triage_test_coverage)).
 
 **Minimal example:**
 ```json
@@ -150,7 +142,7 @@ Add or strengthen tests targeting these lines to kill the survivors.
 | `incremental` | `boolean` | ❌ | Reuse previous run results (StrykerJS only) |
 | `ignorePatterns` | `string[]` | ❌ | Substring patterns to exclude from sandbox copy |
 
-See [`docs/DRAFT.md`](docs/DRAFT.md) for the full API reference with examples.
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for development setup and the full parameter semantics.
 
 ## 🧭 Batch Triage — `triage_test_coverage`
 
