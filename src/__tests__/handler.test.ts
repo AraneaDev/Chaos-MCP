@@ -3010,4 +3010,80 @@ describe('handleToolCall', () => {
       expect(json.scopeNote).toMatch(/untracked/i);
     });
   });
+
+  describe('baseline verify mode', () => {
+    const tsEnv = {
+      projectType: 'typescript' as const,
+      testRunner: 'vitest',
+      detectedRunner: 'vitest',
+      workspaceRoot: '/workspace',
+    };
+
+    it('scopes the re-run to baseline lines and returns a verify delta', async () => {
+      const mockRun = vi.fn().mockResolvedValue({
+        target: 'src/x.ts',
+        totalMutants: 4,
+        killed: 3,
+        survived: 1,
+        mutationScore: '75.00%',
+        vulnerabilities: [{ line: 88, mutator: 'ArithmeticOperator', description: 'survived' }],
+      });
+      MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+      mockDetectEnv.mockReturnValue(tsEnv);
+
+      const res = await handleToolCall(
+        makeRequest('audit_code_resilience', {
+          filePath: 'src/x.ts',
+          baseline: {
+            survivors: [{ line: 42, mutators: { ConditionalExpression: 1 } }],
+            noCoverage: [{ line: 88, mutators: { ArithmeticOperator: 1 } }],
+          },
+        }),
+      );
+
+      const runOpts = mockRun.mock.calls[0][1] as { lineRanges?: { start: number; end: number }[] };
+      expect(runOpts.lineRanges).toEqual([
+        { start: 42, end: 42 },
+        { start: 88, end: 88 },
+      ]);
+
+      const json = JSON.parse((res.content[0] as { text: string }).text);
+      expect(json.mode).toBe('verify');
+      expect(json.killedCount).toBe(1);
+      expect(json.nowKilled).toEqual([{ line: 42, mutator: 'ConditionalExpression' }]);
+      expect(json.stillSurviving).toEqual([{ line: 88, mutator: 'ArithmeticOperator' }]);
+    });
+
+    it('non-TS verify runs whole-file (no lineRanges) and still computes the delta', async () => {
+      const mockRun = vi.fn().mockResolvedValue({
+        target: 'src/x.go',
+        totalMutants: 2,
+        killed: 2,
+        survived: 0,
+        mutationScore: '100.00%',
+        vulnerabilities: [],
+      });
+      MockGoEngine.mockImplementation(() => ({ run: mockRun }) as unknown as GoEngine);
+      mockDetectEnv.mockReturnValue({
+        projectType: 'go',
+        testRunner: 'go test',
+        detectedRunner: 'go test',
+        workspaceRoot: '/workspace',
+      });
+
+      const res = await handleToolCall(
+        makeRequest('audit_code_resilience', {
+          filePath: 'src/x.go',
+          baseline: { survivors: [{ line: 7, mutators: { GoMut: 1 } }] },
+        }),
+      );
+
+      const runOpts = mockRun.mock.calls[0][1] as { lineRanges?: unknown };
+      expect(runOpts.lineRanges).toBeUndefined();
+      const json = JSON.parse((res.content[0] as { text: string }).text);
+      expect(json.mode).toBe('verify');
+      expect(json.killedCount).toBe(1);
+      expect(json.nowKilled).toEqual([{ line: 7, mutator: 'GoMut' }]);
+    });
+  });
 });

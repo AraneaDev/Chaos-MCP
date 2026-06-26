@@ -125,6 +125,19 @@ export const TOOL_DEFINITION = {
           'Line-level scoping is StrykerJS-only; Go/Python/Rust targets run whole-file with a note. ' +
           'If the file has no changes vs the base, the run is skipped. Example: "HEAD"',
       },
+      baseline: {
+        type: 'object',
+        description:
+          'Verify mode: pass back the `survivors` and `noCoverage` arrays from a PRIOR run to re-test only ' +
+          'those mutants and get a delta — which are now killed vs still surviving (plus any new regressions ' +
+          'on the same lines). The re-run is auto-scoped to the baseline lines (StrykerJS) or whole-file (other ' +
+          'languages). Mutually exclusive with diffBase and lineScope. ' +
+          'Example: { "survivors": [{ "line": 42, "mutators": { "ConditionalExpression": 1 } }] }',
+        properties: {
+          survivors: { type: 'array', items: { type: 'object' } },
+          noCoverage: { type: 'array', items: { type: 'object' } },
+        },
+      },
     },
     required: ['filePath'],
     additionalProperties: false,

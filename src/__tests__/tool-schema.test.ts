@@ -22,6 +22,7 @@ describe('TOOL_DEFINITION contract', () => {
       prebuildCommand: 'string',
       perMutantTimeoutMs: 'number',
       diffBase: 'string',
+      baseline: 'object',
     };
     const props = TOOL_DEFINITION.inputSchema.properties as Record<string, { type: string }>;
     // Exactly these keys — no more, no fewer.
@@ -83,5 +84,11 @@ describe('TOOL_DEFINITION contract', () => {
     const props = TOOL_DEFINITION.inputSchema.properties as Record<string, { type: string }>;
     expect(props.diffBase).toBeDefined();
     expect(props.diffBase.type).toBe('string');
+  });
+
+  it('advertises the baseline object parameter', () => {
+    const props = TOOL_DEFINITION.inputSchema.properties as Record<string, { type: string }>;
+    expect(props.baseline).toBeDefined();
+    expect(props.baseline.type).toBe('object');
   });
 });

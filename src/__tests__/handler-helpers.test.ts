@@ -104,6 +104,54 @@ describe('validateToolArgs', () => {
   it('accepts a valid diffBase alone', () => {
     expect(validateToolArgs({ diffBase: 'HEAD' })).toBeNull();
   });
+
+  describe('baseline', () => {
+    const sv = { survivors: [{ line: 42, mutators: { C: 1 } }] };
+
+    it('accepts a well-formed baseline alone', () => {
+      expect(validateToolArgs({ baseline: sv })).toBeNull();
+    });
+
+    it('rejects a non-object baseline', () => {
+      expect(validateToolArgs({ baseline: 'nope' })?.isError).toBe(true);
+    });
+
+    it('rejects baseline with a non-array survivors', () => {
+      expect(validateToolArgs({ baseline: { survivors: {} } })?.isError).toBe(true);
+    });
+
+    it('rejects baseline entries with a bad line', () => {
+      expect(
+        validateToolArgs({ baseline: { survivors: [{ line: 0, mutators: { C: 1 } }] } })?.isError,
+      ).toBe(true);
+    });
+
+    it('rejects an empty baseline (no mutator pairs)', () => {
+      expect(validateToolArgs({ baseline: { survivors: [] } })?.isError).toBe(true);
+    });
+
+    it('rejects baseline together with diffBase', () => {
+      expect(validateToolArgs({ baseline: sv, diffBase: 'HEAD' })?.isError).toBe(true);
+    });
+
+    it('rejects baseline together with lineScope', () => {
+      expect(validateToolArgs({ baseline: sv, lineScope: { start: 1, end: 2 } })?.isError).toBe(
+        true,
+      );
+    });
+
+    it('rejects a baseline entry whose mutators is not an object', () => {
+      expect(
+        validateToolArgs({ baseline: { survivors: [{ line: 1, mutators: [1, 2] }] } })?.isError,
+      ).toBe(true);
+    });
+
+    it('validates the noCoverage array the same way as survivors', () => {
+      expect(
+        validateToolArgs({ baseline: { noCoverage: [{ line: 0, mutators: { A: 1 } }] } })?.isError,
+      ).toBe(true);
+    });
+  });
 });
 
 describe('buildRunOptions', () => {

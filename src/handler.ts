@@ -13,6 +13,15 @@ import { ChaosConfig } from './utils/config-loader.js';
 import { log, isVerbose } from './utils/logger.js';
 import { formatResultAsText, formatResultAsJson } from './format.js';
 import { computeChangedRanges } from './utils/git-diff.js';
+import {
+  parseBaseline,
+  baselineLines,
+  computeVerifyDelta,
+  formatVerifyResultAsJson,
+  formatVerifyResultAsText,
+  type BaselineInput,
+  type MutantKey,
+} from './verify.js';
 
 /**
  * Returns true when `candidate` is `root` itself, or a path strictly inside
@@ -143,6 +152,53 @@ export function validateToolArgs(args: ToolArgs): CallToolResult | null {
     if (args.lineScope !== undefined) {
       return toolError(
         'diffBase and lineScope are mutually exclusive — use one or the other, not both.',
+      );
+    }
+  }
+
+  // ── baseline (verify mode): object with survivors/noCoverage arrays; ──
+  // mutually exclusive with diffBase and lineScope; must hold ≥1 (line, mutator). ──
+  if (args.baseline !== undefined) {
+    const b = args.baseline as Record<string, unknown> | null;
+    if (b === null || typeof b !== 'object' || Array.isArray(b)) {
+      return toolError(
+        'baseline must be an object with optional "survivors" and "noCoverage" arrays from a prior run.',
+      );
+    }
+    if (args.diffBase !== undefined || args.lineScope !== undefined) {
+      return toolError(
+        'baseline is mutually exclusive with diffBase and lineScope — use only one at a time.',
+      );
+    }
+    let pairCount = 0;
+    for (const key of ['survivors', 'noCoverage'] as const) {
+      const arr = b[key];
+      if (arr === undefined) continue;
+      if (!Array.isArray(arr)) {
+        return toolError(`baseline.${key} must be an array of { line, mutators } objects.`);
+      }
+      for (const g of arr) {
+        const entry = g as Record<string, unknown> | null;
+        if (
+          entry === null ||
+          typeof entry !== 'object' ||
+          Array.isArray(entry) ||
+          !Number.isInteger(entry.line) ||
+          (entry.line as number) < 1 ||
+          typeof entry.mutators !== 'object' ||
+          entry.mutators === null ||
+          Array.isArray(entry.mutators)
+        ) {
+          return toolError(
+            'each baseline entry must be { line: integer >= 1, mutators: object of mutator→count }.',
+          );
+        }
+        pairCount += Object.keys(entry.mutators as Record<string, unknown>).length;
+      }
+    }
+    if (pairCount === 0) {
+      return toolError(
+        'baseline must contain at least one (line, mutator) entry across survivors/noCoverage.',
       );
     }
   }
@@ -415,6 +471,22 @@ export async function handleToolCall(
       }
     }
 
+    // ── Verify mode (A3): parse the prior-run baseline and derive the re-run
+    // scope from its lines (TS only; non-TS runs whole-file then filters). ──
+    let baselineKeys: MutantKey[] | undefined;
+    if (
+      earlyArgs.baseline &&
+      typeof earlyArgs.baseline === 'object' &&
+      !Array.isArray(earlyArgs.baseline)
+    ) {
+      baselineKeys = parseBaseline(earlyArgs.baseline as BaselineInput);
+      if (projectType === 'typescript') {
+        // Reuse the A2 scope channel (`diffRanges` → runOptions.lineRanges).
+        // baseline is mutually exclusive with diffBase, so this never collides.
+        diffRanges = baselineLines(baselineKeys).map((l) => ({ start: l, end: l }));
+      }
+    }
+
     // Provision a sandbox so mutation runs never touch the real workspace tree.
     let sandbox;
     try {
@@ -499,6 +571,14 @@ export async function handleToolCall(
       // Apply output format to the final response
       const auditResults = await engine.run(targetFile, runOptions);
       if (scopeNote) auditResults.scopeNote = scopeNote;
+      if (baselineKeys) {
+        const delta = computeVerifyDelta(baselineKeys, auditResults);
+        const verifyText =
+          runOptions.outputFormat === 'text'
+            ? formatVerifyResultAsText(targetFile, delta)
+            : formatVerifyResultAsJson(targetFile, delta);
+        return { content: [{ type: 'text', text: verifyText }] };
+      }
       const text =
         runOptions.outputFormat === 'text'
           ? formatResultAsText(auditResults)
