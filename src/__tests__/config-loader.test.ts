@@ -42,6 +42,12 @@ describe('loadConfig', () => {
     expect(loadConfig('/tmp/config.json').defaultMaxFiles).toBe(10);
   });
 
+  it('accepts defaultMaxFiles at the lower boundary of 1', () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue(JSON.stringify({ defaultMaxFiles: 1 }));
+    expect(loadConfig('/tmp/config.json').defaultMaxFiles).toBe(1);
+  });
+
   it('ignores a non-integer / < 1 defaultMaxFiles', () => {
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue(JSON.stringify({ defaultMaxFiles: 0 }));
