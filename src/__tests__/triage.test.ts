@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import type { MutationResult } from '../engines/base.js';
@@ -31,6 +31,19 @@ describe('isSupportedSourceFile', () => {
     for (const f of ['a.md', 'a.test.ts', 'a.spec.js', 'x_test.go', 'test_x.py', 'x_test.rs']) {
       expect(isSupportedSourceFile(f)).toBe(false);
     }
+  });
+
+  it('anchors the `_test.<lang>` / `test_*.py` rules to the file extension end', () => {
+    // `_test.go` / `.py` only mark a test when they are the actual extension.
+    // Removing the trailing `$` would wrongly flag these as tests.
+    expect(isSupportedSourceFile('a_test.go.ts')).toBe(true);
+    expect(isSupportedSourceFile('test_x.py.ts')).toBe(true);
+  });
+
+  it('matches multi-character python test stems (kills `[^/]*`→`[^/]`)', () => {
+    // `test_xy.py` needs the `*` quantifier to span more than one stem char.
+    expect(isSupportedSourceFile('test_xy.py')).toBe(false);
+    expect(isSupportedSourceFile('dir/test_helpers.py')).toBe(false);
   });
 });
 
@@ -88,11 +101,15 @@ describe('formatTriageAsJson', () => {
 
 describe('formatTriageAsJson note branch', () => {
   it('omits the maxFiles truncation note when skipped=0', () => {
-    // Kills: ConditionalExpression on `skipped > 0` ternary (line 122).
+    // Kills: ConditionalExpression on `skipped > 0` ternary (line 122) and the
+    // drill-down StringLiteral (line 125) by pinning the exact note text — the
+    // empty truncation branch must contribute nothing.
     const rows = rankResults([{ file: 'a.ts', result: mr({}) }]);
     const json = JSON.parse(formatTriageAsJson(rows, [], 2, 0));
-    expect(json.note).not.toContain('skipped by maxFiles');
-    expect(json.note).toContain('weakest-first');
+    expect(json.note).toBe(
+      'Ranked weakest-first by mutation score. ' +
+        'Drill into a file with audit_code_resilience for survivor detail.',
+    );
   });
 });
 
@@ -107,6 +124,9 @@ describe('formatTriageAsText', () => {
     expect(text).toContain('50.00%');
     expect(text).toContain('Errors:');
     expect(text).toContain('b.ts: boom');
+    // Pin the ranked-section header (line 163) and the '\n' line join (line 174).
+    expect(text).toContain('Weakest first (score  survived/total  file):');
+    expect(text.split('\n').length).toBeGreaterThan(1);
   });
 
   it('appends a skipped count when skipped > 0', () => {
@@ -117,10 +137,12 @@ describe('formatTriageAsText', () => {
   });
 
   it('omits the skipped count when skipped = 0', () => {
-    // Companion assertion for the skipped > 0 branch.
+    // Companion assertion for the skipped > 0 branch. Pin the exact header line
+    // so the empty ternary branch (line 160) can't smuggle in extra text.
     const rows = rankResults([{ file: 'a.ts', result: mr({}) }]);
     const text = formatTriageAsText(rows, [], 1, 0);
     expect(text).not.toContain('skipped');
+    expect(text.split('\n')[0]).toBe('Chaos-MCP Triage: 1 of 1 files audited');
   });
 
   it('shows no-source-files message when discovered = 0', () => {
@@ -194,11 +216,49 @@ describe('discoverFiles (real temp tree)', () => {
   });
 
   it('returns files in sorted order (not insertion order)', () => {
-    // Contract: discoverFiles guarantees sorted output. (Note: on this filesystem
-    // readdirSync already returns sorted entries, so this asserts the contract
-    // rather than exercising the .sort() call specifically.)
+    // Explicit paths given in reverse order must come back sorted — this drives
+    // the `.sort()` call directly (kills MethodExpression removing .sort(), line 88).
+    const { files } = discoverFiles(['b.py', 'a.ts'], root, 25);
+    expect(files).toEqual(['a.ts', 'b.py']);
+  });
+});
+
+describe('discoverFiles ignores build/output/test directories', () => {
+  let root: string;
+  const IGNORED = ['build', 'dist', '.git', 'coverage', '.stryker-tmp', 'reports', 'tests'];
+  beforeAll(() => {
+    root = mkdtempSync(join(tmpdir(), 'chaos-triage-ignore-'));
+    writeFileSync(join(root, 'keep.ts'), '');
+    for (const d of IGNORED) {
+      mkdirSync(join(root, d));
+      writeFileSync(join(root, d, 'x.ts'), '');
+    }
+  });
+  afterAll(() => rmSync(root, { recursive: true, force: true }));
+
+  it('skips every IGNORE_DIRS directory, keeping only the root source file', () => {
+    // Each ignored dir name is a distinct StringLiteral in IGNORE_DIRS (lines 22-29);
+    // blanking any one of them would let that dir's x.ts leak into the result.
     const { files } = discoverFiles(['.'], root, 25);
-    const sorted = [...files].sort();
-    expect(files).toEqual(sorted);
+    expect(files).toEqual(['keep.ts']);
+  });
+});
+
+describe('discoverFiles skips non-file directory entries', () => {
+  let root: string;
+  beforeAll(() => {
+    root = mkdtempSync(join(tmpdir(), 'chaos-triage-symlink-'));
+    writeFileSync(join(root, 'real.ts'), '');
+    // A symlink's Dirent reports isFile() === false (and isSymbolicLink() === true),
+    // so walk's `else if (entry.isFile())` must skip it. Forcing that guard to `true`
+    // (line 52 mutant) would wrongly collect the link.
+    symlinkSync(join(root, 'real.ts'), join(root, 'link.ts'));
+  });
+  afterAll(() => rmSync(root, { recursive: true, force: true }));
+
+  it('does not collect a symlink even when it points at a supported source file', () => {
+    const { files } = discoverFiles(['.'], root, 25);
+    expect(files).toEqual(['real.ts']);
+    expect(files).not.toContain('link.ts');
   });
 });

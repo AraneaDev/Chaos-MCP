@@ -130,6 +130,10 @@ describe('formatVerifyResultAsJson', () => {
     const json = JSON.parse(formatVerifyResultAsJson('src/x.ts', delta));
     expect(typeof json.note).toBe('string');
     expect(json.note).toContain('still surviving');
+    // Pin each concatenated fragment of the note (kills StringLiteral→"" mutants).
+    expect(json.note).toContain('previously-uncaught mutants are now killed');
+    expect(json.note).toContain('stillSurviving: add or strengthen tests for these.');
+    expect(json.note).toContain('newSurvivors: your change introduced these uncaught mutants');
   });
 });
 
@@ -142,6 +146,10 @@ describe('formatVerifyResultAsText', () => {
     const text = formatVerifyResultAsText('src/x.ts', delta);
     expect(text).toContain('Chaos-MCP Verify Report: src/x.ts');
     expect(text).toContain('✅ All 1 previously-uncaught mutants are now killed.');
+    // The report header and success line are joined by '\n' (kills join('\n')→join('')).
+    expect(text).toBe(
+      'Chaos-MCP Verify Report: src/x.ts\n✅ All 1 previously-uncaught mutants are now killed.',
+    );
   });
 
   it('lists still-surviving and new mutants when present', () => {
@@ -152,6 +160,11 @@ describe('formatVerifyResultAsText', () => {
     const text = formatVerifyResultAsText('src/x.ts', delta);
     expect(text).toContain('Still surviving:');
     expect(text).toContain('  88: A');
+    // Pin the summary line fragments (kills StringLiteral→"" on lines 108-109).
+    expect(text).toContain('0 of 1 previously-uncaught mutants now killed; ');
+    expect(text).toContain('1 still surviving; 0 new.');
+    // Sections are newline-joined (kills join('\n')→join('') on line 123).
+    expect(text.split('\n')).toContain('Still surviving:');
   });
 
   it('lists Now killed and New survivors sections when both are present', () => {

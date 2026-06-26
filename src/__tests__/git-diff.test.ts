@@ -39,6 +39,27 @@ describe('parseHunks', () => {
   it('returns empty for an empty diff', () => {
     expect(parseHunks('')).toEqual([]);
   });
+
+  it('parses a multi-digit old-side count (kills `,\\d+`→`,\\d`)', () => {
+    // The old-side count must accept >1 digit; a single-digit-only mutant fails to
+    // match this header entirely and would return [].
+    expect(parseHunks('@@ -1,23 +5,2 @@\n')).toEqual([{ start: 5, end: 6 }]);
+  });
+
+  it('parses a multi-digit new-side count (kills `,(\\d+)`→`,(\\d)`)', () => {
+    expect(parseHunks('@@ -1,1 +5,23 @@\n')).toEqual([{ start: 5, end: 27 }]);
+  });
+
+  it('parses a hunk with no old-side count (kills `(?:,\\d+)?`→`(?:,\\d+)`)', () => {
+    // Old side `-5` has no `,count`; making that group required breaks the match.
+    expect(parseHunks('@@ -5 +10,2 @@\n')).toEqual([{ start: 10, end: 11 }]);
+  });
+
+  it('anchors hunk headers to line start (kills removal of `^`)', () => {
+    // A `@@ ... @@` sequence mid-line is NOT a real header; the `^` anchor must
+    // reject it. Without the anchor this would parse a spurious range.
+    expect(parseHunks('+ code with @@ -1,1 +9,1 @@ inside\n')).toEqual([]);
+  });
 });
 
 describe('computeChangedRanges', () => {

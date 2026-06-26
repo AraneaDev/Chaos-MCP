@@ -1,12 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { dirname, basename, join } from 'path';
 import type { CallToolRequest } from '@modelcontextprotocol/sdk/types.js';
 
 vi.mock('../triage.js', async () => {
   const actual = await vi.importActual<typeof import('../triage.js')>('../triage.js');
   return { ...actual, discoverFiles: vi.fn() };
 });
+const { cleanupSpy } = vi.hoisted(() => ({ cleanupSpy: vi.fn() }));
 vi.mock('../utils/sandbox.js', () => ({
-  createSandbox: vi.fn(() => ({ workDir: '/tmp/s', targetFile: '', cleanup: vi.fn() })),
+  createSandbox: vi.fn(() => ({ workDir: '/tmp/s', targetFile: '', cleanup: cleanupSpy })),
 }));
 vi.mock('../utils/project-detector.js', async () => {
   const actual = await vi.importActual<typeof import('../utils/project-detector.js')>(
@@ -34,6 +36,8 @@ const req = (args: Record<string, unknown>): CallToolRequest =>
     params: { name: 'triage_test_coverage', arguments: args },
   }) as CallToolRequest;
 
+const txt = (res: { content: unknown[] }): string => (res.content[0] as { text: string }).text;
+
 const tsEnv = {
   projectType: 'typescript' as const,
   testRunner: 'vitest',
@@ -56,14 +60,51 @@ describe('handleTriageCall', () => {
     mockDetectEnv.mockReturnValue(tsEnv);
   });
 
-  it('rejects a missing/empty/non-array paths arg', async () => {
-    expect((await handleTriageCall(req({}))).isError).toBe(true);
-    expect((await handleTriageCall(req({ paths: [] }))).isError).toBe(true);
-    expect((await handleTriageCall(req({ paths: 'src' }))).isError).toBe(true);
+  it('rejects a missing/empty/non-array paths arg with the exact message', async () => {
+    const expected =
+      'paths is required and must be a non-empty array of workspace-relative file/directory strings.';
+    for (const bad of [{}, { paths: [] }, { paths: 'src' }]) {
+      const res = await handleTriageCall(req(bad));
+      expect(res.isError).toBe(true);
+      // Pins the triageError content shape (line 17) and the message (line 40).
+      expect(res.content[0]).toEqual({ type: 'text', text: expected });
+    }
   });
 
-  it('rejects a non-integer maxFiles', async () => {
-    expect((await handleTriageCall(req({ paths: ['src'], maxFiles: 0 }))).isError).toBe(true);
+  it('rejects a paths array containing a non-string element', async () => {
+    // Kills `typeof p !== 'string'`→false on line 37 (a non-string slips through
+    // and `.trim()` would throw, so the validation must reject it up front).
+    const res = await handleTriageCall(req({ paths: [123] }));
+    expect(res.isError).toBe(true);
+  });
+
+  it('rejects when ANY path is blank, not only when all are (some vs every)', async () => {
+    // Kills `.some(...)`→`.every(...)` on line 37: a mix of valid + blank must reject.
+    const res = await handleTriageCall(req({ paths: ['ok.ts', '   '] }));
+    expect(res.isError).toBe(true);
+  });
+
+  it('rejects a non-integer maxFiles with the exact message', async () => {
+    const res = await handleTriageCall(req({ paths: ['src'], maxFiles: 0 }));
+    expect(res.isError).toBe(true);
+    expect(res.content[0]).toEqual({ type: 'text', text: 'maxFiles must be an integer >= 1.' });
+  });
+
+  it('rejects a fractional maxFiles (number but not an integer)', async () => {
+    // 2.5 passes the `typeof === number` and `>= 1` checks but fails Number.isInteger.
+    // Kills `||`→`&&` on line 48: with `&&`, the isInteger arm would be gated away.
+    const res = await handleTriageCall(req({ paths: ['src'], maxFiles: 2.5 }));
+    expect(res.isError).toBe(true);
+    expect(res.content[0]).toEqual({ type: 'text', text: 'maxFiles must be an integer >= 1.' });
+  });
+
+  it('rejects a path that resolves outside the workspace', async () => {
+    // Exercises the path-containment guard (lines 58-64), which no other test
+    // reaches — kills the ConditionalExpression/BlockStatement/StringLiteral there.
+    const res = await handleTriageCall(req({ paths: ['../escape'] }));
+    expect(res.isError).toBe(true);
+    expect(txt(res)).toContain('must resolve within the workspace');
+    expect(txt(res)).toContain('../escape');
   });
 
   it('returns a clean empty result when nothing is discovered', async () => {
@@ -73,7 +114,125 @@ describe('handleTriageCall', () => {
     const json = JSON.parse((res.content[0] as { text: string }).text);
     expect(json.mode).toBe('triage');
     expect(json.ranking).toEqual([]);
+    // Pin errors=[] too: the second `[]` arg on the empty-discovery JSON path (line 74).
+    expect(json.errors).toEqual([]);
     expect(json.note).toContain('No supported source files');
+    // Pin the MCP content envelope `type: 'text'` (line 75 StringLiteral).
+    expect(res.content[0]).toMatchObject({ type: 'text' });
+  });
+
+  it('renders the empty result as text when outputFormat=text', async () => {
+    // Exercises the text branch of the empty-discovery path (lines 72-75).
+    mockDiscover.mockReturnValue({ files: [], discovered: 0, skipped: 0 });
+    const res = await handleTriageCall(req({ paths: ['src'], outputFormat: 'text' }));
+    expect(res.isError).toBeUndefined();
+    expect(txt(res)).toContain('Chaos-MCP Triage: 0 of 0 files audited');
+    expect(txt(res)).toContain('No supported source files');
+    // Empty discovery has no errors → no Errors: section (kills errors `[]`→junk, line 73).
+    expect(txt(res)).not.toContain('Errors:');
+    expect(() => JSON.parse(txt(res))).toThrow(); // proves it is text, not JSON
+  });
+
+  it('renders ranked results as text when outputFormat=text', async () => {
+    // Exercises the text branch of the final result format (lines 128-131) and the
+    // outputFormat==='text' detection (line 67).
+    mockDiscover.mockReturnValue({ files: ['a.ts'], discovered: 1, skipped: 0 });
+    mockAuditFile.mockResolvedValue(mrOf({ mutationScore: '50.00%', survived: 5 }));
+    const res = await handleTriageCall(req({ paths: ['src'], outputFormat: 'text' }));
+    expect(txt(res)).toContain('Chaos-MCP Triage: 1 of 1 files audited');
+    expect(txt(res)).toContain('Weakest first');
+    expect(txt(res)).toContain('a.ts');
+    expect(() => JSON.parse(txt(res))).toThrow();
+    // Pin the MCP content envelope `type: 'text'` on the non-empty return (line 131).
+    expect(res.content[0]).toMatchObject({ type: 'text' });
+  });
+
+  it('uses config.defaultMaxFiles when no maxFiles arg is given', async () => {
+    // Kills `cfg.defaultMaxFiles ?? DEFAULT_MAX_FILES`→`&&` (line 45): with `&&`,
+    // a truthy 7 would yield DEFAULT_MAX_FILES (25), not 7.
+    mockDiscover.mockReturnValue({ files: [], discovered: 0, skipped: 0 });
+    await handleTriageCall(req({ paths: ['src'] }), { defaultMaxFiles: 7 });
+    expect(mockDiscover).toHaveBeenCalledWith(['src'], expect.any(String), 7);
+  });
+
+  it('falls back to the built-in default (25) when neither arg nor config sets it', async () => {
+    // Kills `?? DEFAULT_MAX_FILES`→`&&` for the undefined case (`undefined && 25` = undefined).
+    mockDiscover.mockReturnValue({ files: [], discovered: 0, skipped: 0 });
+    await handleTriageCall(req({ paths: ['src'] }));
+    expect(mockDiscover).toHaveBeenCalledWith(['src'], expect.any(String), 25);
+  });
+
+  it('passes timeoutMs/mutatorDenylist through to auditFile and forwards the full audit context', async () => {
+    // Kills the perFileArgs ObjectLiteral (line 98) and the auditFile call ObjectLiteral (line 106).
+    mockDiscover.mockReturnValue({ files: ['a.ts'], discovered: 1, skipped: 0 });
+    mockAuditFile.mockResolvedValue(mrOf({}));
+    await handleTriageCall(
+      req({ paths: ['src'], timeoutMs: 1234, mutatorDenylist: ['StringLiteral'] }),
+    );
+    expect(mockAuditFile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        targetFile: 'a.ts',
+        env: tsEnv,
+        projectType: 'typescript',
+        config: {},
+        workDir: '/tmp/s',
+        args: expect.objectContaining({
+          timeoutMs: 1234,
+          mutatorDenylist: ['StringLiteral'],
+        }),
+      }),
+    );
+  });
+
+  it('cleans up the sandbox after auditing each file', async () => {
+    // Kills the `{ sandbox.cleanup(); }`→`{}` BlockStatement on line 117.
+    mockDiscover.mockReturnValue({ files: ['a.ts', 'b.ts'], discovered: 2, skipped: 0 });
+    mockAuditFile.mockResolvedValue(mrOf({}));
+    await handleTriageCall(req({ paths: ['src'] }));
+    expect(cleanupSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('cleans up the sandbox even when auditing throws', async () => {
+    mockDiscover.mockReturnValue({ files: ['a.ts'], discovered: 1, skipped: 0 });
+    mockAuditFile.mockRejectedValue(new Error('boom'));
+    await handleTriageCall(req({ paths: ['src'] }));
+    expect(cleanupSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('passes the workspace-relative targetFile to auditFile when the file sits under the workspace root', async () => {
+    // workspaceRoot = parent of cwd → relFromRoot is "<cwd-name>/a.ts", a clean
+    // relative path, so the ternary on line 94 keeps relFromRoot (not `file`).
+    const parent = dirname(process.cwd());
+    const base = basename(process.cwd());
+    mockDetectEnv.mockReturnValue({ ...tsEnv, workspaceRoot: parent });
+    mockDiscover.mockReturnValue({ files: ['a.ts'], discovered: 1, skipped: 0 });
+    mockAuditFile.mockResolvedValue(mrOf({}));
+    await handleTriageCall(req({ paths: ['src'] }));
+    expect(mockAuditFile).toHaveBeenCalledWith(
+      expect.objectContaining({ targetFile: join(base, 'a.ts') }),
+    );
+  });
+
+  it('falls back to the original file path when the relative path escapes the workspace root', async () => {
+    // workspaceRoot = a deep subdir of cwd → relFromRoot starts with ".." so the
+    // line-94 guard is false and `file` is used. Kills the ConditionalExpression→true
+    // and the `&&`→`||` LogicalOperator mutants there.
+    mockDetectEnv.mockReturnValue({ ...tsEnv, workspaceRoot: join(process.cwd(), 'deep', 'sub') });
+    mockDiscover.mockReturnValue({ files: ['a.ts'], discovered: 1, skipped: 0 });
+    mockAuditFile.mockResolvedValue(mrOf({}));
+    await handleTriageCall(req({ paths: ['src'] }));
+    expect(mockAuditFile).toHaveBeenCalledWith(expect.objectContaining({ targetFile: 'a.ts' }));
+  });
+
+  it('falls back to the original path when the file resolves exactly to the workspace root', async () => {
+    // workspaceRoot === the resolved file → relFromRoot is '' (length 0). The
+    // `relFromRoot.length > 0` guard on line 94 must reject the empty path and keep
+    // `file`. Kills both ConditionalExpression→true and `> 0`→`>= 0`.
+    mockDetectEnv.mockReturnValue({ ...tsEnv, workspaceRoot: join(process.cwd(), 'a.ts') });
+    mockDiscover.mockReturnValue({ files: ['a.ts'], discovered: 1, skipped: 0 });
+    mockAuditFile.mockResolvedValue(mrOf({}));
+    await handleTriageCall(req({ paths: ['src'] }));
+    expect(mockAuditFile).toHaveBeenCalledWith(expect.objectContaining({ targetFile: 'a.ts' }));
   });
 
   it('audits discovered files serially and ranks them weakest-first', async () => {
