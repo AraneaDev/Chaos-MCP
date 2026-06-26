@@ -146,8 +146,12 @@ export function canonicalizeMutator(
     return rawMutator in MUTATOR_SEMANTICS ? rawMutator : 'unknown';
   }
   if (projectType === 'rust' && changeText) {
+    // Strip the cargo-mutants `->` arrow (e.g. "replace get_name -> String with …")
+    // before operator matching so the `-` and `>` in the arrow cannot spuriously
+    // trigger the ArithmeticOperator or EqualityOperator rules.
+    const normalizedText = changeText.replace(/->/g, ' ');
     for (const rule of RUST_DESCRIPTION_RULES) {
-      if (rule.test.test(changeText)) return rule.category;
+      if (rule.test.test(normalizedText)) return rule.category;
     }
   }
   return 'unknown';

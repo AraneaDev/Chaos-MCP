@@ -23,6 +23,13 @@ describe('canonicalizeMutator', () => {
     expect(canonicalizeMutator('replace foo', 'rust', 'replace foo with Default::default()')).toBe('unknown');
   });
 
+  it('does not misclassify cargo-mutants -> arrow as ArithmeticOperator', () => {
+    // The `-` in `->` must not trigger the arithmetic rule.
+    expect(
+      canonicalizeMutator('replace get_name ->', 'rust', 'replace get_name -> String with String::new()'),
+    ).toBe('unknown');
+  });
+
   it('returns unknown for Go and Python (coarse engines)', () => {
     expect(canonicalizeMutator('Go Mutation Operator', 'go')).toBe('unknown');
     expect(canonicalizeMutator('Arithmetic/Logical Mutation', 'python')).toBe('unknown');
