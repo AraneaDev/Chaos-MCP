@@ -399,11 +399,28 @@ describe('PythonEngine', () => {
     await expect(engine.run('src/test.py')).rejects.toThrow('Command failed');
   });
 
-  it('includes stderr prefix in mutmut baseline failure message', async () => {
+  it('rethrows (not baseline-failure) an ExecFailureError whose exit is null', async () => {
+    // exit=null must NOT be treated as a baseline test failure — it falls through
+    // to the generic rethrow. Kills `error.exit !== null`→true (line 273): with
+    // `true`, a null exit would wrongly produce the "baseline test failure" error.
+    mockRunShell.mockRejectedValueOnce(
+      makeExecFailure({ exit: null, signal: null, stderr: 'crash' }),
+    );
+
+    const err = await engine.run('src/test.py').catch((e: Error) => e);
+    expect((err as Error).message).not.toMatch(/baseline test failure/);
+    expect((err as Error).message).toContain('Command failed');
+  });
+
+  it('includes stderr prefix in mutmut baseline failure message, truncated to 500 chars', async () => {
     const longStderr = 'x'.repeat(600);
     mockRunShell.mockRejectedValueOnce(makeExecFailure({ exit: 1, stderr: longStderr }));
 
-    await expect(engine.run('src/test.py')).rejects.toThrow(/Fix the failing tests first.*xxxxx/);
+    const err = await engine.run('src/test.py').catch((e: Error) => e);
+    expect((err as Error).message).toContain('Fix the failing tests first');
+    // Kills the `.slice(0, 500)`→(no slice) MethodExpression on line 276.
+    expect((err as Error).message).toContain('x'.repeat(500));
+    expect((err as Error).message).not.toContain('x'.repeat(501));
   });
 
   // ─── mutmut results catch ─────────────────────────────────────────────────

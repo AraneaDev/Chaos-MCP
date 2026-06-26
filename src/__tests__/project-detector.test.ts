@@ -515,6 +515,20 @@ describe('detectPythonTestRunner', () => {
 
       expect(detectPythonTestRunner('/workspace')).toBe('pytest');
     });
+
+    it('does NOT treat a setup.cfg lacking [tool:pytest] as pytest', () => {
+      // A setup.cfg with no pytest section must fall through to the mutmut
+      // runner override. Kills `'[tool:pytest]'`→"" (line 330): `includes("")`
+      // is always true and would short-circuit to 'pytest' here.
+      mockReadFileSync.mockImplementation((p) => {
+        const path = String(p);
+        if (path.endsWith('setup.cfg')) return '[metadata]\nname = foo';
+        if (path.endsWith('pyproject.toml')) return '[tool.mutmut]\nrunner = "nose2"';
+        throw new Error('ENOENT');
+      });
+
+      expect(detectPythonTestRunner('/workspace')).toBe('nose2');
+    });
   });
 
   describe('tox/nox orchestrator detection (Priority 4)', () => {

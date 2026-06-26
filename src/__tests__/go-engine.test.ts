@@ -410,6 +410,50 @@ describe('GoEngine', () => {
     await expect(engine.run('src/test.go')).rejects.toThrow(/compiler exploded/);
   });
 
+  it('truncates a long stderr tail to 500 chars in the no-output failure message', async () => {
+    // Kills the `.slice(0, 500)`→(no slice) MethodExpression on line 189.
+    const longStderr = 'E'.repeat(600);
+    mockRunShell.mockRejectedValue(makeExecFailure({ exit: 1, stdout: '', stderr: longStderr }));
+    const err = await engine.run('src/test.go').catch((e: Error) => e);
+    expect((err as Error).message).toContain('E'.repeat(500));
+    expect((err as Error).message).not.toContain('E'.repeat(501));
+  });
+
+  it('truncates a long stderr tail to 500 chars in the H2 baseline-failure message', async () => {
+    // Kills the `.slice(0, 500)`→(no slice) MethodExpression on line 209 (the
+    // non-zero-exit + zero-mutants-parsed path, stdout present but unparseable).
+    const longStderr = 'B'.repeat(600);
+    mockRunShell.mockRejectedValue(
+      makeExecFailure({
+        exit: 1,
+        stdout: '# pkg\n./main.go:5:2: undefined: foo',
+        stderr: longStderr,
+      }),
+    );
+    const err = await engine.run('src/test.go').catch((e: Error) => e);
+    expect((err as Error).message).toMatch(/baseline failure/);
+    expect((err as Error).message).toContain('B'.repeat(500));
+    expect((err as Error).message).not.toContain('B'.repeat(501));
+  });
+
+  it('truncates a long stderr tail to 500 chars in the verbose log', async () => {
+    // Kills the `.slice(0, 500)`→(no slice) MethodExpression on line 195.
+    const { isVerbose, log } = await import('../utils/logger.js');
+    const mockLog = vi.mocked(log);
+    const mockVerbose = vi.mocked(isVerbose);
+    mockVerbose.mockReturnValue(true);
+    mockRunShell.mockResolvedValue(makeExecResult('PASS  "/path/src/m.go:1:1"', 'W'.repeat(600)));
+
+    await engine.run('src/main.go');
+
+    const stderrLog = mockLog.mock.calls
+      .map((c) => String(c[0]))
+      .find((s) => s.includes('go-mutesting stderr'));
+    expect(stderrLog).toContain('W'.repeat(500));
+    expect(stderrLog).not.toContain('W'.repeat(501));
+    mockVerbose.mockReturnValue(false);
+  });
+
   it('does not log when verbose mode is off', async () => {
     const { isVerbose, log } = await import('../utils/logger.js');
     const mockLog = vi.mocked(log);

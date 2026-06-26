@@ -424,6 +424,10 @@ describe('RustEngine', () => {
     const result = await engine.run('src/file');
     // lineMatch is null → mutantLine = 0
     expect(result.vulnerabilities[0].line).toBe(0);
+    // No description was extracted → `mutated` must stay unset. Kills the
+    // `desc`→true ConditionalExpression (line 77) and the `: ''`→junk fallback
+    // (line 70), both of which would wrongly populate `mutated`.
+    expect(result.vulnerabilities[0].mutated).toBeUndefined();
   });
 
   it('handles non-zero exit with empty stdout but non-empty stderr', async () => {
@@ -452,6 +456,8 @@ describe('RustEngine', () => {
     mockRunShell.mockResolvedValue(makeExecResult(stdout));
     const result = await engine.run('src/main.rs');
     expect(result.vulnerabilities[0].mutator).toBe('Rust Mutation Operator');
+    // Empty description → `mutated` stays unset (kills `m.description`→true, line 124).
+    expect(result.vulnerabilities[0].mutated).toBeUndefined();
   });
 
   // ─── Mutation hardening: JSON filter precision + summary math + verbose ────
@@ -615,5 +621,53 @@ describe('RustEngine', () => {
     const result = await engine.run('src/lib.rs');
     const vuln = result.vulnerabilities.find((v) => v.line === 7);
     expect(vuln?.mutated).toBe('replace foo -> bar');
+  });
+
+  it('parses a multi-digit column without leaking it into the description', async () => {
+    // Column 15 has two digits; a `:\d+`→`:\d` mutant would consume only `1`,
+    // leaving `5:` glued to the front of the description.
+    const stdout = 'MISSED   src/lib.rs:42:15: replace add -> sub\n';
+    mockRunShell.mockResolvedValue(makeExecResult(stdout));
+    const result = await engine.run('src/lib.rs');
+    const vuln = result.vulnerabilities.find((v) => v.line === 42);
+    expect(vuln?.mutated).toBe('replace add -> sub');
+  });
+
+  it('trims surrounding whitespace from the text-path description', async () => {
+    // Trailing whitespace in the captured group must be stripped (kills the
+    // `locMatch[2].trim()`→`locMatch[2]` MethodExpression on line 70).
+    const stdout = 'MISSED   src/lib.rs:9:1:   replace x -> y   \n';
+    mockRunShell.mockResolvedValue(makeExecResult(stdout));
+    const result = await engine.run('src/lib.rs');
+    const vuln = result.vulnerabilities.find((v) => v.line === 9);
+    expect(vuln?.mutated).toBe('replace x -> y');
+  });
+
+  it('truncates a long stderr tail to 500 chars in the no-output failure message', async () => {
+    // Kills the `.slice(0, 500)`→(no slice) MethodExpression on line 186.
+    const longStderr = 'E'.repeat(600);
+    mockRunShell.mockRejectedValue(makeExecFailure({ exit: 1, stdout: '', stderr: longStderr }));
+    const err = await engine.run('src/test.rs').catch((e: Error) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toContain('E'.repeat(500));
+    expect((err as Error).message).not.toContain('E'.repeat(501));
+  });
+
+  it('truncates a long stderr tail to 500 chars in the verbose log', async () => {
+    // Kills the `.slice(0, 500)`→(no slice) MethodExpression on line 192.
+    const { isVerbose, log } = await import('../utils/logger.js');
+    const mockLog = vi.mocked(log);
+    const mockVerbose = vi.mocked(isVerbose);
+    mockVerbose.mockReturnValue(true);
+    mockRunShell.mockResolvedValue(makeExecResult('CAUGHT   src/m.rs:1:1  x', 'W'.repeat(600)));
+
+    await engine.run('src/m.rs');
+
+    const stderrLog = mockLog.mock.calls
+      .map((c) => String(c[0]))
+      .find((s) => s.includes('cargo-mutants stderr'));
+    expect(stderrLog).toContain('W'.repeat(500));
+    expect(stderrLog).not.toContain('W'.repeat(501));
+    mockVerbose.mockReturnValue(false);
   });
 });
