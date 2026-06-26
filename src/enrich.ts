@@ -155,3 +155,50 @@ export function canonicalizeMutator(
 
 // Referenced by later tasks (kept here to centralize the type import).
 export type { SupportedProjectType };
+
+export interface Enrichment {
+  severity: Severity;
+  why: string;
+  hint: string;
+  context?: string[];
+}
+
+export interface EnrichGroupInput {
+  line: number;
+  mutators: Record<string, number>;
+  changes?: string[];
+  projectType: SupportedProjectType;
+  sourceLines?: string[];
+}
+
+const CONTEXT_RADIUS = 2;
+
+/** Source window [line-RADIUS, line+RADIUS] clamped to the file, line-numbered. */
+function buildContext(line: number, sourceLines?: string[]): string[] | undefined {
+  if (!sourceLines || line < 1 || line > sourceLines.length) return undefined;
+  const start = Math.max(1, line - CONTEXT_RADIUS);
+  const end = Math.min(sourceLines.length, line + CONTEXT_RADIUS);
+  const out: string[] = [];
+  for (let n = start; n <= end; n++) out.push(`${n}: ${sourceLines[n - 1]}`);
+  return out;
+}
+
+/** Compute severity + why/hint + context for a single survivor line group. */
+export function enrichGroup(input: EnrichGroupInput): Enrichment {
+  const changeText = input.changes?.join(' ');
+  let best: { category: string; semantic: MutatorSemantic } | undefined;
+  for (const rawMutator of Object.keys(input.mutators)) {
+    const category = canonicalizeMutator(rawMutator, input.projectType, changeText);
+    const semantic = MUTATOR_SEMANTICS[category];
+    if (!semantic) continue;
+    if (!best || SEVERITY_RANK[semantic.severity] > SEVERITY_RANK[best.semantic.severity]) {
+      best = { category, semantic };
+    }
+  }
+
+  const context = buildContext(input.line, input.sourceLines);
+  if (!best) {
+    return { severity: 'unknown', why: UNKNOWN_SEMANTIC.why, hint: UNKNOWN_SEMANTIC.hint, context };
+  }
+  return { severity: best.semantic.severity, why: best.semantic.why, hint: best.semantic.hint, context };
+}
