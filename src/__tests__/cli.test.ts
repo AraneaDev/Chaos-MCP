@@ -164,9 +164,9 @@ describe('cli', () => {
       mockValidateConfig.mockReturnValue({ config: {}, warnings: ['bad key', 'other'] });
       const { exitCode } = run(['--validate-config']);
       expect(errSpy).toHaveBeenCalledWith('Config validation warnings:');
-      // The loop body (and its ⚠ template literal) must actually emit each warning.
-      expect(errSpy).toHaveBeenCalledWith('  ⚠  bad key');
-      expect(errSpy).toHaveBeenCalledWith('  ⚠  other');
+      // The loop body must actually emit each warning line.
+      expect(errSpy).toHaveBeenCalledWith('  - bad key');
+      expect(errSpy).toHaveBeenCalledWith('  - other');
       expect(exitCode).toBe(1);
     });
 

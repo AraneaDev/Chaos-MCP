@@ -5,11 +5,11 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![status: in development](https://img.shields.io/badge/status-in%20development-orange.svg)](#)
 
-> ⚠️ **Pre-release / in active development.** Chaos-MCP is **not yet published to npm** and is **not on a public host** — it currently lives in a private [Forgejo](https://forgejo.org/) repository. Install from source (see [Installation](#-installation)). Any `npm install -g` / `npx` commands in this README describe the planned published experience and do not work yet.
+> **Pre-release / in active development.** Chaos-MCP is **not yet published to npm** and is **not on a public host** — it currently lives in a private [Forgejo](https://forgejo.org/) repository. Install from source (see [Installation](#installation)). Any `npm install -g` / `npx` commands in this README describe the planned published experience and do not work yet.
 
 Chaos-MCP is an [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server that exposes two tools — `audit_code_resilience` (audit a single file) and `triage_test_coverage` (rank a whole tree weakest-first) — which run isolated mutation testing against your source to find weaknesses in the local test suite. It intentionally injects logical faults (like changing `>` to `>=`) and checks whether your tests catch them. Surviving mutants indicate test coverage holes.
 
-## ✨ Features
+## Features
 
 - **4 Languages Supported** — TypeScript/JavaScript (StrykerJS), Python (Mutmut), Go (go-mutesting), Rust (cargo-mutants)
 - **Sandbox Isolation** — all mutation runs execute in temporary directories; your real workspace is never touched
@@ -18,7 +18,7 @@ Chaos-MCP is an [MCP (Model Context Protocol)](https://modelcontextprotocol.io/)
 - **Rich Tool Schema** — supports line scoping, mutator denylists, concurrency control, dry-run mode, incremental runs, and output format selection
 - **Cross-Platform** — works on macOS, Linux, and Windows (with junction fallback for symlinks)
 
-## 📦 Installation
+## Installation
 
 While in development, the only supported install path is **from source** — clone the private repo, build, and register the built entrypoint with your MCP client.
 
@@ -37,11 +37,11 @@ claude mcp add chaos-mcp -- node /absolute/path/to/ChaosMCP/build/index.js
 
 > **Planned (not available yet):** once published, install will be `npm install -g chaos-mcp` or run on demand via `npx chaos-mcp`. These do not work until the package ships to npm.
 
-## 🚀 Quick Start
+## Quick Start
 
 ### 1. Start the Server
 
-Normally your MCP client launches the server for you (see [Installation](#-installation)). To run it directly from a source checkout:
+Normally your MCP client launches the server for you (see [Installation](#installation)). To run it directly from a source checkout:
 
 ```bash
 # From the repo root, after `npm run build`
@@ -52,7 +52,7 @@ node build/index.js --config ./chaos-mcp.config.json
 
 ### 2. Call the Tool from Your MCP Client
 
-The primary tool is `audit_code_resilience` (the batch tool `triage_test_coverage` is documented [below](#-batch-triage--triage_test_coverage)).
+The primary tool is `audit_code_resilience` (the batch tool `triage_test_coverage` is documented [below](#batch-triage--triage_test_coverage)).
 
 **Minimal example:**
 ```json
@@ -125,26 +125,26 @@ Survivors (line: mutators):
 Add or strengthen tests targeting these lines to kill the survivors.
 ```
 
-## 🛠️ Tool Parameters
+## Tool Parameters
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `filePath` | `string` | ✅ | Workspace-relative path to the file (`.ts`, `.js`, `.tsx`, `.jsx`, `.py`, `.go`, `.rs`) |
-| `timeoutMs` | `number` | ❌ | Max run time in ms (default: 300000 / 5 min) |
-| `lineScope` | `{ start, end }` | ❌ | 1-based line range (StrykerJS only) |
-| `diffBase` | `string` | ❌ | Auto-scope mutation to git-changed lines. `"HEAD"` (uncommitted), `"staged"`, or a git ref (e.g. `"main"`, via merge-base). Mutually exclusive with `lineScope`. Line-level scoping is StrykerJS-only; other languages run whole-file with a note. No changes vs base → run skipped. |
-| `baseline` | `object` | ❌ | Verify mode. Pass back a prior run's `{ survivors, noCoverage }` to re-test only those mutants and get a delta (`nowKilled` / `stillSurviving` / `newSurvivors`). Re-run auto-scopes to the baseline lines (StrykerJS) or whole-file (other languages). Mutually exclusive with `diffBase`/`lineScope`. Verify mode keys on line numbers, so run it after **adding tests** — not after editing the source under test, since edits shift line numbers and would misreport which mutants were killed. |
-| `mutatorAllowlist` | `string[]` | ❌ | ⚠ Not supported in StrykerJS v9 — ignored (use `mutatorDenylist`) |
-| `mutatorDenylist` | `string[]` | ❌ | Stryker mutator names to exclude |
-| `concurrency` | `number` | ❌ | Parallel mutation workers (StrykerJS only) |
-| `dryRun` | `boolean` | ❌ | Validate test suite only, no mutations (StrykerJS only) |
-| `outputFormat` | `"json"` \| `"text"` | ❌ | Output format (default: `"json"`) |
-| `incremental` | `boolean` | ❌ | Reuse previous run results (StrykerJS only) |
-| `ignorePatterns` | `string[]` | ❌ | Substring patterns to exclude from sandbox copy |
+| `filePath` | `string` | Yes | Workspace-relative path to the file (`.ts`, `.js`, `.tsx`, `.jsx`, `.py`, `.go`, `.rs`) |
+| `timeoutMs` | `number` | No | Max run time in ms (default: 300000 / 5 min) |
+| `lineScope` | `{ start, end }` | No | 1-based line range (StrykerJS only) |
+| `diffBase` | `string` | No | Auto-scope mutation to git-changed lines. `"HEAD"` (uncommitted), `"staged"`, or a git ref (e.g. `"main"`, via merge-base). Mutually exclusive with `lineScope`. Line-level scoping is StrykerJS-only; other languages run whole-file with a note. No changes vs base → run skipped. |
+| `baseline` | `object` | No | Verify mode. Pass back a prior run's `{ survivors, noCoverage }` to re-test only those mutants and get a delta (`nowKilled` / `stillSurviving` / `newSurvivors`). Re-run auto-scopes to the baseline lines (StrykerJS) or whole-file (other languages). Mutually exclusive with `diffBase`/`lineScope`. Verify mode keys on line numbers, so run it after **adding tests** — not after editing the source under test, since edits shift line numbers and would misreport which mutants were killed. |
+| `mutatorAllowlist` | `string[]` | No | Not supported in StrykerJS v9 — ignored (use `mutatorDenylist`) |
+| `mutatorDenylist` | `string[]` | No | Stryker mutator names to exclude |
+| `concurrency` | `number` | No | Parallel mutation workers (StrykerJS only) |
+| `dryRun` | `boolean` | No | Validate test suite only, no mutations (StrykerJS only) |
+| `outputFormat` | `"json"` \| `"text"` | No | Output format (default: `"json"`) |
+| `incremental` | `boolean` | No | Reuse previous run results (StrykerJS only) |
+| `ignorePatterns` | `string[]` | No | Substring patterns to exclude from sandbox copy |
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for development setup and the full parameter semantics.
 
-## 🧭 Batch Triage — `triage_test_coverage`
+## Batch Triage — `triage_test_coverage`
 
 A second tool ranks where your test suite is weakest across many files in one call.
 
@@ -166,7 +166,7 @@ Drill into a weak file with `audit_code_resilience` for per-mutant survivor deta
 
 **Parameters:** `paths` (required array of files/dirs), `maxFiles` (integer ≥ 1), `timeoutMs` (per-file), `mutatorDenylist`, `outputFormat`.
 
-## 🔧 Configuration
+## Configuration
 
 Create a `chaos-mcp.config.json` in your workspace root for default settings:
 
@@ -192,7 +192,7 @@ Tool call arguments override config defaults.
 
 The `prebuildCommand` tool argument runs an arbitrary shell command inside the sandbox, which can reach outside it. It is **disabled by default**. Enable it explicitly with `"allowPrebuild": true` in `chaos-mcp.config.json`, or by setting the `CHAOS_MCP_ALLOW_PREBUILD=1` environment variable. Auto-detected prebuilds for Go (`go mod download`) and Rust (`cargo check`) run without this flag.
 
-## 🏃 Supported Test Runners (Auto-Detected)
+## Supported Test Runners (Auto-Detected)
 
 | Language | Mutation Tool | Detected Runners |
 |----------|--------------|------------------|
@@ -201,7 +201,7 @@ The `prebuildCommand` tool argument runs an arbitrary shell command inside the s
 | Go | go-mutesting | go test, testify, ginkgo |
 | Rust | cargo-mutants | cargo test, cargo-nextest |
 
-## 📋 CLI Flags
+## CLI Flags
 
 ```
 chaos-mcp [flags]
@@ -212,7 +212,7 @@ chaos-mcp [flags]
   --verbose   Enable diagnostic logging to stderr
 ```
 
-## 🧪 Development
+## Development
 
 ```bash
 npm run check         # Full CI pipeline: build + lint + format + test
@@ -222,11 +222,11 @@ npm run test:coverage # Tests with coverage report
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for detailed development setup and contribution guidelines.
 
-## 📄 License
+## License
 
 MIT — See [LICENSE](LICENSE) for details.
 
-## 🔗 Links
+## Links
 
 - [MCP Documentation](https://modelcontextprotocol.io/)
 - [StrykerJS](https://stryker-mutator.io/)

@@ -48,7 +48,7 @@ export const TOOL_DEFINITION = {
         type: 'array',
         items: { type: 'string' },
         description:
-          '⚠ NOT SUPPORTED in StrykerJS v9 and ignored — passing it has no effect. ' +
+          'NOT SUPPORTED in StrykerJS v9 and ignored — passing it has no effect. ' +
           'v9 has no way to express "only these mutators" without the full mutator list. ' +
           'Use mutatorDenylist to exclude noisy mutators instead, or supply your own stryker.config.json.',
       },

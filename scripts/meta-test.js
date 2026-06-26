@@ -28,7 +28,7 @@ const request = {
   },
 };
 
-console.log('🔬 Running chaos-mcp against its own source: src/utils/exec-classify.ts');
+console.log('Running chaos-mcp against its own source: src/utils/exec-classify.ts');
 console.log('   (tests the full pipeline: handler → sandbox → StrykerJS → parse)');
 console.log('');
 
@@ -39,12 +39,12 @@ try {
 
   if (response.isError) {
     const text = response.content[0].text;
-    console.log(`⚠️  Tool returned an error after ${elapsed}s:`);
+    console.log(`Tool returned an error after ${elapsed}s:`);
     console.log(`   ${text.slice(0, 500)}`);
   } else {
     const text = response.content[0].text;
     const result = JSON.parse(text);
-    console.log(`✅ Mutation audit complete (${elapsed}s):`);
+    console.log(`Mutation audit complete (${elapsed}s):`);
     console.log(`   Target:         ${result.target}`);
     console.log(`   Total mutants:  ${result.totalMutants}`);
     console.log(`   Killed:         ${result.killed}`);
@@ -59,13 +59,13 @@ try {
         console.log(`     ... and ${result.vulnerabilities.length - 5} more`);
       }
     } else {
-      console.log('   🎉 No surviving mutants!');
+      console.log('   No surviving mutants!');
     }
   }
   process.exit(response.isError ? 1 : 0);
 } catch (error) {
   const elapsed = ((Date.now() - start) / 1000).toFixed(1);
   const message = error instanceof Error ? error.message : String(error);
-  console.error(`❌ Crash after ${elapsed}s: ${message}`);
+  console.error(`Crash after ${elapsed}s: ${message}`);
   process.exit(2);
 }

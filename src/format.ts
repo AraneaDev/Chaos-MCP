@@ -106,7 +106,7 @@ export function formatResultAsText(result: MutationResult): string {
   }
 
   if (survivors.length === 0 && noCoverage.length === 0) {
-    lines.push('✅ No surviving mutants — your tests caught all mutations.');
+    lines.push('No surviving mutants — your tests caught all mutations.');
     return lines.join('\n');
   }
 

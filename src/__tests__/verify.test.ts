@@ -145,10 +145,10 @@ describe('formatVerifyResultAsText', () => {
     );
     const text = formatVerifyResultAsText('src/x.ts', delta);
     expect(text).toContain('Chaos-MCP Verify Report: src/x.ts');
-    expect(text).toContain('✅ All 1 previously-uncaught mutants are now killed.');
+    expect(text).toContain('All 1 previously-uncaught mutants are now killed.');
     // The report header and success line are joined by '\n' (kills join('\n')→join('')).
     expect(text).toBe(
-      'Chaos-MCP Verify Report: src/x.ts\n✅ All 1 previously-uncaught mutants are now killed.',
+      'Chaos-MCP Verify Report: src/x.ts\nAll 1 previously-uncaught mutants are now killed.',
     );
   });
 
@@ -191,7 +191,7 @@ describe('formatVerifyResultAsText', () => {
       result([{ line: 1, mutator: 'B' }]),
     );
     const text = formatVerifyResultAsText('src/x.ts', delta);
-    expect(text).not.toContain('✅ All');
+    expect(text).not.toContain('All 1 previously-uncaught mutants are now killed.');
     expect(text).toContain('New survivors (regressions on baseline lines):');
   });
 

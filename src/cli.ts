@@ -131,7 +131,7 @@ export function runCli({ appVersion, startServer }: CliDeps): void {
     if (warnings.length > 0) {
       console.error('Config validation warnings:');
       for (const w of warnings) {
-        console.error(`  ⚠  ${w}`);
+        console.error(`  - ${w}`);
       }
       process.exit(strict ? 2 : 1);
     }

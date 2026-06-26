@@ -51,7 +51,7 @@ describe('formatResultAsText', () => {
       [
         'Chaos-MCP Audit Report: src/foo.ts',
         'Mutation score: 100.00% (10/10 killed, 0 survived)',
-        '✅ No surviving mutants — your tests caught all mutations.',
+        'No surviving mutants — your tests caught all mutations.',
       ].join('\n'),
     );
   });
@@ -115,7 +115,8 @@ describe('formatResultAsText', () => {
       ].join('\n'),
     );
     expect(text).not.toContain('Survivors (line: mutators):');
-    expect(text).not.toContain('✅');
+    // No-coverage mutants exist, so the all-clear success line must NOT appear.
+    expect(text).not.toContain('No surviving mutants');
   });
 
   it('shows both the survivors and no-coverage tables, survivors first', () => {

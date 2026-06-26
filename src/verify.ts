@@ -101,7 +101,7 @@ export function formatVerifyResultAsJson(target: string, delta: VerifyDelta): st
 export function formatVerifyResultAsText(target: string, delta: VerifyDelta): string {
   const lines: string[] = [`Chaos-MCP Verify Report: ${target}`];
   if (delta.stillSurviving.length === 0 && delta.newSurvivors.length === 0) {
-    lines.push(`✅ All ${delta.baselineTotal} previously-uncaught mutants are now killed.`);
+    lines.push(`All ${delta.baselineTotal} previously-uncaught mutants are now killed.`);
     return lines.join('\n');
   }
   lines.push(
