@@ -3,8 +3,9 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { TOOL_DEFINITION } from './tool-schema.js';
+import { TOOL_DEFINITION, TRIAGE_TOOL_DEFINITION } from './tool-schema.js';
 import { handleToolCall } from './handler.js';
+import { handleTriageCall } from './triage-handler.js';
 import { ChaosConfig } from './utils/config-loader.js';
 import { runCli } from './cli.js';
 
@@ -43,18 +44,21 @@ export async function startServer(config?: ChaosConfig): Promise<void> {
 
   /**
    * List available tools.
-   * Chaos-MCP exposes a single tool: audit_code_resilience.
+   * Chaos-MCP exposes two tools: audit_code_resilience and triage_test_coverage.
    */
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     return {
-      tools: [TOOL_DEFINITION],
+      tools: [TOOL_DEFINITION, TRIAGE_TOOL_DEFINITION],
     };
   });
 
   /**
-   * Dispatch tool calls to the handler.
+   * Dispatch tool calls to the appropriate handler.
    */
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    if (request.params.name === 'triage_test_coverage') {
+      return handleTriageCall(request, config);
+    }
     return handleToolCall(request, config);
   });
 

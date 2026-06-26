@@ -37,6 +37,7 @@ vi.mock('fs', async () => {
   return {
     ...actual,
     existsSync: vi.fn().mockReturnValue(false),
+    realpathSync: vi.fn((p: string) => p),
   };
 });
 

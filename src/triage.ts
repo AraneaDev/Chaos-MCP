@@ -1,0 +1,175 @@
+import { readdirSync } from 'fs';
+import { join, relative, resolve } from 'path';
+import type { MutationResult } from './engines/base.js';
+
+export interface TriageRow {
+  file: string;
+  mutationScore: string;
+  total: number;
+  killed: number;
+  survived: number;
+  noCoverage: number;
+}
+
+export interface TriageError {
+  file: string;
+  error: string;
+}
+
+const SUPPORTED_EXT = ['.ts', '.js', '.tsx', '.jsx', '.py', '.go', '.rs'];
+const IGNORE_DIRS = new Set([
+  'node_modules',
+  'build',
+  'dist',
+  '.git',
+  'coverage',
+  '.stryker-tmp',
+  'reports',
+  '__tests__',
+  'tests',
+]);
+const TEST_FILE_RE = /(\.test\.|\.spec\.|_test\.(go|py|rs)$|(^|\/)test_[^/]*\.py$)/;
+
+/** True if a path is a mutation-testable source file (supported ext, not a test). */
+export function isSupportedSourceFile(path: string): boolean {
+  if (!SUPPORTED_EXT.some((ext) => path.endsWith(ext))) return false;
+  if (TEST_FILE_RE.test(path)) return false;
+  return true;
+}
+
+/** Recursively collect supported source files under an absolute directory. */
+function walk(absDir: string, workspaceRoot: string, out: string[]): void {
+  let entries;
+  try {
+    entries = readdirSync(absDir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (entry.isDirectory()) {
+      if (IGNORE_DIRS.has(entry.name)) continue;
+      walk(join(absDir, entry.name), workspaceRoot, out);
+    } else if (entry.isFile()) {
+      const rel = relative(workspaceRoot, join(absDir, entry.name));
+      if (isSupportedSourceFile(rel)) out.push(rel);
+    }
+  }
+}
+
+/** Probe whether an absolute path is a directory via readdirSync (throws for files). */
+function readdirSyncIsDir(abs: string): boolean {
+  try {
+    readdirSync(abs);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Expand `paths` (files and/or directories) into workspace-relative supported
+ * source files: dedupe, sort, then cap at `maxFiles`.
+ */
+export function discoverFiles(
+  paths: string[],
+  workspaceRoot: string,
+  maxFiles: number,
+): { files: string[]; discovered: number; skipped: number } {
+  const collected: string[] = [];
+  for (const p of paths) {
+    const abs = resolve(workspaceRoot, p);
+    if (readdirSyncIsDir(abs)) {
+      walk(abs, workspaceRoot, collected);
+    } else {
+      const rel = relative(workspaceRoot, abs);
+      if (isSupportedSourceFile(rel)) collected.push(rel);
+    }
+  }
+  const unique = [...new Set(collected)].sort();
+  const discovered = unique.length;
+  const files = unique.slice(0, maxFiles);
+  return { files, discovered, skipped: discovered - files.length };
+}
+
+/** Parse a "87.50%" score string into a number (NaN-safe → 100). */
+function scoreNum(s: string): number {
+  const n = parseFloat(s);
+  return Number.isFinite(n) ? n : 100;
+}
+
+/** Rank audited results weakest-first: score asc, survived desc, file asc. */
+export function rankResults(results: { file: string; result: MutationResult }[]): TriageRow[] {
+  const rows: TriageRow[] = results.map(({ file, result }) => ({
+    file,
+    mutationScore: result.mutationScore,
+    total: result.totalMutants,
+    killed: result.killed,
+    survived: result.survived,
+    noCoverage: Math.max(0, result.vulnerabilities.length - result.survived),
+  }));
+  return rows.sort(
+    (a, b) =>
+      scoreNum(a.mutationScore) - scoreNum(b.mutationScore) ||
+      b.survived - a.survived ||
+      a.file.localeCompare(b.file),
+  );
+}
+
+function note(rows: TriageRow[], discovered: number, skipped: number): string {
+  if (discovered === 0) {
+    return 'No supported source files found under the given paths.';
+  }
+  const trunc = skipped > 0 ? ` Audited ${rows.length}; ${skipped} skipped by maxFiles.` : '';
+  return (
+    'Ranked weakest-first by mutation score. ' +
+    'Drill into a file with audit_code_resilience for survivor detail.' +
+    trunc
+  );
+}
+
+/** Render the triage result as compact JSON. */
+export function formatTriageAsJson(
+  rows: TriageRow[],
+  errors: TriageError[],
+  discovered: number,
+  skipped: number,
+): string {
+  return JSON.stringify({
+    mode: 'triage',
+    summary: {
+      filesDiscovered: discovered,
+      filesAudited: rows.length,
+      filesSkipped: skipped,
+      filesErrored: errors.length,
+    },
+    ranking: rows,
+    errors,
+    note: note(rows, discovered, skipped),
+  });
+}
+
+/** Render the triage result as a human-readable table. */
+export function formatTriageAsText(
+  rows: TriageRow[],
+  errors: TriageError[],
+  discovered: number,
+  skipped: number,
+): string {
+  const lines: string[] = [
+    `Chaos-MCP Triage: ${rows.length} of ${discovered} files audited` +
+      (skipped > 0 ? ` (${skipped} skipped)` : ''),
+  ];
+  if (rows.length > 0) {
+    lines.push('Weakest first (score  survived/total  file):');
+    for (const r of rows) {
+      lines.push(`  ${r.mutationScore}  ${r.survived}/${r.total}  ${r.file}`);
+    }
+  } else if (discovered === 0) {
+    lines.push('No supported source files found under the given paths.');
+  }
+  if (errors.length > 0) {
+    lines.push('Errors:');
+    for (const e of errors) lines.push(`  ${e.file}: ${e.error}`);
+  }
+  return lines.join('\n');
+}

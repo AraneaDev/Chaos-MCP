@@ -36,6 +36,20 @@ describe('loadConfig', () => {
     expect(config.defaultTimeoutMs).toBe(60000);
   });
 
+  it('loads defaultMaxFiles from config file', () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue(JSON.stringify({ defaultMaxFiles: 10 }));
+    expect(loadConfig('/tmp/config.json').defaultMaxFiles).toBe(10);
+  });
+
+  it('ignores a non-integer / < 1 defaultMaxFiles', () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue(JSON.stringify({ defaultMaxFiles: 0 }));
+    expect(loadConfig('/tmp/config.json').defaultMaxFiles).toBeUndefined();
+    mockReadFileSync.mockReturnValue(JSON.stringify({ defaultMaxFiles: 2.5 }));
+    expect(loadConfig('/tmp/config.json').defaultMaxFiles).toBeUndefined();
+  });
+
   it('loads testRunner from config file', () => {
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue(JSON.stringify({ testRunner: 'jest' }));

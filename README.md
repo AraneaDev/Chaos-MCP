@@ -141,7 +141,7 @@ Add or strengthen tests targeting these lines to kill the survivors.
 | `timeoutMs` | `number` | ❌ | Max run time in ms (default: 300000 / 5 min) |
 | `lineScope` | `{ start, end }` | ❌ | 1-based line range (StrykerJS only) |
 | `diffBase` | `string` | ❌ | Auto-scope mutation to git-changed lines. `"HEAD"` (uncommitted), `"staged"`, or a git ref (e.g. `"main"`, via merge-base). Mutually exclusive with `lineScope`. Line-level scoping is StrykerJS-only; other languages run whole-file with a note. No changes vs base → run skipped. |
-| `baseline` | `object` | ❌ | Verify mode. Pass back a prior run's `{ survivors, noCoverage }` to re-test only those mutants and get a delta (`nowKilled` / `stillSurviving` / `newSurvivors`). Re-run auto-scopes to the baseline lines (StrykerJS) or whole-file (other languages). Mutually exclusive with `diffBase`/`lineScope`. |
+| `baseline` | `object` | ❌ | Verify mode. Pass back a prior run's `{ survivors, noCoverage }` to re-test only those mutants and get a delta (`nowKilled` / `stillSurviving` / `newSurvivors`). Re-run auto-scopes to the baseline lines (StrykerJS) or whole-file (other languages). Mutually exclusive with `diffBase`/`lineScope`. Verify mode keys on line numbers, so run it after **adding tests** — not after editing the source under test, since edits shift line numbers and would misreport which mutants were killed. |
 | `mutatorAllowlist` | `string[]` | ❌ | ⚠ Not supported in StrykerJS v9 — ignored (use `mutatorDenylist`) |
 | `mutatorDenylist` | `string[]` | ❌ | Stryker mutator names to exclude |
 | `concurrency` | `number` | ❌ | Parallel mutation workers (StrykerJS only) |
@@ -152,6 +152,28 @@ Add or strengthen tests targeting these lines to kill the survivors.
 
 See [`docs/DRAFT.md`](docs/DRAFT.md) for the full API reference with examples.
 
+## 🧭 Batch Triage — `triage_test_coverage`
+
+A second tool ranks where your test suite is weakest across many files in one call.
+
+```json
+{ "paths": ["src/utils", "src/index.ts"], "maxFiles": 25 }
+```
+
+Directories are recursively expanded to supported source files (test files skipped), audited **serially** (capped at `maxFiles`; precedence `maxFiles` arg → `defaultMaxFiles` config → 25), and ranked weakest-first by mutation score:
+
+```json
+{ "mode": "triage",
+  "summary": { "filesDiscovered": 30, "filesAudited": 25, "filesSkipped": 5, "filesErrored": 0 },
+  "ranking": [ { "file": "src/a.ts", "mutationScore": "62.50%", "total": 16, "killed": 10, "survived": 5, "noCoverage": 1 } ],
+  "errors": [],
+  "note": "Ranked weakest-first by mutation score. Drill into a file with audit_code_resilience for survivor detail." }
+```
+
+Drill into a weak file with `audit_code_resilience` for per-mutant survivor detail.
+
+**Parameters:** `paths` (required array of files/dirs), `maxFiles` (integer ≥ 1), `timeoutMs` (per-file), `mutatorDenylist`, `outputFormat`.
+
 ## 🔧 Configuration
 
 Create a `chaos-mcp.config.json` in your workspace root for default settings:
@@ -160,11 +182,19 @@ Create a `chaos-mcp.config.json` in your workspace root for default settings:
 {
   "defaultTimeoutMs": 300000,
   "mutatorDenylist": ["StringLiteral"],
-  "concurrency": 4
+  "concurrency": 4,
+  "defaultMaxFiles": 25
 }
 ```
 
 Tool call arguments override config defaults.
+
+| Config key | Type | Default | Description |
+|------------|------|---------|-------------|
+| `defaultTimeoutMs` | `number` | `300000` | Per-file timeout in ms |
+| `mutatorDenylist` | `string[]` | `[]` | Mutator names to exclude globally |
+| `concurrency` | `number` | `4` | Parallel mutation workers |
+| `defaultMaxFiles` | `number` | `25` | Default triage file cap (integer ≥ 1); overridden by the `maxFiles` argument |
 
 ### Enabling `prebuildCommand`
 

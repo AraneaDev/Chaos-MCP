@@ -143,3 +143,48 @@ export const TOOL_DEFINITION = {
     additionalProperties: false,
   },
 };
+
+export const TRIAGE_TOOL_DEFINITION = {
+  name: 'triage_test_coverage',
+  description:
+    'Batch triage: audit a set of files and/or directories and return a weakest-first ranked ' +
+    'leaderboard of mutation scores, so you can see where the test suite is most fragile in one call. ' +
+    'Directories are recursively expanded to supported source files (.ts/.js/.py/.go/.rs), skipping ' +
+    'test files. Files are audited serially. Drill into a weak file with audit_code_resilience for ' +
+    'per-mutant survivor detail.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      paths: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          'Workspace-relative files and/or directories to triage. Directories are recursively ' +
+          'expanded to supported source files. Example: ["src/utils", "src/index.ts"]',
+      },
+      maxFiles: {
+        type: 'integer',
+        minimum: 1,
+        description:
+          'Cap on the number of files audited (precedence: this arg > config.defaultMaxFiles > 25). ' +
+          'Files beyond the cap are skipped (reported in the summary). Example: 25',
+      },
+      timeoutMs: {
+        type: 'number',
+        description: 'Per-file mutation-run timeout in milliseconds. Default: 300000 (5 minutes).',
+      },
+      mutatorDenylist: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Stryker mutator names to exclude, applied to every TypeScript/JS file.',
+      },
+      outputFormat: {
+        type: 'string',
+        enum: ['json', 'text'],
+        description: 'Output format. "json" (default) or "text".',
+      },
+    },
+    required: ['paths'],
+    additionalProperties: false,
+  },
+};

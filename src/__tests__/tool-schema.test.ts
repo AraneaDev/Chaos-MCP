@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { TOOL_DEFINITION } from '../tool-schema.js';
+import { TOOL_DEFINITION, TRIAGE_TOOL_DEFINITION } from '../tool-schema.js';
 
 describe('TOOL_DEFINITION contract', () => {
   it('exposes the audit_code_resilience tool with an object input schema', () => {
@@ -90,5 +90,15 @@ describe('TOOL_DEFINITION contract', () => {
     const props = TOOL_DEFINITION.inputSchema.properties as Record<string, { type: string }>;
     expect(props.baseline).toBeDefined();
     expect(props.baseline.type).toBe('object');
+  });
+});
+
+describe('TRIAGE_TOOL_DEFINITION contract', () => {
+  it('is named triage_test_coverage and requires paths (array)', () => {
+    expect(TRIAGE_TOOL_DEFINITION.name).toBe('triage_test_coverage');
+    expect(TRIAGE_TOOL_DEFINITION.inputSchema.required).toEqual(['paths']);
+    const props = TRIAGE_TOOL_DEFINITION.inputSchema.properties as Record<string, { type: string }>;
+    expect(props.paths.type).toBe('array');
+    expect(props.maxFiles.type).toBe('integer');
   });
 });

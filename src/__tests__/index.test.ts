@@ -26,13 +26,20 @@ vi.mock('@modelcontextprotocol/sdk/server/stdio.js', () => ({
   }),
 }));
 
-vi.mock('../tool-schema.js', () => ({ TOOL_DEFINITION: { name: 'audit_code_resilience' } }));
+vi.mock('../tool-schema.js', () => ({
+  TOOL_DEFINITION: { name: 'audit_code_resilience' },
+  TRIAGE_TOOL_DEFINITION: { name: 'triage_test_coverage' },
+}));
 vi.mock('../handler.js', () => ({ handleToolCall: vi.fn(() => Promise.resolve({ content: [] })) }));
+vi.mock('../triage-handler.js', () => ({
+  handleTriageCall: vi.fn(() => Promise.resolve({ content: [] })),
+}));
 vi.mock('../cli.js', () => ({ runCli: vi.fn() }));
 
 import { startServer, APP_VERSION } from '../index.js';
-import { TOOL_DEFINITION } from '../tool-schema.js';
+import { TOOL_DEFINITION, TRIAGE_TOOL_DEFINITION } from '../tool-schema.js';
 import { handleToolCall } from '../handler.js';
+import { handleTriageCall } from '../triage-handler.js';
 
 describe('startServer', () => {
   beforeEach(() => {
@@ -48,14 +55,14 @@ describe('startServer', () => {
     );
   });
 
-  it('registers the tools/list handler returning the single tool definition', async () => {
+  it('registers the tools/list handler returning both tool definitions', async () => {
     await startServer();
     const handler = sdk.setRequestHandler.mock.calls.find(
       (c) => c[0] === ListToolsRequestSchema,
     )?.[1];
     expect(handler).toBeTypeOf('function');
     const result = await (handler as () => Promise<unknown>)();
-    expect(result).toEqual({ tools: [TOOL_DEFINITION] });
+    expect(result).toEqual({ tools: [TOOL_DEFINITION, TRIAGE_TOOL_DEFINITION] });
   });
 
   it('registers the tools/call handler delegating to handleToolCall with the config', async () => {
@@ -68,6 +75,20 @@ describe('startServer', () => {
     const request = { params: { name: 'audit_code_resilience', arguments: {} } };
     await (handler as (req: unknown) => Promise<unknown>)(request);
     expect(handleToolCall).toHaveBeenCalledWith(request, config);
+    expect(handleTriageCall).not.toHaveBeenCalled();
+  });
+
+  it('routes triage_test_coverage to handleTriageCall with the config', async () => {
+    const config = { defaultMaxFiles: 7 };
+    await startServer(config);
+    const handler = sdk.setRequestHandler.mock.calls.find(
+      (c) => c[0] === CallToolRequestSchema,
+    )?.[1];
+    expect(handler).toBeTypeOf('function');
+    const request = { params: { name: 'triage_test_coverage', arguments: { paths: ['src'] } } };
+    await (handler as (req: unknown) => Promise<unknown>)(request);
+    expect(handleTriageCall).toHaveBeenCalledWith(request, config);
+    expect(handleToolCall).not.toHaveBeenCalled();
   });
 
   it('connects the server over a stdio transport', async () => {

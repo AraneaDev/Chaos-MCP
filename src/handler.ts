@@ -1,11 +1,11 @@
 import { resolve, isAbsolute, relative, join } from 'path';
-import { existsSync } from 'fs';
+import { existsSync, realpathSync } from 'fs';
 import type { CallToolRequest, CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { TypeScriptEngine } from './engines/typescript.js';
 import { PythonEngine } from './engines/python.js';
 import { GoEngine } from './engines/go.js';
 import { RustEngine } from './engines/rust.js';
-import { BaseEngine, RunOptions } from './engines/base.js';
+import { BaseEngine, RunOptions, MutationResult } from './engines/base.js';
 import { detectProjectType, detectEnvironment, EnvironmentInfo } from './utils/project-detector.js';
 import { createSandbox } from './utils/sandbox.js';
 import { runShellCommand } from './utils/exec.js';
@@ -34,6 +34,20 @@ import {
 function isPathInside(candidate: string, root: string): boolean {
   const rel = relative(root, candidate);
   return !rel.startsWith('..') && !isAbsolute(rel);
+}
+
+/** Resolve symlinks (falling back to the lexical path when the target does not
+ *  exist), then test lexical containment. Defense-in-depth against a symlink
+ *  whose lexical path is inside the workspace but resolves outside it. */
+export function isRealPathInside(candidate: string, root: string): boolean {
+  const real = (p: string): string => {
+    try {
+      return realpathSync(p);
+    } catch {
+      return p; // path does not exist yet — can't resolve symlinks, use lexical
+    }
+  };
+  return isPathInside(real(candidate), real(root));
 }
 
 /** Build an MCP error response from a single message. */
@@ -324,8 +338,60 @@ export function resolvePrebuildCommand(
   return null;
 }
 
+export interface AuditFileInput {
+  targetFile: string;
+  env: EnvironmentInfo;
+  projectType: Exclude<ProjectType, 'unsupported'>;
+  engine: BaseEngine;
+  args: ToolArgs;
+  config: ChaosConfig;
+  workDir: string;
+  prebuildCmd: string | null;
+  lineRanges?: { start: number; end: number }[];
+}
+
+/**
+ * Run a single mutation audit inside an ALREADY-PROVISIONED sandbox `workDir`:
+ * build run options, run the (already-resolved/gated) prebuild command, then
+ * run the engine. The caller owns the sandbox lifecycle (provision + cleanup).
+ * Throws `Prebuild command failed in sandbox: …` if the prebuild fails; engine
+ * errors propagate from `engine.run`.
+ */
+export async function auditFile(input: AuditFileInput): Promise<MutationResult> {
+  const { targetFile, env, projectType, engine, args, config, workDir, prebuildCmd, lineRanges } =
+    input;
+  const runOptions = buildRunOptions(args, config, env, workDir, projectType);
+  if (lineRanges) runOptions.lineRanges = lineRanges;
+
+  if (prebuildCmd !== null) {
+    if (isVerbose()) {
+      const prebuildExplicit =
+        typeof args.prebuildCommand === 'string' && args.prebuildCommand.trim().length > 0;
+      const autoLabel =
+        env.packageManager && env.packageManager !== 'pip' ? env.packageManager : projectType;
+      const source = prebuildExplicit ? 'explicit' : `auto (${autoLabel})`;
+      log(`Running prebuild command in sandbox [${source}]: ${prebuildCmd}`);
+    }
+    const prebuildStart = Date.now();
+    try {
+      await runShellCommand(prebuildCmd, { cwd: workDir, timeoutMs: runOptions.timeoutMs });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Prebuild command failed in sandbox: ${message}`);
+    }
+    if (isVerbose()) log('Prebuild command completed successfully');
+    // Deduct prebuild time so timeoutMs bounds the whole run (audit Med#3).
+    if (typeof runOptions.timeoutMs === 'number') {
+      const remaining = runOptions.timeoutMs - (Date.now() - prebuildStart);
+      runOptions.timeoutMs = remaining > 0 ? remaining : 1;
+    }
+  }
+
+  return engine.run(targetFile, runOptions);
+}
+
 /** Construct the engine for a (supported) project type. */
-function makeEngine(projectType: Exclude<ProjectType, 'unsupported'>): BaseEngine {
+export function makeEngine(projectType: Exclude<ProjectType, 'unsupported'>): BaseEngine {
   return projectType === 'typescript'
     ? new TypeScriptEngine()
     : projectType === 'python'
@@ -367,7 +433,7 @@ export async function handleToolCall(
   // against an LLM being tricked into auditing arbitrary host files.
   const rootCwd = resolve(process.cwd());
   const resolvedFile = resolve(rootCwd, rawFilePath);
-  if (!isPathInside(resolvedFile, rootCwd)) {
+  if (!isRealPathInside(resolvedFile, rootCwd)) {
     return toolError(
       `Error: filePath must resolve within the workspace (${rootCwd}); received "${rawFilePath}".`,
     );
@@ -523,16 +589,9 @@ export async function handleToolCall(
         if (engCfg) log(`  engineConfig (${projectType}):`, JSON.stringify(engCfg));
       }
 
-      const runOptions = buildRunOptions(args, cfg, env, sandbox.workDir, projectType);
-      if (diffRanges) runOptions.lineRanges = diffRanges;
-
-      // ── Run prebuild command in the sandbox (before any mutation tool) ──
+      // Resolve + gate the prebuild command (explicit prebuild is opt-in).
       const prebuildCmd = resolvePrebuildCommand(args, env, projectType);
       if (prebuildCmd !== null) {
-        // An explicit prebuildCommand runs an arbitrary shell command that can
-        // reach outside the sandbox, so it must be opted into (audit Med#10).
-        // Auto-detected prebuilds (go mod download, cargo check) are a fixed,
-        // known-safe set and are not gated.
         const prebuildExplicit =
           typeof args.prebuildCommand === 'string' && args.prebuildCommand.trim().length > 0;
         if (prebuildExplicit && !isPrebuildAllowed(cfg)) {
@@ -542,45 +601,41 @@ export async function handleToolCall(
               'file or by setting the CHAOS_MCP_ALLOW_PREBUILD=1 environment variable.',
           );
         }
-        try {
-          if (isVerbose()) {
-            const autoLabel =
-              env.packageManager && env.packageManager !== 'pip' ? env.packageManager : projectType;
-            const source = prebuildExplicit ? 'explicit' : `auto (${autoLabel})`;
-            log(`Running prebuild command in sandbox [${source}]: ${prebuildCmd}`);
-          }
-          const prebuildStart = Date.now();
-          await runShellCommand(prebuildCmd, {
-            cwd: sandbox.workDir,
-            timeoutMs: runOptions.timeoutMs, // prebuild may use up to the full budget
-          });
-          if (isVerbose()) log('Prebuild command completed successfully');
-          // Deduct the time the prebuild consumed so `timeoutMs` bounds the WHOLE
-          // run, not each phase independently (audit Med#3). Floors at 1ms so a
-          // long prebuild still lets the engine start (it will time out quickly).
-          if (typeof runOptions.timeoutMs === 'number') {
-            const remaining = runOptions.timeoutMs - (Date.now() - prebuildStart);
-            runOptions.timeoutMs = remaining > 0 ? remaining : 1;
-          }
-        } catch (error: unknown) {
-          const message = error instanceof Error ? error.message : String(error);
-          return toolError(`Prebuild command failed in sandbox: ${message}`);
-        }
       }
 
-      // Apply output format to the final response
-      const auditResults = await engine.run(targetFile, runOptions);
+      let auditResults: MutationResult;
+      try {
+        auditResults = await auditFile({
+          targetFile,
+          env,
+          projectType,
+          engine,
+          args,
+          config: cfg,
+          workDir: sandbox.workDir,
+          prebuildCmd,
+          lineRanges: diffRanges,
+        });
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        // Prebuild failures keep their specific tool error; engine errors
+        // propagate to the outer catch (unchanged behavior).
+        if (message.startsWith('Prebuild command failed in sandbox:')) {
+          return toolError(message);
+        }
+        throw error;
+      }
       if (scopeNote) auditResults.scopeNote = scopeNote;
       if (baselineKeys) {
         const delta = computeVerifyDelta(baselineKeys, auditResults);
         const verifyText =
-          runOptions.outputFormat === 'text'
+          args.outputFormat === 'text'
             ? formatVerifyResultAsText(targetFile, delta)
             : formatVerifyResultAsJson(targetFile, delta);
         return { content: [{ type: 'text', text: verifyText }] };
       }
       const text =
-        runOptions.outputFormat === 'text'
+        args.outputFormat === 'text'
           ? formatResultAsText(auditResults)
           : formatResultAsJson(auditResults);
 

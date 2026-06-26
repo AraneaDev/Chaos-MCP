@@ -6,6 +6,7 @@ import { resolve } from 'path';
 /** Valid top-level config keys known to ChaosConfig. */
 const KNOWN_KEYS = new Set([
   'defaultTimeoutMs',
+  'defaultMaxFiles',
   'testRunner',
   'concurrency',
   'mutatorAllowlist',
@@ -100,6 +101,9 @@ export interface CargoMutantsConfig {
 export interface ChaosConfig {
   /** Default timeout in milliseconds for all mutation runs. */
   defaultTimeoutMs?: number;
+
+  /** Default cap on files audited by triage_test_coverage (integer >= 1; default 25). */
+  defaultMaxFiles?: number;
 
   /** Default test runner override (applied when auto-detection is inconclusive). */
   testRunner?: string;
@@ -258,6 +262,13 @@ function buildConfig(raw: Record<string, unknown>): ChaosConfig {
 
   if (typeof raw.defaultTimeoutMs === 'number' && raw.defaultTimeoutMs > 0) {
     result.defaultTimeoutMs = raw.defaultTimeoutMs;
+  }
+  if (
+    typeof raw.defaultMaxFiles === 'number' &&
+    Number.isInteger(raw.defaultMaxFiles) &&
+    raw.defaultMaxFiles >= 1
+  ) {
+    result.defaultMaxFiles = raw.defaultMaxFiles;
   }
   if (typeof raw.testRunner === 'string' && raw.testRunner.length > 0) {
     result.testRunner = raw.testRunner;

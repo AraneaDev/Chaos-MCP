@@ -4,7 +4,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('fs', () => ({ existsSync: vi.fn(() => false) }));
 
 import { existsSync } from 'fs';
-import { validateToolArgs, buildRunOptions, resolvePrebuildCommand } from '../handler.js';
+import {
+  validateToolArgs,
+  buildRunOptions,
+  resolvePrebuildCommand,
+  auditFile,
+} from '../handler.js';
 import type { EnvironmentInfo } from '../utils/project-detector.js';
 
 const mockExistsSync = vi.mocked(existsSync);
@@ -388,5 +393,34 @@ describe('resolvePrebuildCommand', () => {
     expect(
       resolvePrebuildCommand({}, env({ projectType: 'python', packageManager: 'pip' }), 'python'),
     ).toBeNull();
+  });
+});
+
+describe('auditFile', () => {
+  it('builds run options for the sandbox workDir and returns the engine result', async () => {
+    const result = {
+      target: 'src/x.ts',
+      totalMutants: 2,
+      killed: 2,
+      survived: 0,
+      mutationScore: '100.00%',
+      vulnerabilities: [],
+    };
+    const run = vi.fn().mockResolvedValue(result);
+    const out = await auditFile({
+      targetFile: 'src/x.ts',
+      env: env(),
+      projectType: 'typescript',
+      engine: { run } as never,
+      args: {},
+      config: {},
+      workDir: '/tmp/sandbox',
+      prebuildCmd: null,
+    });
+    expect(out).toBe(result);
+    expect(run).toHaveBeenCalledWith(
+      'src/x.ts',
+      expect.objectContaining({ workDir: '/tmp/sandbox' }),
+    );
   });
 });

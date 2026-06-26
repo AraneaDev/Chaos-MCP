@@ -123,23 +123,29 @@ describe('chaos-mcp integration', () => {
     expect(response.id).toBe(2);
     expect(response.result?.tools).toBeDefined();
     expect(Array.isArray(response.result?.tools)).toBe(true);
-    expect(response.result?.tools).toHaveLength(1);
+    expect(response.result?.tools).toHaveLength(2);
 
-    const tool = response.result?.tools?.[0];
-    expect(tool.name).toBe('audit_code_resilience');
-    expect(tool.description).toContain('mutation testing');
-    expect(tool.inputSchema?.properties?.filePath).toBeDefined();
-    expect(tool.inputSchema?.properties?.timeoutMs).toBeDefined();
-    expect(tool.inputSchema?.properties?.lineScope).toBeDefined();
-    expect(tool.inputSchema?.properties?.mutatorAllowlist).toBeDefined();
-    expect(tool.inputSchema?.properties?.mutatorDenylist).toBeDefined();
-    expect(tool.inputSchema?.properties?.concurrency).toBeDefined();
-    expect(tool.inputSchema?.properties?.dryRun).toBeDefined();
-    expect(tool.inputSchema?.properties?.outputFormat).toBeDefined();
-    expect(tool.inputSchema?.properties?.incremental).toBeDefined();
-    expect(tool.inputSchema?.properties?.ignorePatterns).toBeDefined();
-    expect(tool.inputSchema?.additionalProperties).toBe(false);
-    expect(tool.inputSchema?.required).toContain('filePath');
+    const tools = response.result?.tools as Record<string, unknown>[];
+    const toolNames = tools.map((t) => t.name);
+    expect(toolNames).toContain('audit_code_resilience');
+    expect(toolNames).toContain('triage_test_coverage');
+
+    const tool = tools.find((t) => t.name === 'audit_code_resilience');
+    expect(tool).toBeDefined();
+    expect(tool?.name).toBe('audit_code_resilience');
+    expect(tool?.description).toContain('mutation testing');
+    expect(tool?.inputSchema?.properties?.filePath).toBeDefined();
+    expect(tool?.inputSchema?.properties?.timeoutMs).toBeDefined();
+    expect(tool?.inputSchema?.properties?.lineScope).toBeDefined();
+    expect(tool?.inputSchema?.properties?.mutatorAllowlist).toBeDefined();
+    expect(tool?.inputSchema?.properties?.mutatorDenylist).toBeDefined();
+    expect(tool?.inputSchema?.properties?.concurrency).toBeDefined();
+    expect(tool?.inputSchema?.properties?.dryRun).toBeDefined();
+    expect(tool?.inputSchema?.properties?.outputFormat).toBeDefined();
+    expect(tool?.inputSchema?.properties?.incremental).toBeDefined();
+    expect(tool?.inputSchema?.properties?.ignorePatterns).toBeDefined();
+    expect(tool?.inputSchema?.additionalProperties).toBe(false);
+    expect(tool?.inputSchema?.required).toContain('filePath');
   });
 
   it('returns error for unsupported file extension (audit_code_resilience)', async () => {
