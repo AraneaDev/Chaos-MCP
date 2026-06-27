@@ -11,13 +11,39 @@ const RESULT: MutationResult = {
   mutationScore: '83.33%',
   vulnerabilities: [
     { line: 88, mutator: 'StringLiteral', description: 'survived', mutated: '"a" -> ""' },
-    { line: 42, mutator: 'EqualityOperator', description: 'survived', original: 'a > b', mutated: 'a >= b' },
+    {
+      line: 42,
+      mutator: 'EqualityOperator',
+      description: 'survived',
+      original: 'a > b',
+      mutated: 'a >= b',
+    },
   ],
 };
 
-const SRC = ['L1', 'L2', 'L3', 'L4', 'L5', 'L6', 'L7', 'L8', 'L9', 'L10',
-  'L11', 'L12', 'L13', 'L14', 'L15', 'L16', 'L17', 'L18', 'L19', 'L20',
-  ...Array.from({ length: 70 }, (_, i) => `L${i + 21}`)]; // 90 lines
+const SRC = [
+  'L1',
+  'L2',
+  'L3',
+  'L4',
+  'L5',
+  'L6',
+  'L7',
+  'L8',
+  'L9',
+  'L10',
+  'L11',
+  'L12',
+  'L13',
+  'L14',
+  'L15',
+  'L16',
+  'L17',
+  'L18',
+  'L19',
+  'L20',
+  ...Array.from({ length: 70 }, (_, i) => `L${i + 21}`),
+]; // 90 lines
 
 describe('formatResultAsJson with enrich', () => {
   it('is byte-identical to non-enriched when enrich is omitted', () => {
@@ -28,7 +54,9 @@ describe('formatResultAsJson with enrich', () => {
   });
 
   it('attaches severity/why/hint/context and ranks severity-first', () => {
-    const out = JSON.parse(formatResultAsJson(RESULT, { projectType: 'typescript', sourceLines: SRC }));
+    const out = JSON.parse(
+      formatResultAsJson(RESULT, { projectType: 'typescript', sourceLines: SRC }),
+    );
     // EqualityOperator (line 42, high) ranks before StringLiteral (line 88, low)
     expect(out.survivors[0].line).toBe(42);
     expect(out.survivors[0].severity).toBe('high');

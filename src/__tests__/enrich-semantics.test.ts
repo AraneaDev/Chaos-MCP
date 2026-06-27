@@ -4,10 +4,10 @@ import { MUTATOR_SEMANTICS, SEVERITY_RANK, UNKNOWN_SEMANTIC } from '../enrich.js
 describe('MUTATOR_SEMANTICS table integrity', () => {
   it('every entry has a non-empty why and hint and a valid tier', () => {
     const tiers = new Set(['high', 'medium', 'low']);
-    for (const [name, sem] of Object.entries(MUTATOR_SEMANTICS)) {
-      expect(sem.why.length, `${name}.why`).toBeGreaterThan(0);
-      expect(sem.hint.length, `${name}.hint`).toBeGreaterThan(0);
-      expect(tiers.has(sem.severity), `${name}.severity`).toBe(true);
+    for (const sem of Object.values(MUTATOR_SEMANTICS)) {
+      expect(sem.why.length).toBeGreaterThan(0);
+      expect(sem.hint.length).toBeGreaterThan(0);
+      expect(tiers.has(sem.severity)).toBe(true);
     }
   });
 
@@ -22,7 +22,7 @@ describe('MUTATOR_SEMANTICS table integrity', () => {
       'BooleanLiteral',
       'BlockStatement',
     ]) {
-      expect(MUTATOR_SEMANTICS[name]?.severity, name).toBe('high');
+      expect(MUTATOR_SEMANTICS[name]?.severity).toBe('high');
     }
   });
 

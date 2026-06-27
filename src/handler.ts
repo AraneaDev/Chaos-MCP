@@ -753,7 +753,14 @@ export async function handleToolCall(
       }
       if (scopeNote) auditResults.scopeNote = scopeNote;
       const enrichCtx = buildEnrichContext(args, resolvedFile, projectType);
-      return formatAuditOutput(auditResults, args, projectType, baselineKeys, targetFile, enrichCtx);
+      return formatAuditOutput(
+        auditResults,
+        args,
+        projectType,
+        baselineKeys,
+        targetFile,
+        enrichCtx,
+      );
     } finally {
       // Always clean up the sandbox, even if the engine threw
       sandbox.cleanup();

@@ -198,7 +198,7 @@ export function formatResultAsJson(result: MutationResult, enrich?: EnrichContex
     if (survivors.length > 0) worstSeverity = s.worst;
     if (s.hasUnknown || n.hasUnknown) {
       enrichNote =
-        "some mutants could not be classified — this language's mutation tool doesn't expose per-mutant operator detail (severity reported as \"unknown\").";
+        'some mutants could not be classified — this language\'s mutation tool doesn\'t expose per-mutant operator detail (severity reported as "unknown").';
     }
   }
 

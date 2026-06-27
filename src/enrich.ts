@@ -101,7 +101,7 @@ export const MUTATOR_SEMANTICS: Record<string, MutatorSemantic> = {
   },
   ArrowFunction: {
     severity: 'medium',
-    why: 'an arrow function body was replaced (e.g. with a constant); a callback\'s logic is untested.',
+    why: "an arrow function body was replaced (e.g. with a constant); a callback's logic is untested.",
     hint: "assert the callback's effect through the API that invokes it.",
   },
   StringLiteral: {
@@ -204,5 +204,10 @@ export function enrichGroup(input: EnrichGroupInput): Enrichment {
   if (!best) {
     return { severity: 'unknown', why: UNKNOWN_SEMANTIC.why, hint: UNKNOWN_SEMANTIC.hint, context };
   }
-  return { severity: best.semantic.severity, why: best.semantic.why, hint: best.semantic.hint, context };
+  return {
+    severity: best.semantic.severity,
+    why: best.semantic.why,
+    hint: best.semantic.hint,
+    context,
+  };
 }

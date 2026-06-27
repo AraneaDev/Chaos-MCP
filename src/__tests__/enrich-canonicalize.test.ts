@@ -3,7 +3,9 @@ import { canonicalizeMutator, MUTATOR_SEMANTICS } from '../enrich.js';
 
 describe('canonicalizeMutator', () => {
   it('maps StrykerJS canonical names directly for typescript', () => {
-    expect(canonicalizeMutator('ConditionalExpression', 'typescript')).toBe('ConditionalExpression');
+    expect(canonicalizeMutator('ConditionalExpression', 'typescript')).toBe(
+      'ConditionalExpression',
+    );
     expect(canonicalizeMutator('EqualityOperator', 'typescript')).toBe('EqualityOperator');
     expect(canonicalizeMutator('StringLiteral', 'typescript')).toBe('StringLiteral');
   });
@@ -13,20 +15,34 @@ describe('canonicalizeMutator', () => {
   });
 
   it('infers Rust categories from the change description', () => {
-    expect(canonicalizeMutator('replace > with', 'rust', 'replace > with >=')).toBe('EqualityOperator');
-    expect(canonicalizeMutator('replace add ->', 'rust', 'replace a + b with a - b')).toBe('ArithmeticOperator');
-    expect(canonicalizeMutator('replace && with', 'rust', 'replace x && y with x || y')).toBe('LogicalOperator');
-    expect(canonicalizeMutator('replace true', 'rust', 'replace true with false')).toBe('BooleanLiteral');
+    expect(canonicalizeMutator('replace > with', 'rust', 'replace > with >=')).toBe(
+      'EqualityOperator',
+    );
+    expect(canonicalizeMutator('replace add ->', 'rust', 'replace a + b with a - b')).toBe(
+      'ArithmeticOperator',
+    );
+    expect(canonicalizeMutator('replace && with', 'rust', 'replace x && y with x || y')).toBe(
+      'LogicalOperator',
+    );
+    expect(canonicalizeMutator('replace true', 'rust', 'replace true with false')).toBe(
+      'BooleanLiteral',
+    );
   });
 
   it('returns unknown for Rust when the description has no recognizable operator', () => {
-    expect(canonicalizeMutator('replace foo', 'rust', 'replace foo with Default::default()')).toBe('unknown');
+    expect(canonicalizeMutator('replace foo', 'rust', 'replace foo with Default::default()')).toBe(
+      'unknown',
+    );
   });
 
   it('does not misclassify cargo-mutants -> arrow as ArithmeticOperator', () => {
     // The `-` in `->` must not trigger the arithmetic rule.
     expect(
-      canonicalizeMutator('replace get_name ->', 'rust', 'replace get_name -> String with String::new()'),
+      canonicalizeMutator(
+        'replace get_name ->',
+        'rust',
+        'replace get_name -> String with String::new()',
+      ),
     ).toBe('unknown');
   });
 

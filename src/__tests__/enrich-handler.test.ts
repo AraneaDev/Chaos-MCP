@@ -9,7 +9,9 @@ import { TOOL_DEFINITION } from '../tool-schema.js';
 describe('enrich schema + validation', () => {
   it('declares enrich as a boolean in the tool schema', () => {
     expect(TOOL_DEFINITION.inputSchema.properties).toHaveProperty('enrich');
-    expect((TOOL_DEFINITION.inputSchema.properties as Record<string, { type: string }>).enrich.type).toBe('boolean');
+    expect(
+      (TOOL_DEFINITION.inputSchema.properties as Record<string, { type: string }>).enrich.type,
+    ).toBe('boolean');
   });
 
   it('accepts enrich: true and enrich absent', () => {
