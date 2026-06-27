@@ -65,3 +65,30 @@ describe('buildResultPayload maxSurvivors', () => {
     expect(payload.survivorsTruncated).toBeUndefined();
   });
 });
+
+describe('buildResultPayload severityFloor', () => {
+  it('drops groups below the floor and counts them, when enriched', () => {
+    const payload = buildResultPayload(
+      result({
+        vulnerabilities: [
+          { line: 1, mutator: 'ConditionalExpression', description: 'survived' }, // high
+          { line: 2, mutator: 'StringLiteral', description: 'survived' }, // low
+        ],
+      }),
+      { enrich: { projectType: 'typescript' }, severityFloor: 'high' },
+    );
+    expect(payload.survivors).toHaveLength(1);
+    expect(payload.survivors[0].line).toBe(1);
+    expect(payload.survivorsFiltered).toBe(1);
+  });
+
+  it('ignores severityFloor when not enriched and notes why', () => {
+    const payload = buildResultPayload(
+      result({ vulnerabilities: [{ line: 1, mutator: 'ConditionalExpression', description: 'survived' }] }),
+      { severityFloor: 'high' },
+    );
+    expect(payload.survivors).toHaveLength(1);
+    expect(payload.survivorsFiltered).toBeUndefined();
+    expect(payload.enrichNote).toContain('severityFloor');
+  });
+});

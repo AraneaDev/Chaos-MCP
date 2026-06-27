@@ -139,6 +139,22 @@ function capGroups(groups: LineGroup[], max: number | undefined): { groups: Line
 }
 
 /**
+ * Filter out line groups whose severity is below `floor`.
+ * Only has an effect when `enriched` is true (severity data is present).
+ * Returns the kept groups and the count of dropped groups.
+ */
+function floorGroups(
+  groups: LineGroup[],
+  floor: Severity | undefined,
+  enriched: boolean,
+): { groups: LineGroup[]; filtered: number } {
+  if (!enriched || !floor) return { groups, filtered: 0 };
+  const min = SEVERITY_RANK[floor];
+  const kept = groups.filter((g) => SEVERITY_RANK[(g as EnrichedGroup).severity ?? 'unknown'] >= min);
+  return { groups: kept, filtered: groups.length - kept.length };
+}
+
+/**
  * Format a MutationResult as a compact, human-readable text summary.
  * Used when the caller requests `outputFormat: 'text'`.
  */
@@ -161,10 +177,16 @@ export function formatResultAsText(
     return lines.join('\n');
   }
 
+  const enriched = Boolean(enrich);
   if (enrich) {
     survivors = enrichGroups(survivors, enrich).groups;
     noCoverage = enrichGroups(noCoverage, enrich).groups;
   }
+
+  const sFloorText = floorGroups(survivors, opts.severityFloor, enriched);
+  const nFloorText = floorGroups(noCoverage, opts.severityFloor, enriched);
+  survivors = sFloorText.groups;
+  noCoverage = nFloorText.groups;
 
   const sCap = capGroups(survivors, opts.maxSurvivors);
   const nCap = capGroups(noCoverage, opts.maxSurvivors);
@@ -235,6 +257,7 @@ export function buildResultPayload(result: MutationResult, opts: ResultPayloadOp
   let noCoverage: LineGroup[] = compact.noCoverage;
   const clean = survivors.length === 0 && noCoverage.length === 0;
 
+  const enriched = Boolean(enrich);
   let worstSeverity: Severity | undefined;
   let enrichNote: string | undefined;
   if (enrich) {
@@ -247,6 +270,15 @@ export function buildResultPayload(result: MutationResult, opts: ResultPayloadOp
       enrichNote =
         'some mutants could not be classified — this language\'s mutation tool doesn\'t expose per-mutant operator detail (severity reported as "unknown").';
     }
+  }
+
+  const sFloor = floorGroups(survivors, opts.severityFloor, enriched);
+  const nFloor = floorGroups(noCoverage, opts.severityFloor, enriched);
+  survivors = sFloor.groups;
+  noCoverage = nFloor.groups;
+  if (!enriched && opts.severityFloor) {
+    enrichNote =
+      'severityFloor was ignored: it requires enrichment (severity classification), which is off for this run.';
   }
 
   const sCap = capGroups(survivors, opts.maxSurvivors);
@@ -279,6 +311,8 @@ export function buildResultPayload(result: MutationResult, opts: ResultPayloadOp
   };
   if (sCap.truncated > 0) payload.survivorsTruncated = sCap.truncated;
   if (nCap.truncated > 0) payload.noCoverageTruncated = nCap.truncated;
+  if (sFloor.filtered > 0) payload.survivorsFiltered = sFloor.filtered;
+  if (nFloor.filtered > 0) payload.noCoverageFiltered = nFloor.filtered;
   if (enrichNote) payload.enrichNote = enrichNote;
   if (result.scopeNote) payload.scopeNote = result.scopeNote;
   return payload;
