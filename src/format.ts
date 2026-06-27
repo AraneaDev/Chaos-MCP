@@ -133,7 +133,10 @@ function formatMutators(mutators: Record<string, number>): string {
  * Cap a list of line groups to at most `max` entries.
  * Returns the (possibly sliced) groups and the truncation count.
  */
-function capGroups(groups: LineGroup[], max: number | undefined): { groups: LineGroup[]; truncated: number } {
+function capGroups(
+  groups: LineGroup[],
+  max: number | undefined,
+): { groups: LineGroup[]; truncated: number } {
   if (typeof max !== 'number' || groups.length <= max) return { groups, truncated: 0 };
   return { groups: groups.slice(0, max), truncated: groups.length - max };
 }
@@ -150,7 +153,9 @@ function floorGroups(
 ): { groups: LineGroup[]; filtered: number } {
   if (!enriched || !floor) return { groups, filtered: 0 };
   const min = SEVERITY_RANK[floor];
-  const kept = groups.filter((g) => SEVERITY_RANK[(g as EnrichedGroup).severity ?? 'unknown'] >= min);
+  const kept = groups.filter(
+    (g) => SEVERITY_RANK[(g as EnrichedGroup).severity ?? 'unknown'] >= min,
+  );
   return { groups: kept, filtered: groups.length - kept.length };
 }
 
@@ -209,12 +214,14 @@ export function formatResultAsText(
   if (survivors.length > 0) {
     lines.push(`Survivors (line: mutators):`);
     survivors.forEach(renderGroup);
-    if (sCap.truncated > 0) lines.push(`  …${sCap.truncated} more (raise maxSurvivors to see them)`);
+    if (sCap.truncated > 0)
+      lines.push(`  …${sCap.truncated} more (raise maxSurvivors to see them)`);
   }
   if (noCoverage.length > 0) {
     lines.push(`No-coverage mutants (line: mutators):`);
     noCoverage.forEach(renderGroup);
-    if (nCap.truncated > 0) lines.push(`  …${nCap.truncated} more (raise maxSurvivors to see them)`);
+    if (nCap.truncated > 0)
+      lines.push(`  …${nCap.truncated} more (raise maxSurvivors to see them)`);
   }
   lines.push('Add or strengthen tests targeting these lines to kill the survivors.');
   return lines.join('\n');
@@ -250,7 +257,10 @@ export interface ResultPayloadOpts {
  * Pure data construction — no serialization. Becomes the `structuredContent`
  * and drives the `outputSchema` contract in future tasks.
  */
-export function buildResultPayload(result: MutationResult, opts: ResultPayloadOpts = {}): ResultPayload {
+export function buildResultPayload(
+  result: MutationResult,
+  opts: ResultPayloadOpts = {},
+): ResultPayload {
   const { enrich } = opts;
   const compact = compactSurvivors(result);
   let survivors: LineGroup[] = compact.survivors;

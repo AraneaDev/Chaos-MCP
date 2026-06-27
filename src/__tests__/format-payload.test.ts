@@ -16,7 +16,9 @@ function result(overrides: Partial<MutationResult> = {}): MutationResult {
 
 describe('buildResultPayload', () => {
   it('returns the same shape formatResultAsJson serializes (clean run)', () => {
-    const payload = buildResultPayload(result({ survived: 0, killed: 10, mutationScore: '100.00%' }));
+    const payload = buildResultPayload(
+      result({ survived: 0, killed: 10, mutationScore: '100.00%' }),
+    );
     expect(payload).toMatchObject({
       target: 'src/foo.ts',
       mutationScore: '100.00%',
@@ -84,7 +86,9 @@ describe('buildResultPayload severityFloor', () => {
 
   it('ignores severityFloor when not enriched and notes why', () => {
     const payload = buildResultPayload(
-      result({ vulnerabilities: [{ line: 1, mutator: 'ConditionalExpression', description: 'survived' }] }),
+      result({
+        vulnerabilities: [{ line: 1, mutator: 'ConditionalExpression', description: 'survived' }],
+      }),
       { severityFloor: 'high' },
     );
     expect(payload.survivors).toHaveLength(1);
