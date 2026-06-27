@@ -8,7 +8,9 @@ import { createSandbox } from './utils/sandbox.js';
 import { runShellCommand } from './utils/exec.js';
 import { ChaosConfig } from './utils/config-loader.js';
 import { log, isVerbose } from './utils/logger.js';
-import { formatResultAsText, formatResultAsJson, type EnrichContext } from './format.js';
+import { formatResultAsText, buildResultPayload, type EnrichContext } from './format.js';
+import type { Severity } from './enrich.js';
+import { suggestTestFile } from './test-file.js';
 import { computeChangedRanges } from './utils/git-diff.js';
 import {
   parseBaseline,
@@ -235,6 +237,32 @@ function validateEnrichArg(args: ToolArgs): string | null {
   return null;
 }
 
+/** maxSurvivors: integer >= 1 when present. */
+function validateMaxSurvivorsArg(args: ToolArgs): string | null {
+  if (
+    args.maxSurvivors !== undefined &&
+    (typeof args.maxSurvivors !== 'number' ||
+      !Number.isInteger(args.maxSurvivors) ||
+      args.maxSurvivors < 1)
+  ) {
+    return 'maxSurvivors must be an integer >= 1. Example: 20.';
+  }
+  return null;
+}
+
+/** severityFloor: one of high|medium|low when present. */
+function validateSeverityFloorArg(args: ToolArgs): string | null {
+  if (
+    args.severityFloor !== undefined &&
+    args.severityFloor !== 'high' &&
+    args.severityFloor !== 'medium' &&
+    args.severityFloor !== 'low'
+  ) {
+    return 'severityFloor must be one of "high", "medium", or "low". Example: "high".';
+  }
+  return null;
+}
+
 /** Ordered per-field validators run by {@link validateToolArgs}. */
 const TOOL_ARG_VALIDATORS: ((args: ToolArgs) => string | null)[] = [
   validatePerMutantTimeoutMs,
@@ -244,6 +272,8 @@ const TOOL_ARG_VALIDATORS: ((args: ToolArgs) => string | null)[] = [
   validateDiffBaseArg,
   validateBaselineArg,
   validateEnrichArg,
+  validateMaxSurvivorsArg,
+  validateSeverityFloorArg,
 ];
 
 /** Normalise an unknown into a well-formed `{ start, end }` lineScope, or `undefined`. */
@@ -345,6 +375,34 @@ export function buildRunOptions(
   };
 }
 
+const DEFAULT_MAX_SURVIVORS = 10;
+
+/**
+ * Resolve the cap on survivor/no-coverage groups returned per run.
+ * Precedence: arg > cfg.defaultMaxSurvivors > DEFAULT_MAX_SURVIVORS.
+ */
+function resolveMaxSurvivors(args: ToolArgs, cfg: ChaosConfig): number {
+  if (
+    typeof args.maxSurvivors === 'number' &&
+    Number.isInteger(args.maxSurvivors) &&
+    args.maxSurvivors >= 1
+  ) {
+    return args.maxSurvivors;
+  }
+  if (typeof cfg.defaultMaxSurvivors === 'number') return cfg.defaultMaxSurvivors;
+  return DEFAULT_MAX_SURVIVORS;
+}
+
+/**
+ * Resolve the severity floor for survivor reporting.
+ * Precedence: arg > cfg.defaultSeverityFloor.
+ */
+function resolveSeverityFloor(args: ToolArgs, cfg: ChaosConfig): Severity | undefined {
+  const a = args.severityFloor;
+  if (a === 'high' || a === 'medium' || a === 'low') return a;
+  return cfg.defaultSeverityFloor;
+}
+
 /**
  * Resolve the prebuild command: explicit args win, then fall back to smart
  * defaults based on the detected package manager / language. Returns `null`
@@ -382,7 +440,7 @@ export function buildEnrichContext(
   resolvedFile: string,
   projectType: SupportedProjectType,
 ): EnrichContext | undefined {
-  if (args.enrich !== true) return undefined;
+  if (args.enrich === false) return undefined; // default-on: only an explicit false disables
   let sourceLines: string[] | undefined;
   try {
     sourceLines = readFileSync(resolvedFile, 'utf8').split(/\r?\n/);
@@ -511,9 +569,18 @@ async function computeScope(
           vulnerabilities: [],
           scopeNote: `No changed lines in ${targetFile} vs ${diffBase}; nothing to mutate.`,
         };
+        // enrich context is not available here (built later by buildEnrichContext);
+        // the empty result has no survivors/noCoverage so enrichment has no effect.
+        const payload = buildResultPayload(empty, {});
         const text =
-          earlyArgs.outputFormat === 'text' ? formatResultAsText(empty) : formatResultAsJson(empty);
-        return { kind: 'result', result: { content: [{ type: 'text', text }] } };
+          earlyArgs.outputFormat === 'text' ? formatResultAsText(empty) : JSON.stringify(payload);
+        return {
+          kind: 'result',
+          result: {
+            content: [{ type: 'text', text }],
+            structuredContent: payload as unknown as Record<string, unknown>,
+          },
+        };
       }
       case 'untracked':
         // File is new/untracked — every line is "changed", so mutate the
@@ -553,6 +620,10 @@ async function computeScope(
  * Format a completed audit into the MCP tool response: verify-mode delta when a
  * baseline was supplied, otherwise the standard report plus a trailing note for
  * any StrykerJS-only options the resolved engine ignored (audit Low#5).
+ *
+ * The non-verify branch builds the result payload once via `buildResultPayload`,
+ * then returns both a text/JSON content block AND `structuredContent: payload`
+ * so callers can consume the structured data directly. Verify-mode is UNCHANGED.
  */
 function formatAuditOutput(
   auditResults: MutationResult,
@@ -561,6 +632,8 @@ function formatAuditOutput(
   baselineKeys: MutantKey[] | undefined,
   targetFile: string,
   enrichCtx: EnrichContext | undefined,
+  cfg: ChaosConfig,
+  env: EnvironmentInfo,
 ): CallToolResult {
   if (baselineKeys) {
     // verify-mode delta keeps its own formatters; enrichment is not applied here.
@@ -572,17 +645,33 @@ function formatAuditOutput(
     return { content: [{ type: 'text', text: verifyText }] };
   }
 
+  const enrichOpts = {
+    enrich: enrichCtx,
+    maxSurvivors: resolveMaxSurvivors(args, cfg),
+    severityFloor: resolveSeverityFloor(args, cfg),
+  };
+  const ignored = ignoredOptionsFor(projectType, args);
+  const suggestion =
+    auditResults.survived > 0 || auditResults.vulnerabilities.length > 0
+      ? suggestTestFile(targetFile, projectType, env.workspaceRoot)
+      : undefined;
+
+  const payload = buildResultPayload(auditResults, {
+    ...enrichOpts,
+    suggestedTestFile: suggestion,
+    ignoredOptions: ignored.length > 0 ? ignored : undefined,
+  });
+
   const text =
     args.outputFormat === 'text'
-      ? formatResultAsText(auditResults, enrichCtx)
-      : formatResultAsJson(auditResults, enrichCtx);
+      ? formatResultAsText(auditResults, enrichCtx, enrichOpts)
+      : JSON.stringify(payload);
 
   const content: { type: 'text'; text: string }[] = [{ type: 'text', text }];
 
   // Surface options the resolved engine silently ignores so the caller knows
   // they had no effect (audit Low#5). Kept as a separate trailing content
   // block so it never corrupts the JSON/text payload above.
-  const ignored = ignoredOptionsFor(projectType, args);
   if (ignored.length > 0) {
     content.push({
       type: 'text',
@@ -590,7 +679,7 @@ function formatAuditOutput(
     });
   }
 
-  return { content };
+  return { content, structuredContent: payload as unknown as Record<string, unknown> };
 }
 
 /**
@@ -760,6 +849,8 @@ export async function handleToolCall(
         baselineKeys,
         targetFile,
         enrichCtx,
+        cfg,
+        env,
       );
     } finally {
       // Always clean up the sandbox, even if the engine threw

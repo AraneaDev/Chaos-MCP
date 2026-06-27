@@ -72,18 +72,27 @@ The primary tool is `audit_code_resilience` (the batch tool `triage_test_coverag
   "incremental": true,
   "ignorePatterns": ["fixtures/", "snapshots/"],
   "outputFormat": "text",
-  "enrich": true
+  "enrich": false,
+  "maxSurvivors": 20,
+  "severityFloor": "medium"
 }
 ```
 
-**Get enriched, severity-ranked guidance on survivors:**
+**Get enriched, severity-ranked guidance on survivors (on by default):**
+
+Enrichment is enabled by default. Each surviving / no-coverage line is augmented with four fields: a `severity` rating (`high`, `medium`, or `low`) based on the mutator's semantics (e.g. boundary operators and logical operators rank high), a `why` explanation of why the gap is dangerous, a `hint` describing the kind of test that would kill it, and a `context` snippet of the surrounding source lines. Survivors are re-ranked severity-first so the most critical gaps appear first. To disable enrichment and return the plain unranked output, pass `"enrich": false`.
+
+TypeScript targets produce the richest output because StrykerJS exposes per-mutant operator detail; Go targets can also produce severity-ranked output when the mutation tool emits structured data with mutator names; Python targets report `severity: "unknown"` with a generic why/hint because mutmut does not expose per-mutant operator detail.
+
+**Cap and filter the survivor list:**
 ```json
 {
   "filePath": "src/utils/math.ts",
-  "enrich": true
+  "maxSurvivors": 5,
+  "severityFloor": "high"
 }
 ```
-When `enrich` is true each surviving / no-coverage line is augmented with four fields: a `severity` rating (`high`, `medium`, or `low`) based on the mutator's semantics (e.g. boundary operators and logical operators rank high), a `why` explanation of why the gap is dangerous, a `hint` describing the kind of test that would kill it, and a `context` snippet of the surrounding source lines. Survivors are then re-ranked severity-first so the most critical gaps appear first. Enrichment is opt-in (adds tokens to the response) and applies to all languages — though TypeScript targets produce the richest output because StrykerJS exposes per-mutant operator detail; Go and Python targets still receive a `context` snippet (source readability depends only on the file, not the engine), but report `severity: "unknown"` with a generic why/hint because those mutation tools do not expose per-mutant operator detail.
+`maxSurvivors` caps how many survivor (and no-coverage) line groups are returned after severity ranking (default: 10; configurable via `defaultMaxSurvivors`). Hidden groups are counted in `survivorsTruncated` / `noCoverageTruncated` in the output. `severityFloor` drops groups below the given severity level (requires enrichment, which is on by default); dropped groups are counted in `survivorsFiltered` / `noCoverageFiltered`.
 
 **Scope to just your uncommitted changes:**
 ```json
@@ -117,14 +126,25 @@ The output is **bundled and deduplicated** to stay token-efficient: mutants are 
 {
   "target": "src/utils/math.ts",
   "mutationScore": "91.67%",
-  "summary": { "total": 12, "killed": 11, "survived": 1 },
+  "summary": { "total": 12, "killed": 11, "survived": 1, "worstSeverity": "high" },
   "survivors": [
-    { "line": 42, "mutators": { "ConditionalExpression": 1 }, "changes": ["a > b → a >= b"] }
+    {
+      "line": 42, "mutators": { "ConditionalExpression": 1 }, "changes": ["a > b → a >= b"],
+      "severity": "high",
+      "why": "a branch condition was forced to a constant; a test passed without exercising both arms.",
+      "hint": "add tests that take BOTH the true and the false branch.",
+      "context": ["41: if (a > b) {", "42:   return a;", "43: }"]
+    }
   ],
   "noCoverage": [],
+  "suggestedTestFile": { "path": "src/utils/__tests__/math.test.ts", "exists": false },
   "note": "survivors: mutants your tests ran but did not kill. noCoverage: mutants no test reached (per line+mutator, so a line may appear here and in survivors). mutators = type→count. Add or strengthen tests targeting these. changes = sampled original→mutated edits for that line (capped)."
 }
 ```
+
+The tool response also carries a `structuredContent` field (in addition to the standard text content block) so MCP clients that support it can consume the data directly without parsing JSON from text. The text block is retained for compatibility with clients that read `content[0].text`.
+
+`suggestedTestFile` is included when there are survivors or no-coverage entries (i.e. when the mutation score is below 100%), pointing to the conventional test file path for the audited source file (e.g. `src/utils/__tests__/math.test.ts` for `src/utils/math.ts`). The `exists` flag indicates whether the file already exists on disk.
 
 **Text output** (`"outputFormat": "text"`):
 ```
@@ -151,7 +171,9 @@ Add or strengthen tests targeting these lines to kill the survivors.
 | `outputFormat` | `"json"` \| `"text"` | No | Output format (default: `"json"`) |
 | `incremental` | `boolean` | No | Reuse previous run results (StrykerJS only) |
 | `ignorePatterns` | `string[]` | No | Substring patterns to exclude from sandbox copy |
-| `enrich` | `boolean` | No | If true, annotate each survivor with severity, why-it-matters, a test hint, and source context — and rank severity-first. Opt-in; adds tokens. Richest for TypeScript; Go/Python degrade to `severity: "unknown"`. Default: `false` |
+| `enrich` | `boolean` | No | Annotate each survivor with severity, why-it-matters, a test hint, and source context — and rank severity-first. **Default: `true`** (pass `false` to disable and return plain unranked output). Richest for TypeScript; Go can produce severity-ranked output when structured mutator data is available; Python degrades to `severity: "unknown"`. |
+| `maxSurvivors` | `integer ≥ 1` | No | Cap on how many survivor (and no-coverage) line groups are returned after severity ranking. Hidden groups counted in `survivorsTruncated`/`noCoverageTruncated`. Precedence: arg > `defaultMaxSurvivors` config > 10. |
+| `severityFloor` | `"high"` \| `"medium"` \| `"low"` | No | Drop survivor groups below this severity (requires enrichment, on by default). Dropped groups counted in `survivorsFiltered`/`noCoverageFiltered`. `"unknown"`-severity groups are below `"low"` and are dropped by any floor. |
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for development setup and the full parameter semantics.
 
@@ -186,7 +208,9 @@ Create a `chaos-mcp.config.json` in your workspace root for default settings:
   "defaultTimeoutMs": 300000,
   "mutatorDenylist": ["StringLiteral"],
   "concurrency": 4,
-  "defaultMaxFiles": 25
+  "defaultMaxFiles": 25,
+  "defaultMaxSurvivors": 10,
+  "defaultSeverityFloor": "medium"
 }
 ```
 
@@ -198,6 +222,8 @@ Tool call arguments override config defaults.
 | `mutatorDenylist` | `string[]` | `[]` | Mutator names to exclude globally |
 | `concurrency` | `number` | `4` | Parallel mutation workers |
 | `defaultMaxFiles` | `number` | `25` | Default triage file cap (integer ≥ 1); overridden by the `maxFiles` argument |
+| `defaultMaxSurvivors` | `number` | `10` | Default cap on survivor/no-coverage groups returned by `audit_code_resilience` (integer ≥ 1); overridden by the `maxSurvivors` argument |
+| `defaultSeverityFloor` | `"high"` \| `"medium"` \| `"low"` | — | Default severity floor for survivor reporting; overridden by the `severityFloor` argument |
 
 ### Enabling `prebuildCommand`
 

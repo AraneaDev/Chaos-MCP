@@ -454,6 +454,22 @@ describe('GoEngine', () => {
     mockVerbose.mockReturnValue(false);
   });
 
+  // ─── Go mutator-name enrichment: JSON path preserves mutator verbatim ──────
+
+  it('preserves go-mutesting mutator name verbatim from JSON output (branch/if)', async () => {
+    // Feeds a JSON stdout sample with "mutator": "branch/if" and status SURVIVED.
+    // Asserts the parsed survivor's mutator === 'branch/if' so that
+    // canonicalizeMutator('branch/if', 'go') can map it to ConditionalExpression.
+    // No go-mutesting binary needed — this tests the parser with a fixed string.
+    const stdout = JSON.stringify({
+      stats: { totalMutants: 1, killed: 0, survived: 1, mutationScore: 0 },
+      mutants: [{ status: 'SURVIVED', line: 7, mutator: 'branch/if' }],
+    });
+    mockRunShell.mockResolvedValue(makeExecResult(stdout));
+    const result = await engine.run('src/main.go');
+    expect(result.vulnerabilities[0].mutator).toBe('branch/if');
+  });
+
   it('does not log when verbose mode is off', async () => {
     const { isVerbose, log } = await import('../utils/logger.js');
     const mockLog = vi.mocked(log);

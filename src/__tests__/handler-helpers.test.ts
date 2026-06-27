@@ -158,6 +158,35 @@ describe('validateToolArgs', () => {
       ).toBe(true);
     });
   });
+
+  // ── maxSurvivors ──
+  describe('validateToolArgs phase-1 args', () => {
+    it('rejects non-integer maxSurvivors', () => {
+      const err = validateToolArgs({ maxSurvivors: 2.5 });
+      expect(err?.isError).toBe(true);
+      expect((err?.content[0] as { text: string }).text).toContain('maxSurvivors');
+    });
+    it('rejects maxSurvivors < 1', () => {
+      expect(validateToolArgs({ maxSurvivors: 0 })?.isError).toBe(true);
+    });
+    it('accepts a valid maxSurvivors', () => {
+      expect(validateToolArgs({ maxSurvivors: 25 })).toBeNull();
+    });
+    it('rejects an unknown severityFloor', () => {
+      const err = validateToolArgs({ severityFloor: 'critical' });
+      expect(err?.isError).toBe(true);
+      expect((err?.content[0] as { text: string }).text).toContain('severityFloor');
+    });
+    it('accepts a valid severityFloor', () => {
+      expect(validateToolArgs({ severityFloor: 'high' })).toBeNull();
+    });
+    it('accepts severityFloor medium', () => {
+      expect(validateToolArgs({ severityFloor: 'medium' })).toBeNull();
+    });
+    it('accepts severityFloor low', () => {
+      expect(validateToolArgs({ severityFloor: 'low' })).toBeNull();
+    });
+  });
 });
 
 describe('buildRunOptions', () => {

@@ -27,9 +27,17 @@ describe('enrich schema + validation', () => {
 });
 
 describe('buildEnrichContext', () => {
-  it('returns undefined when enrich is not true', () => {
-    expect(buildEnrichContext({}, '/nope', 'typescript')).toBeUndefined();
+  it('returns undefined only when enrich is explicitly false (default-on)', () => {
+    // Explicit false → disabled
     expect(buildEnrichContext({ enrich: false }, '/nope', 'typescript')).toBeUndefined();
+  });
+
+  it('returns an EnrichContext by default (enrich absent)', () => {
+    // Default: enrich absent → enabled; file unreadable → sourceLines undefined
+    const ctx = buildEnrichContext({}, '/nope', 'typescript');
+    expect(ctx).toBeDefined();
+    expect(ctx?.projectType).toBe('typescript');
+    expect(ctx?.sourceLines).toBeUndefined();
   });
 
   it('reads source lines when enrich is true', () => {

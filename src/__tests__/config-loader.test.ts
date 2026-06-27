@@ -314,6 +314,16 @@ describe('loadConfig', () => {
     const config = loadConfig('/tmp/config.json');
     expect(config.stryker).toBeUndefined();
   });
+
+  it('loads defaultMaxSurvivors and defaultSeverityFloor', () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue(
+      JSON.stringify({ defaultMaxSurvivors: 20, defaultSeverityFloor: 'high' }),
+    );
+    const cfg = loadConfig('/tmp/config.json');
+    expect(cfg.defaultMaxSurvivors).toBe(20);
+    expect(cfg.defaultSeverityFloor).toBe('high');
+  });
 });
 
 describe('validateConfig', () => {
@@ -670,6 +680,18 @@ describe('validateConfig', () => {
     const { config } = validateConfig('/tmp/config.json');
     expect(config.testRunner).toBe('vitest');
     expect(config.defaultTimeoutMs).toBe(60000);
+  });
+
+  it('rejects invalid defaultMaxSurvivors and defaultSeverityFloor with warnings', () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue(
+      JSON.stringify({ defaultMaxSurvivors: 0, defaultSeverityFloor: 'critical' }),
+    );
+    const { config, warnings } = validateConfig('/tmp/config.json');
+    expect(config.defaultMaxSurvivors).toBeUndefined();
+    expect(config.defaultSeverityFloor).toBeUndefined();
+    expect(warnings.join(' ')).toContain('defaultMaxSurvivors');
+    expect(warnings.join(' ')).toContain('defaultSeverityFloor');
   });
 });
 

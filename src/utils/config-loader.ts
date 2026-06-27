@@ -7,6 +7,8 @@ import { resolve } from 'path';
 const KNOWN_KEYS = new Set([
   'defaultTimeoutMs',
   'defaultMaxFiles',
+  'defaultMaxSurvivors',
+  'defaultSeverityFloor',
   'testRunner',
   'concurrency',
   'mutatorAllowlist',
@@ -104,6 +106,12 @@ export interface ChaosConfig {
 
   /** Default cap on files audited by triage_test_coverage (integer >= 1; default 25). */
   defaultMaxFiles?: number;
+
+  /** Default cap on survivor/no-coverage groups returned by audit_code_resilience (integer >= 1; default 10). */
+  defaultMaxSurvivors?: number;
+
+  /** Default severity floor for audit_code_resilience survivor reporting. */
+  defaultSeverityFloor?: 'high' | 'medium' | 'low';
 
   /** Default test runner override (applied when auto-detection is inconclusive). */
   testRunner?: string;
@@ -287,6 +295,20 @@ function buildConfig(raw: Record<string, unknown>): ChaosConfig {
   ) {
     result.defaultMaxFiles = raw.defaultMaxFiles;
   }
+  if (
+    typeof raw.defaultMaxSurvivors === 'number' &&
+    Number.isInteger(raw.defaultMaxSurvivors) &&
+    raw.defaultMaxSurvivors >= 1
+  ) {
+    result.defaultMaxSurvivors = raw.defaultMaxSurvivors;
+  }
+  if (
+    raw.defaultSeverityFloor === 'high' ||
+    raw.defaultSeverityFloor === 'medium' ||
+    raw.defaultSeverityFloor === 'low'
+  ) {
+    result.defaultSeverityFloor = raw.defaultSeverityFloor;
+  }
   if (typeof raw.testRunner === 'string' && raw.testRunner.length > 0) {
     result.testRunner = raw.testRunner;
   }
@@ -390,6 +412,26 @@ export function validateConfig(configPath?: string): { config: ChaosConfig; warn
   }
   if ('allowPrebuild' in raw && typeof raw.allowPrebuild !== 'boolean') {
     warnings.push(`allowPrebuild must be a boolean, got ${typeof raw.allowPrebuild}.`);
+  }
+  if (
+    'defaultMaxSurvivors' in raw &&
+    (typeof raw.defaultMaxSurvivors !== 'number' ||
+      !Number.isInteger(raw.defaultMaxSurvivors) ||
+      raw.defaultMaxSurvivors < 1)
+  ) {
+    warnings.push(
+      `defaultMaxSurvivors must be an integer >= 1, got ${typeof raw.defaultMaxSurvivors === 'number' ? raw.defaultMaxSurvivors : typeof raw.defaultMaxSurvivors}.`,
+    );
+  }
+  if (
+    'defaultSeverityFloor' in raw &&
+    raw.defaultSeverityFloor !== 'high' &&
+    raw.defaultSeverityFloor !== 'medium' &&
+    raw.defaultSeverityFloor !== 'low'
+  ) {
+    warnings.push(
+      `defaultSeverityFloor must be one of "high"|"medium"|"low", got ${JSON.stringify(raw.defaultSeverityFloor)}.`,
+    );
   }
 
   // Build the config from the already-parsed raw object (no double-read)

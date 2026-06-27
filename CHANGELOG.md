@@ -2,11 +2,40 @@
 
 All notable changes to Chaos-MCP are documented in this file.
 
-## [Unreleased]
+## [Unreleased] — Phase 1: Output Enrichment
 
-### Added — Survivor Enrichment (`enrich` flag)
+### Changed — Enrichment on by default
 
-- **`enrich` boolean tool argument** — opt-in flag that augments each surviving / no-coverage line in the audit output with four deterministic enrichment fields: `severity` (`high`/`medium`/`low`) derived from the mutator's semantics, a `why` explanation of why the coverage gap is dangerous, a `hint` describing what kind of test would kill it, and a `context` snippet of surrounding source lines. Survivors are re-ranked severity-first so the most critical gaps appear at the top of the report. The flag is off by default (output is byte-identical when `enrich` is absent or `false`) to avoid adding unwanted tokens to the response. Applies to all supported languages: TypeScript targets produce the richest output (StrykerJS exposes per-mutant operator detail); Go and Python targets degrade gracefully — `severity` is reported as `"unknown"` and an `enrichNote` is added to the JSON payload when per-mutant classification is not possible. Source-file reads for context snippets fail gracefully (degrade to no `context` field) rather than failing the audit.
+- **`enrich` now defaults to `true`** — survivor/no-coverage groups are enriched and severity-ranked in every audit response unless the caller explicitly passes `"enrich": false`. Prior behaviour (opt-in, off by default) was reversed; callers who relied on unenriched output for token efficiency should now pass `false` to restore it.
+
+### Added — `maxSurvivors` cap
+
+- **`maxSurvivors` tool argument** (integer ≥ 1) — caps how many survivor and no-coverage line groups are returned after severity ranking. Hidden groups are counted in `survivorsTruncated` / `noCoverageTruncated` in the JSON payload. Precedence: `maxSurvivors` arg > `defaultMaxSurvivors` config > 10 (built-in default).
+
+### Added — `severityFloor` filter
+
+- **`severityFloor` tool argument** (`"high"` | `"medium"` | `"low"`) — drops survivor and no-coverage groups whose enriched severity is below the given floor. Dropped groups are counted in `survivorsFiltered` / `noCoverageFiltered`. Requires enrichment (which is on by default); ignored with an explanatory `enrichNote` when `enrich: false` is passed. `"unknown"`-severity groups are treated as below `"low"` and are dropped by any floor.
+
+### Added — `suggestedTestFile` field
+
+- **`suggestedTestFile`** — included in the JSON payload when there are survivors or no-coverage entries (i.e. when the mutation score is below 100%), pointing to the conventional test file path for the audited source file (e.g. `src/utils/__tests__/math.test.ts` for `src/utils/math.ts`). The `exists` field indicates whether the file already exists on disk. Helps the calling agent know where to add or strengthen tests.
+
+### Added — `outputSchema` on the tool definition
+
+- **`outputSchema`** registered on the `audit_code_resilience` tool definition. MCP clients that support it can read the schema to understand the structured payload without parsing JSON from the text block.
+
+### Added — `structuredContent` in the tool response
+
+- **`structuredContent`** is now returned alongside the text content block in every successful (non-verify-mode, non-error) `audit_code_resilience` response. MCP clients can consume the structured payload directly; the text block is retained unchanged for compatibility with clients that read `content[0].text`.
+
+### Added — Go severity support
+
+- **Go mutator name mapping** — `canonicalizeMutator` now maps `<group>/<name>` mutator strings produced by go-mutesting (e.g. `"branch/if"` → `ConditionalExpression`, `"expression/comparison"` → `EqualityOperator`) to canonical severity categories via `GO_MUTATOR_MAP`. The mapping activates unconditionally; it produces severity-ranked output when go-mutesting emits structured data with mutator names, and falls back to `"unknown"` for unmapped names.
+
+### Added — New config fields
+
+- **`defaultMaxSurvivors`** (integer ≥ 1 in `chaos-mcp.config.json`) — sets the default survivor cap for all `audit_code_resilience` calls. Overridden by the `maxSurvivors` tool argument.
+- **`defaultSeverityFloor`** (`"high"` | `"medium"` | `"low"` in `chaos-mcp.config.json`) — sets the default severity floor for all `audit_code_resilience` calls. Overridden by the `severityFloor` tool argument.
 
 ## [1.1.1] - 2026-06-24
 

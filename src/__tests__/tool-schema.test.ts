@@ -24,6 +24,8 @@ describe('TOOL_DEFINITION contract', () => {
       diffBase: 'string',
       baseline: 'object',
       enrich: 'boolean',
+      maxSurvivors: 'integer',
+      severityFloor: 'string',
     };
     const props = TOOL_DEFINITION.inputSchema.properties as Record<string, { type: string }>;
     // Exactly these keys — no more, no fewer.
@@ -101,5 +103,42 @@ describe('TRIAGE_TOOL_DEFINITION contract', () => {
     const props = TRIAGE_TOOL_DEFINITION.inputSchema.properties as Record<string, { type: string }>;
     expect(props.paths.type).toBe('array');
     expect(props.maxFiles.type).toBe('integer');
+  });
+});
+
+interface SchemaProp {
+  type?: string;
+  minimum?: number;
+  enum?: string[];
+  description?: string;
+}
+
+interface ToolDefWithOutput {
+  outputSchema: {
+    type: string;
+    properties: Record<string, unknown>;
+  };
+}
+
+describe('TOOL_DEFINITION phase-1 additions', () => {
+  it('declares maxSurvivors and severityFloor inputs', () => {
+    const props = TOOL_DEFINITION.inputSchema.properties as Record<string, SchemaProp>;
+    expect(props.maxSurvivors.type).toBe('integer');
+    expect(props.maxSurvivors.minimum).toBe(1);
+    expect(props.severityFloor.enum).toEqual(['high', 'medium', 'low']);
+  });
+
+  it('documents enrich as default-on', () => {
+    const props = TOOL_DEFINITION.inputSchema.properties as Record<string, SchemaProp>;
+    expect(props.enrich.description?.toLowerCase()).toContain('default');
+    expect(props.enrich.description?.toLowerCase()).toContain('true');
+    expect((props.enrich as { description: string }).description).toContain('Defaults to TRUE');
+  });
+
+  it('exposes an outputSchema with survivors and summary', () => {
+    const out = (TOOL_DEFINITION as ToolDefWithOutput).outputSchema;
+    expect(out.type).toBe('object');
+    expect(out.properties.summary).toBeDefined();
+    expect(out.properties.survivors).toBeDefined();
   });
 });
