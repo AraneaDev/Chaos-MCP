@@ -9,6 +9,7 @@ const KNOWN_KEYS = new Set([
   'defaultMaxFiles',
   'defaultMaxSurvivors',
   'defaultSeverityFloor',
+  'defaultFileConcurrency',
   'testRunner',
   'concurrency',
   'mutatorAllowlist',
@@ -109,6 +110,9 @@ export interface ChaosConfig {
 
   /** Default cap on survivor/no-coverage groups returned by audit_code_resilience (integer >= 1; default 10). */
   defaultMaxSurvivors?: number;
+
+  /** Default number of files audited in parallel by triage_test_coverage (integer 1–64). */
+  defaultFileConcurrency?: number;
 
   /** Default severity floor for audit_code_resilience survivor reporting. */
   defaultSeverityFloor?: 'high' | 'medium' | 'low';
@@ -303,6 +307,14 @@ function buildConfig(raw: Record<string, unknown>): ChaosConfig {
     result.defaultMaxSurvivors = raw.defaultMaxSurvivors;
   }
   if (
+    typeof raw.defaultFileConcurrency === 'number' &&
+    Number.isInteger(raw.defaultFileConcurrency) &&
+    raw.defaultFileConcurrency >= 1 &&
+    raw.defaultFileConcurrency <= 64
+  ) {
+    result.defaultFileConcurrency = raw.defaultFileConcurrency;
+  }
+  if (
     raw.defaultSeverityFloor === 'high' ||
     raw.defaultSeverityFloor === 'medium' ||
     raw.defaultSeverityFloor === 'low'
@@ -431,6 +443,17 @@ export function validateConfig(configPath?: string): { config: ChaosConfig; warn
   ) {
     warnings.push(
       `defaultSeverityFloor must be one of "high"|"medium"|"low", got ${JSON.stringify(raw.defaultSeverityFloor)}.`,
+    );
+  }
+  if (
+    'defaultFileConcurrency' in raw &&
+    (typeof raw.defaultFileConcurrency !== 'number' ||
+      !Number.isInteger(raw.defaultFileConcurrency) ||
+      raw.defaultFileConcurrency < 1 ||
+      raw.defaultFileConcurrency > 64)
+  ) {
+    warnings.push(
+      `defaultFileConcurrency must be an integer between 1 and 64, got ${typeof raw.defaultFileConcurrency === 'number' ? raw.defaultFileConcurrency : typeof raw.defaultFileConcurrency}.`,
     );
   }
 

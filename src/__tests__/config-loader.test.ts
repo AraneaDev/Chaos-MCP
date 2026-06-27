@@ -324,6 +324,22 @@ describe('loadConfig', () => {
     expect(cfg.defaultMaxSurvivors).toBe(20);
     expect(cfg.defaultSeverityFloor).toBe('high');
   });
+
+  it('loads a valid defaultFileConcurrency', () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue(JSON.stringify({ defaultFileConcurrency: 4 }));
+    expect(loadConfig('/tmp/config.json').defaultFileConcurrency).toBe(4);
+  });
+
+  it('ignores a non-integer / out-of-range defaultFileConcurrency', () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue(JSON.stringify({ defaultFileConcurrency: 0 }));
+    expect(loadConfig('/tmp/config.json').defaultFileConcurrency).toBeUndefined();
+    mockReadFileSync.mockReturnValue(JSON.stringify({ defaultFileConcurrency: 100 }));
+    expect(loadConfig('/tmp/config.json').defaultFileConcurrency).toBeUndefined();
+    mockReadFileSync.mockReturnValue(JSON.stringify({ defaultFileConcurrency: 2.5 }));
+    expect(loadConfig('/tmp/config.json').defaultFileConcurrency).toBeUndefined();
+  });
 });
 
 describe('validateConfig', () => {
@@ -692,6 +708,14 @@ describe('validateConfig', () => {
     expect(config.defaultSeverityFloor).toBeUndefined();
     expect(warnings.join(' ')).toContain('defaultMaxSurvivors');
     expect(warnings.join(' ')).toContain('defaultSeverityFloor');
+  });
+
+  it('rejects an out-of-range defaultFileConcurrency with a warning', () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue(JSON.stringify({ defaultFileConcurrency: 0 }));
+    const { config, warnings } = validateConfig('/tmp/config.json');
+    expect(config.defaultFileConcurrency).toBeUndefined();
+    expect(warnings.join(' ')).toContain('defaultFileConcurrency');
   });
 });
 
