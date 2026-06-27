@@ -339,6 +339,26 @@ describe('A1 mutation detail (changes)', () => {
   });
 });
 
+describe('formatResultAsText severityFloor signal', () => {
+  it('shows floor-hidden count and cap truncation lines in text output', () => {
+    // 2 high-severity survivors (one shown, one truncated by cap) + 1 low-severity (filtered by floor)
+    const text = formatResultAsText(
+      result({
+        vulnerabilities: [
+          { line: 1, mutator: 'ConditionalExpression', description: 'survived' }, // high
+          { line: 2, mutator: 'ConditionalExpression', description: 'survived' }, // high
+          { line: 3, mutator: 'StringLiteral', description: 'survived' }, // low
+        ],
+      }),
+      { projectType: 'typescript' },
+      { maxSurvivors: 1, severityFloor: 'high' },
+    );
+    expect(text).toContain('[high]');
+    expect(text).toContain('…1 more (raise maxSurvivors to see them)');
+    expect(text).toContain('…1 hidden below severityFloor');
+  });
+});
+
 describe('A2 scopeNote', () => {
   it('includes scopeNote in JSON when present', () => {
     const r = baseResult([]);

@@ -216,12 +216,14 @@ export function formatResultAsText(
     survivors.forEach(renderGroup);
     if (sCap.truncated > 0)
       lines.push(`  …${sCap.truncated} more (raise maxSurvivors to see them)`);
+    if (sFloorText.filtered > 0) lines.push(`  …${sFloorText.filtered} hidden below severityFloor`);
   }
   if (noCoverage.length > 0) {
     lines.push(`No-coverage mutants (line: mutators):`);
     noCoverage.forEach(renderGroup);
     if (nCap.truncated > 0)
       lines.push(`  …${nCap.truncated} more (raise maxSurvivors to see them)`);
+    if (nFloorText.filtered > 0) lines.push(`  …${nFloorText.filtered} hidden below severityFloor`);
   }
   lines.push('Add or strengthen tests targeting these lines to kill the survivors.');
   return lines.join('\n');
@@ -275,7 +277,12 @@ export function buildResultPayload(
     const n = enrichGroups(noCoverage, enrich);
     survivors = s.groups;
     noCoverage = n.groups;
-    if (survivors.length > 0) worstSeverity = s.worst;
+    if (survivors.length > 0 || noCoverage.length > 0) {
+      const candidates: Severity[] = [];
+      if (survivors.length > 0) candidates.push(s.worst);
+      if (noCoverage.length > 0) candidates.push(n.worst);
+      worstSeverity = candidates.reduce((a, b) => (SEVERITY_RANK[a] >= SEVERITY_RANK[b] ? a : b));
+    }
     if (s.hasUnknown || n.hasUnknown) {
       enrichNote =
         'some mutants could not be classified — this language\'s mutation tool doesn\'t expose per-mutant operator detail (severity reported as "unknown").';

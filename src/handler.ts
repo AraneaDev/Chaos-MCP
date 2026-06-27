@@ -8,12 +8,7 @@ import { createSandbox } from './utils/sandbox.js';
 import { runShellCommand } from './utils/exec.js';
 import { ChaosConfig } from './utils/config-loader.js';
 import { log, isVerbose } from './utils/logger.js';
-import {
-  formatResultAsText,
-  formatResultAsJson,
-  buildResultPayload,
-  type EnrichContext,
-} from './format.js';
+import { formatResultAsText, buildResultPayload, type EnrichContext } from './format.js';
 import type { Severity } from './enrich.js';
 import { suggestTestFile } from './test-file.js';
 import { computeChangedRanges } from './utils/git-diff.js';
@@ -574,9 +569,18 @@ async function computeScope(
           vulnerabilities: [],
           scopeNote: `No changed lines in ${targetFile} vs ${diffBase}; nothing to mutate.`,
         };
+        // enrich context is not available here (built later by buildEnrichContext);
+        // the empty result has no survivors/noCoverage so enrichment has no effect.
+        const payload = buildResultPayload(empty, {});
         const text =
-          earlyArgs.outputFormat === 'text' ? formatResultAsText(empty) : formatResultAsJson(empty);
-        return { kind: 'result', result: { content: [{ type: 'text', text }] } };
+          earlyArgs.outputFormat === 'text' ? formatResultAsText(empty) : JSON.stringify(payload);
+        return {
+          kind: 'result',
+          result: {
+            content: [{ type: 'text', text }],
+            structuredContent: payload as unknown as Record<string, unknown>,
+          },
+        };
       }
       case 'untracked':
         // File is new/untracked — every line is "changed", so mutate the

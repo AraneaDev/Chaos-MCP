@@ -112,9 +112,9 @@ describe('formatResultAsJson with enrich', () => {
     expect(out.survivors[1].line).toBe(10);
   });
 
-  it('omits worstSeverity when there are no survivors (only no-coverage)', () => {
-    // worstSeverity is keyed off survivors specifically; a result whose only
-    // mutants are no-coverage must not report one. Guards `survivors.length > 0`.
+  it('sets worstSeverity from noCoverage groups when there are no survivors', () => {
+    // worstSeverity now considers noCoverage too — a noCoverage-only result
+    // that has high-severity groups (EqualityOperator → high) must report it.
     const result: MutationResult = {
       ...RESULT,
       vulnerabilities: [
@@ -132,7 +132,7 @@ describe('formatResultAsJson with enrich', () => {
     );
     expect(out.survivors).toHaveLength(0);
     expect(out.noCoverage).toHaveLength(1);
-    expect(out.summary.worstSeverity).toBeUndefined();
+    expect(out.summary.worstSeverity).toBe('high');
   });
 });
 

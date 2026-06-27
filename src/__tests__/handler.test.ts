@@ -1295,6 +1295,13 @@ describe('handleToolCall', () => {
     const parsed = JSON.parse((response.content[0] as { text: string }).text);
     expect(parsed.survivors ?? []).toEqual([]);
     expect(parsed.noCoverage ?? []).toEqual([]);
+    // JSON mode: text block == structuredContent, and structuredContent is present (Fix 1).
+    expect(response.structuredContent).toBeDefined();
+    const sc = response.structuredContent as Record<string, unknown>;
+    expect(sc.summary).toBeDefined();
+    expect(JSON.parse((response.content[0] as { text: string }).text)).toEqual(
+      response.structuredContent,
+    );
   });
 
   it('renders the no-change short-circuit in text format with a perfect score', async () => {

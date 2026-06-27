@@ -180,6 +180,12 @@ describe('validateToolArgs', () => {
     it('accepts a valid severityFloor', () => {
       expect(validateToolArgs({ severityFloor: 'high' })).toBeNull();
     });
+    it('accepts severityFloor medium', () => {
+      expect(validateToolArgs({ severityFloor: 'medium' })).toBeNull();
+    });
+    it('accepts severityFloor low', () => {
+      expect(validateToolArgs({ severityFloor: 'low' })).toBeNull();
+    });
   });
 });
 

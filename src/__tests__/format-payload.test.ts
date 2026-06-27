@@ -96,3 +96,27 @@ describe('buildResultPayload severityFloor', () => {
     expect(payload.enrichNote).toContain('severityFloor');
   });
 });
+
+describe('buildResultPayload worstSeverity', () => {
+  it('derives worstSeverity from noCoverage when survivors is empty', () => {
+    // ConditionalExpression is 'high' severity; description routes to noCoverage bucket
+    const payload = buildResultPayload(
+      result({
+        survived: 0,
+        killed: 10,
+        mutationScore: '100.00%',
+        vulnerabilities: [
+          {
+            line: 5,
+            mutator: 'ConditionalExpression',
+            description: 'no test reached this mutant',
+          },
+        ],
+      }),
+      { enrich: { projectType: 'typescript' } },
+    );
+    expect(payload.survivors).toHaveLength(0);
+    expect(payload.noCoverage).toHaveLength(1);
+    expect(payload.summary.worstSeverity).toBe('high');
+  });
+});
