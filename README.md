@@ -185,7 +185,7 @@ A second tool ranks where your test suite is weakest across many files in one ca
 { "paths": ["src/utils", "src/index.ts"], "maxFiles": 25 }
 ```
 
-Directories are recursively expanded to supported source files (test files skipped), audited in **bounded parallel** (default `min(4, cpus-1)` files at a time; capped at `maxFiles`; precedence `maxFiles` arg → `defaultMaxFiles` config → 25), and ranked weakest-first by mutation score:
+Directories are recursively expanded to supported source files (test files skipped), audited in **bounded parallel** (default `max(1, min(4, cpus-1))` files at a time; capped at `maxFiles`; precedence `maxFiles` arg → `defaultMaxFiles` config → 25), and ranked weakest-first by mutation score:
 
 ```json
 { "mode": "triage",
@@ -229,7 +229,7 @@ TypeScript files are mutated only on the changed lines; Python, Go, and Rust fil
 { "paths": ["src"], "fileConcurrency": 8 }
 ```
 
-`fileConcurrency` controls how many files are audited in parallel (default `min(4, cpus-1)`; range 1–64). When `fileConcurrency > 1` and the file is TypeScript, each StrykerJS run's worker count is automatically capped (`floor((cpus-1) / fileConcurrency)`) so total CPU use stays near the core count rather than oversubscribing.
+`fileConcurrency` controls how many files are audited in parallel (default `max(1, min(4, cpus-1))`; range 1–64). When `fileConcurrency > 1` and the file is TypeScript, each StrykerJS run's worker count is automatically capped (`floor((cpus-1) / fileConcurrency)`) so total CPU use stays near the core count rather than oversubscribing. Other languages run their mutation tool without a worker-count override (they ignore the concurrency cap).
 
 **Parameters:**
 
@@ -242,7 +242,7 @@ TypeScript files are mutated only on the changed lines; Python, Go, and Rust fil
 | `outputFormat` | `"json"` \| `"text"` | Output format (default: `"json"`). |
 | `diffBase` | `string` | Auto-scope to git-changed files. `"HEAD"`, `"staged"`, or any git ref/SHA. Makes `paths` optional; with `paths`, intersects changed files under those paths. TypeScript: changed lines only. Other languages: whole-file. |
 | `survivorsPerFile` | `integer ≥ 0` | Inline top-N enriched survivors per ranked file (default `0` = scores-only). |
-| `fileConcurrency` | `integer 1–64` | Files audited in parallel (default `min(4, cpus-1)`). StrykerJS worker count is capped per-file to avoid CPU oversubscription. |
+| `fileConcurrency` | `integer 1–64` | Files audited in parallel (default `max(1, min(4, cpus-1))`). Per-file StrykerJS worker count is automatically capped (TypeScript/StrykerJS only; other engines ignore the worker-count cap). |
 
 ## Configuration
 
@@ -270,7 +270,7 @@ Tool call arguments override config defaults.
 | `defaultMaxFiles` | `number` | `25` | Default triage file cap (integer ≥ 1); overridden by the `maxFiles` argument |
 | `defaultMaxSurvivors` | `number` | `10` | Default cap on survivor/no-coverage groups returned by `audit_code_resilience` (integer ≥ 1); overridden by the `maxSurvivors` argument |
 | `defaultSeverityFloor` | `"high"` \| `"medium"` \| `"low"` | — | Default severity floor for survivor reporting; overridden by the `severityFloor` argument |
-| `defaultFileConcurrency` | `number` | `min(4, cpus-1)` | Default parallel file count for `triage_test_coverage` (integer 1–64); overridden by the `fileConcurrency` argument |
+| `defaultFileConcurrency` | `number` | `max(1, min(4, cpus-1))` | Default parallel file count for `triage_test_coverage` (integer 1–64); overridden by the `fileConcurrency` argument |
 
 ### Enabling `prebuildCommand`
 

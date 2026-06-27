@@ -345,6 +345,21 @@ describe('handleTriageCall', () => {
     expect(parsed.scopeNote).toBeDefined();
   });
 
+  it('diffBase: silently excludes a file whose resolved path escapes the workspace root', async () => {
+    // Defense-in-depth (C2 parity): git shouldn't produce out-of-root paths, but
+    // if discoverChangedFiles returns one, the boundary filter must drop it so the
+    // audit never runs on a file outside the workspace.
+    // `resolve(cwd, '../outside.ts')` escapes the cwd, so isRealPathInside → false.
+    mockListChangedFiles.mockResolvedValue({ kind: 'files', files: ['../outside.ts'] });
+    mockDiscoverChanged.mockReturnValue({ files: ['../outside.ts'], discovered: 1, skipped: 0 });
+    const res = await handleTriageCall(req({ diffBase: 'main' }));
+    // The out-of-root file is filtered → audit never invoked → empty ranking.
+    expect(mockAuditFile).not.toHaveBeenCalled();
+    const parsed = JSON.parse(txt(res));
+    expect(parsed.ranking).toEqual([]);
+    expect(res.isError).toBeUndefined();
+  });
+
   it('diffBase with a changed TS file passes lineRanges to auditFile and marks the row', async () => {
     mockListChangedFiles.mockResolvedValue({ kind: 'files', files: ['src/foo.ts'] });
     mockDiscoverChanged.mockReturnValue({ files: ['src/foo.ts'], discovered: 1, skipped: 0 });
@@ -415,5 +430,10 @@ describe('resolveStrykerConcurrency', () => {
     expect(resolveStrykerConcurrency(4, 8)).toBe(1); // floor(7/4)=1
     expect(resolveStrykerConcurrency(2, 8)).toBe(3); // floor(7/2)=3
     expect(resolveStrykerConcurrency(8, 2)).toBe(1); // floor(1/8)=0 → clamped to 1
+  });
+  it('clamps the result to 64 on very-high-core machines', () => {
+    // floor((200-1)/2) = 99 → clamped to 64 (Stryker's documented upper bound).
+    // Kills the `Math.min(64, ...)` wrapping by ensuring an unclamped result exceeds 64.
+    expect(resolveStrykerConcurrency(2, 200)).toBe(64);
   });
 });

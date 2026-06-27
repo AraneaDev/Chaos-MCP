@@ -27,10 +27,11 @@ function triageError(text: string): CallToolResult {
 
 const DEFAULT_MAX_FILES = 25;
 
-/** Per-file StrykerJS worker cap so parallel triage doesn't oversubscribe CPU. */
+/** Per-file StrykerJS worker cap so parallel triage doesn't oversubscribe CPU.
+ *  Clamped to 1–64 to stay within StrykerJS's documented concurrency range. */
 export function resolveStrykerConcurrency(poolSize: number, cpuCount: number): number | undefined {
   if (poolSize <= 1) return undefined;
-  return Math.max(1, Math.floor((cpuCount - 1) / poolSize));
+  return Math.min(64, Math.max(1, Math.floor((cpuCount - 1) / poolSize)));
 }
 
 /**
@@ -142,7 +143,9 @@ export async function handleTriageCall(
       return triageError(`diffBase "${listed.ref}" could not be resolved as a git ref.`);
     }
     const sel = discoverChangedFiles(listed.files, paths, maxFiles);
-    files = sel.files;
+    // Defense-in-depth: git normally only reports workspace-relative paths, but
+    // filter any path whose realpath resolves outside the workspace root. (C2 parity)
+    files = sel.files.filter((file) => isRealPathInside(resolve(rootCwd, file), rootCwd));
     discovered = sel.discovered;
     skipped = sel.skipped;
     scopeNote = `Scoped to files changed vs ${args.diffBase}. TypeScript files mutated on changed lines; other languages whole-file.`;

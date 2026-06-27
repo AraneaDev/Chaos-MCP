@@ -16,7 +16,7 @@ All notable changes to Chaos-MCP are documented in this file.
 
 ### Added — `fileConcurrency` bounded-parallel auditing
 
-- **`fileConcurrency` argument** (integer 1–64; default `min(4, cpus-1)`) — files are now audited in bounded parallel rather than serially. When `fileConcurrency > 1`, each StrykerJS run's worker count is automatically capped to `floor((cpus-1) / fileConcurrency)` so total CPU use stays near the machine's core count instead of oversubscribing.
+- **`fileConcurrency` argument** (integer 1–64; default `max(1, min(4, cpus-1))`) — files are now audited in bounded parallel rather than serially. When `fileConcurrency > 1`, each TypeScript/StrykerJS run's worker count is automatically capped to `floor((cpus-1) / fileConcurrency)` so total CPU use stays near the machine's core count instead of oversubscribing. Other languages (Python/Go/Rust) run whole-file without a worker-count override (they ignore the concurrency cap).
 - **`resolveStrykerConcurrency(poolSize, cpuCount)`** — exported helper that computes the per-file Stryker worker cap (returns `undefined` when `poolSize ≤ 1`, i.e. serial mode).
 
 ### Added — `structuredContent` + `outputSchema` on `triage_test_coverage`
@@ -26,7 +26,7 @@ All notable changes to Chaos-MCP are documented in this file.
 
 ### Added — `defaultFileConcurrency` config field
 
-- **`defaultFileConcurrency`** (integer 1–64 in `chaos-mcp.config.json`) — sets the default parallel file count for all `triage_test_coverage` calls. Overridden by the `fileConcurrency` tool argument. Falls back to `min(4, cpus-1)` when absent.
+- **`defaultFileConcurrency`** (integer 1–64 in `chaos-mcp.config.json`) — sets the default parallel file count for all `triage_test_coverage` calls. Overridden by the `fileConcurrency` tool argument. Falls back to `max(1, min(4, cpus-1))` when absent.
 
 ### Refactored — triage sort-comparator DRY
 

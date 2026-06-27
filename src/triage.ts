@@ -149,9 +149,11 @@ export function rankResults(results: { file: string; result: MutationResult }[])
   return rows.sort(compareTriageRows);
 }
 
-function note(rows: TriageRow[], discovered: number, skipped: number): string {
+function note(rows: TriageRow[], discovered: number, skipped: number, diffMode?: boolean): string {
   if (discovered === 0) {
-    return 'No supported source files found under the given paths.';
+    return diffMode
+      ? 'No changed supported source files found vs the diff base.'
+      : 'No supported source files found under the given paths.';
   }
   const trunc = skipped > 0 ? ` Audited ${rows.length}; ${skipped} skipped by maxFiles.` : '';
   return (
@@ -192,7 +194,7 @@ export function buildTriagePayload(
     },
     ranking: rows,
     errors,
-    note: note(rows, discovered, skipped),
+    note: note(rows, discovered, skipped, !!scopeNote),
   };
   if (scopeNote) payload.scopeNote = scopeNote;
   return payload;
@@ -228,7 +230,11 @@ export function formatTriageAsText(
       lines.push(`  ${r.mutationScore}  ${r.survived}/${r.total}  ${r.file}`);
     }
   } else if (discovered === 0) {
-    lines.push('No supported source files found under the given paths.');
+    lines.push(
+      scopeNote
+        ? 'No changed supported source files found vs the diff base.'
+        : 'No supported source files found under the given paths.',
+    );
   }
   if (errors.length > 0) {
     lines.push('Errors:');

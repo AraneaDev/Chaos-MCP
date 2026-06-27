@@ -154,6 +154,14 @@ describe('formatTriageAsText', () => {
     expect(text).not.toContain('Weakest first');
   });
 
+  it('shows a diff-mode empty message when scopeNote is set and discovered = 0', () => {
+    // Kills the `scopeNote ?` ternary in the empty-discovery branch: the diff-mode
+    // note must differ from the paths-mode one so they can be distinguished.
+    const text = formatTriageAsText([], [], 0, 0, 'Scoped to files changed vs main.');
+    expect(text).toContain('diff base');
+    expect(text).not.toContain('given paths');
+  });
+
   it('shows no ranking header or errors section when rows and errors are empty but files were discovered', () => {
     // Kills: ConditionalExpression on `rows.length > 0` (line 162) and
     // `errors.length > 0` (line 170).
@@ -308,5 +316,20 @@ describe('buildTriagePayload', () => {
   it('includes scopeNote when provided', () => {
     const p = buildTriagePayload([], [], 0, 0, 'diff vs main');
     expect(p.scopeNote).toBe('diff vs main');
+  });
+
+  it('emits a diffBase-specific note when scopeNote is set and discovered=0', () => {
+    // Kills the `diffMode` → false branch: the scopeNote truthy path must yield
+    // the diff-specific message, not the paths-mode one.
+    const p = buildTriagePayload([], [], 0, 0, 'Scoped to files changed vs main.');
+    expect(p.note).toContain('diff base');
+    expect(p.note).not.toContain('given paths');
+  });
+
+  it('emits the paths-mode note when no scopeNote and discovered=0', () => {
+    // Companion assertion: without a scopeNote the paths-mode message must appear.
+    const p = buildTriagePayload([], [], 0, 0);
+    expect(p.note).toContain('given paths');
+    expect(p.note).not.toContain('diff base');
   });
 });
