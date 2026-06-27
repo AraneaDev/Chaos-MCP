@@ -2,6 +2,36 @@
 
 All notable changes to Chaos-MCP are documented in this file.
 
+## [Unreleased] — Phase 2: Triage Scanner
+
+### Added — `diffBase` on `triage_test_coverage`
+
+- **`diffBase` argument** — auto-scopes the triage to files changed in git. Accepts `"HEAD"`, `"staged"`, or any git ref/branch/SHA (merge-base with HEAD). `paths` is now optional when `diffBase` is provided: supplying only `diffBase` audits every changed supported source file in the workspace; supplying both intersects changed files under the given paths.
+- TypeScript files are mutated only on the changed lines (same line-scoping logic as `audit_code_resilience`). Python, Go, and Rust files always run whole-file; each affected ranking row includes a `scopeNote` field explaining the per-file scoping decision.
+- `not-a-repo` and `bad-ref` diff errors are surfaced as clean MCP error responses (not crashes).
+
+### Added — `survivorsPerFile` inline enrichment
+
+- **`survivorsPerFile` argument** (integer ≥ 0; default `0`) — when `> 0`, inlines the top-N severity-ranked, enriched survivor groups directly into each `TriageRow` in the `ranking` array. Fields added to the row when non-empty: `survivors` (grouped by line, enriched), `noCoverageGroups`, `worstSeverity`. Default `0` returns the compact scores-only leaderboard.
+
+### Added — `fileConcurrency` bounded-parallel auditing
+
+- **`fileConcurrency` argument** (integer 1–64; default `min(4, cpus-1)`) — files are now audited in bounded parallel rather than serially. When `fileConcurrency > 1`, each StrykerJS run's worker count is automatically capped to `floor((cpus-1) / fileConcurrency)` so total CPU use stays near the machine's core count instead of oversubscribing.
+- **`resolveStrykerConcurrency(poolSize, cpuCount)`** — exported helper that computes the per-file Stryker worker cap (returns `undefined` when `poolSize ≤ 1`, i.e. serial mode).
+
+### Added — `structuredContent` + `outputSchema` on `triage_test_coverage`
+
+- **`structuredContent`** is now returned in every `triage_test_coverage` response alongside the text block, matching the behaviour of `audit_code_resilience`. MCP clients can consume the `TriagePayload` directly; the text block is retained for compatibility.
+- **`outputSchema`** registered on the `triage_test_coverage` tool definition, describing the `TriagePayload` shape (`mode`, `summary`, `ranking`, `errors`, `scopeNote`, `note`).
+
+### Added — `defaultFileConcurrency` config field
+
+- **`defaultFileConcurrency`** (integer 1–64 in `chaos-mcp.config.json`) — sets the default parallel file count for all `triage_test_coverage` calls. Overridden by the `fileConcurrency` tool argument. Falls back to `min(4, cpus-1)` when absent.
+
+### Refactored — triage sort-comparator DRY
+
+- Extracted shared `compareTriageRows(a, b)` comparator from the duplicated `scoreNum`/inline-comparator in `triage-handler.ts`. The comparator is now exported from `triage.ts` and reused by both `rankResults` and the handler's final sort. Sort order is byte-identical: score asc, survived desc, file asc.
+
 ## [Unreleased] — Phase 1: Output Enrichment
 
 ### Changed — Enrichment on by default

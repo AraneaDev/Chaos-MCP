@@ -185,7 +185,7 @@ A second tool ranks where your test suite is weakest across many files in one ca
 { "paths": ["src/utils", "src/index.ts"], "maxFiles": 25 }
 ```
 
-Directories are recursively expanded to supported source files (test files skipped), audited **serially** (capped at `maxFiles`; precedence `maxFiles` arg → `defaultMaxFiles` config → 25), and ranked weakest-first by mutation score:
+Directories are recursively expanded to supported source files (test files skipped), audited in **bounded parallel** (default `min(4, cpus-1)` files at a time; capped at `maxFiles`; precedence `maxFiles` arg → `defaultMaxFiles` config → 25), and ranked weakest-first by mutation score:
 
 ```json
 { "mode": "triage",
@@ -195,9 +195,54 @@ Directories are recursively expanded to supported source files (test files skipp
   "note": "Ranked weakest-first by mutation score. Drill into a file with audit_code_resilience for survivor detail." }
 ```
 
+The tool response carries a `structuredContent` field (in addition to the text block) so MCP clients can consume the ranked payload directly without parsing JSON. The `outputSchema` on the tool definition describes the payload shape.
+
 Drill into a weak file with `audit_code_resilience` for per-mutant survivor detail.
 
-**Parameters:** `paths` (required array of files/dirs), `maxFiles` (integer ≥ 1), `timeoutMs` (per-file), `mutatorDenylist`, `outputFormat`.
+**PR-diff scan — `diffBase`:**
+
+Pass `diffBase` to limit the triage to files changed in a PR or branch. `paths` becomes optional in this mode:
+
+```json
+{ "diffBase": "main" }
+```
+
+`diffBase` alone audits every changed supported source file in the workspace (relative to `main` via merge-base). Passing both limits the scan to changed files under those paths:
+
+```json
+{ "diffBase": "main", "paths": ["src/utils"] }
+```
+
+TypeScript files are mutated only on the changed lines; Python, Go, and Rust files run whole-file (a per-file `scopeNote` is included in the ranking row).
+
+**Inline survivor detail — `survivorsPerFile`:**
+
+```json
+{ "paths": ["src"], "survivorsPerFile": 3 }
+```
+
+`survivorsPerFile` (default `0`, scores-only) inlines the top-N severity-ranked, enriched survivor groups into each ranking row so you can triage and inspect in one call. Set it to `0` for the compact leaderboard; raise it when you want to see the worst gaps immediately.
+
+**Parallel file auditing — `fileConcurrency`:**
+
+```json
+{ "paths": ["src"], "fileConcurrency": 8 }
+```
+
+`fileConcurrency` controls how many files are audited in parallel (default `min(4, cpus-1)`; range 1–64). When `fileConcurrency > 1` and the file is TypeScript, each StrykerJS run's worker count is automatically capped (`floor((cpus-1) / fileConcurrency)`) so total CPU use stays near the core count rather than oversubscribing.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `paths` | `string[]` | Workspace-relative files/dirs to triage. Optional when `diffBase` is provided. |
+| `maxFiles` | `integer ≥ 1` | Cap on files audited (precedence: arg → `defaultMaxFiles` config → 25). |
+| `timeoutMs` | `number` | Per-file mutation-run timeout in ms (default: 300000). |
+| `mutatorDenylist` | `string[]` | Stryker mutator names to exclude, applied to every TypeScript/JS file. |
+| `outputFormat` | `"json"` \| `"text"` | Output format (default: `"json"`). |
+| `diffBase` | `string` | Auto-scope to git-changed files. `"HEAD"`, `"staged"`, or any git ref/SHA. Makes `paths` optional; with `paths`, intersects changed files under those paths. TypeScript: changed lines only. Other languages: whole-file. |
+| `survivorsPerFile` | `integer ≥ 0` | Inline top-N enriched survivors per ranked file (default `0` = scores-only). |
+| `fileConcurrency` | `integer 1–64` | Files audited in parallel (default `min(4, cpus-1)`). StrykerJS worker count is capped per-file to avoid CPU oversubscription. |
 
 ## Configuration
 
@@ -210,7 +255,8 @@ Create a `chaos-mcp.config.json` in your workspace root for default settings:
   "concurrency": 4,
   "defaultMaxFiles": 25,
   "defaultMaxSurvivors": 10,
-  "defaultSeverityFloor": "medium"
+  "defaultSeverityFloor": "medium",
+  "defaultFileConcurrency": 4
 }
 ```
 
@@ -224,6 +270,7 @@ Tool call arguments override config defaults.
 | `defaultMaxFiles` | `number` | `25` | Default triage file cap (integer ≥ 1); overridden by the `maxFiles` argument |
 | `defaultMaxSurvivors` | `number` | `10` | Default cap on survivor/no-coverage groups returned by `audit_code_resilience` (integer ≥ 1); overridden by the `maxSurvivors` argument |
 | `defaultSeverityFloor` | `"high"` \| `"medium"` \| `"low"` | — | Default severity floor for survivor reporting; overridden by the `severityFloor` argument |
+| `defaultFileConcurrency` | `number` | `min(4, cpus-1)` | Default parallel file count for `triage_test_coverage` (integer 1–64); overridden by the `fileConcurrency` argument |
 
 ### Enabling `prebuildCommand`
 
