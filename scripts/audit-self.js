@@ -36,13 +36,19 @@ try {
   } else {
     const text = response.content[0].text;
     const result = JSON.parse(text);
-    console.log(`OK|${filePath}|${elapsed}s|${result.totalMutants}|${result.killed}|${result.survived}|${result.mutationScore}`);
-    if (result.vulnerabilities.length > 0) {
-      for (const v of result.vulnerabilities.slice(0, 5)) {
-        console.log(`  VULN|L${v.line}|[${v.replacement}]|${v.description}`);
+    const { total, killed, survived } = result.summary ?? {};
+    console.log(`OK|${filePath}|${elapsed}s|${total}|${killed}|${survived}|${result.mutationScore}`);
+    const allSurvivors = [...(result.survivors ?? []), ...(result.noCoverage ?? [])];
+    if (allSurvivors.length > 0) {
+      for (const v of allSurvivors.slice(0, 5)) {
+        const mutators = Object.entries(v.mutators)
+          .map(([m, n]) => (n > 1 ? `${m}×${n}` : m))
+          .join(', ');
+        const changes = v.changes ? ` [${v.changes.join('; ')}]` : '';
+        console.log(`  SURVIVOR|L${v.line}|${mutators}${changes}`);
       }
-      if (result.vulnerabilities.length > 5) {
-        console.log(`  ... and ${result.vulnerabilities.length - 5} more`);
+      if (allSurvivors.length > 5) {
+        console.log(`  ... and ${allSurvivors.length - 5} more`);
       }
     }
   }

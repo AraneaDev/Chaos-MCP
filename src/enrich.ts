@@ -152,7 +152,10 @@ const RUST_DESCRIPTION_RULES: { test: RegExp; category: string }[] = [
  *
  * - TypeScript: StrykerJS names ARE canonical — direct table lookup.
  * - Rust: infer from `changeText` (cargo-mutants packs the operator there).
- * - Go / Python: coarse labels with no per-mutant operator — always `'unknown'`.
+ * - Go: maps `<group>/<name>` mutator strings via `GO_MUTATOR_MAP` when the
+ *   structured output provides them (e.g. via go-mutesting's JSON reporter);
+ *   unmapped names fall back to `'unknown'`.
+ * - Python: coarse labels with no per-mutant operator — always `'unknown'`.
  */
 export function canonicalizeMutator(
   rawMutator: string,

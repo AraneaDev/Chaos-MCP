@@ -44,19 +44,25 @@ try {
   } else {
     const text = response.content[0].text;
     const result = JSON.parse(text);
+    const { total, killed, survived } = result.summary ?? {};
     console.log(`Mutation audit complete (${elapsed}s):`);
     console.log(`   Target:         ${result.target}`);
-    console.log(`   Total mutants:  ${result.totalMutants}`);
-    console.log(`   Killed:         ${result.killed}`);
-    console.log(`   Survived:       ${result.survived}`);
+    console.log(`   Total mutants:  ${total}`);
+    console.log(`   Killed:         ${killed}`);
+    console.log(`   Survived:       ${survived}`);
     console.log(`   Mutation score: ${result.mutationScore}`);
-    if (result.vulnerabilities.length > 0) {
-      console.log(`   Vulnerabilities: ${result.vulnerabilities.length}`);
-      for (const v of result.vulnerabilities.slice(0, 5)) {
-        console.log(`     Line ${v.line}: [${v.replacement}] ${v.description}`);
+    const allSurvivors = [...(result.survivors ?? []), ...(result.noCoverage ?? [])];
+    if (allSurvivors.length > 0) {
+      console.log(`   Survivors: ${allSurvivors.length}`);
+      for (const v of allSurvivors.slice(0, 5)) {
+        const mutators = Object.entries(v.mutators)
+          .map(([m, n]) => (n > 1 ? `${m}×${n}` : m))
+          .join(', ');
+        const changes = v.changes ? ` [${v.changes.join('; ')}]` : '';
+        console.log(`     Line ${v.line}: ${mutators}${changes}`);
       }
-      if (result.vulnerabilities.length > 5) {
-        console.log(`     ... and ${result.vulnerabilities.length - 5} more`);
+      if (allSurvivors.length > 5) {
+        console.log(`     ... and ${allSurvivors.length - 5} more`);
       }
     } else {
       console.log('   No surviving mutants!');
