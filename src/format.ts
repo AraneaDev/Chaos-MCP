@@ -325,6 +325,9 @@ export function buildResultPayload(
   if (nFloor.filtered > 0) payload.noCoverageFiltered = nFloor.filtered;
   if (enrichNote) payload.enrichNote = enrichNote;
   if (result.scopeNote) payload.scopeNote = result.scopeNote;
+  if (opts.suggestedTestFile) payload.suggestedTestFile = opts.suggestedTestFile;
+  if (opts.ignoredOptions && opts.ignoredOptions.length > 0)
+    payload.ignoredOptions = opts.ignoredOptions;
   return payload;
 }
 

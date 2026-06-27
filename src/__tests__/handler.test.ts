@@ -701,8 +701,8 @@ describe('handleToolCall', () => {
     const text = (response.content[0] as { text: string }).text;
     expect(text).toContain('Chaos-MCP Audit Report');
     expect(text).toContain('Mutation score: 66.67%');
-    // Survivors are bundled by line: "42: ConditionalExpression"
-    expect(text).toContain('42: ConditionalExpression');
+    // Survivors are bundled by line, enriched by default: "[high] ConditionalExpression"
+    expect(text).toContain('[high] ConditionalExpression');
     // Should NOT be JSON
     expect(text.startsWith('{')).toBe(false);
   });
@@ -859,13 +859,20 @@ describe('handleToolCall', () => {
     );
     const parsed = JSON.parse((response.content[0] as { text: string }).text);
 
-    expect(parsed.summary).toEqual({ total: 10, killed: 6, survived: 4 });
-    // One grouped entry for line 42 (not three repeated entries).
+    // Enrich-by-default: summary now carries worstSeverity (ConditionalExpression → high).
+    expect(parsed.summary).toEqual({ total: 10, killed: 6, survived: 4, worstSeverity: 'high' });
+    // One grouped entry for line 42 (not three repeated entries); enriched with severity.
     expect(parsed.survivors).toEqual([
-      { line: 42, mutators: { ConditionalExpression: 2, LogicalOperator: 1 } },
+      expect.objectContaining({
+        line: 42,
+        mutators: { ConditionalExpression: 2, LogicalOperator: 1 },
+        severity: 'high',
+      }),
     ]);
-    // NoCoverage mutant is split out (with its mutator), not mixed into survivors.
-    expect(parsed.noCoverage).toEqual([{ line: 99, mutators: { StringLiteral: 1 } }]);
+    // NoCoverage mutant is split out (with its mutator), not mixed into survivors; enriched.
+    expect(parsed.noCoverage).toEqual([
+      expect.objectContaining({ line: 99, mutators: { StringLiteral: 1 }, severity: 'low' }),
+    ]);
   });
 
   it('emits single-line JSON with no repeated boilerplate descriptions', async () => {
@@ -880,6 +887,41 @@ describe('handleToolCall', () => {
     expect(text.match(/Logical mutation survived/g)).toBeNull();
   });
 
+  // ─── structuredContent + enrich-by-default (Task 8) ─────────────────────
+
+  it('returns structuredContent with severity-ranked survivors by default (no enrich arg)', async () => {
+    mockSurvivorRun();
+    const res = await handleToolCall(
+      makeRequest('audit_code_resilience', { filePath: 'src/math.ts' }),
+    );
+
+    // structuredContent is present and carries severity information.
+    expect(res.structuredContent).toBeDefined();
+    const sc = res.structuredContent as Record<string, unknown>;
+    const summary = sc.summary as { worstSeverity?: string };
+    const survivors = sc.survivors as { severity?: string }[];
+    expect(summary.worstSeverity).toBe('high');
+    expect(survivors[0].severity).toBe('high');
+
+    // content[0].text (JSON mode) must equal the structuredContent payload.
+    const parsed = JSON.parse((res.content[0] as { text: string }).text);
+    expect(parsed).toEqual(res.structuredContent);
+  });
+
+  it('omits structuredContent.worstSeverity and severity fields when enrich is false', async () => {
+    mockSurvivorRun();
+    const res = await handleToolCall(
+      makeRequest('audit_code_resilience', { filePath: 'src/math.ts', enrich: false }),
+    );
+
+    // enrich:false disables enrichment; survivors should have no severity field.
+    const sc = res.structuredContent as Record<string, unknown>;
+    const summary = sc.summary as { worstSeverity?: string };
+    const survivors = sc.survivors as { severity?: string }[];
+    expect(summary.worstSeverity).toBeUndefined();
+    expect(survivors[0].severity).toBeUndefined();
+  });
+
   it('renders bundled survivors in text format', async () => {
     mockSurvivorRun();
     const response = await handleToolCall(
@@ -887,9 +929,10 @@ describe('handleToolCall', () => {
     );
     const text = (response.content[0] as { text: string }).text;
 
-    expect(text).toContain('42: ConditionalExpression×2, LogicalOperator');
+    // Enrich-by-default: severity badge appears in text output.
+    expect(text).toContain('[high] ConditionalExpression×2, LogicalOperator');
     expect(text).toContain('No-coverage mutants (line: mutators):');
-    expect(text).toContain('99: StringLiteral');
+    expect(text).toContain('[low] StringLiteral');
   });
 
   it('reports a NoCoverage mutant and a covered survivor on the SAME line separately', async () => {
@@ -932,8 +975,17 @@ describe('handleToolCall', () => {
     );
     const parsed = JSON.parse((response.content[0] as { text: string }).text);
 
-    expect(parsed.survivors).toEqual([{ line: 113, mutators: { MethodExpression: 1 } }]);
-    expect(parsed.noCoverage).toEqual([{ line: 113, mutators: { ArrayDeclaration: 1 } }]);
+    // Enrich-by-default: survivors carry severity fields.
+    expect(parsed.survivors).toEqual([
+      expect.objectContaining({ line: 113, mutators: { MethodExpression: 1 }, severity: 'medium' }),
+    ]);
+    expect(parsed.noCoverage).toEqual([
+      expect.objectContaining({
+        line: 113,
+        mutators: { ArrayDeclaration: 1 },
+        severity: 'medium',
+      }),
+    ]);
   });
 
   // ─── prebuildCommand tests ──────────────────────────────────────────────────
