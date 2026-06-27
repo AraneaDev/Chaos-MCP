@@ -76,6 +76,64 @@ describe('formatResultAsJson with enrich', () => {
     expect(out.survivors[0].severity).toBe('unknown');
     expect(out.enrichNote).toBeDefined();
   });
+
+  it('omits enrichNote when every survivor is classified', () => {
+    // The negative of the case above: a fully-classified TypeScript result must
+    // NOT carry an enrichNote. Guards the `hasUnknown` accumulation against
+    // being forced always-true.
+    const out = JSON.parse(
+      formatResultAsJson(RESULT, { projectType: 'typescript', sourceLines: SRC }),
+    );
+    expect(out.survivors.every((s: { severity: string }) => s.severity !== 'unknown')).toBe(true);
+    expect(out.enrichNote).toBeUndefined();
+  });
+
+  it('ranks a high-severity survivor above a low one on an EARLIER line', () => {
+    // The high mutator sits on the LATER line, so a no-op sort would leave the
+    // low one first. Forces the severity-descending sort to actually reorder.
+    const result: MutationResult = {
+      ...RESULT,
+      vulnerabilities: [
+        { line: 10, mutator: 'StringLiteral', description: 'survived', mutated: '"x" -> ""' },
+        {
+          line: 50,
+          mutator: 'EqualityOperator',
+          description: 'survived',
+          original: 'a > b',
+          mutated: 'a >= b',
+        },
+      ],
+    };
+    const out = JSON.parse(
+      formatResultAsJson(result, { projectType: 'typescript', sourceLines: SRC }),
+    );
+    expect(out.survivors[0].line).toBe(50);
+    expect(out.survivors[0].severity).toBe('high');
+    expect(out.survivors[1].line).toBe(10);
+  });
+
+  it('omits worstSeverity when there are no survivors (only no-coverage)', () => {
+    // worstSeverity is keyed off survivors specifically; a result whose only
+    // mutants are no-coverage must not report one. Guards `survivors.length > 0`.
+    const result: MutationResult = {
+      ...RESULT,
+      vulnerabilities: [
+        {
+          line: 7,
+          mutator: 'EqualityOperator',
+          description: 'no test reached this mutant',
+          original: 'a > b',
+          mutated: 'a >= b',
+        },
+      ],
+    };
+    const out = JSON.parse(
+      formatResultAsJson(result, { projectType: 'typescript', sourceLines: SRC }),
+    );
+    expect(out.survivors).toHaveLength(0);
+    expect(out.noCoverage).toHaveLength(1);
+    expect(out.summary.worstSeverity).toBeUndefined();
+  });
 });
 
 describe('formatResultAsText with enrich', () => {
@@ -88,5 +146,16 @@ describe('formatResultAsText with enrich', () => {
     expect(txt).toContain('[high]');
     expect(txt).toContain('why:');
     expect(txt).toContain('hint:');
+    // The context line is only emitted when sourceLines were supplied, and the
+    // numbered source rows are joined with ' | '.
+    expect(txt).toContain('context: 40: L40 | 41: L41 | 42: L42 | 43: L43 | 44: L44');
+  });
+
+  it('omits the context line (without throwing) when sourceLines are absent', () => {
+    // enrich is on but no source is available — context is undefined, so the
+    // text renderer must skip the context line rather than join over undefined.
+    const txt = formatResultAsText(RESULT, { projectType: 'typescript' });
+    expect(txt).toContain('[high]');
+    expect(txt).not.toContain('context:');
   });
 });
