@@ -143,6 +143,13 @@ function parseGoMutestingOutput(stdout: string, filePath: string): MutationResul
  * Note: Line-level scoping and mutator allow/denylists are not supported by
  * go-mutesting's CLI. These `RunOptions` parameters are silently ignored
  * for Go targets.
+ *
+ * Go severity enrichment (GO_MUTATOR_MAP in enrich.ts) activates automatically
+ * once go-mutesting emits structured JSON output carrying mutator names. The
+ * JSON branch in parseGoMutestingOutput already preserves `m.mutator` verbatim
+ * into Vulnerability.mutator. Enabling the structured reporter flag in the CLI
+ * invocation is pending confirmation on an environment with go-mutesting installed
+ * (spike deferred: go-mutesting not present in this build environment).
  */
 export class GoEngine extends BaseEngine {
   async run(filePath: string, options?: RunOptions): Promise<MutationResult> {

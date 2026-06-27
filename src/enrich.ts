@@ -117,6 +117,23 @@ export const MUTATOR_SEMANTICS: Record<string, MutatorSemantic> = {
 };
 
 /**
+ * go-mutesting mutator name → canonical category. go-mutesting names its
+ * mutators "<group>/<name>" (e.g. "branch/if"). Unmapped names → unknown.
+ *
+ * Go severity enrichment activates once go-mutesting emits structured output
+ * carrying mutator names (via its JSON reporter). Enabling the structured
+ * reporter is pending confirmation on an environment with go-mutesting installed.
+ */
+const GO_MUTATOR_MAP: Record<string, string> = {
+  'branch/if': 'ConditionalExpression',
+  'branch/else': 'ConditionalExpression',
+  'branch/case': 'ConditionalExpression',
+  'expression/comparison': 'EqualityOperator',
+  'expression/remove': 'MethodExpression',
+  'statement/remove': 'BlockStatement',
+};
+
+/**
  * Keyword rules for inferring a canonical category from a Rust (cargo-mutants)
  * change description like "replace > with >=". Order matters: logical before
  * equality before arithmetic, so `&&`/`||` aren't shadowed by a stray operator
@@ -153,6 +170,9 @@ export function canonicalizeMutator(
     for (const rule of RUST_DESCRIPTION_RULES) {
       if (rule.test.test(normalizedText)) return rule.category;
     }
+  }
+  if (projectType === 'go') {
+    return GO_MUTATOR_MAP[rawMutator] ?? 'unknown';
   }
   return 'unknown';
 }

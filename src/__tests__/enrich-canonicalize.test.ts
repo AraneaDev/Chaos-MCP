@@ -81,3 +81,20 @@ describe('canonicalizeMutator', () => {
     expect(keys.has(canonicalizeMutator('whatever', 'go'))).toBe(true);
   });
 });
+
+describe('canonicalizeMutator (go)', () => {
+  it('maps go-mutesting branch mutators to ConditionalExpression', () => {
+    expect(canonicalizeMutator('branch/if', 'go')).toBe('ConditionalExpression');
+    expect(canonicalizeMutator('branch/else', 'go')).toBe('ConditionalExpression');
+    expect(canonicalizeMutator('branch/case', 'go')).toBe('ConditionalExpression');
+  });
+  it('maps comparison/remove mutators', () => {
+    expect(canonicalizeMutator('expression/comparison', 'go')).toBe('EqualityOperator');
+    expect(canonicalizeMutator('expression/remove', 'go')).toBe('MethodExpression');
+    expect(canonicalizeMutator('statement/remove', 'go')).toBe('BlockStatement');
+  });
+  it('falls back to unknown for unmapped go mutators', () => {
+    expect(canonicalizeMutator('something/weird', 'go')).toBe('unknown');
+    expect(canonicalizeMutator('Go Mutation Operator', 'go')).toBe('unknown');
+  });
+});
