@@ -239,8 +239,52 @@ export const TRIAGE_TOOL_DEFINITION = {
         enum: ['json', 'text'],
         description: 'Output format. "json" (default) or "text".',
       },
+      diffBase: {
+        type: 'string',
+        description:
+          'Auto-scope the triage to files changed in git. "HEAD" (uncommitted), "staged", or any ' +
+          'ref/branch/SHA (merge-base with HEAD). Makes "paths" optional: diffBase alone scans all ' +
+          'changed supported source files; diffBase + paths intersects with those paths. TypeScript ' +
+          'files are mutated only on changed lines; other languages run whole-file. Example: "main"',
+      },
+      survivorsPerFile: {
+        type: 'integer',
+        minimum: 0,
+        description:
+          'How many top (severity-ranked, enriched) survivor groups to inline per ranked file. ' +
+          '0 (default) returns a scores-only leaderboard. Example: 3',
+      },
+      fileConcurrency: {
+        type: 'integer',
+        minimum: 1,
+        maximum: 64,
+        description:
+          "How many files to audit in parallel. Default min(4, cpus-1). When >1, each StrykerJS run's " +
+          'worker count is capped so total CPU use stays near the core count. Example: 4',
+      },
     },
-    required: ['paths'],
+    required: [],
     additionalProperties: false,
+  },
+  outputSchema: {
+    type: 'object' as const,
+    properties: {
+      mode: { type: 'string' },
+      summary: {
+        type: 'object',
+        properties: {
+          filesDiscovered: { type: 'integer' },
+          filesAudited: { type: 'integer' },
+          filesSkipped: { type: 'integer' },
+          filesErrored: { type: 'integer' },
+        },
+        required: ['filesDiscovered', 'filesAudited', 'filesSkipped', 'filesErrored'],
+      },
+      ranking: { type: 'array', items: { type: 'object' } },
+      errors: { type: 'array', items: { type: 'object' } },
+      scopeNote: { type: 'string' },
+      note: { type: 'string' },
+    },
+    required: ['mode', 'summary', 'ranking', 'errors', 'note'],
   },
 };
