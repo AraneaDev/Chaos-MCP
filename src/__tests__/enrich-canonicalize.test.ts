@@ -46,6 +46,30 @@ describe('canonicalizeMutator', () => {
     ).toBe('unknown');
   });
 
+  it('classifies a bare < / > (no =) as EqualityOperator', () => {
+    // The EqualityOperator rule is /[<>]=?|==|!=/ — the `=` is OPTIONAL, so a
+    // relational flip with no `=` must still match. Guards the `=?` quantifier.
+    expect(canonicalizeMutator('replace < with >', 'rust', 'replace a < b with a > b')).toBe(
+      'EqualityOperator',
+    );
+  });
+
+  it('does not apply the Rust rules to non-Rust engines even with change text', () => {
+    // Go/Python descriptions can contain operator chars, but only Rust packs a
+    // reliable per-mutant operator into changeText. The `projectType === 'rust'`
+    // guard must hold even when changeText would match a rule.
+    expect(canonicalizeMutator('Go Mutation Operator', 'go', 'replace > with >=')).toBe('unknown');
+    expect(canonicalizeMutator('Some Python Mutation', 'python', 'replace && with ||')).toBe(
+      'unknown',
+    );
+  });
+
+  it('returns unknown for Rust when changeText is absent (no throw)', () => {
+    // The `&& changeText` guard short-circuits before the .replace() call; a
+    // Rust target with no description must degrade to unknown, not crash.
+    expect(canonicalizeMutator('replace foo', 'rust', undefined)).toBe('unknown');
+  });
+
   it('returns unknown for Go and Python (coarse engines)', () => {
     expect(canonicalizeMutator('Go Mutation Operator', 'go')).toBe('unknown');
     expect(canonicalizeMutator('Arithmetic/Logical Mutation', 'python')).toBe('unknown');

@@ -22,6 +22,35 @@ describe('enrichGroup', () => {
     expect(e.hint).toBe(MUTATOR_SEMANTICS.EqualityOperator.hint);
   });
 
+  it('keeps the highest severity even when the high mutator is listed first', () => {
+    // Order-independence: with the high mutator FIRST, a lower one must not
+    // overwrite it. Guards the `rank > best.rank` comparison against being
+    // forced always-true (which would let the last-iterated mutator win).
+    const e = enrichGroup({
+      line: 3,
+      mutators: { EqualityOperator: 1, StringLiteral: 1 }, // high listed before low
+      projectType: 'typescript',
+      sourceLines: SRC,
+    });
+    expect(e.severity).toBe('high');
+    expect(e.why).toBe(MUTATOR_SEMANTICS.EqualityOperator.why);
+  });
+
+  it('keeps the first-seen mutator when two share the top severity (strict >)', () => {
+    // ConditionalExpression and EqualityOperator are both high. The selector
+    // uses strict `>`, so the FIRST-listed wins the tie; a `>=` mutant would
+    // switch to the second and change the why/hint.
+    const e = enrichGroup({
+      line: 3,
+      mutators: { ConditionalExpression: 1, EqualityOperator: 1 },
+      projectType: 'typescript',
+      sourceLines: SRC,
+    });
+    expect(e.severity).toBe('high');
+    expect(e.why).toBe(MUTATOR_SEMANTICS.ConditionalExpression.why);
+    expect(e.hint).toBe(MUTATOR_SEMANTICS.ConditionalExpression.hint);
+  });
+
   it('builds a line-numbered context window clamped to the file', () => {
     const e = enrichGroup({
       line: 3,
@@ -81,6 +110,30 @@ describe('enrichGroup', () => {
       sourceLines: SRC,
     });
     expect(e.context).toBeUndefined();
+  });
+
+  it('omits context when line is below 1', () => {
+    // Guards the `line < 1` lower-bound check; line 0 must yield no window,
+    // not a window anchored off the top of the file.
+    const e = enrichGroup({
+      line: 0,
+      mutators: { EqualityOperator: 1 },
+      projectType: 'typescript',
+      sourceLines: SRC,
+    });
+    expect(e.context).toBeUndefined();
+  });
+
+  it('includes context for the last line (upper-bound boundary)', () => {
+    // line === sourceLines.length is in range. Guards the `>` upper-bound
+    // check against a `>=` mutant that would drop the final line.
+    const e = enrichGroup({
+      line: 5, // SRC has exactly 5 lines
+      mutators: { EqualityOperator: 1 },
+      projectType: 'typescript',
+      sourceLines: SRC,
+    });
+    expect(e.context).toEqual(['3:   if (a > b) return b;', '4:   return a;', '5: }']);
   });
 
   it('uses Rust change text to classify', () => {
