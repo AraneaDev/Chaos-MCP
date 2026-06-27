@@ -141,15 +141,62 @@ export const TOOL_DEFINITION = {
       enrich: {
         type: 'boolean',
         description:
-          'If true, augment each surviving / no-coverage line with deterministic guidance: ' +
-          'severity (high/medium/low based on mutator semantics), a "why it matters" explanation, ' +
-          'a test-writing hint, and a source-context snippet — and rank survivors severity-first. ' +
-          'Adds tokens; default false (output unchanged). Richest for TypeScript; Go/Python report ' +
-          'severity "unknown" (their tools expose less per-mutant detail). Example: true',
+          'Augment each surviving / no-coverage line with deterministic guidance: severity (high/medium/low), ' +
+          'a "why it matters" explanation, a test-writing hint, and a source-context snippet — and rank survivors severity-first. ' +
+          'Defaults to TRUE; pass false to disable and return the plain (unranked, unclassified) output. ' +
+          'Richest for TypeScript and Go; Python reports severity "unknown".',
+      },
+      maxSurvivors: {
+        type: 'integer',
+        minimum: 1,
+        description:
+          'Cap on how many survivor (and how many no-coverage) line groups are returned, after severity ranking. ' +
+          'Hidden groups are counted in survivorsTruncated/noCoverageTruncated. ' +
+          'Precedence: this arg > config.defaultMaxSurvivors > 10. Example: 20',
+      },
+      severityFloor: {
+        type: 'string',
+        enum: ['high', 'medium', 'low'],
+        description:
+          'Report-time filter: drop survivor groups below this severity (requires enrichment, which is on by default). ' +
+          'Dropped groups are counted in survivorsFiltered/noCoverageFiltered. "unknown"-severity groups are below "low" and are dropped by any floor. ' +
+          'Ignored (with a note) when enrich is false. Example: "high"',
       },
     },
     required: ['filePath'],
     additionalProperties: false,
+  },
+  outputSchema: {
+    type: 'object' as const,
+    properties: {
+      target: { type: 'string' },
+      mutationScore: { type: 'string' },
+      summary: {
+        type: 'object',
+        properties: {
+          total: { type: 'integer' },
+          killed: { type: 'integer' },
+          survived: { type: 'integer' },
+          worstSeverity: { type: 'string', enum: ['high', 'medium', 'low', 'unknown'] },
+        },
+        required: ['total', 'killed', 'survived'],
+      },
+      survivors: { type: 'array', items: { type: 'object' } },
+      noCoverage: { type: 'array', items: { type: 'object' } },
+      suggestedTestFile: {
+        type: 'object',
+        properties: { path: { type: 'string' }, exists: { type: 'boolean' } },
+      },
+      ignoredOptions: { type: 'array', items: { type: 'string' } },
+      survivorsTruncated: { type: 'integer' },
+      noCoverageTruncated: { type: 'integer' },
+      survivorsFiltered: { type: 'integer' },
+      noCoverageFiltered: { type: 'integer' },
+      scopeNote: { type: 'string' },
+      enrichNote: { type: 'string' },
+      note: { type: 'string' },
+    },
+    required: ['target', 'mutationScore', 'summary', 'survivors', 'noCoverage', 'note'],
   },
 };
 
