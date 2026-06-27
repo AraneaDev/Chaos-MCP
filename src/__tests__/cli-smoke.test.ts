@@ -10,8 +10,7 @@ import { performance } from 'perf_hooks';
  * responds to both `--help` and `--version` without crashing.
  *
  * Unlike the more detailed `cli-help.test.ts` and `cli-version.test.ts`,
- * this test is a single fast gate that runs in <1s total and catches
- * gross regressions:
+ * this test is a single fast gate that catches gross regressions:
  *   - build output missing (postbuild shebang broken)
  *   - binary crashes on startup (runtime error before arg parsing)
  *   - `--help` or `--version` exits non-zero
@@ -74,24 +73,29 @@ describe('CLI smoke test', () => {
     expect(existsSync(ENTRY)).toBe(true);
   });
 
-  it('--help exits 0, no stderr, <1s', async () => {
+  // The elapsed-time bound is a hang guard, not a perf benchmark: cold Node
+  // startup on a loaded CI runner routinely exceeds 1s, so the threshold is the
+  // same 5s as the spawn timeout (a genuine hang is already caught by the kill).
+  const MAX_STARTUP_MS = 5000;
+
+  it('--help exits 0, no stderr, without hanging', async () => {
     const { code, stderr, elapsedMs } = await spawnWithFlag('--help');
     expect(code).toBe(0);
     expect(stderr.trim()).toBe('');
-    expect(elapsedMs).toBeLessThan(1000);
+    expect(elapsedMs).toBeLessThan(MAX_STARTUP_MS);
   });
 
-  it('--version exits 0, prints synced version, no stderr, <1s', async () => {
+  it('--version exits 0, prints synced version, no stderr, without hanging', async () => {
     const { code, stdout, stderr, elapsedMs } = await spawnWithFlag('--version');
     expect(code).toBe(0);
     // Verify the version string matches package.json — catches HELP_TEXT/
     // APP_VERSION drift (regression: edited one but forgot the other).
     expect(stdout.trim()).toBe(`chaos-mcp v${expectedVersion}`);
     expect(stderr.trim()).toBe('');
-    expect(elapsedMs).toBeLessThan(1000);
+    expect(elapsedMs).toBeLessThan(MAX_STARTUP_MS);
   });
 
-  it('--verbose --help exits 0 with help on stdout, no fatal stderr, <1s', async () => {
+  it('--verbose --help exits 0 with help on stdout, no fatal stderr, without hanging', async () => {
     // Note: arg parsing checks --help BEFORE --verbose, so --help
     // short-circuits and exits before verbose mode is enabled.
     // We verify the combined flags don't crash or produce errors.
@@ -137,6 +141,6 @@ describe('CLI smoke test', () => {
     // enables diagnostic logging; any stderr content would indicate
     // a crash, deprecation warning, or other unexpected output
     expect(result.stderr.trim()).toBe('');
-    expect(result.elapsedMs).toBeLessThan(1000);
+    expect(result.elapsedMs).toBeLessThan(MAX_STARTUP_MS);
   });
 });

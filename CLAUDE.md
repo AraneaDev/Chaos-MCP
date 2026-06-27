@@ -22,7 +22,7 @@ npm run format:check       # prettier --check (format to write)
 
 - `npm test` requires `build/` to exist — several tests (`build-output`, `version-sync`, the `audit-self`/`meta-test` scripts) import from `../build/index.js`, not `src/`.
 - **E2E tests are opt-in** behind env-var gates inside the test files themselves: `E2E=1 npx vitest run src/__tests__/e2e-mcp.test.ts` (spawns a real server) and `E2E_STRYKER=1 npx vitest run src/__tests__/e2e-stryker.test.ts` (real Stryker run). Without the flag they load and noop. CI runs them only via the `e2e.yml` workflow (manual dispatch or the `run-e2e` PR label).
-- CI (`ci.yml`) runs `npm run check` on Node 18/20/22 — all three must pass.
+- CI (`ci.yml`) runs `npm run check` on Node 20/22/24 — all three must pass.
 
 ## Architecture: the request pipeline
 

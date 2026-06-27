@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
 import type { CallToolRequest } from '@modelcontextprotocol/sdk/types.js';
 
 // Mock engines
@@ -93,8 +93,19 @@ function makeRequest(name: string, args: Record<string, unknown>): CallToolReque
 }
 
 describe('handleToolCall', () => {
+  // Pin process.cwd() so the workspace re-anchoring (relative(workspaceRoot,
+  // resolvedFile)) is deterministic regardless of where CI checks the repo out.
+  // The mocked workspaceRoot is '/workspace'; on a runner whose checkout lives
+  // UNDER /workspace (e.g. Forgejo's /workspace/<owner>/<repo>), the real cwd
+  // would make '/workspace' an ancestor and change the re-anchored targetFile,
+  // breaking the 'src/math.ts' assertions. Pinning cwd to '/workspace' makes the
+  // re-anchoring resolve to the file's workspace-relative path on every runner.
+  const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue('/workspace');
+  afterAll(() => cwdSpy.mockRestore());
+
   beforeEach(() => {
     vi.clearAllMocks();
+    cwdSpy.mockReturnValue('/workspace');
 
     // Reset logger mock to silent default (prevents leak from verbose tests)
     mockIsVerbose.mockReturnValue(false);
