@@ -89,3 +89,64 @@ export async function computeChangedRanges(
   const ranges = parseHunks(diffOut);
   return ranges.length === 0 ? { kind: 'no-changes' } : { kind: 'ranges', ranges };
 }
+
+/** Classification of the changed-file set against a diff base. */
+export type ChangedFilesResult =
+  | { kind: 'not-a-repo' }
+  | { kind: 'bad-ref'; ref: string }
+  | { kind: 'files'; files: string[] };
+
+/**
+ * List workspace-relative source paths that changed versus `diffBase`, unioned
+ * with untracked files. Read-only git in `workspaceRoot`; never throws for
+ * expected conditions. Same base resolution as {@link computeChangedRanges}
+ * (merge-base for refs, `--cached` for "staged") so per-file ranges align.
+ */
+export async function listChangedFiles(
+  workspaceRoot: string,
+  diffBase: string,
+): Promise<ChangedFilesResult> {
+  const git = (args: string[]) =>
+    runShell('git', args, { cwd: workspaceRoot, timeoutMs: GIT_TIMEOUT_MS });
+
+  try {
+    await git(['rev-parse', '--is-inside-work-tree']);
+  } catch {
+    return { kind: 'not-a-repo' };
+  }
+
+  let nameOnly: string[];
+  if (diffBase === 'staged') {
+    nameOnly = ['diff', '--cached', '--name-only'];
+  } else {
+    let base: string;
+    try {
+      base = (await git(['merge-base', diffBase, 'HEAD'])).stdout.trim();
+    } catch {
+      return { kind: 'bad-ref', ref: diffBase };
+    }
+    nameOnly = ['diff', '--name-only', base];
+  }
+
+  let changed: string;
+  try {
+    changed = (await git(nameOnly)).stdout;
+  } catch {
+    return { kind: 'bad-ref', ref: diffBase };
+  }
+
+  let untracked = '';
+  try {
+    untracked = (await git(['ls-files', '--others', '--exclude-standard'])).stdout;
+  } catch {
+    untracked = ''; // best-effort: untracked discovery failing is non-fatal
+  }
+
+  const split = (s: string) =>
+    s
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0);
+  const files = [...new Set([...split(changed), ...split(untracked)])].sort();
+  return { kind: 'files', files };
+}
