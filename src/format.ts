@@ -22,7 +22,7 @@ const NO_COVERAGE_RE = /no test reached|nocoverage/i;
 /** Max distinct change-strings shown per line group before truncation. */
 const CHANGES_CAP = 3;
 
-interface LineGroup {
+export interface LineGroup {
   line: number;
   mutators: Record<string, number>;
   changes?: string[];
@@ -91,7 +91,7 @@ function compactSurvivors(result: MutationResult): {
 }
 
 /** A LineGroup augmented with its enrichment fields (severity, why, hint, context). */
-type EnrichedGroup = LineGroup & Enrichment;
+export type EnrichedGroup = LineGroup & Enrichment;
 
 /**
  * Enrich + re-rank line groups: attach severity/why/hint/context to each group,
@@ -178,15 +178,42 @@ export function formatResultAsText(result: MutationResult, enrich?: EnrichContex
   return lines.join('\n');
 }
 
+export interface ResultPayload {
+  target: string;
+  mutationScore: string;
+  summary: { total: number; killed: number; survived: number; worstSeverity?: Severity };
+  survivors: LineGroup[];
+  noCoverage: LineGroup[];
+  suggestedTestFile?: { path: string; exists: boolean };
+  ignoredOptions?: string[];
+  survivorsTruncated?: number;
+  noCoverageTruncated?: number;
+  survivorsFiltered?: number;
+  noCoverageFiltered?: number;
+  scopeNote?: string;
+  enrichNote?: string;
+  note: string;
+}
+
+export interface ResultPayloadOpts {
+  enrich?: EnrichContext;
+  maxSurvivors?: number;
+  severityFloor?: Severity;
+  suggestedTestFile?: { path: string; exists: boolean };
+  ignoredOptions?: string[];
+}
+
 /**
- * Format a MutationResult as a compact JSON payload (single-line, deduplicated).
- * Used for the default `outputFormat: 'json'`.
+ * Build the structured result payload object from a MutationResult.
+ * Pure data construction — no serialization. Becomes the `structuredContent`
+ * and drives the `outputSchema` contract in future tasks.
  */
-export function formatResultAsJson(result: MutationResult, enrich?: EnrichContext): string {
+export function buildResultPayload(result: MutationResult, opts: ResultPayloadOpts = {}): ResultPayload {
+  const { enrich } = opts;
   const compact = compactSurvivors(result);
-  let { survivors, noCoverage } = compact;
+  let survivors: LineGroup[] = compact.survivors;
+  let noCoverage: LineGroup[] = compact.noCoverage;
   const clean = survivors.length === 0 && noCoverage.length === 0;
-  const hasChanges = [...survivors, ...noCoverage].some((g) => g.changes);
 
   let worstSeverity: Severity | undefined;
   let enrichNote: string | undefined;
@@ -202,15 +229,18 @@ export function formatResultAsJson(result: MutationResult, enrich?: EnrichContex
     }
   }
 
+  const hasChanges = [...survivors, ...noCoverage].some((g) => g.changes);
   const baseNote =
     'survivors: mutants your tests ran but did not kill. noCoverage: mutants no test reached (per line+mutator, so a line may appear here and in survivors). mutators = type→count. Add or strengthen tests targeting these.';
-  const summary: Record<string, unknown> = {
+
+  const summary: ResultPayload['summary'] = {
     total: result.totalMutants,
     killed: result.killed,
     survived: result.survived,
   };
   if (worstSeverity) summary.worstSeverity = worstSeverity;
-  const payload: Record<string, unknown> = {
+
+  const payload: ResultPayload = {
     target: result.target,
     mutationScore: result.mutationScore,
     summary,
@@ -224,5 +254,13 @@ export function formatResultAsJson(result: MutationResult, enrich?: EnrichContex
   };
   if (enrichNote) payload.enrichNote = enrichNote;
   if (result.scopeNote) payload.scopeNote = result.scopeNote;
-  return JSON.stringify(payload);
+  return payload;
+}
+
+/**
+ * Format a MutationResult as a compact JSON payload (single-line, deduplicated).
+ * Used for the default `outputFormat: 'json'`.
+ */
+export function formatResultAsJson(result: MutationResult, enrich?: EnrichContext): string {
+  return JSON.stringify(buildResultPayload(result, { enrich }));
 }
