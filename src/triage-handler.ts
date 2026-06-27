@@ -3,13 +3,16 @@ import type { CallToolRequest, CallToolResult } from '@modelcontextprotocol/sdk/
 import { auditFile, makeEngine, resolvePrebuildCommand, isRealPathInside } from './handler.js';
 import {
   discoverFiles,
+  discoverChangedFiles,
   rankResults,
   buildTriagePayload,
   formatTriageAsText,
   type TriageError,
 } from './triage.js';
+import { listChangedFiles, computeChangedRanges } from './utils/git-diff.js';
 import { detectProjectType, detectEnvironment } from './utils/project-detector.js';
 import { createSandbox } from './utils/sandbox.js';
+import { ENGINE_REGISTRY } from './engines/registry.js';
 import type { ChaosConfig } from './utils/config-loader.js';
 import type { MutationResult } from './engines/base.js';
 
@@ -101,9 +104,34 @@ export async function handleTriageCall(
 
   const outputFormat = args.outputFormat === 'text' ? 'text' : 'json';
 
-  const { files, discovered, skipped } = discoverFiles(paths ?? [], rootCwd, maxFiles);
+  let files: string[];
+  let discovered: number;
+  let skipped: number;
+  let scopeNote: string | undefined;
+
+  if (hasDiffBase) {
+    const listed = await listChangedFiles(rootCwd, args.diffBase as string);
+    if (listed.kind === 'not-a-repo') {
+      return triageError(
+        `diffBase requires a git work tree, but "${rootCwd}" is not one. Remove diffBase or run inside a git repository.`,
+      );
+    }
+    if (listed.kind === 'bad-ref') {
+      return triageError(`diffBase "${listed.ref}" could not be resolved as a git ref.`);
+    }
+    const sel = discoverChangedFiles(listed.files, paths, maxFiles);
+    files = sel.files;
+    discovered = sel.discovered;
+    skipped = sel.skipped;
+    scopeNote = `Scoped to files changed vs ${args.diffBase}. TypeScript files mutated on changed lines; other languages whole-file.`;
+  } else {
+    const disc = discoverFiles(paths as string[], rootCwd, maxFiles);
+    files = disc.files;
+    discovered = disc.discovered;
+    skipped = disc.skipped;
+  }
+
   if (files.length === 0) {
-    const scopeNote: string | undefined = undefined;
     const payload = buildTriagePayload([], [], discovered, skipped, scopeNote);
     const text =
       outputFormat === 'text'
@@ -117,6 +145,7 @@ export async function handleTriageCall(
 
   const audited: { file: string; result: MutationResult }[] = [];
   const errors: TriageError[] = [];
+  const rowScopeNoteMap = new Map<string, string>();
 
   for (const file of files) {
     try {
@@ -141,6 +170,28 @@ export async function handleTriageCall(
       };
       const prebuildCmd = resolvePrebuildCommand(perFileArgs, env, projectType);
 
+      let lineRanges: { start: number; end: number }[] | undefined;
+      let rowScopeNote: string | undefined;
+      if (hasDiffBase) {
+        if (ENGINE_REGISTRY[projectType].supportsLineScope) {
+          const ranges = await computeChangedRanges(
+            targetFile,
+            env.workspaceRoot,
+            args.diffBase as string,
+          );
+          if (ranges.kind === 'ranges') {
+            lineRanges = ranges.ranges;
+            rowScopeNote = 'scored on changed lines';
+          } else if (ranges.kind === 'untracked') {
+            rowScopeNote = 'untracked; whole file';
+          }
+          // no-changes/bad-ref/not-a-repo: leave whole-file (the file was selected, so this is rare)
+        } else {
+          rowScopeNote = 'diff scoping unsupported for this language; whole file';
+        }
+      }
+      if (rowScopeNote) rowScopeNoteMap.set(file, rowScopeNote);
+
       const sandbox = createSandbox(targetFile, env.workspaceRoot, undefined);
       try {
         const result = await auditFile({
@@ -152,6 +203,7 @@ export async function handleTriageCall(
           config: cfg,
           workDir: sandbox.workDir,
           prebuildCmd,
+          lineRanges,
         });
         audited.push({ file, result });
       } finally {
@@ -164,7 +216,10 @@ export async function handleTriageCall(
   }
 
   const ranking = rankResults(audited);
-  const scopeNote: string | undefined = undefined;
+  for (const row of ranking) {
+    const rNote = rowScopeNoteMap.get(row.file);
+    if (rNote) row.scopeNote = rNote;
+  }
   const payload = buildTriagePayload(ranking, errors, discovered, skipped, scopeNote);
   const text =
     outputFormat === 'text'

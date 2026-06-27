@@ -4,8 +4,12 @@ import type { CallToolRequest } from '@modelcontextprotocol/sdk/types.js';
 
 vi.mock('../triage.js', async () => {
   const actual = await vi.importActual<typeof import('../triage.js')>('../triage.js');
-  return { ...actual, discoverFiles: vi.fn() };
+  return { ...actual, discoverFiles: vi.fn(), discoverChangedFiles: vi.fn() };
 });
+vi.mock('../utils/git-diff.js', () => ({
+  listChangedFiles: vi.fn(),
+  computeChangedRanges: vi.fn(),
+}));
 const { cleanupSpy } = vi.hoisted(() => ({ cleanupSpy: vi.fn() }));
 vi.mock('../utils/sandbox.js', () => ({
   createSandbox: vi.fn(() => ({ workDir: '/tmp/s', targetFile: '', cleanup: cleanupSpy })),
@@ -21,14 +25,18 @@ vi.mock('../handler.js', async () => {
   return { ...actual, auditFile: vi.fn(), makeEngine: vi.fn(() => ({ run: vi.fn() })) };
 });
 
-import { discoverFiles } from '../triage.js';
+import { discoverFiles, discoverChangedFiles } from '../triage.js';
 import { detectEnvironment } from '../utils/project-detector.js';
 import { auditFile } from '../handler.js';
+import { listChangedFiles, computeChangedRanges } from '../utils/git-diff.js';
 import { handleTriageCall } from '../triage-handler.js';
 
 const mockDiscover = vi.mocked(discoverFiles);
+const mockDiscoverChanged = vi.mocked(discoverChangedFiles);
 const mockDetectEnv = vi.mocked(detectEnvironment);
 const mockAuditFile = vi.mocked(auditFile);
+const mockListChangedFiles = vi.mocked(listChangedFiles);
+const mockComputeChangedRanges = vi.mocked(computeChangedRanges);
 
 const req = (args: Record<string, unknown>): CallToolRequest =>
   ({
@@ -318,5 +326,42 @@ describe('handleTriageCall', () => {
     const res = await handleTriageCall(req({ paths: ['src'], fileConcurrency: 0 }));
     expect(res.isError).toBe(true);
     expect(txt(res)).toContain('fileConcurrency');
+  });
+
+  it('selects changed files via diffBase and reports not-a-repo', async () => {
+    mockListChangedFiles.mockResolvedValue({ kind: 'not-a-repo' });
+    const res = await handleTriageCall(req({ diffBase: 'main' }));
+    expect(res.isError).toBe(true);
+    expect((res.content[0] as { text: string }).text).toMatch(/git work tree|not a git/i);
+  });
+
+  it('diffBase with no changed supported files returns an empty leaderboard', async () => {
+    mockListChangedFiles.mockResolvedValue({ kind: 'files', files: ['README.md'] });
+    mockDiscoverChanged.mockReturnValue({ files: [], discovered: 0, skipped: 0 });
+    const res = await handleTriageCall(req({ diffBase: 'main' }));
+    const parsed = JSON.parse((res.content[0] as { text: string }).text);
+    expect(parsed.ranking).toEqual([]);
+    expect(parsed.scopeNote).toBeDefined();
+  });
+
+  it('diffBase with a changed TS file passes lineRanges to auditFile and marks the row', async () => {
+    mockListChangedFiles.mockResolvedValue({ kind: 'files', files: ['src/foo.ts'] });
+    mockDiscoverChanged.mockReturnValue({ files: ['src/foo.ts'], discovered: 1, skipped: 0 });
+    mockComputeChangedRanges.mockResolvedValue({
+      kind: 'ranges',
+      ranges: [{ start: 1, end: 10 }],
+    });
+    mockAuditFile.mockResolvedValue(mrOf({ mutationScore: '60.00%', survived: 4 }));
+    const res = await handleTriageCall(req({ diffBase: 'main' }));
+    expect(mockComputeChangedRanges).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(String),
+      'main',
+    );
+    expect(mockAuditFile).toHaveBeenCalledWith(
+      expect.objectContaining({ lineRanges: [{ start: 1, end: 10 }] }),
+    );
+    const parsed = JSON.parse(txt(res));
+    expect(parsed.ranking[0].scopeNote).toBe('scored on changed lines');
   });
 });
