@@ -39,3 +39,29 @@ describe('buildResultPayload', () => {
     expect(payload.survivors).toEqual([{ line: 3, mutators: { ConditionalExpression: 2 } }]);
   });
 });
+
+function manySurvivors(n: number) {
+  return Array.from({ length: n }, (_, i) => ({
+    line: i + 1,
+    mutator: 'ConditionalExpression',
+    description: 'survived',
+  }));
+}
+
+describe('buildResultPayload maxSurvivors', () => {
+  it('caps survivors and records how many were truncated', () => {
+    const payload = buildResultPayload(result({ vulnerabilities: manySurvivors(15) }), {
+      maxSurvivors: 10,
+    });
+    expect(payload.survivors).toHaveLength(10);
+    expect(payload.survivorsTruncated).toBe(5);
+  });
+
+  it('omits the truncation count when nothing is dropped', () => {
+    const payload = buildResultPayload(result({ vulnerabilities: manySurvivors(3) }), {
+      maxSurvivors: 10,
+    });
+    expect(payload.survivors).toHaveLength(3);
+    expect(payload.survivorsTruncated).toBeUndefined();
+  });
+});

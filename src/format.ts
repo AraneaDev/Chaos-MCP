@@ -130,10 +130,23 @@ function formatMutators(mutators: Record<string, number>): string {
 }
 
 /**
+ * Cap a list of line groups to at most `max` entries.
+ * Returns the (possibly sliced) groups and the truncation count.
+ */
+function capGroups(groups: LineGroup[], max: number | undefined): { groups: LineGroup[]; truncated: number } {
+  if (typeof max !== 'number' || groups.length <= max) return { groups, truncated: 0 };
+  return { groups: groups.slice(0, max), truncated: groups.length - max };
+}
+
+/**
  * Format a MutationResult as a compact, human-readable text summary.
  * Used when the caller requests `outputFormat: 'text'`.
  */
-export function formatResultAsText(result: MutationResult, enrich?: EnrichContext): string {
+export function formatResultAsText(
+  result: MutationResult,
+  enrich?: EnrichContext,
+  opts: { maxSurvivors?: number; severityFloor?: Severity } = {},
+): string {
   const compact = compactSurvivors(result);
   let survivors = compact.survivors;
   let noCoverage = compact.noCoverage;
@@ -153,6 +166,11 @@ export function formatResultAsText(result: MutationResult, enrich?: EnrichContex
     noCoverage = enrichGroups(noCoverage, enrich).groups;
   }
 
+  const sCap = capGroups(survivors, opts.maxSurvivors);
+  const nCap = capGroups(noCoverage, opts.maxSurvivors);
+  survivors = sCap.groups;
+  noCoverage = nCap.groups;
+
   const renderGroup = (g: LineGroup): void => {
     const suffix = g.changes ? `  (${g.changes.join('; ')})` : '';
     const e = g as Partial<Enrichment>;
@@ -169,10 +187,12 @@ export function formatResultAsText(result: MutationResult, enrich?: EnrichContex
   if (survivors.length > 0) {
     lines.push(`Survivors (line: mutators):`);
     survivors.forEach(renderGroup);
+    if (sCap.truncated > 0) lines.push(`  …${sCap.truncated} more (raise maxSurvivors to see them)`);
   }
   if (noCoverage.length > 0) {
     lines.push(`No-coverage mutants (line: mutators):`);
     noCoverage.forEach(renderGroup);
+    if (nCap.truncated > 0) lines.push(`  …${nCap.truncated} more (raise maxSurvivors to see them)`);
   }
   lines.push('Add or strengthen tests targeting these lines to kill the survivors.');
   return lines.join('\n');
@@ -229,6 +249,11 @@ export function buildResultPayload(result: MutationResult, opts: ResultPayloadOp
     }
   }
 
+  const sCap = capGroups(survivors, opts.maxSurvivors);
+  const nCap = capGroups(noCoverage, opts.maxSurvivors);
+  survivors = sCap.groups;
+  noCoverage = nCap.groups;
+
   const hasChanges = [...survivors, ...noCoverage].some((g) => g.changes);
   const baseNote =
     'survivors: mutants your tests ran but did not kill. noCoverage: mutants no test reached (per line+mutator, so a line may appear here and in survivors). mutators = type→count. Add or strengthen tests targeting these.';
@@ -252,6 +277,8 @@ export function buildResultPayload(result: MutationResult, opts: ResultPayloadOp
         ? `${baseNote} changes = sampled original→mutated edits for that line (capped).`
         : baseNote,
   };
+  if (sCap.truncated > 0) payload.survivorsTruncated = sCap.truncated;
+  if (nCap.truncated > 0) payload.noCoverageTruncated = nCap.truncated;
   if (enrichNote) payload.enrichNote = enrichNote;
   if (result.scopeNote) payload.scopeNote = result.scopeNote;
   return payload;
