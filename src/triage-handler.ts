@@ -1,18 +1,22 @@
 import { resolve, relative, isAbsolute } from 'path';
+import { cpus } from 'os';
+import { readFileSync } from 'fs';
 import type { CallToolRequest, CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { auditFile, makeEngine, resolvePrebuildCommand, isRealPathInside } from './handler.js';
 import {
   discoverFiles,
   discoverChangedFiles,
-  rankResults,
   buildTriagePayload,
   formatTriageAsText,
+  type TriageRow,
   type TriageError,
 } from './triage.js';
 import { listChangedFiles, computeChangedRanges } from './utils/git-diff.js';
 import { detectProjectType, detectEnvironment } from './utils/project-detector.js';
 import { createSandbox } from './utils/sandbox.js';
 import { ENGINE_REGISTRY } from './engines/registry.js';
+import { mapPool } from './utils/pool.js';
+import { buildResultPayload } from './format.js';
 import type { ChaosConfig } from './utils/config-loader.js';
 import type { MutationResult } from './engines/base.js';
 
@@ -22,10 +26,34 @@ function triageError(text: string): CallToolResult {
 
 const DEFAULT_MAX_FILES = 25;
 
+/** Parse a score string like "87.50%" into a number (NaN-safe → 100). */
+function scoreNum(s: string): number {
+  const n = parseFloat(s);
+  return Number.isFinite(n) ? n : 100;
+}
+
+/** Sort pre-built TriageRows weakest-first: score asc, survived desc, file asc. */
+function rankRows(rows: TriageRow[]): TriageRow[] {
+  return rows
+    .slice()
+    .sort(
+      (a, b) =>
+        scoreNum(a.mutationScore) - scoreNum(b.mutationScore) ||
+        b.survived - a.survived ||
+        a.file.localeCompare(b.file),
+    );
+}
+
+/** Per-file StrykerJS worker cap so parallel triage doesn't oversubscribe CPU. */
+export function resolveStrykerConcurrency(poolSize: number, cpuCount: number): number | undefined {
+  if (poolSize <= 1) return undefined;
+  return Math.max(1, Math.floor((cpuCount - 1) / poolSize));
+}
+
 /**
  * Batch-triage handler: discover supported source files under `paths`, audit
- * each serially via the shared `auditFile` core, and return a weakest-first
- * ranked leaderboard. Per-file failures are collected, never fatal.
+ * each in bounded-parallel via the shared `auditFile` core, and return a
+ * weakest-first ranked leaderboard. Per-file failures are collected, never fatal.
  */
 export async function handleTriageCall(
   request: CallToolRequest,
@@ -104,6 +132,17 @@ export async function handleTriageCall(
 
   const outputFormat = args.outputFormat === 'text' ? 'text' : 'json';
 
+  const cpuCount = cpus().length;
+  const poolSize =
+    typeof args.fileConcurrency === 'number' && Number.isInteger(args.fileConcurrency)
+      ? (args.fileConcurrency as number)
+      : (cfg.defaultFileConcurrency ?? Math.max(1, Math.min(4, cpuCount - 1)));
+  const strykerConcurrency = resolveStrykerConcurrency(poolSize, cpuCount);
+  const survivorsPerFile =
+    typeof args.survivorsPerFile === 'number' && Number.isInteger(args.survivorsPerFile)
+      ? (args.survivorsPerFile as number)
+      : 0;
+
   let files: string[];
   let discovered: number;
   let skipped: number;
@@ -143,16 +182,15 @@ export async function handleTriageCall(
     };
   }
 
-  const audited: { file: string; result: MutationResult }[] = [];
   const errors: TriageError[] = [];
-  const rowScopeNoteMap = new Map<string, string>();
 
-  for (const file of files) {
+  type AuditOutcome = { row: TriageRow } | { error: TriageError };
+
+  const auditOne = async (file: string): Promise<AuditOutcome> => {
     try {
       const projectType = detectProjectType(file);
       if (projectType === 'unsupported') {
-        errors.push({ file, error: `Unsupported file type for ${file}` });
-        continue;
+        return { error: { file, error: `Unsupported file type for ${file}` } };
       }
       const env = detectEnvironment(file);
       const engine = makeEngine(projectType);
@@ -168,6 +206,11 @@ export async function handleTriageCall(
         timeoutMs: args.timeoutMs,
         mutatorDenylist: args.mutatorDenylist,
       };
+      // A2: include Stryker concurrency cap only for TypeScript files and only
+      // when the pool size is > 1 (strykerConcurrency is defined).
+      if (strykerConcurrency !== undefined && projectType === 'typescript') {
+        perFileArgs.concurrency = strykerConcurrency;
+      }
       const prebuildCmd = resolvePrebuildCommand(perFileArgs, env, projectType);
 
       let lineRanges: { start: number; end: number }[] | undefined;
@@ -190,11 +233,11 @@ export async function handleTriageCall(
           rowScopeNote = 'diff scoping unsupported for this language; whole file';
         }
       }
-      if (rowScopeNote) rowScopeNoteMap.set(file, rowScopeNote);
 
       const sandbox = createSandbox(targetFile, env.workspaceRoot, undefined);
+      let result: MutationResult;
       try {
-        const result = await auditFile({
+        result = await auditFile({
           targetFile,
           env,
           projectType,
@@ -205,21 +248,62 @@ export async function handleTriageCall(
           prebuildCmd,
           lineRanges,
         });
-        audited.push({ file, result });
       } finally {
         sandbox.cleanup();
       }
+
+      const row: TriageRow = {
+        file,
+        mutationScore: result.mutationScore,
+        total: result.totalMutants,
+        killed: result.killed,
+        survived: result.survived,
+        noCoverage: Math.max(0, result.vulnerabilities.length - result.survived),
+      };
+      if (rowScopeNote) row.scopeNote = rowScopeNote;
+
+      // Enrich with inline survivors when the caller asked for them.
+      // Source-read failure is non-fatal: enrichment works without source lines
+      // (severity comes from mutator type, not the code text).
+      if (survivorsPerFile > 0) {
+        let sourceLines: string[] | undefined;
+        try {
+          sourceLines = readFileSync(resolve(rootCwd, file), 'utf8').split(/\r?\n/);
+        } catch {
+          sourceLines = undefined;
+        }
+        const payload = buildResultPayload(result, {
+          enrich: { projectType, sourceLines },
+          maxSurvivors: survivorsPerFile,
+        });
+        if (payload.survivors.length > 0) row.survivors = payload.survivors;
+        if (payload.noCoverage.length > 0) row.noCoverageGroups = payload.noCoverage;
+        if (payload.summary.worstSeverity) row.worstSeverity = payload.summary.worstSeverity;
+      }
+
+      return { row };
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
-      errors.push({ file, error: message });
+      return { error: { file, error: message } };
+    }
+  };
+
+  const outcomes = await mapPool(files, poolSize, (file) => auditOne(file));
+  const auditedRows: TriageRow[] = [];
+  for (const o of outcomes) {
+    if (o instanceof Error) {
+      // Safety-net slot from mapPool — auditOne never throws, but guard defensively.
+      errors.push({ file: '(unknown)', error: o.message });
+      continue;
+    }
+    if ('error' in o) {
+      errors.push(o.error);
+    } else {
+      auditedRows.push(o.row);
     }
   }
 
-  const ranking = rankResults(audited);
-  for (const row of ranking) {
-    const rNote = rowScopeNoteMap.get(row.file);
-    if (rNote) row.scopeNote = rNote;
-  }
+  const ranking = rankRows(auditedRows);
   const payload = buildTriagePayload(ranking, errors, discovered, skipped, scopeNote);
   const text =
     outputFormat === 'text'

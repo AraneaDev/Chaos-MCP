@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { dirname, basename, join } from 'path';
 import type { CallToolRequest } from '@modelcontextprotocol/sdk/types.js';
+import { resolveStrykerConcurrency } from '../triage-handler.js';
 
 vi.mock('../triage.js', async () => {
   const actual = await vi.importActual<typeof import('../triage.js')>('../triage.js');
@@ -243,7 +244,7 @@ describe('handleTriageCall', () => {
     expect(mockAuditFile).toHaveBeenCalledWith(expect.objectContaining({ targetFile: 'a.ts' }));
   });
 
-  it('audits discovered files serially and ranks them weakest-first', async () => {
+  it('audits discovered files and ranks them weakest-first', async () => {
     mockDiscover.mockReturnValue({ files: ['a.ts', 'b.ts'], discovered: 2, skipped: 0 });
     mockAuditFile
       .mockResolvedValueOnce(mrOf({ mutationScore: '90.00%', survived: 1 }))
@@ -363,5 +364,56 @@ describe('handleTriageCall', () => {
     );
     const parsed = JSON.parse(txt(res));
     expect(parsed.ranking[0].scopeNote).toBe('scored on changed lines');
+  });
+
+  it('inlines top survivors per file when survivorsPerFile > 0', async () => {
+    const mrWithSurvivor = {
+      target: 'src/foo.ts',
+      totalMutants: 5,
+      killed: 4,
+      survived: 1,
+      mutationScore: '80.00%',
+      vulnerabilities: [
+        { line: 10, mutator: 'ConditionalExpression', description: 'a conditional' },
+      ],
+    };
+    mockDiscover.mockReturnValue({ files: ['src/foo.ts'], discovered: 1, skipped: 0 });
+    mockAuditFile.mockResolvedValue(mrWithSurvivor);
+    const res = await handleTriageCall(req({ paths: ['src/foo.ts'], survivorsPerFile: 3 }));
+    const parsed = JSON.parse((res.content[0] as { text: string }).text);
+    const row = parsed.ranking[0];
+    expect(row.survivors.length).toBeGreaterThan(0);
+    expect(row.worstSeverity).toBe('high');
+  });
+
+  it('does not inline survivors when survivorsPerFile is 0 (default)', async () => {
+    const mrWithSurvivor = {
+      target: 'src/foo.ts',
+      totalMutants: 5,
+      killed: 4,
+      survived: 1,
+      mutationScore: '80.00%',
+      vulnerabilities: [
+        { line: 10, mutator: 'ConditionalExpression', description: 'a conditional' },
+      ],
+    };
+    mockDiscover.mockReturnValue({ files: ['src/foo.ts'], discovered: 1, skipped: 0 });
+    mockAuditFile.mockResolvedValue(mrWithSurvivor);
+    const res = await handleTriageCall(req({ paths: ['src/foo.ts'] }));
+    const parsed = JSON.parse((res.content[0] as { text: string }).text);
+    const row = parsed.ranking[0];
+    expect(row.survivors).toBeUndefined();
+    expect(row.worstSeverity).toBeUndefined();
+  });
+});
+
+describe('resolveStrykerConcurrency', () => {
+  it('returns undefined for a single-file pool', () => {
+    expect(resolveStrykerConcurrency(1, 8)).toBeUndefined();
+  });
+  it('divides (cpus-1) across the pool, min 1', () => {
+    expect(resolveStrykerConcurrency(4, 8)).toBe(1); // floor(7/4)=1
+    expect(resolveStrykerConcurrency(2, 8)).toBe(3); // floor(7/2)=3
+    expect(resolveStrykerConcurrency(8, 2)).toBe(1); // floor(1/8)=0 → clamped to 1
   });
 });
