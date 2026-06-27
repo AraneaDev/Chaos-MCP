@@ -1206,6 +1206,191 @@ describe('handleToolCall', () => {
     expect(mockCleanup).toHaveBeenCalledOnce();
   });
 
+  // ─── diff-aware (A2) no-change short-circuit + verify (A3) routing ───────────
+
+  it('short-circuits a no-change diff with a synthetic empty result (JSON)', async () => {
+    const mockRun = vi.fn();
+    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    mockDetectEnv.mockReturnValue({
+      projectType: 'typescript',
+      testRunner: 'vitest',
+      detectedRunner: 'vitest',
+      workspaceRoot: '/workspace',
+    });
+    mockComputeChangedRanges.mockResolvedValue({ kind: 'no-changes' });
+
+    const response = await handleToolCall(
+      makeRequest('audit_code_resilience', { filePath: 'src/math.ts', diffBase: 'HEAD' }),
+    );
+
+    expect(response.isError).toBeUndefined();
+    // Nothing changed → neither the sandbox nor the engine is provisioned.
+    expect(mockCreateSandbox).not.toHaveBeenCalled();
+    expect(mockRun).not.toHaveBeenCalled();
+    // The synthetic result carries no vulnerabilities (kills the `[] → [...]`
+    // ArrayDeclaration mutant on the empty result).
+    const parsed = JSON.parse((response.content[0] as { text: string }).text);
+    expect(parsed.survivors ?? []).toEqual([]);
+    expect(parsed.noCoverage ?? []).toEqual([]);
+  });
+
+  it('renders the no-change short-circuit in text format with a perfect score', async () => {
+    const mockRun = vi.fn();
+    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    mockDetectEnv.mockReturnValue({
+      projectType: 'typescript',
+      testRunner: 'vitest',
+      detectedRunner: 'vitest',
+      workspaceRoot: '/workspace',
+    });
+    mockComputeChangedRanges.mockResolvedValue({ kind: 'no-changes' });
+
+    const response = await handleToolCall(
+      makeRequest('audit_code_resilience', {
+        filePath: 'src/math.ts',
+        diffBase: 'HEAD',
+        outputFormat: 'text',
+      }),
+    );
+
+    const text = (response.content[0] as { text: string }).text;
+    // Text branch, not JSON (kills `outputFormat === 'text' → false` / `'text' → ""`).
+    expect(text.startsWith('{')).toBe(false);
+    expect(text).toContain('Chaos-MCP Audit Report');
+    // Synthetic 100% score (kills the `'100.00%' → ""` StringLiteral mutant).
+    expect(text).toContain('100.00%');
+    expect(mockRun).not.toHaveBeenCalled();
+  });
+
+  it('formats a verify-mode delta as text when outputFormat is "text"', async () => {
+    const mockRun = vi.fn().mockResolvedValue({
+      target: 'src/math.ts',
+      totalMutants: 1,
+      killed: 1,
+      survived: 0,
+      mutationScore: '100.00%',
+      vulnerabilities: [],
+    });
+    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    mockDetectEnv.mockReturnValue({
+      projectType: 'typescript',
+      testRunner: 'vitest',
+      detectedRunner: 'vitest',
+      workspaceRoot: '/workspace',
+    });
+
+    const response = await handleToolCall(
+      makeRequest('audit_code_resilience', {
+        filePath: 'src/math.ts',
+        baseline: { survivors: [{ line: 42, mutators: { ConditionalExpression: 1 } }] },
+        outputFormat: 'text',
+      }),
+    );
+
+    // Verify-mode text formatter, not JSON (kills `args.outputFormat === 'text' → false`).
+    const text = (response.content[0] as { text: string }).text;
+    expect(text.startsWith('{')).toBe(false);
+  });
+
+  it('formats a verify-mode delta as JSON by default', async () => {
+    const mockRun = vi.fn().mockResolvedValue({
+      target: 'src/math.ts',
+      totalMutants: 1,
+      killed: 1,
+      survived: 0,
+      mutationScore: '100.00%',
+      vulnerabilities: [],
+    });
+    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    mockDetectEnv.mockReturnValue({
+      projectType: 'typescript',
+      testRunner: 'vitest',
+      detectedRunner: 'vitest',
+      workspaceRoot: '/workspace',
+    });
+
+    const response = await handleToolCall(
+      makeRequest('audit_code_resilience', {
+        filePath: 'src/math.ts',
+        baseline: { survivors: [{ line: 42, mutators: { ConditionalExpression: 1 } }] },
+      }),
+    );
+
+    expect((response.content[0] as { text: string }).text.startsWith('{')).toBe(true);
+  });
+
+  it('returns a prebuild failure verbatim, not re-wrapped by the outer catch', async () => {
+    mockCreateSandbox.mockReturnValue({
+      workDir: '/tmp/chaos-mcp-sandbox',
+      targetFile: 'src/math.ts',
+      cleanup: vi.fn(),
+    });
+    const mockRun = vi.fn();
+    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    mockDetectEnv.mockReturnValue({
+      projectType: 'typescript',
+      testRunner: 'vitest',
+      detectedRunner: 'vitest',
+      workspaceRoot: '/workspace',
+    });
+    mockRunShellCommand.mockRejectedValue(new Error('boom'));
+
+    const response = await handleToolCall(
+      makeRequest('audit_code_resilience', {
+        filePath: 'src/math.ts',
+        prebuildCommand: 'npm run build',
+      }),
+      { allowPrebuild: true },
+    );
+
+    const text = (response.content[0] as { text: string }).text;
+    expect(response.isError).toBe(true);
+    expect(text).toContain('Prebuild command failed in sandbox');
+    // The specific prebuild error is returned directly; the `startsWith(...)`
+    // check at line 749 must route it AWAY from the generic outer-catch wrapper
+    // (kills `startsWith → false` / `startsWith → endsWith` / emptied block).
+    expect(text).not.toContain('Chaos Engine Halted');
+    expect(mockRun).not.toHaveBeenCalled();
+  });
+
+  it('lists ONLY the StrykerJS-only options actually passed in the ignored-options note', async () => {
+    const { PythonEngine } = await import('../engines/python.js');
+    const MockPyEngine = vi.mocked(PythonEngine);
+    const mockRun = vi.fn().mockResolvedValue({
+      target: 'src/calc.py',
+      totalMutants: 1,
+      killed: 1,
+      survived: 0,
+      mutationScore: '100.00%',
+      vulnerabilities: [],
+    });
+    MockPyEngine.mockImplementation(
+      () => ({ run: mockRun }) as unknown as typeof PythonEngine.prototype,
+    );
+    mockDetectEnv.mockReturnValue({
+      projectType: 'python',
+      testRunner: 'pytest',
+      detectedRunner: 'pytest',
+      workspaceRoot: '/workspace',
+      packageManager: 'pip',
+    });
+
+    const response = await handleToolCall(
+      makeRequest('audit_code_resilience', {
+        filePath: 'src/calc.py',
+        lineScope: { start: 1, end: 10 },
+      }),
+    );
+
+    const note = (response.content[1] as { text: string }).text;
+    expect(note).toContain('lineScope');
+    // Options the caller did NOT pass must be absent — kills the dropped `.filter`
+    // and the `args[opt] !== undefined → true` mutants (which list all 7).
+    expect(note).not.toContain('concurrency');
+    expect(note).not.toContain('dryRun');
+    expect(note).not.toContain('perMutantTimeoutMs');
+  });
+
   // ─── perMutantTimeoutMs tests ──────────────────────────────────────────────
 
   it('passes perMutantTimeoutMs to RunOptions', async () => {

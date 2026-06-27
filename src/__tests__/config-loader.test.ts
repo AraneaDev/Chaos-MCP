@@ -918,4 +918,182 @@ describe('config-loader mutation hardening', () => {
       ),
     ).toBe(true);
   });
+
+  // ── Wrong-typed-but-coercible timeouts must be dropped, not accepted ──
+  // The `typeof x === 'number' → true` mutants survive against numeric inputs
+  // because the `> 0` guard still rejects them. A *string* '5' slips past `> 0`
+  // (JS coerces it), so only this exercises the typeof check itself.
+  it('drops a string-typed timeoutMs in every section (typeof check)', () => {
+    setConfig({
+      defaultTimeoutMs: '5',
+      perMutantTimeoutMs: '5',
+      stryker: { timeoutMs: '5', perMutantTimeoutMs: '5' },
+      mutmut: { timeoutMs: '5' },
+      go: { timeoutMs: '5' },
+      rust: { timeoutMs: '5' },
+    });
+    const cfg = loadConfig('/tmp/config.json');
+    expect(cfg.defaultTimeoutMs).toBeUndefined();
+    expect(cfg.perMutantTimeoutMs).toBeUndefined();
+    expect(cfg.stryker).toBeUndefined();
+    expect(cfg.mutmut).toBeUndefined();
+    expect(cfg.go).toBeUndefined();
+    expect(cfg.rust).toBeUndefined();
+  });
+
+  it('drops a string-typed defaultMaxFiles (typeof check)', () => {
+    setConfig({ defaultMaxFiles: '5' });
+    expect(loadConfig('/tmp/config.json').defaultMaxFiles).toBeUndefined();
+  });
+
+  // ── A float concurrency must be dropped (kills the `&&` → `||` mutant, which
+  //    would let the typeof-number arm alone admit 2.5). ──
+  it('drops a float concurrency in both the global and stryker sections', () => {
+    setConfig({ concurrency: 2.5 });
+    expect(loadConfig('/tmp/config.json').concurrency).toBeUndefined();
+    setConfig({ stryker: { concurrency: 2.5 } });
+    expect(loadConfig('/tmp/config.json').stryker).toBeUndefined();
+  });
+
+  // ── A null engine section must yield `undefined`, not a null-deref crash.
+  //    Kills `raw === null → false` in each parser. ──
+  it('treats a null engine section as absent without crashing', () => {
+    setConfig({ stryker: null, mutmut: null, go: null, rust: null });
+    const cfg = loadConfig('/tmp/config.json');
+    expect(cfg.stryker).toBeUndefined();
+    expect(cfg.mutmut).toBeUndefined();
+    expect(cfg.go).toBeUndefined();
+    expect(cfg.rust).toBeUndefined();
+  });
+
+  // ── A top-level `null` config is rejected with the specific message.
+  //    Kills `parsed === null → false` in readConfigRaw. ──
+  it('throws "must contain a JSON object" for a literal null config', () => {
+    setConfig(null);
+    expect(() => loadConfig('/tmp/config.json')).toThrow(/Config file must contain a JSON object/);
+  });
+
+  // ── validateConfig: allowPrebuild non-boolean warning was wholly uncovered. ──
+  it('warns when allowPrebuild is not a boolean (validateConfig)', () => {
+    setConfig({ allowPrebuild: 'yes' });
+    const { warnings } = validateConfig('/tmp/config.json');
+    expect(
+      warnings.some((w) => w.includes('allowPrebuild') && w.includes('must be a boolean')),
+    ).toBe(true);
+  });
+
+  // ── validateConfig global concurrency lower-bound: 0 must warn (kills the
+  //    `concurrency < 1 → false` mutant). ──
+  it('warns about a global concurrency of 0 (below the lower bound)', () => {
+    setConfig({ concurrency: 0 });
+    const { warnings } = validateConfig('/tmp/config.json');
+    expect(warnings.some((w) => w.includes('concurrency') && w.includes('between 1 and 64'))).toBe(
+      true,
+    );
+  });
+
+  // ── validateEngineSection concurrency range boundaries (kills the `< 1`/`> 64`
+  //    → `<= 1`/`>= 64` and `→ false` EqualityOperator/Conditional mutants). ──
+  it('does not warn about an engine concurrency exactly at the bounds (1 and 64)', () => {
+    setConfig({ stryker: { concurrency: 1 } });
+    expect(
+      validateConfig('/tmp/config.json').warnings.some((w) => w.includes('between 1 and 64')),
+    ).toBe(false);
+    setConfig({ stryker: { concurrency: 64 } });
+    expect(
+      validateConfig('/tmp/config.json').warnings.some((w) => w.includes('between 1 and 64')),
+    ).toBe(false);
+  });
+
+  it('warns "between 1 and 64" for an engine concurrency just above the upper bound (65)', () => {
+    // Only the upper bound is reachable here: concurrency 0 is caught earlier by
+    // the `val <= 0` ("must be positive") guard, so the `val < 1` arm at line 450
+    // is unreachable for positive input (an equivalent mutant). 65 exercises the
+    // `val > 64` arm, killing its `> 64 → >= 64` / `→ false` mutants.
+    setConfig({ stryker: { concurrency: 65 } });
+    expect(
+      validateConfig('/tmp/config.json').warnings.some((w) => w.includes('between 1 and 64')),
+    ).toBe(true);
+  });
+
+  // ── A null engine section must not crash validateConfig either (kills the
+  //    `raw === null → false` mutant in validateEngineSection). ──
+  it('does not throw or warn for a null engine section in validateConfig', () => {
+    setConfig({ stryker: null });
+    let warnings: string[] = [];
+    expect(() => {
+      warnings = validateConfig('/tmp/config.json').warnings;
+    }).not.toThrow();
+    expect(warnings.some((w) => w.includes('stryker'))).toBe(false);
+  });
+
+  // ── A non-object, non-null top-level config (e.g. a bare number) is rejected
+  //    with the specific message (kills `typeof parsed !== 'object' → false`). ──
+  it('throws "must contain a JSON object" for a bare-number config', () => {
+    setConfig(5);
+    expect(() => loadConfig('/tmp/config.json')).toThrow(/Config file must contain a JSON object/);
+  });
+
+  // ── A stryker section whose ONLY field is a non-empty mutatorDenylist must be
+  //    kept (kills `result.mutatorDenylist.length > 0 → false` at line 175;
+  //    previously only the mutatorAllowlist branch was covered). ──
+  it('keeps a stryker section whose only field is a non-empty mutatorDenylist', () => {
+    setConfig({ stryker: { mutatorDenylist: ['StringLiteral'] } });
+    expect(loadConfig('/tmp/config.json').stryker?.mutatorDenylist).toEqual(['StringLiteral']);
+  });
+
+  // ── validateConfig global type checks: a VALID value must produce NO warning.
+  //    The `typeof X !== 'Y' → true` mutants would warn even for valid input. ──
+  it('does not warn about a valid global testRunner / perMutantTimeoutMs / allowPrebuild', () => {
+    setConfig({ testRunner: 'vitest', perMutantTimeoutMs: 5000, allowPrebuild: true });
+    const { warnings } = validateConfig('/tmp/config.json');
+    expect(warnings.some((w) => w.includes('testRunner'))).toBe(false);
+    expect(warnings.some((w) => w.includes('perMutantTimeoutMs'))).toBe(false);
+    expect(warnings.some((w) => w.includes('allowPrebuild'))).toBe(false);
+  });
+
+  // ── validateEngineSection: each key's wrong-type warning must fire for THAT
+  //    key (kills the `key === '…' → false` / `→ true` dispatch mutants). ──
+  it('warns about a wrong-typed perMutantTimeoutMs in an engine section', () => {
+    // `key === 'perMutantTimeoutMs' → false` would let a non-number slip past the
+    // numeric block and be counted as a valid field.
+    setConfig({ stryker: { perMutantTimeoutMs: 'nope' } });
+    expect(
+      validateConfig('/tmp/config.json').warnings.some(
+        (w) => w.includes('perMutantTimeoutMs') && w.includes('must be a number'),
+      ),
+    ).toBe(true);
+  });
+
+  it('does not call a float timeoutMs a non-integer (concurrency-only check)', () => {
+    // `key === 'concurrency' → true` at the integer check would mis-flag a
+    // perfectly valid float timeoutMs as "must be an integer".
+    setConfig({ stryker: { timeoutMs: 1.5 } });
+    expect(
+      validateConfig('/tmp/config.json').warnings.some((w) => w.includes('must be an integer')),
+    ).toBe(false);
+  });
+
+  it('warns about a non-array mutatorDenylist in an engine section', () => {
+    // `key === 'mutatorDenylist' → false` would skip the array check for denylist.
+    setConfig({ stryker: { mutatorDenylist: 'StringLiteral' } });
+    expect(
+      validateConfig('/tmp/config.json').warnings.some(
+        (w) => w.includes('mutatorDenylist') && w.includes('must be an array'),
+      ),
+    ).toBe(true);
+  });
+
+  it('does not warn about valid array / boolean / string fields in an engine section', () => {
+    // Kills the `!Array.isArray(val) → true` (458), `typeof val !== 'boolean' → true`
+    // (466), and `typeof val !== 'string' → true` (474) mutants, which would warn
+    // even when the field is well-formed.
+    setConfig({
+      stryker: { mutatorAllowlist: ['ConditionalExpression'], dryRun: true, testRunner: 'vitest' },
+    });
+    const { warnings } = validateConfig('/tmp/config.json');
+    expect(warnings.some((w) => w.includes('must be an array'))).toBe(false);
+    expect(warnings.some((w) => w.includes('must be a boolean'))).toBe(false);
+    expect(warnings.some((w) => w.includes('must be a string'))).toBe(false);
+  });
 });

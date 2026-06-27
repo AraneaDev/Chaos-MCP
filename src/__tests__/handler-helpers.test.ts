@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // resolvePrebuildCommand probes the filesystem for go.mod / Cargo.toml.
 vi.mock('fs', () => ({ existsSync: vi.fn(() => false) }));
@@ -9,6 +9,7 @@ import {
   buildRunOptions,
   resolvePrebuildCommand,
   auditFile,
+  isPrebuildAllowed,
 } from '../handler.js';
 import type { EnvironmentInfo } from '../utils/project-detector.js';
 
@@ -393,6 +394,162 @@ describe('resolvePrebuildCommand', () => {
     expect(
       resolvePrebuildCommand({}, env({ projectType: 'python', packageManager: 'pip' }), 'python'),
     ).toBeNull();
+  });
+});
+
+// Mutation hardening: the baseline validator's per-arm survivors. The existing
+// baseline tests assert only `.isError`, so a mutant that still errors (via a
+// different arm/message) survives. These pin the *specific* message and the
+// arms whose mutation would otherwise let a malformed entry through (or crash
+// on a null deref) instead of returning a clean error.
+describe('validateToolArgs — baseline arms', () => {
+  /** Extract the error text from a CallToolResult. */
+  const msg = (r: ReturnType<typeof validateToolArgs>): string =>
+    (r?.content[0] as { text: string }).text;
+
+  it('reports the "must be an object" message for a non-object baseline', () => {
+    // Mutating `typeof b !== 'object' → false` lets a string fall through to the
+    // generic "must contain at least one" message; pin the specific one.
+    expect(msg(validateToolArgs({ baseline: 'nope' }))).toContain('must be an object');
+  });
+
+  it('accepts a baseline entry at the line lower bound of 1', () => {
+    // Kills the `line < 1 → line <= 1` boundary mutant (which would reject 1).
+    expect(
+      validateToolArgs({ baseline: { survivors: [{ line: 1, mutators: { C: 1 } }] } }),
+    ).toBeNull();
+  });
+
+  it('rejects a null baseline entry without dereferencing it', () => {
+    // `entry === null → false` would skip the null guard and crash on `.line`.
+    expect(validateToolArgs({ baseline: { survivors: [null] } })?.isError).toBe(true);
+  });
+
+  it('rejects a baseline entry whose mutators is null', () => {
+    // `entry.mutators === null → false` would let null through to Object.keys().
+    expect(
+      validateToolArgs({ baseline: { survivors: [{ line: 1, mutators: null }] } })?.isError,
+    ).toBe(true);
+  });
+
+  it('rejects a baseline entry whose mutators is a string', () => {
+    // `typeof entry.mutators !== 'object' → false` would accept a string (whose
+    // Object.keys are indices), inflating pairCount and passing validation.
+    expect(
+      validateToolArgs({ baseline: { survivors: [{ line: 1, mutators: 'x' }] } })?.isError,
+    ).toBe(true);
+  });
+
+  it('reports the "must be an object" message for a null baseline', () => {
+    // `b === null → false` would skip the null guard and crash dereferencing
+    // b['survivors']; the real code returns the specific object-shape message.
+    expect(msg(validateToolArgs({ baseline: null }))).toContain('must be an object');
+  });
+});
+
+describe('buildRunOptions — mutation hardening', () => {
+  it('never sources a testRunner from the mutmut section for a non-mutmut engine', () => {
+    // `configKey === 'mutmut' → true` would leak mutmut's runner into a Go run.
+    expect(
+      buildRunOptions(
+        {},
+        { mutmut: { testRunner: 'leaked' } },
+        env({ projectType: 'go', testRunner: 'gotest' }),
+        '/sb',
+        'go',
+      ).testRunner,
+    ).toBe('gotest');
+  });
+
+  it('ignores a non-number args.timeoutMs and falls back to config', () => {
+    // `typeof args.timeoutMs === 'number' → true` would accept the coercible
+    // numeric string '5' (since '5' > 0 is truthy) instead of falling back.
+    expect(
+      buildRunOptions({ timeoutMs: '5' }, { defaultTimeoutMs: 99 }, env(), '/sb', 'typescript')
+        .timeoutMs,
+    ).toBe(99);
+  });
+
+  it('honours outputFormat "json"', () => {
+    // Kills `args.outputFormat === 'json' → false` and the '' string mutant.
+    expect(
+      buildRunOptions({ outputFormat: 'json' }, {}, env(), '/sb', 'typescript').outputFormat,
+    ).toBe('json');
+  });
+
+  it('filters non-string entries out of ignorePatterns', () => {
+    // Kills the dropped `.filter` and `typeof v === 'string' → true` mutants.
+    expect(
+      buildRunOptions({ ignorePatterns: ['a', 1, 'b', null] }, {}, env(), '/sb', 'typescript')
+        .ignorePatterns,
+    ).toEqual(['a', 'b']);
+  });
+
+  it('rejects an out-of-range args.concurrency of 0 in favour of the config fallback', () => {
+    // isValidConcurrency's `v >= 1 → true` mutant would accept 0; assert the
+    // config value wins instead. (Boundary below the lower bound of 1.)
+    expect(
+      buildRunOptions({ concurrency: 0 }, { concurrency: 3 }, env(), '/sb', 'typescript')
+        .concurrency,
+    ).toBe(3);
+  });
+
+  it('ignores a non-number args.perMutantTimeoutMs and falls back to config', () => {
+    // isPositiveMs's `typeof v === 'number' → true` would accept the coercible
+    // string '5' (since '5' > 0 is truthy) instead of falling back to config.
+    expect(
+      buildRunOptions(
+        { perMutantTimeoutMs: '5' },
+        { perMutantTimeoutMs: 20 },
+        env(),
+        '/sb',
+        'typescript',
+      ).perMutantTimeoutMs,
+    ).toBe(20);
+  });
+});
+
+// The prebuild opt-in gate. The config branch (`cfg.allowPrebuild === true`) is
+// covered by handleToolCall tests, but the CHAOS_MCP_ALLOW_PREBUILD env-var
+// branch was entirely untested — a gap on a security boundary (it gates running
+// an arbitrary shell command that can escape the sandbox).
+describe('isPrebuildAllowed', () => {
+  let saved: string | undefined;
+
+  beforeEach(() => {
+    saved = process.env.CHAOS_MCP_ALLOW_PREBUILD;
+    delete process.env.CHAOS_MCP_ALLOW_PREBUILD;
+  });
+  afterEach(() => {
+    if (saved === undefined) delete process.env.CHAOS_MCP_ALLOW_PREBUILD;
+    else process.env.CHAOS_MCP_ALLOW_PREBUILD = saved;
+  });
+
+  it('allows prebuild when config opts in, regardless of the env var', () => {
+    expect(isPrebuildAllowed({ allowPrebuild: true })).toBe(true);
+  });
+
+  it('allows prebuild when the env var is exactly "1"', () => {
+    process.env.CHAOS_MCP_ALLOW_PREBUILD = '1';
+    expect(isPrebuildAllowed({})).toBe(true);
+  });
+
+  it('allows prebuild when the env var is exactly "true"', () => {
+    process.env.CHAOS_MCP_ALLOW_PREBUILD = 'true';
+    expect(isPrebuildAllowed({})).toBe(true);
+  });
+
+  it('does NOT allow prebuild for any other env-var value', () => {
+    // Kills `flag === '1' || … → false`, the `|| → &&` swap, and each literal
+    // mutation: only the exact tokens '1' / 'true' may enable it.
+    for (const v of ['0', 'false', 'yes', 'TRUE', '']) {
+      process.env.CHAOS_MCP_ALLOW_PREBUILD = v;
+      expect(isPrebuildAllowed({})).toBe(false);
+    }
+  });
+
+  it('does NOT allow prebuild when neither config nor env opts in', () => {
+    expect(isPrebuildAllowed({})).toBe(false);
   });
 });
 

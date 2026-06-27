@@ -58,7 +58,7 @@ function toolError(text: string): CallToolResult {
  * is opt-in: enabled via `allowPrebuild: true` in the config file or the
  * `CHAOS_MCP_ALLOW_PREBUILD` environment variable (audit Med#10).
  */
-function isPrebuildAllowed(cfg: ChaosConfig): boolean {
+export function isPrebuildAllowed(cfg: ChaosConfig): boolean {
   if (cfg.allowPrebuild === true) return true;
   const flag = process.env.CHAOS_MCP_ALLOW_PREBUILD;
   return flag === '1' || flag === 'true';
