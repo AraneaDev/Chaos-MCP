@@ -127,6 +127,15 @@ function scoreNum(s: string): number {
   return Number.isFinite(n) ? n : 100;
 }
 
+/** Comparator: weakest-first — score asc, survived desc, file asc. */
+export function compareTriageRows(a: TriageRow, b: TriageRow): number {
+  return (
+    scoreNum(a.mutationScore) - scoreNum(b.mutationScore) ||
+    b.survived - a.survived ||
+    a.file.localeCompare(b.file)
+  );
+}
+
 /** Rank audited results weakest-first: score asc, survived desc, file asc. */
 export function rankResults(results: { file: string; result: MutationResult }[]): TriageRow[] {
   const rows: TriageRow[] = results.map(({ file, result }) => ({
@@ -137,12 +146,7 @@ export function rankResults(results: { file: string; result: MutationResult }[])
     survived: result.survived,
     noCoverage: Math.max(0, result.vulnerabilities.length - result.survived),
   }));
-  return rows.sort(
-    (a, b) =>
-      scoreNum(a.mutationScore) - scoreNum(b.mutationScore) ||
-      b.survived - a.survived ||
-      a.file.localeCompare(b.file),
-  );
+  return rows.sort(compareTriageRows);
 }
 
 function note(rows: TriageRow[], discovered: number, skipped: number): string {

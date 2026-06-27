@@ -6,6 +6,7 @@ import { auditFile, makeEngine, resolvePrebuildCommand, isRealPathInside } from 
 import {
   discoverFiles,
   discoverChangedFiles,
+  compareTriageRows,
   buildTriagePayload,
   formatTriageAsText,
   type TriageRow,
@@ -25,24 +26,6 @@ function triageError(text: string): CallToolResult {
 }
 
 const DEFAULT_MAX_FILES = 25;
-
-/** Parse a score string like "87.50%" into a number (NaN-safe → 100). */
-function scoreNum(s: string): number {
-  const n = parseFloat(s);
-  return Number.isFinite(n) ? n : 100;
-}
-
-/** Sort pre-built TriageRows weakest-first: score asc, survived desc, file asc. */
-function rankRows(rows: TriageRow[]): TriageRow[] {
-  return rows
-    .slice()
-    .sort(
-      (a, b) =>
-        scoreNum(a.mutationScore) - scoreNum(b.mutationScore) ||
-        b.survived - a.survived ||
-        a.file.localeCompare(b.file),
-    );
-}
 
 /** Per-file StrykerJS worker cap so parallel triage doesn't oversubscribe CPU. */
 export function resolveStrykerConcurrency(poolSize: number, cpuCount: number): number | undefined {
@@ -303,7 +286,7 @@ export async function handleTriageCall(
     }
   }
 
-  const ranking = rankRows(auditedRows);
+  const ranking = auditedRows.slice().sort(compareTriageRows);
   const payload = buildTriagePayload(ranking, errors, discovered, skipped, scopeNote);
   const text =
     outputFormat === 'text'
