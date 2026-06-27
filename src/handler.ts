@@ -235,6 +235,32 @@ function validateEnrichArg(args: ToolArgs): string | null {
   return null;
 }
 
+/** maxSurvivors: integer >= 1 when present. */
+function validateMaxSurvivorsArg(args: ToolArgs): string | null {
+  if (
+    args.maxSurvivors !== undefined &&
+    (typeof args.maxSurvivors !== 'number' ||
+      !Number.isInteger(args.maxSurvivors) ||
+      args.maxSurvivors < 1)
+  ) {
+    return 'maxSurvivors must be an integer >= 1. Example: 20.';
+  }
+  return null;
+}
+
+/** severityFloor: one of high|medium|low when present. */
+function validateSeverityFloorArg(args: ToolArgs): string | null {
+  if (
+    args.severityFloor !== undefined &&
+    args.severityFloor !== 'high' &&
+    args.severityFloor !== 'medium' &&
+    args.severityFloor !== 'low'
+  ) {
+    return 'severityFloor must be one of "high", "medium", or "low". Example: "high".';
+  }
+  return null;
+}
+
 /** Ordered per-field validators run by {@link validateToolArgs}. */
 const TOOL_ARG_VALIDATORS: ((args: ToolArgs) => string | null)[] = [
   validatePerMutantTimeoutMs,
@@ -244,6 +270,8 @@ const TOOL_ARG_VALIDATORS: ((args: ToolArgs) => string | null)[] = [
   validateDiffBaseArg,
   validateBaselineArg,
   validateEnrichArg,
+  validateMaxSurvivorsArg,
+  validateSeverityFloorArg,
 ];
 
 /** Normalise an unknown into a well-formed `{ start, end }` lineScope, or `undefined`. */
