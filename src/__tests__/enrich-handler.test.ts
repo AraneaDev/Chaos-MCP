@@ -19,9 +19,10 @@ describe('enrich schema + validation', () => {
     expect(validateToolArgs({})).toBeNull();
   });
 
-  it('rejects a non-boolean enrich', () => {
+  it('rejects a non-boolean enrich with a descriptive message', () => {
     const err = validateToolArgs({ enrich: 'yes' });
     expect(err?.isError).toBe(true);
+    expect(err?.content[0].text).toContain('enrich must be a boolean');
   });
 });
 
