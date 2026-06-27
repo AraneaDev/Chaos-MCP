@@ -6,7 +6,7 @@ vi.mock('../utils/exec.js', () => ({
 }));
 
 import { runShell, ExecFailureError } from '../utils/exec.js';
-import { parseHunks, computeChangedRanges } from '../utils/git-diff.js';
+import { parseHunks, computeChangedRanges, listChangedFiles } from '../utils/git-diff.js';
 
 const mockRunShell = vi.mocked(runShell);
 const ok = (stdout = '') => ({ stdout, stderr: '', exit: 0, signal: null });
@@ -189,5 +189,45 @@ describe('computeChangedRanges', () => {
       kind: 'bad-ref',
       ref: 'HEAD',
     });
+  });
+});
+
+describe('listChangedFiles', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('returns not-a-repo when the work-tree check fails', async () => {
+    mockRunShell.mockRejectedValueOnce(new Error('not a git repo'));
+    const r = await listChangedFiles('/ws', 'main');
+    expect(r).toEqual({ kind: 'not-a-repo' });
+  });
+
+  it('returns bad-ref when merge-base fails', async () => {
+    mockRunShell
+      .mockResolvedValueOnce(ok('true\n')) // rev-parse work-tree
+      .mockRejectedValueOnce(new Error('bad ref')); // merge-base
+    const r = await listChangedFiles('/ws', 'nope');
+    expect(r).toEqual({ kind: 'bad-ref', ref: 'nope' });
+  });
+
+  it('unions tracked-changed and untracked, deduped', async () => {
+    mockRunShell
+      .mockResolvedValueOnce(ok('true\n')) // work-tree
+      .mockResolvedValueOnce(ok('abc123\n')) // merge-base
+      .mockResolvedValueOnce(ok('src/a.ts\nsrc/b.ts\n')) // diff --name-only
+      .mockResolvedValueOnce(ok('src/b.ts\nsrc/c.ts\n')); // ls-files --others
+    const r = await listChangedFiles('/ws', 'main');
+    expect(r).toEqual({ kind: 'files', files: ['src/a.ts', 'src/b.ts', 'src/c.ts'] });
+  });
+
+  it('uses --cached for staged', async () => {
+    mockRunShell
+      .mockResolvedValueOnce(ok('true\n')) // work-tree
+      .mockResolvedValueOnce(ok('src/a.ts\n')) // diff --cached --name-only
+      .mockResolvedValueOnce(ok('')); // ls-files --others
+    const r = await listChangedFiles('/ws', 'staged');
+    expect(r).toEqual({ kind: 'files', files: ['src/a.ts'] });
+    // assert no merge-base call happened
+    const calls = mockRunShell.mock.calls.map((c) => c[1].join(' '));
+    expect(calls.some((c) => c.includes('merge-base'))).toBe(false);
   });
 });

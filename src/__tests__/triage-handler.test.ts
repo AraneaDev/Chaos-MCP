@@ -1,11 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { dirname, basename, join } from 'path';
 import type { CallToolRequest } from '@modelcontextprotocol/sdk/types.js';
+import { resolveStrykerConcurrency } from '../triage-handler.js';
 
 vi.mock('../triage.js', async () => {
   const actual = await vi.importActual<typeof import('../triage.js')>('../triage.js');
-  return { ...actual, discoverFiles: vi.fn() };
+  return { ...actual, discoverFiles: vi.fn(), discoverChangedFiles: vi.fn() };
 });
+vi.mock('../utils/git-diff.js', () => ({
+  listChangedFiles: vi.fn(),
+  computeChangedRanges: vi.fn(),
+}));
 const { cleanupSpy } = vi.hoisted(() => ({ cleanupSpy: vi.fn() }));
 vi.mock('../utils/sandbox.js', () => ({
   createSandbox: vi.fn(() => ({ workDir: '/tmp/s', targetFile: '', cleanup: cleanupSpy })),
@@ -21,14 +26,18 @@ vi.mock('../handler.js', async () => {
   return { ...actual, auditFile: vi.fn(), makeEngine: vi.fn(() => ({ run: vi.fn() })) };
 });
 
-import { discoverFiles } from '../triage.js';
+import { discoverFiles, discoverChangedFiles } from '../triage.js';
 import { detectEnvironment } from '../utils/project-detector.js';
 import { auditFile } from '../handler.js';
+import { listChangedFiles, computeChangedRanges } from '../utils/git-diff.js';
 import { handleTriageCall } from '../triage-handler.js';
 
 const mockDiscover = vi.mocked(discoverFiles);
+const mockDiscoverChanged = vi.mocked(discoverChangedFiles);
 const mockDetectEnv = vi.mocked(detectEnvironment);
 const mockAuditFile = vi.mocked(auditFile);
+const mockListChangedFiles = vi.mocked(listChangedFiles);
+const mockComputeChangedRanges = vi.mocked(computeChangedRanges);
 
 const req = (args: Record<string, unknown>): CallToolRequest =>
   ({
@@ -60,13 +69,13 @@ describe('handleTriageCall', () => {
     mockDetectEnv.mockReturnValue(tsEnv);
   });
 
-  it('rejects a missing/empty/non-array paths arg with the exact message', async () => {
+  it('rejects missing/empty/non-array paths (when no diffBase) with the paths-or-diffBase message', async () => {
     const expected =
-      'paths is required and must be a non-empty array of workspace-relative file/directory strings.';
+      'Provide "paths" (array of workspace-relative files/dirs) or "diffBase" (a git ref) — at least one is required.';
     for (const bad of [{}, { paths: [] }, { paths: 'src' }]) {
       const res = await handleTriageCall(req(bad));
       expect(res.isError).toBe(true);
-      // Pins the triageError content shape (line 17) and the message (line 40).
+      // Pins the triageError content shape and the paths-or-diffBase message.
       expect(res.content[0]).toEqual({ type: 'text', text: expected });
     }
   });
@@ -235,7 +244,7 @@ describe('handleTriageCall', () => {
     expect(mockAuditFile).toHaveBeenCalledWith(expect.objectContaining({ targetFile: 'a.ts' }));
   });
 
-  it('audits discovered files serially and ranks them weakest-first', async () => {
+  it('audits discovered files and ranks them weakest-first', async () => {
     mockDiscover.mockReturnValue({ files: ['a.ts', 'b.ts'], discovered: 2, skipped: 0 });
     mockAuditFile
       .mockResolvedValueOnce(mrOf({ mutationScore: '90.00%', survived: 1 }))
@@ -282,5 +291,149 @@ describe('handleTriageCall', () => {
     expect(json.summary.filesErrored).toBe(1);
     expect(json.errors[0].file).toBe('weird.txt');
     expect(json.errors[0].error).toMatch(/unsupported/i);
+  });
+
+  it('returns structuredContent matching the JSON text block', async () => {
+    // Verifies that (a) structuredContent is present on the result and
+    // (b) the JSON text block and structuredContent are deeply equal, i.e.
+    // buildTriagePayload drives both representations.
+    mockDiscover.mockReturnValue({ files: ['a.ts'], discovered: 1, skipped: 0 });
+    mockAuditFile.mockResolvedValue(mrOf({ mutationScore: '80.00%', survived: 2 }));
+    const res = await handleTriageCall(req({ paths: ['src'] }));
+    expect(res.structuredContent).toBeDefined();
+    const parsed = JSON.parse((res.content[0] as { text: string }).text);
+    expect(parsed).toEqual(res.structuredContent);
+  });
+
+  it('errors when neither paths nor diffBase is given', async () => {
+    const res = await handleTriageCall(req({}));
+    expect(res.isError).toBe(true);
+    expect(txt(res)).toMatch(/paths.*diffBase|diffBase.*paths/);
+  });
+
+  it('rejects a "-"-prefixed diffBase', async () => {
+    const res = await handleTriageCall(req({ diffBase: '-x' }));
+    expect(res.isError).toBe(true);
+    expect(txt(res)).toContain('diffBase');
+  });
+
+  it('rejects a negative survivorsPerFile', async () => {
+    const res = await handleTriageCall(req({ paths: ['src'], survivorsPerFile: -1 }));
+    expect(res.isError).toBe(true);
+    expect(txt(res)).toContain('survivorsPerFile');
+  });
+
+  it('rejects an out-of-range fileConcurrency', async () => {
+    const res = await handleTriageCall(req({ paths: ['src'], fileConcurrency: 0 }));
+    expect(res.isError).toBe(true);
+    expect(txt(res)).toContain('fileConcurrency');
+  });
+
+  it('selects changed files via diffBase and reports not-a-repo', async () => {
+    mockListChangedFiles.mockResolvedValue({ kind: 'not-a-repo' });
+    const res = await handleTriageCall(req({ diffBase: 'main' }));
+    expect(res.isError).toBe(true);
+    expect((res.content[0] as { text: string }).text).toMatch(/git work tree|not a git/i);
+  });
+
+  it('diffBase with no changed supported files returns an empty leaderboard', async () => {
+    mockListChangedFiles.mockResolvedValue({ kind: 'files', files: ['README.md'] });
+    mockDiscoverChanged.mockReturnValue({ files: [], discovered: 0, skipped: 0 });
+    const res = await handleTriageCall(req({ diffBase: 'main' }));
+    const parsed = JSON.parse((res.content[0] as { text: string }).text);
+    expect(parsed.ranking).toEqual([]);
+    expect(parsed.scopeNote).toBeDefined();
+  });
+
+  it('diffBase: silently excludes a file whose resolved path escapes the workspace root', async () => {
+    // Defense-in-depth (C2 parity): git shouldn't produce out-of-root paths, but
+    // if discoverChangedFiles returns one, the boundary filter must drop it so the
+    // audit never runs on a file outside the workspace.
+    // `resolve(cwd, '../outside.ts')` escapes the cwd, so isRealPathInside → false.
+    mockListChangedFiles.mockResolvedValue({ kind: 'files', files: ['../outside.ts'] });
+    mockDiscoverChanged.mockReturnValue({ files: ['../outside.ts'], discovered: 1, skipped: 0 });
+    const res = await handleTriageCall(req({ diffBase: 'main' }));
+    // The out-of-root file is filtered → audit never invoked → empty ranking.
+    expect(mockAuditFile).not.toHaveBeenCalled();
+    const parsed = JSON.parse(txt(res));
+    expect(parsed.ranking).toEqual([]);
+    expect(res.isError).toBeUndefined();
+  });
+
+  it('diffBase with a changed TS file passes lineRanges to auditFile and marks the row', async () => {
+    mockListChangedFiles.mockResolvedValue({ kind: 'files', files: ['src/foo.ts'] });
+    mockDiscoverChanged.mockReturnValue({ files: ['src/foo.ts'], discovered: 1, skipped: 0 });
+    mockComputeChangedRanges.mockResolvedValue({
+      kind: 'ranges',
+      ranges: [{ start: 1, end: 10 }],
+    });
+    mockAuditFile.mockResolvedValue(mrOf({ mutationScore: '60.00%', survived: 4 }));
+    const res = await handleTriageCall(req({ diffBase: 'main' }));
+    expect(mockComputeChangedRanges).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(String),
+      'main',
+    );
+    expect(mockAuditFile).toHaveBeenCalledWith(
+      expect.objectContaining({ lineRanges: [{ start: 1, end: 10 }] }),
+    );
+    const parsed = JSON.parse(txt(res));
+    expect(parsed.ranking[0].scopeNote).toBe('scored on changed lines');
+  });
+
+  it('inlines top survivors per file when survivorsPerFile > 0', async () => {
+    const mrWithSurvivor = {
+      target: 'src/foo.ts',
+      totalMutants: 5,
+      killed: 4,
+      survived: 1,
+      mutationScore: '80.00%',
+      vulnerabilities: [
+        { line: 10, mutator: 'ConditionalExpression', description: 'a conditional' },
+      ],
+    };
+    mockDiscover.mockReturnValue({ files: ['src/foo.ts'], discovered: 1, skipped: 0 });
+    mockAuditFile.mockResolvedValue(mrWithSurvivor);
+    const res = await handleTriageCall(req({ paths: ['src/foo.ts'], survivorsPerFile: 3 }));
+    const parsed = JSON.parse((res.content[0] as { text: string }).text);
+    const row = parsed.ranking[0];
+    expect(row.survivors.length).toBeGreaterThan(0);
+    expect(row.worstSeverity).toBe('high');
+  });
+
+  it('does not inline survivors when survivorsPerFile is 0 (default)', async () => {
+    const mrWithSurvivor = {
+      target: 'src/foo.ts',
+      totalMutants: 5,
+      killed: 4,
+      survived: 1,
+      mutationScore: '80.00%',
+      vulnerabilities: [
+        { line: 10, mutator: 'ConditionalExpression', description: 'a conditional' },
+      ],
+    };
+    mockDiscover.mockReturnValue({ files: ['src/foo.ts'], discovered: 1, skipped: 0 });
+    mockAuditFile.mockResolvedValue(mrWithSurvivor);
+    const res = await handleTriageCall(req({ paths: ['src/foo.ts'] }));
+    const parsed = JSON.parse((res.content[0] as { text: string }).text);
+    const row = parsed.ranking[0];
+    expect(row.survivors).toBeUndefined();
+    expect(row.worstSeverity).toBeUndefined();
+  });
+});
+
+describe('resolveStrykerConcurrency', () => {
+  it('returns undefined for a single-file pool', () => {
+    expect(resolveStrykerConcurrency(1, 8)).toBeUndefined();
+  });
+  it('divides (cpus-1) across the pool, min 1', () => {
+    expect(resolveStrykerConcurrency(4, 8)).toBe(1); // floor(7/4)=1
+    expect(resolveStrykerConcurrency(2, 8)).toBe(3); // floor(7/2)=3
+    expect(resolveStrykerConcurrency(8, 2)).toBe(1); // floor(1/8)=0 → clamped to 1
+  });
+  it('clamps the result to 64 on very-high-core machines', () => {
+    // floor((200-1)/2) = 99 → clamped to 64 (Stryker's documented upper bound).
+    // Kills the `Math.min(64, ...)` wrapping by ensuring an unclamped result exceeds 64.
+    expect(resolveStrykerConcurrency(2, 200)).toBe(64);
   });
 });

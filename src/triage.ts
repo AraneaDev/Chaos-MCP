@@ -1,6 +1,8 @@
 import { readdirSync } from 'fs';
 import { join, relative, resolve } from 'path';
 import type { MutationResult } from './engines/base.js';
+import type { Severity } from './enrich.js';
+import type { LineGroup } from './format.js';
 
 export interface TriageRow {
   file: string;
@@ -9,6 +11,10 @@ export interface TriageRow {
   killed: number;
   survived: number;
   noCoverage: number;
+  scopeNote?: string;
+  worstSeverity?: Severity;
+  survivors?: LineGroup[];
+  noCoverageGroups?: LineGroup[];
 }
 
 export interface TriageError {
@@ -91,10 +97,43 @@ export function discoverFiles(
   return { files, discovered, skipped: discovered - files.length };
 }
 
+/**
+ * Filter a raw changed-file list (from listChangedFiles) to supported source
+ * files, optionally intersecting with `paths` (treated as directory/file
+ * prefixes), then sort, dedupe, and cap at `maxFiles`.
+ */
+export function discoverChangedFiles(
+  changedFiles: string[],
+  paths: string[] | undefined,
+  maxFiles: number,
+): { files: string[]; discovered: number; skipped: number } {
+  const underPaths = (rel: string): boolean => {
+    if (!paths || paths.length === 0) return true;
+    return paths.some((p) => {
+      const norm = p.replace(/\/+$/, '');
+      return rel === norm || rel.startsWith(`${norm}/`);
+    });
+  };
+  const collected = changedFiles.filter((rel) => isSupportedSourceFile(rel) && underPaths(rel));
+  const unique = [...new Set(collected)].sort();
+  const discovered = unique.length;
+  const files = unique.slice(0, maxFiles);
+  return { files, discovered, skipped: discovered - files.length };
+}
+
 /** Parse a "87.50%" score string into a number (NaN-safe → 100). */
 function scoreNum(s: string): number {
   const n = parseFloat(s);
   return Number.isFinite(n) ? n : 100;
+}
+
+/** Comparator: weakest-first — score asc, survived desc, file asc. */
+export function compareTriageRows(a: TriageRow, b: TriageRow): number {
+  return (
+    scoreNum(a.mutationScore) - scoreNum(b.mutationScore) ||
+    b.survived - a.survived ||
+    a.file.localeCompare(b.file)
+  );
 }
 
 /** Rank audited results weakest-first: score asc, survived desc, file asc. */
@@ -107,17 +146,14 @@ export function rankResults(results: { file: string; result: MutationResult }[])
     survived: result.survived,
     noCoverage: Math.max(0, result.vulnerabilities.length - result.survived),
   }));
-  return rows.sort(
-    (a, b) =>
-      scoreNum(a.mutationScore) - scoreNum(b.mutationScore) ||
-      b.survived - a.survived ||
-      a.file.localeCompare(b.file),
-  );
+  return rows.sort(compareTriageRows);
 }
 
-function note(rows: TriageRow[], discovered: number, skipped: number): string {
+function note(rows: TriageRow[], discovered: number, skipped: number, diffMode?: boolean): string {
   if (discovered === 0) {
-    return 'No supported source files found under the given paths.';
+    return diffMode
+      ? 'No changed supported source files found vs the diff base.'
+      : 'No supported source files found under the given paths.';
   }
   const trunc = skipped > 0 ? ` Audited ${rows.length}; ${skipped} skipped by maxFiles.` : '';
   return (
@@ -127,14 +163,28 @@ function note(rows: TriageRow[], discovered: number, skipped: number): string {
   );
 }
 
-/** Render the triage result as compact JSON. */
-export function formatTriageAsJson(
+export interface TriagePayload {
+  mode: 'triage';
+  summary: {
+    filesDiscovered: number;
+    filesAudited: number;
+    filesSkipped: number;
+    filesErrored: number;
+  };
+  ranking: TriageRow[];
+  errors: TriageError[];
+  scopeNote?: string;
+  note: string;
+}
+
+export function buildTriagePayload(
   rows: TriageRow[],
   errors: TriageError[],
   discovered: number,
   skipped: number,
-): string {
-  return JSON.stringify({
+  scopeNote?: string,
+): TriagePayload {
+  const payload: TriagePayload = {
     mode: 'triage',
     summary: {
       filesDiscovered: discovered,
@@ -144,8 +194,21 @@ export function formatTriageAsJson(
     },
     ranking: rows,
     errors,
-    note: note(rows, discovered, skipped),
-  });
+    note: note(rows, discovered, skipped, !!scopeNote),
+  };
+  if (scopeNote) payload.scopeNote = scopeNote;
+  return payload;
+}
+
+/** Render the triage result as compact JSON. */
+export function formatTriageAsJson(
+  rows: TriageRow[],
+  errors: TriageError[],
+  discovered: number,
+  skipped: number,
+  scopeNote?: string,
+): string {
+  return JSON.stringify(buildTriagePayload(rows, errors, discovered, skipped, scopeNote));
 }
 
 /** Render the triage result as a human-readable table. */
@@ -154,18 +217,24 @@ export function formatTriageAsText(
   errors: TriageError[],
   discovered: number,
   skipped: number,
+  scopeNote?: string,
 ): string {
   const lines: string[] = [
     `Chaos-MCP Triage: ${rows.length} of ${discovered} files audited` +
       (skipped > 0 ? ` (${skipped} skipped)` : ''),
   ];
+  if (scopeNote) lines.push(scopeNote);
   if (rows.length > 0) {
     lines.push('Weakest first (score  survived/total  file):');
     for (const r of rows) {
       lines.push(`  ${r.mutationScore}  ${r.survived}/${r.total}  ${r.file}`);
     }
   } else if (discovered === 0) {
-    lines.push('No supported source files found under the given paths.');
+    lines.push(
+      scopeNote
+        ? 'No changed supported source files found vs the diff base.'
+        : 'No supported source files found under the given paths.',
+    );
   }
   if (errors.length > 0) {
     lines.push('Errors:');

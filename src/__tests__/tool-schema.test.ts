@@ -97,9 +97,8 @@ describe('TOOL_DEFINITION contract', () => {
 });
 
 describe('TRIAGE_TOOL_DEFINITION contract', () => {
-  it('is named triage_test_coverage and requires paths (array)', () => {
+  it('is named triage_test_coverage with paths array and maxFiles integer', () => {
     expect(TRIAGE_TOOL_DEFINITION.name).toBe('triage_test_coverage');
-    expect(TRIAGE_TOOL_DEFINITION.inputSchema.required).toEqual(['paths']);
     const props = TRIAGE_TOOL_DEFINITION.inputSchema.properties as Record<string, { type: string }>;
     expect(props.paths.type).toBe('array');
     expect(props.maxFiles.type).toBe('integer');
@@ -119,6 +118,33 @@ interface ToolDefWithOutput {
     properties: Record<string, unknown>;
   };
 }
+
+describe('TRIAGE_TOOL_DEFINITION phase-2 additions', () => {
+  it('declares diffBase, survivorsPerFile, fileConcurrency', () => {
+    const props = TRIAGE_TOOL_DEFINITION.inputSchema.properties as Record<
+      string,
+      { type?: string; minimum?: number; maximum?: number }
+    >;
+    expect(props.diffBase.type).toBe('string');
+    expect(props.survivorsPerFile.type).toBe('integer');
+    expect(props.survivorsPerFile.minimum).toBe(0);
+    expect(props.fileConcurrency.type).toBe('integer');
+    expect(props.fileConcurrency.minimum).toBe(1);
+    expect(props.fileConcurrency.maximum).toBe(64);
+  });
+
+  it('no longer requires paths', () => {
+    expect(TRIAGE_TOOL_DEFINITION.inputSchema.required).not.toContain('paths');
+  });
+
+  it('exposes an outputSchema with ranking and summary', () => {
+    const out = (
+      TRIAGE_TOOL_DEFINITION as { outputSchema?: { properties?: Record<string, unknown> } }
+    ).outputSchema;
+    expect(out?.properties?.ranking).toBeDefined();
+    expect(out?.properties?.summary).toBeDefined();
+  });
+});
 
 describe('TOOL_DEFINITION phase-1 additions', () => {
   it('declares maxSurvivors and severityFloor inputs', () => {
