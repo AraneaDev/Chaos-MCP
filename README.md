@@ -144,8 +144,7 @@ The output is **bundled and deduplicated** to stay token-efficient: mutants are 
 
 The tool response also carries a `structuredContent` field (in addition to the standard text content block) so MCP clients that support it can consume the data directly without parsing JSON from text. The text block is retained for compatibility with clients that read `content[0].text`.
 
-`suggestedTestFile` is included when there are survivors, pointing to the conventional test file path for the audited source file (e.g. `src/utils/__tests__/math.test.ts` for `src/utils/math.ts`). The `exists` flag indicates whether the file already exists on disk.
-```
+`suggestedTestFile` is included when there are survivors or no-coverage entries (i.e. when the mutation score is below 100%), pointing to the conventional test file path for the audited source file (e.g. `src/utils/__tests__/math.test.ts` for `src/utils/math.ts`). The `exists` flag indicates whether the file already exists on disk.
 
 **Text output** (`"outputFormat": "text"`):
 ```

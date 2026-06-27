@@ -18,7 +18,7 @@ All notable changes to Chaos-MCP are documented in this file.
 
 ### Added — `suggestedTestFile` field
 
-- **`suggestedTestFile`** — included in the JSON payload when there are survivors, pointing to the conventional test file path for the audited source file (e.g. `src/utils/__tests__/math.test.ts` for `src/utils/math.ts`). The `exists` field indicates whether the file already exists on disk. Helps the calling agent know where to add or strengthen tests.
+- **`suggestedTestFile`** — included in the JSON payload when there are survivors or no-coverage entries (i.e. when the mutation score is below 100%), pointing to the conventional test file path for the audited source file (e.g. `src/utils/__tests__/math.test.ts` for `src/utils/math.ts`). The `exists` field indicates whether the file already exists on disk. Helps the calling agent know where to add or strengthen tests.
 
 ### Added — `outputSchema` on the tool definition
 
