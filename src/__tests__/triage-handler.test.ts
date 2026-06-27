@@ -283,4 +283,16 @@ describe('handleTriageCall', () => {
     expect(json.errors[0].file).toBe('weird.txt');
     expect(json.errors[0].error).toMatch(/unsupported/i);
   });
+
+  it('returns structuredContent matching the JSON text block', async () => {
+    // Verifies that (a) structuredContent is present on the result and
+    // (b) the JSON text block and structuredContent are deeply equal, i.e.
+    // buildTriagePayload drives both representations.
+    mockDiscover.mockReturnValue({ files: ['a.ts'], discovered: 1, skipped: 0 });
+    mockAuditFile.mockResolvedValue(mrOf({ mutationScore: '80.00%', survived: 2 }));
+    const res = await handleTriageCall(req({ paths: ['src'] }));
+    expect(res.structuredContent).toBeDefined();
+    const parsed = JSON.parse((res.content[0] as { text: string }).text);
+    expect(parsed).toEqual(res.structuredContent);
+  });
 });

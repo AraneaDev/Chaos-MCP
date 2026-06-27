@@ -4,7 +4,7 @@ import { auditFile, makeEngine, resolvePrebuildCommand, isRealPathInside } from 
 import {
   discoverFiles,
   rankResults,
-  formatTriageAsJson,
+  buildTriagePayload,
   formatTriageAsText,
   type TriageError,
 } from './triage.js';
@@ -68,11 +68,16 @@ export async function handleTriageCall(
 
   const { files, discovered, skipped } = discoverFiles(paths, rootCwd, maxFiles);
   if (files.length === 0) {
+    const scopeNote: string | undefined = undefined;
+    const payload = buildTriagePayload([], [], discovered, skipped, scopeNote);
     const text =
       outputFormat === 'text'
-        ? formatTriageAsText([], [], discovered, skipped)
-        : formatTriageAsJson([], [], discovered, skipped);
-    return { content: [{ type: 'text', text }] };
+        ? formatTriageAsText([], [], discovered, skipped, scopeNote)
+        : JSON.stringify(payload);
+    return {
+      content: [{ type: 'text', text }],
+      structuredContent: payload as unknown as Record<string, unknown>,
+    };
   }
 
   const audited: { file: string; result: MutationResult }[] = [];
@@ -124,9 +129,14 @@ export async function handleTriageCall(
   }
 
   const ranking = rankResults(audited);
+  const scopeNote: string | undefined = undefined;
+  const payload = buildTriagePayload(ranking, errors, discovered, skipped, scopeNote);
   const text =
     outputFormat === 'text'
-      ? formatTriageAsText(ranking, errors, discovered, skipped)
-      : formatTriageAsJson(ranking, errors, discovered, skipped);
-  return { content: [{ type: 'text', text }] };
+      ? formatTriageAsText(ranking, errors, discovered, skipped, scopeNote)
+      : JSON.stringify(payload);
+  return {
+    content: [{ type: 'text', text }],
+    structuredContent: payload as unknown as Record<string, unknown>,
+  };
 }

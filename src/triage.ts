@@ -1,6 +1,8 @@
 import { readdirSync } from 'fs';
 import { join, relative, resolve } from 'path';
 import type { MutationResult } from './engines/base.js';
+import type { Severity } from './enrich.js';
+import type { LineGroup } from './format.js';
 
 export interface TriageRow {
   file: string;
@@ -9,6 +11,10 @@ export interface TriageRow {
   killed: number;
   survived: number;
   noCoverage: number;
+  scopeNote?: string;
+  worstSeverity?: Severity;
+  survivors?: LineGroup[];
+  noCoverageGroups?: LineGroup[];
 }
 
 export interface TriageError {
@@ -151,14 +157,28 @@ function note(rows: TriageRow[], discovered: number, skipped: number): string {
   );
 }
 
-/** Render the triage result as compact JSON. */
-export function formatTriageAsJson(
+export interface TriagePayload {
+  mode: 'triage';
+  summary: {
+    filesDiscovered: number;
+    filesAudited: number;
+    filesSkipped: number;
+    filesErrored: number;
+  };
+  ranking: TriageRow[];
+  errors: TriageError[];
+  scopeNote?: string;
+  note: string;
+}
+
+export function buildTriagePayload(
   rows: TriageRow[],
   errors: TriageError[],
   discovered: number,
   skipped: number,
-): string {
-  return JSON.stringify({
+  scopeNote?: string,
+): TriagePayload {
+  const payload: TriagePayload = {
     mode: 'triage',
     summary: {
       filesDiscovered: discovered,
@@ -169,7 +189,20 @@ export function formatTriageAsJson(
     ranking: rows,
     errors,
     note: note(rows, discovered, skipped),
-  });
+  };
+  if (scopeNote) payload.scopeNote = scopeNote;
+  return payload;
+}
+
+/** Render the triage result as compact JSON. */
+export function formatTriageAsJson(
+  rows: TriageRow[],
+  errors: TriageError[],
+  discovered: number,
+  skipped: number,
+  scopeNote?: string,
+): string {
+  return JSON.stringify(buildTriagePayload(rows, errors, discovered, skipped, scopeNote));
 }
 
 /** Render the triage result as a human-readable table. */
@@ -178,11 +211,13 @@ export function formatTriageAsText(
   errors: TriageError[],
   discovered: number,
   skipped: number,
+  scopeNote?: string,
 ): string {
   const lines: string[] = [
     `Chaos-MCP Triage: ${rows.length} of ${discovered} files audited` +
       (skipped > 0 ? ` (${skipped} skipped)` : ''),
   ];
+  if (scopeNote) lines.push(scopeNote);
   if (rows.length > 0) {
     lines.push('Weakest first (score  survived/total  file):');
     for (const r of rows) {

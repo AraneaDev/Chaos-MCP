@@ -10,6 +10,7 @@ import {
   rankResults,
   formatTriageAsJson,
   formatTriageAsText,
+  buildTriagePayload,
 } from '../triage.js';
 
 const mr = (over: Partial<MutationResult>): MutationResult => ({
@@ -284,5 +285,28 @@ describe('discoverChangedFiles', () => {
     expect(r.files).toEqual(['pkg/c.go']);
     expect(r.discovered).toBe(3);
     expect(r.skipped).toBe(2);
+  });
+});
+
+describe('buildTriagePayload', () => {
+  it('assembles summary + ranking + note', () => {
+    const rows = [
+      { file: 'a.ts', mutationScore: '50.00%', total: 4, killed: 2, survived: 2, noCoverage: 0 },
+    ];
+    const p = buildTriagePayload(rows, [], 1, 0);
+    expect(p.mode).toBe('triage');
+    expect(p.summary).toEqual({
+      filesDiscovered: 1,
+      filesAudited: 1,
+      filesSkipped: 0,
+      filesErrored: 0,
+    });
+    expect(p.ranking).toEqual(rows);
+    expect(typeof p.note).toBe('string');
+  });
+
+  it('includes scopeNote when provided', () => {
+    const p = buildTriagePayload([], [], 0, 0, 'diff vs main');
+    expect(p.scopeNote).toBe('diff vs main');
   });
 });
