@@ -31,16 +31,49 @@ export async function handleTriageCall(
   const args = request.params.arguments ?? {};
   const cfg = config ?? {};
 
-  if (
-    !Array.isArray(args.paths) ||
-    args.paths.length === 0 ||
-    args.paths.some((p) => typeof p !== 'string' || p.trim().length === 0)
-  ) {
+  const hasPaths = Array.isArray(args.paths) && args.paths.length > 0;
+  const hasDiffBase = typeof args.diffBase === 'string' && args.diffBase.trim().length > 0;
+  if (!hasPaths && !hasDiffBase) {
     return triageError(
-      'paths is required and must be a non-empty array of workspace-relative file/directory strings.',
+      'Provide "paths" (array of workspace-relative files/dirs) or "diffBase" (a git ref) — at least one is required.',
     );
   }
-  const paths = args.paths as string[];
+  if (
+    hasPaths &&
+    (args.paths as unknown[]).some(
+      (p) => typeof p !== 'string' || (p as string).trim().length === 0,
+    )
+  ) {
+    return triageError('paths must be an array of non-empty workspace-relative strings.');
+  }
+  if (args.diffBase !== undefined) {
+    if (typeof args.diffBase !== 'string' || args.diffBase.trim().length === 0) {
+      return triageError('diffBase must be a non-empty string: "HEAD", "staged", or a git ref.');
+    }
+    if (args.diffBase.startsWith('-')) {
+      return triageError(
+        'diffBase must not start with "-" (it would be mistaken for a git option).',
+      );
+    }
+  }
+  if (
+    args.survivorsPerFile !== undefined &&
+    (typeof args.survivorsPerFile !== 'number' ||
+      !Number.isInteger(args.survivorsPerFile) ||
+      args.survivorsPerFile < 0)
+  ) {
+    return triageError('survivorsPerFile must be an integer >= 0.');
+  }
+  if (
+    args.fileConcurrency !== undefined &&
+    (typeof args.fileConcurrency !== 'number' ||
+      !Number.isInteger(args.fileConcurrency) ||
+      args.fileConcurrency < 1 ||
+      args.fileConcurrency > 64)
+  ) {
+    return triageError('fileConcurrency must be an integer between 1 and 64.');
+  }
+  const paths = hasPaths ? (args.paths as string[]) : undefined;
 
   let maxFiles = cfg.defaultMaxFiles ?? DEFAULT_MAX_FILES;
   if (args.maxFiles !== undefined) {
@@ -55,18 +88,20 @@ export async function handleTriageCall(
   }
 
   const rootCwd = resolve(process.cwd());
-  for (const p of paths) {
-    const abs = resolve(rootCwd, p);
-    if (!isRealPathInside(abs, rootCwd)) {
-      return triageError(
-        `Each path must resolve within the workspace (${rootCwd}); received "${p}".`,
-      );
+  if (paths) {
+    for (const p of paths) {
+      const abs = resolve(rootCwd, p);
+      if (!isRealPathInside(abs, rootCwd)) {
+        return triageError(
+          `Each path must resolve within the workspace (${rootCwd}); received "${p}".`,
+        );
+      }
     }
   }
 
   const outputFormat = args.outputFormat === 'text' ? 'text' : 'json';
 
-  const { files, discovered, skipped } = discoverFiles(paths, rootCwd, maxFiles);
+  const { files, discovered, skipped } = discoverFiles(paths ?? [], rootCwd, maxFiles);
   if (files.length === 0) {
     const scopeNote: string | undefined = undefined;
     const payload = buildTriagePayload([], [], discovered, skipped, scopeNote);

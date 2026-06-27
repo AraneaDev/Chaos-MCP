@@ -60,13 +60,13 @@ describe('handleTriageCall', () => {
     mockDetectEnv.mockReturnValue(tsEnv);
   });
 
-  it('rejects a missing/empty/non-array paths arg with the exact message', async () => {
+  it('rejects missing/empty/non-array paths (when no diffBase) with the paths-or-diffBase message', async () => {
     const expected =
-      'paths is required and must be a non-empty array of workspace-relative file/directory strings.';
+      'Provide "paths" (array of workspace-relative files/dirs) or "diffBase" (a git ref) — at least one is required.';
     for (const bad of [{}, { paths: [] }, { paths: 'src' }]) {
       const res = await handleTriageCall(req(bad));
       expect(res.isError).toBe(true);
-      // Pins the triageError content shape (line 17) and the message (line 40).
+      // Pins the triageError content shape and the paths-or-diffBase message.
       expect(res.content[0]).toEqual({ type: 'text', text: expected });
     }
   });
@@ -294,5 +294,29 @@ describe('handleTriageCall', () => {
     expect(res.structuredContent).toBeDefined();
     const parsed = JSON.parse((res.content[0] as { text: string }).text);
     expect(parsed).toEqual(res.structuredContent);
+  });
+
+  it('errors when neither paths nor diffBase is given', async () => {
+    const res = await handleTriageCall(req({}));
+    expect(res.isError).toBe(true);
+    expect(txt(res)).toMatch(/paths.*diffBase|diffBase.*paths/);
+  });
+
+  it('rejects a "-"-prefixed diffBase', async () => {
+    const res = await handleTriageCall(req({ diffBase: '-x' }));
+    expect(res.isError).toBe(true);
+    expect(txt(res)).toContain('diffBase');
+  });
+
+  it('rejects a negative survivorsPerFile', async () => {
+    const res = await handleTriageCall(req({ paths: ['src'], survivorsPerFile: -1 }));
+    expect(res.isError).toBe(true);
+    expect(txt(res)).toContain('survivorsPerFile');
+  });
+
+  it('rejects an out-of-range fileConcurrency', async () => {
+    const res = await handleTriageCall(req({ paths: ['src'], fileConcurrency: 0 }));
+    expect(res.isError).toBe(true);
+    expect(txt(res)).toContain('fileConcurrency');
   });
 });
