@@ -91,6 +91,30 @@ export function discoverFiles(
   return { files, discovered, skipped: discovered - files.length };
 }
 
+/**
+ * Filter a raw changed-file list (from listChangedFiles) to supported source
+ * files, optionally intersecting with `paths` (treated as directory/file
+ * prefixes), then sort, dedupe, and cap at `maxFiles`.
+ */
+export function discoverChangedFiles(
+  changedFiles: string[],
+  paths: string[] | undefined,
+  maxFiles: number,
+): { files: string[]; discovered: number; skipped: number } {
+  const underPaths = (rel: string): boolean => {
+    if (!paths || paths.length === 0) return true;
+    return paths.some((p) => {
+      const norm = p.replace(/\/+$/, '');
+      return rel === norm || rel.startsWith(`${norm}/`);
+    });
+  };
+  const collected = changedFiles.filter((rel) => isSupportedSourceFile(rel) && underPaths(rel));
+  const unique = [...new Set(collected)].sort();
+  const discovered = unique.length;
+  const files = unique.slice(0, maxFiles);
+  return { files, discovered, skipped: discovered - files.length };
+}
+
 /** Parse a "87.50%" score string into a number (NaN-safe → 100). */
 function scoreNum(s: string): number {
   const n = parseFloat(s);

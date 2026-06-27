@@ -6,6 +6,7 @@ import type { MutationResult } from '../engines/base.js';
 import {
   isSupportedSourceFile,
   discoverFiles,
+  discoverChangedFiles,
   rankResults,
   formatTriageAsJson,
   formatTriageAsText,
@@ -260,5 +261,28 @@ describe('discoverFiles skips non-file directory entries', () => {
     const { files } = discoverFiles(['.'], root, 25);
     expect(files).toEqual(['real.ts']);
     expect(files).not.toContain('link.ts');
+  });
+});
+
+describe('discoverChangedFiles', () => {
+  const changed = ['src/a.ts', 'src/util/b.ts', 'README.md', 'src/a.test.ts', 'pkg/c.go'];
+
+  it('keeps only supported non-test source files', () => {
+    const r = discoverChangedFiles(changed, undefined, 25);
+    expect(r.files).toEqual(['pkg/c.go', 'src/a.ts', 'src/util/b.ts']);
+    expect(r.discovered).toBe(3);
+    expect(r.skipped).toBe(0);
+  });
+
+  it('intersects with paths prefixes when provided', () => {
+    const r = discoverChangedFiles(changed, ['src/util'], 25);
+    expect(r.files).toEqual(['src/util/b.ts']);
+  });
+
+  it('caps at maxFiles and reports skipped', () => {
+    const r = discoverChangedFiles(changed, undefined, 1);
+    expect(r.files).toEqual(['pkg/c.go']);
+    expect(r.discovered).toBe(3);
+    expect(r.skipped).toBe(2);
   });
 });
