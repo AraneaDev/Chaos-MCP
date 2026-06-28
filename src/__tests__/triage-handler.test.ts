@@ -465,6 +465,48 @@ describe('handleTriageCall', () => {
   });
 });
 
+describe('handleTriageCall minScore gate', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockDetectEnv.mockReturnValue(tsEnv);
+  });
+
+  it('rejects an invalid minScore (> 100) with an error', async () => {
+    const res = await handleTriageCall(req({ paths: ['src'], minScore: 150 }));
+    expect(res.isError).toBe(true);
+    expect(txt(res)).toContain('minScore');
+  });
+
+  it('rejects a negative minScore with an error', async () => {
+    const res = await handleTriageCall(req({ paths: ['src'], minScore: -1 }));
+    expect(res.isError).toBe(true);
+    expect(txt(res)).toContain('minScore');
+  });
+
+  it('passes minScore through and returns gate result in the payload', async () => {
+    mockDiscover.mockReturnValue({ files: ['a.ts'], discovered: 1, skipped: 0 });
+    mockAuditFile.mockResolvedValue(mrOf({ mutationScore: '50.00%', survived: 5 }));
+    const res = await handleTriageCall(req({ paths: ['src'], minScore: 80 }));
+    const json = JSON.parse(txt(res));
+    expect(json.gate).toBeDefined();
+    expect(json.gate.minScore).toBe(80);
+    expect(json.gate.passed).toBe(false);
+    expect(json.gate.failingFiles).toContain('a.ts');
+    expect(json.ranking[0].passed).toBe(false);
+  });
+
+  it('passes minScore to the empty-result early return', async () => {
+    mockDiscover.mockReturnValue({ files: [], discovered: 0, skipped: 0 });
+    const res = await handleTriageCall(req({ paths: ['src'], minScore: 80 }));
+    expect(res.isError).toBeUndefined();
+    const json = JSON.parse(txt(res));
+    // No ranked rows → failingFiles is empty → gate passes (no files to fail)
+    expect(json.gate).toBeDefined();
+    expect(json.gate.passed).toBe(true);
+    expect(json.gate.failingFiles).toEqual([]);
+  });
+});
+
 describe('resolveStrykerConcurrency', () => {
   it('returns undefined for a single-file pool', () => {
     expect(resolveStrykerConcurrency(1, 8)).toBeUndefined();

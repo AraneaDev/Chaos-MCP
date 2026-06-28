@@ -3,6 +3,7 @@ import { join, relative, resolve } from 'path';
 import type { MutationResult } from './engines/base.js';
 import type { Severity } from './enrich.js';
 import type { LineGroup } from './format.js';
+import { evaluateGate } from './gate.js';
 
 export interface TriageRow {
   file: string;
@@ -19,6 +20,8 @@ export interface TriageRow {
   runId?: string;
   /** Number of equivalent mutants suppressed for this file (from the suppressions list). */
   suppressedCount?: number;
+  /** Whether this file met the minScore gate threshold (only present when minScore is set). */
+  passed?: boolean;
 }
 
 export interface TriageError {
@@ -179,6 +182,8 @@ export interface TriagePayload {
   errors: TriageError[];
   scopeNote?: string;
   note: string;
+  /** Gate result — only present when minScore is supplied. A failing gate is never an error. */
+  gate?: { minScore: number; passed: boolean; failingFiles: string[] };
 }
 
 export function buildTriagePayload(
@@ -187,6 +192,7 @@ export function buildTriagePayload(
   discovered: number,
   skipped: number,
   scopeNote?: string,
+  minScore?: number,
 ): TriagePayload {
   const payload: TriagePayload = {
     mode: 'triage',
@@ -201,6 +207,19 @@ export function buildTriagePayload(
     note: note(rows, discovered, skipped, !!scopeNote),
   };
   if (scopeNote) payload.scopeNote = scopeNote;
+  if (minScore !== undefined) {
+    for (const row of rows) {
+      row.passed = evaluateGate(row.mutationScore, minScore).passed;
+    }
+    const failingFiles = rows
+      .filter((r) => !r.passed)
+      .map((r) => r.file)
+      .sort();
+    payload.gate = { minScore, passed: failingFiles.length === 0, failingFiles };
+    if (errors.length > 0) {
+      payload.note += ` Note: ${errors.length} file(s) errored and are not graded.`;
+    }
+  }
   return payload;
 }
 

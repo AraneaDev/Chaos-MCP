@@ -3,6 +3,7 @@ import { cpus } from 'os';
 import { readFileSync } from 'fs';
 import type { CallToolRequest, CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { auditFile, makeEngine, resolvePrebuildCommand, isRealPathInside } from './handler.js';
+import { validateMinScore } from './gate.js';
 import {
   discoverFiles,
   discoverChangedFiles,
@@ -90,6 +91,9 @@ export async function handleTriageCall(
   ) {
     return triageError('fileConcurrency must be an integer between 1 and 64.');
   }
+  const minScoreErr = validateMinScore(args.minScore);
+  if (minScoreErr !== null) return triageError(minScoreErr);
+  const minScore = typeof args.minScore === 'number' ? args.minScore : undefined;
   const paths = hasPaths ? (args.paths as string[]) : undefined;
 
   let maxFiles = cfg.defaultMaxFiles ?? DEFAULT_MAX_FILES;
@@ -159,7 +163,7 @@ export async function handleTriageCall(
   }
 
   if (files.length === 0) {
-    const payload = buildTriagePayload([], [], discovered, skipped, scopeNote);
+    const payload = buildTriagePayload([], [], discovered, skipped, scopeNote, minScore);
     const text =
       outputFormat === 'text'
         ? formatTriageAsText([], [], discovered, skipped, scopeNote)
@@ -330,7 +334,7 @@ export async function handleTriageCall(
   }
 
   const ranking = auditedRows.slice().sort(compareTriageRows);
-  const payload = buildTriagePayload(ranking, errors, discovered, skipped, scopeNote);
+  const payload = buildTriagePayload(ranking, errors, discovered, skipped, scopeNote, minScore);
   const text =
     outputFormat === 'text'
       ? formatTriageAsText(ranking, errors, discovered, skipped, scopeNote)

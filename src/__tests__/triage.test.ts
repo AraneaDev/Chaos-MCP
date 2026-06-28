@@ -335,6 +335,64 @@ describe('buildTriagePayload', () => {
   });
 });
 
+describe('buildTriagePayload gate computation', () => {
+  it('computes a gate over ranked rows when minScore is given', () => {
+    const rows = [
+      { file: 'a.ts', mutationScore: '90.00%', total: 10, killed: 9, survived: 1, noCoverage: 0 },
+      { file: 'b.ts', mutationScore: '50.00%', total: 10, killed: 5, survived: 5, noCoverage: 0 },
+    ];
+    const payload = buildTriagePayload(rows, [], 2, 0, undefined, 80);
+    expect(payload.gate).toEqual({ minScore: 80, passed: false, failingFiles: ['b.ts'] });
+    expect(payload.ranking.find((r) => r.file === 'a.ts')?.passed).toBe(true);
+    expect(payload.ranking.find((r) => r.file === 'b.ts')?.passed).toBe(false);
+  });
+
+  it('omits gate when minScore is absent', () => {
+    const payload = buildTriagePayload(
+      [{ file: 'a.ts', mutationScore: '90.00%', total: 1, killed: 1, survived: 0, noCoverage: 0 }],
+      [],
+      1,
+      0,
+    );
+    expect(payload.gate).toBeUndefined();
+  });
+
+  it('gate passes when all rows meet the threshold', () => {
+    const rows = [
+      { file: 'a.ts', mutationScore: '90.00%', total: 10, killed: 9, survived: 1, noCoverage: 0 },
+      { file: 'b.ts', mutationScore: '85.00%', total: 10, killed: 8, survived: 2, noCoverage: 0 },
+    ];
+    const payload = buildTriagePayload(rows, [], 2, 0, undefined, 80);
+    expect(payload.gate).toEqual({ minScore: 80, passed: true, failingFiles: [] });
+    expect(payload.ranking.every((r) => r.passed === true)).toBe(true);
+  });
+
+  it('failingFiles are sorted alphabetically', () => {
+    const rows = [
+      { file: 'z.ts', mutationScore: '10.00%', total: 10, killed: 1, survived: 9, noCoverage: 0 },
+      { file: 'a.ts', mutationScore: '20.00%', total: 10, killed: 2, survived: 8, noCoverage: 0 },
+    ];
+    const payload = buildTriagePayload(rows, [], 2, 0, undefined, 80);
+    expect(payload.gate?.failingFiles).toEqual(['a.ts', 'z.ts']);
+  });
+
+  it('appends an errored-files note to the gate note when errors are present', () => {
+    const rows = [
+      { file: 'a.ts', mutationScore: '90.00%', total: 10, killed: 9, survived: 1, noCoverage: 0 },
+    ];
+    const payload = buildTriagePayload(
+      rows,
+      [{ file: 'b.ts', error: 'boom' }],
+      2,
+      0,
+      undefined,
+      80,
+    );
+    expect(payload.note).toContain('errored');
+    expect(payload.note).toContain('1');
+  });
+});
+
 describe('TriageRow optional runId and suppressedCount fields', () => {
   it('carries runId and suppressedCount through buildTriagePayload into ranking', () => {
     // RED: TriageRow lacks runId/suppressedCount; payload omits them.

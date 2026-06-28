@@ -306,6 +306,13 @@ export const TRIAGE_TOOL_DEFINITION = {
           "How many files to audit in parallel. Default min(4, cpus-1). When >1, each StrykerJS run's " +
           'worker count is capped so total CPU use stays near the core count. Example: 4',
       },
+      minScore: {
+        type: 'number',
+        minimum: 0,
+        maximum: 100,
+        description:
+          "Gate: if any file's mutation score is below this (0–100), the result reports gate.passed=false and lists the failing files. Never causes an error. Example: 80.",
+      },
     },
     required: [],
     additionalProperties: false,
@@ -331,12 +338,21 @@ export const TRIAGE_TOOL_DEFINITION = {
           properties: {
             runId: { type: 'string' },
             suppressedCount: { type: 'integer' },
+            passed: { type: 'boolean' },
           },
         },
       },
       errors: { type: 'array', items: { type: 'object' } },
       scopeNote: { type: 'string' },
       note: { type: 'string' },
+      gate: {
+        type: 'object',
+        properties: {
+          minScore: { type: 'number' },
+          passed: { type: 'boolean' },
+          failingFiles: { type: 'array', items: { type: 'string' } },
+        },
+      },
     },
     required: ['mode', 'summary', 'ranking', 'errors', 'note'],
   },
