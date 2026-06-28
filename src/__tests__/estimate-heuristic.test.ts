@@ -64,4 +64,64 @@ describe('estimateHeuristic', () => {
       estimateHeuristic(small, 'typescript').mutants,
     );
   });
+
+  // Exact-count assertions: every term in the constructs/mutants sums must hold its
+  // weight. `toBeGreaterThan` checks let arithmetic-operator flips survive; these pin
+  // the exact totals so a `+`->`-` or `*2`->`/2` swap changes the number and dies.
+  it('weights every construct exactly (comparison x2, all else x1)', () => {
+    // comparison:3 (> < >=), arithmetic:1 (after excluding ++/-- double-count),
+    // logical:2 (&& ||), conditional:3 (if while ?), returns:2, booleans:2 (true false),
+    // numbers:2 (0 10), incdec:2 (++ --)  => constructs 17, mutants 17 + comparison(3) = 20
+    const src = `function f(a, b) {
+      let i = 0;
+      i++;
+      if (a > b && i < 10) { return a + b; }
+      while (b || a) { i--; }
+      const ok = a >= b ? true : false;
+      return ok;
+    }`;
+    expect(estimateHeuristic(src, 'typescript')).toEqual({ mutants: 20, constructs: 17 });
+  });
+
+  it('excludes the ++/-- double-count from the arithmetic term', () => {
+    // `a + b` is one real arithmetic op; the four `+`/`-` chars inside `i++`/`j--`
+    // are cancelled by the `- count(++|--) * 2` correction. arithmetic:1 + incdec:2.
+    expect(estimateHeuristic(`a + b; i++; j--;`, 'typescript')).toEqual({
+      mutants: 3,
+      constructs: 3,
+    });
+  });
+
+  it('adds the ternary `?` into the conditional term', () => {
+    expect(estimateHeuristic(`x ? y : z;`, 'typescript')).toEqual({ mutants: 1, constructs: 1 });
+  });
+
+  it('does NOT count operators inside block comments', () => {
+    const withBlock = `/* a + b > c && d */\nconst x = 1;`;
+    const noBlock = `const x = 1;`;
+    expect(estimateHeuristic(withBlock, 'typescript')).toEqual(
+      estimateHeuristic(noBlock, 'typescript'),
+    );
+  });
+
+  it('clamps a non-positive arithmetic term to zero (safe wrapper)', () => {
+    // `i++; i--;` => bare +/- chars 4, minus 2*incdec(2)=4 => arithmetic 0, clamped to 0.
+    // Only the two incdec mutations remain, so constructs/mutants == incdec count == 2.
+    expect(estimateHeuristic(`i++; i--;`, 'typescript')).toEqual({ mutants: 2, constructs: 2 });
+  });
+
+  it('counts a decimal literal as a single number', () => {
+    // Pins the `\d+(?:\.\d+)?` number regex: a mutant that drops the `+` (\.\d) or
+    // negates the class (\.\D) would split `1.55` into two numbers.
+    expect(estimateHeuristic(`const x = 1.55;`, 'typescript')).toEqual({
+      mutants: 1,
+      constructs: 1,
+    });
+  });
+
+  it('replaces a stripped block comment with a separating space, not nothing', () => {
+    // `1/* */2` -> "1 2" (two numbers). If the replacement were '' the tokens would
+    // merge into "12" (one number) — this distinguishes the ' ' -> '' string mutant.
+    expect(estimateHeuristic(`1/* */2`, 'typescript')).toEqual({ mutants: 2, constructs: 2 });
+  });
 });
