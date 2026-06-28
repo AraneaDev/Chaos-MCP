@@ -7,7 +7,7 @@
 
 > **Pre-release / in active development.** Chaos-MCP is **not yet published to npm** and is **not on a public host** — it currently lives in a private [Forgejo](https://forgejo.org/) repository. Install from source (see [Installation](#installation)). Any `npm install -g` / `npx` commands in this README describe the planned published experience and do not work yet.
 
-Chaos-MCP is an [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server that exposes two tools — `audit_code_resilience` (audit a single file) and `triage_test_coverage` (rank a whole tree weakest-first) — which run isolated mutation testing against your source to find weaknesses in the local test suite. It intentionally injects logical faults (like changing `>` to `>=`) and checks whether your tests catch them. Surviving mutants indicate test coverage holes.
+Chaos-MCP is an [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server that exposes three tools — `audit_code_resilience` (audit a single file), `triage_test_coverage` (rank a whole tree weakest-first), and `estimate_audit` (cheap pre-flight mutant count / timing estimate) — which run isolated mutation testing against your source to find weaknesses in the local test suite. It intentionally injects logical faults (like changing `>` to `>=`) and checks whether your tests catch them. Surviving mutants indicate test coverage holes.
 
 ## Features
 
@@ -16,6 +16,8 @@ Chaos-MCP is an [MCP (Model Context Protocol)](https://modelcontextprotocol.io/)
 - **Auto-Detection** — automatically detects project type, test runner, and workspace root
 - **Async Subprocesses** — all mutation-tool execution uses async `execFile`/`exec` (subprocess runs never block the event loop; the one-time sandbox copy is synchronous)
 - **Rich Tool Schema** — supports line scoping, mutator denylists, concurrency control, dry-run mode, incremental runs, and output format selection
+- **Pre-flight Estimation** — `estimate_audit` gives a fast mutant count (exact for Rust, approximate for others) and optional timing estimate before you commit to a full run
+- **Gate Mode** — pass `minScore` to `audit_code_resilience` or `triage_test_coverage` to get a machine-readable pass/fail field for CI pipelines
 - **Cross-Platform** — works on macOS, Linux, and Windows (with junction fallback for symlinks)
 
 ## Installation
@@ -52,7 +54,7 @@ node build/index.js --config ./chaos-mcp.config.json
 
 ### 2. Call the Tool from Your MCP Client
 
-The primary tool is `audit_code_resilience` (the batch tool `triage_test_coverage` is documented [below](#batch-triage--triage_test_coverage)).
+The primary tool is `audit_code_resilience` (the batch tool `triage_test_coverage` is documented [below](#batch-triage--triage_test_coverage); the lightweight pre-flight tool `estimate_audit` is documented [below](#pre-flight-estimate--estimate_audit)).
 
 **Minimal example:**
 ```json
@@ -177,6 +179,7 @@ Add or strengthen tests targeting these lines to kill the survivors.
 | `runId` | `string` | No | Verify mode by cached id: re-run against the survivor baseline saved from a prior audit (the `runId` it returned). Mutually exclusive with `baseline`, `diffBase`, and `lineScope`. Unknown or expired ids (cache TTL: ~24 h) return an error. |
 | `suppress` | `object[]` | No | Mark mutants as equivalent (unkillable). Each entry: `{ "line": N, "mutator": "MutatorName" }` (reason is an optional string explaining why the mutant is equivalent). Persisted to `.chaos-mcp/suppressions.json`; suppressed mutants are auto-excluded from the score denominator and from future `audit` and `triage` output. The output field `suppressedCount` reports how many were excluded. |
 | `unsuppress` | `object[]` | No | Remove previously-suppressed mutants for this file. Each entry: `{ "line": N, "mutator": "MutatorName" }`. |
+| `minScore` | `number 0–100` | No | Gate threshold. When the mutation score is below this value, the output includes `gate: { minScore, passed: false }`. Never an error. Uses the suppression-adjusted score. |
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for development setup and the full parameter semantics.
 
@@ -299,6 +302,118 @@ TypeScript files are mutated only on the changed lines; Python, Go, and Rust fil
 | `diffBase` | `string` | Auto-scope to git-changed files. `"HEAD"`, `"staged"`, or any git ref/SHA. Makes `paths` optional; with `paths`, intersects changed files under those paths. TypeScript: changed lines only. Other languages: whole-file. |
 | `survivorsPerFile` | `integer ≥ 0` | Inline top-N enriched survivors per ranked file (default `0` = scores-only). |
 | `fileConcurrency` | `integer 1–64` | Files audited in parallel (default `max(1, min(4, cpus-1))`). Per-file StrykerJS worker count is automatically capped (TypeScript/StrykerJS only; other engines ignore the worker-count cap). |
+| `minScore` | `number 0–100` | Gate threshold. Per-row `passed` field + top-level `gate: { minScore, passed, failingFiles }` in output. Never an error. |
+
+## Pre-flight Estimate — `estimate_audit`
+
+Before committing to a full mutation run, use `estimate_audit` to check how many mutants a file will produce and (optionally) how long the run will take. It never runs the mutation test cycle by default.
+
+```json
+{ "filePath": "src/utils/math.ts" }
+```
+
+**Output:**
+```json
+{
+  "target": "src/utils/math.ts",
+  "language": "typescript",
+  "mutants": 47,
+  "fidelity": "approx",
+  "basis": "source heuristic: 23 constructs",
+  "note": "Approximate mutant count from a source-parse heuristic; the real audit may differ. Run audit_code_resilience for exact results."
+}
+```
+
+**With timing** (`withTiming: true`): runs the test suite once to measure a baseline, then estimates total wall-clock time as `mutants × baseline / concurrency`. This provisions a sandbox and counts against your machine's resources — use it when you want a time budget before a large audit.
+
+```json
+{ "filePath": "src/utils/math.ts", "withTiming": true }
+```
+
+Additional output fields when `withTiming: true`:
+```json
+{
+  "baselineMs": 4200,
+  "estimatedMs": 197400,
+  "concurrency": 1
+}
+```
+
+### Fidelity
+
+| Language | Fidelity | Basis |
+|----------|----------|-------|
+| Rust | `exact` | `cargo mutants --list` (no tests run) |
+| TypeScript / JavaScript | `approx` | source-parse heuristic |
+| Python | `approx` | source-parse heuristic |
+| Go | `approx` | source-parse heuristic |
+
+For Rust, the estimate is exact because `cargo mutants --list` enumerates every planned mutant without running tests. For all other languages the count is approximate — a lightweight heuristic over the source AST; the actual audit may differ. Run `audit_code_resilience` for exact results.
+
+If `cargo-mutants` is not installed, the Rust path falls back to the heuristic and reports `fidelity: "approx"` with a note.
+
+### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `filePath` | `string` | Yes | Workspace-relative path to the file to estimate. |
+| `withTiming` | `boolean` | No | When `true`, runs the test suite once to measure `baselineMs` and computes `estimatedMs`. Default: `false`. |
+
+### Use case
+
+Call `estimate_audit` first when you are unsure whether a file is too large to audit interactively:
+
+1. `estimate_audit { "filePath": "src/big.ts" }` → 300 mutants, approx.
+2. Consider scoping with `lineScope` or `diffBase`, or scheduling the full run with a longer `timeoutMs`.
+3. `audit_code_resilience { "filePath": "src/big.ts", "diffBase": "HEAD" }` → audits only your changed lines.
+
+## Gate Mode — `minScore`
+
+Both `audit_code_resilience` and `triage_test_coverage` accept a `minScore` parameter (0–100). When the mutation score falls below the threshold, the result reports the gate as failed. **A failing gate is never an error** — it is a data field for an agent or CI pipeline to read and act on.
+
+### Gate on a single file
+
+```json
+{ "filePath": "src/utils/math.ts", "minScore": 80 }
+```
+
+If the mutation score is below 80, the output includes:
+```json
+{ "gate": { "minScore": 80, "passed": false } }
+```
+
+If the score meets or exceeds the threshold, `gate.passed` is `true`. The field is absent when `minScore` is not provided.
+
+The gate uses the suppression-adjusted mutation score (i.e. equivalent mutants excluded via `suppress` are not counted against the denominator).
+
+### Gate on a triage run
+
+```json
+{ "paths": ["src"], "minScore": 75 }
+```
+
+Each ranking row gains a `passed` field. The top-level output includes:
+```json
+{
+  "gate": {
+    "minScore": 75,
+    "passed": false,
+    "failingFiles": ["src/utils/math.ts", "src/parser.ts"]
+  }
+}
+```
+
+`gate.passed` is `false` if any file's score is below `minScore`. `failingFiles` lists the workspace-relative paths that did not pass. Files that errored during triage are reported in `errors[]` and do not affect the gate.
+
+### CI use case
+
+```bash
+# Fail CI if any audited file scores below 80%
+mcp call triage_test_coverage '{"paths":["src"],"minScore":80}' \
+  | jq -e '.gate.passed'
+```
+
+An agent or CI script reads `gate.passed` and decides whether to block the build, open an issue, or continue. The tool call itself always succeeds (never `isError`) regardless of the gate outcome.
 
 ## Configuration
 

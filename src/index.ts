@@ -49,7 +49,7 @@ export async function startServer(config?: ChaosConfig): Promise<void> {
 
   /**
    * List available tools.
-   * Chaos-MCP exposes two tools: audit_code_resilience and triage_test_coverage.
+   * Chaos-MCP exposes three tools: audit_code_resilience, triage_test_coverage, and estimate_audit.
    */
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     return {
