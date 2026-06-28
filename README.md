@@ -496,7 +496,7 @@ When an MCP client includes a `progressToken` in a tool call's `_meta` field, Ch
 
 Cancelling an in-flight MCP request aborts the run cleanly:
 
-- The abort signal propagates through the tool handler into `RunOptions.signal` and from there into the mutation engine subprocess, killing it immediately.
+- The abort signal propagates through the tool handler into `RunOptions.signal` and from there into the mutation engine subprocess, terminating it.
 - The sandbox is always cleaned up even if cancellation occurs mid-run.
 - The cancelled call returns `"Operation cancelled."` as a tool error rather than throwing.
 
