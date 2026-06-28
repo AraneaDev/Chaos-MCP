@@ -555,10 +555,47 @@ describe('handleTriageCall ctx: progress + cancellation', () => {
     await expect(handleTriageCall(req({ paths: ['src'] }))).resolves.toBeDefined();
   });
 
+  it('fires reportProgress N times with done=1..N even when all files error', async () => {
+    // Invariant: the finally block in auditOne must advance done for all files,
+    // including those that throw (error path) or return early (signal-aborted skip path).
+    // This test covers the error path: mocking all auditFile calls to reject, verifying
+    // progress fires 3 times with done advancing 1→2→3 despite all files failing.
+    mockDiscover.mockReturnValue({ files: ['a.ts', 'b.ts', 'c.ts'], discovered: 3, skipped: 0 });
+    mockAuditFile
+      .mockRejectedValueOnce(new Error('error 1'))
+      .mockRejectedValueOnce(new Error('error 2'))
+      .mockRejectedValueOnce(new Error('error 3'));
+
+    const calls: [number, number | undefined][] = [];
+    const ctx = {
+      reportProgress: vi.fn((progress: number, total?: number) => {
+        calls.push([progress, total]);
+      }),
+    };
+
+    const res = await handleTriageCall(req({ paths: ['src'] }), undefined, ctx);
+
+    // All three files errored, so reportProgress fires 3 times.
+    expect(ctx.reportProgress).toHaveBeenCalledTimes(3);
+    // Done values must be 1, 2, 3 (in that sequential order).
+    const dones = calls.map(([d]) => d);
+    expect(dones).toEqual([1, 2, 3]);
+    // Total is always the discovered count (3).
+    expect(calls.every(([, total]) => total === 3)).toBe(true);
+    // All three errors recorded in result.
+    expect(res.isError).toBeUndefined();
+    const json = JSON.parse((res.content[0] as { text: string }).text);
+    expect(json.errors.length).toBe(3);
+    expect(json.summary.filesErrored).toBe(3);
+  });
+
   it('returns a cancelled result immediately when ctx.signal is pre-aborted (before discovery)', async () => {
     const controller = new AbortController();
     controller.abort();
     const ctx = { signal: controller.signal };
+    // Mock safety net: if abort check regresses, discovery is called but returns empty
+    // rather than crashing with TypeError, so the test fails on the assertion.
+    mockDiscover.mockReturnValue({ files: [], discovered: 0, skipped: 0 });
 
     const res = await handleTriageCall(req({ paths: ['src'] }), undefined, ctx);
 
