@@ -6,6 +6,7 @@ import { createSandbox } from './utils/sandbox.js';
 import { isRealPathInside, toolError } from './handler.js';
 import { estimateAudit, estimateNeedsSandbox } from './estimate.js';
 import type { ChaosConfig } from './utils/config-loader.js';
+import type { ToolContext } from './tool-context.js';
 
 /**
  * Handle `estimate_audit` tool invocations.
@@ -20,11 +21,18 @@ import type { ChaosConfig } from './utils/config-loader.js';
  *
  * @param request - The MCP tool call request.
  * @param config  - Optional ChaosConfig loaded from a config file.
+ * @param ctx     - Optional per-request context; `ctx.signal` cancels in-flight subprocesses.
  */
 export async function handleEstimateCall(
   request: CallToolRequest,
   config?: ChaosConfig,
+  ctx?: ToolContext,
 ): Promise<CallToolResult> {
+  // Early abort: return immediately if the caller already cancelled.
+  if (ctx?.signal?.aborted) {
+    return toolError('Operation cancelled.');
+  }
+
   const args = request.params.arguments ?? {};
 
   // ── Validate filePath before any other work (C2) ──
@@ -100,6 +108,7 @@ export async function handleEstimateCall(
           typeof cfg.defaultTimeoutMs === 'number' && cfg.defaultTimeoutMs > 0
             ? cfg.defaultTimeoutMs
             : undefined,
+        signal: ctx?.signal,
       });
 
       return {

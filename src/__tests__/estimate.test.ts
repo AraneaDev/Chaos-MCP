@@ -257,3 +257,54 @@ describe('estimateAudit withTiming', () => {
     expect(r.note).toContain('timing unavailable');
   });
 });
+
+describe('estimateAudit signal forwarding', () => {
+  it('forwards signal into invokeMutationTool options on the rust path', async () => {
+    mockInvoke.mockResolvedValueOnce({
+      stdout: 'src/lib.rs:1:1: replace foo -> bar\n',
+      stderr: '',
+    } as never);
+
+    const controller = new AbortController();
+    await estimateAudit({
+      absFile: '/ws/src/lib.rs',
+      relFile: 'src/lib.rs',
+      projectType: 'rust',
+      workDir: '/sandbox',
+      signal: controller.signal,
+    });
+
+    expect(mockInvoke).toHaveBeenCalledWith(
+      'cargo-mutants',
+      'cargo',
+      ['mutants', '--list', '--file', 'src/lib.rs'],
+      expect.objectContaining({ signal: controller.signal }),
+    );
+  });
+
+  it('forwards signal into runShell options on the withTiming path', async () => {
+    mockRunShell.mockResolvedValueOnce({
+      stdout: '',
+      stderr: '',
+      exit: 0,
+      signal: null,
+    } as never);
+
+    const controller = new AbortController();
+    await estimateAudit({
+      absFile: __filename,
+      relFile: 'src/__tests__/estimate.test.ts',
+      projectType: 'typescript',
+      workDir: '/sandbox',
+      withTiming: true,
+      env: baseEnv(),
+      signal: controller.signal,
+    });
+
+    expect(mockRunShell).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(Array),
+      expect.objectContaining({ signal: controller.signal }),
+    );
+  });
+});
