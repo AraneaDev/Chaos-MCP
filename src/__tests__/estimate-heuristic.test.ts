@@ -33,11 +33,27 @@ describe('estimateHeuristic', () => {
     );
   });
 
+  it('does NOT count operators inside template literals', () => {
+    const withTpl = 'const s = `a + b > c && d`;';
+    const noTpl = 'const s = ``;';
+    expect(estimateHeuristic(withTpl, 'typescript').constructs).toBe(
+      estimateHeuristic(noTpl, 'typescript').constructs,
+    );
+  });
+
   it('strips python # comments', () => {
     const withComment = `# a + b > c\nx = 1`;
     const noComment = `x = 1`;
     expect(estimateHeuristic(withComment, 'python').constructs).toBe(
       estimateHeuristic(noComment, 'python').constructs,
+    );
+  });
+
+  it('strips python triple-quoted strings', () => {
+    const withStr = `x = 1\ny = """hello world"""`;
+    const noStr = `x = 1\ny = """"""`;
+    expect(estimateHeuristic(withStr, 'python').constructs).toBe(
+      estimateHeuristic(noStr, 'python').constructs,
     );
   });
 
