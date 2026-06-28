@@ -55,7 +55,7 @@ export async function invokeMutationTool(
   tool: ExecutableTool,
   command: string,
   args: string[],
-  options: { cwd?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv } = {},
+  options: { cwd?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv; signal?: AbortSignal } = {},
 ): Promise<ExecResult> {
   try {
     return await runShell(command, args, options);

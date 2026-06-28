@@ -259,7 +259,11 @@ export class PythonEngine extends BaseEngine {
     // letting us skip the separate `mutmut results` call.
     let runStdout = '';
     try {
-      const runResult = await invokeMutationTool('mutmut', 'mutmut', runArgs, { cwd, timeoutMs });
+      const runResult = await invokeMutationTool('mutmut', 'mutmut', runArgs, {
+        cwd,
+        timeoutMs,
+        signal: options?.signal,
+      });
       runStdout = runResult.stdout;
     } catch (error: unknown) {
       if (error instanceof MutationToolStartupError) {
@@ -300,6 +304,7 @@ export class PythonEngine extends BaseEngine {
       const result = await invokeMutationTool('mutmut', 'mutmut', ['results'], {
         cwd,
         timeoutMs,
+        signal: options?.signal,
       });
       resultsText = result.stdout;
     } catch (error: unknown) {

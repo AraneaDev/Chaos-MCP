@@ -226,7 +226,11 @@ export class TypeScriptEngine extends BaseEngine {
     }
 
     try {
-      await invokeMutationTool('StrykerJS', args[0], args.slice(1), { cwd, timeoutMs });
+      await invokeMutationTool('StrykerJS', args[0], args.slice(1), {
+        cwd,
+        timeoutMs,
+        signal: options?.signal,
+      });
     } catch (error: unknown) {
       // Startup-class failures (not-installed / timeout / signal crash) are
       // wrapped in MutationToolStartupError by the helper. Surface verbatim.

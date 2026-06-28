@@ -163,7 +163,7 @@ export class RustEngine extends BaseEngine {
         'cargo-mutants',
         'cargo',
         ['mutants', '--file', filePath],
-        { cwd, timeoutMs },
+        { cwd, timeoutMs, signal: options?.signal },
       );
       stdout = result.stdout;
       stderr = result.stderr;
