@@ -5,10 +5,25 @@ vi.mock('../utils/exec-classify.js', () => ({
   MutationToolStartupError: class extends Error {},
 }));
 
+vi.mock('../utils/exec.js', () => ({
+  runShell: vi.fn(),
+}));
+
 import { invokeMutationTool, MutationToolStartupError } from '../utils/exec-classify.js';
+import { runShell } from '../utils/exec.js';
 import { estimateAudit, estimateNeedsSandbox } from '../estimate.js';
+import type { EnvironmentInfo } from '../utils/project-detector.js';
 
 const mockInvoke = vi.mocked(invokeMutationTool);
+const mockRunShell = vi.mocked(runShell);
+
+const baseEnv = (): EnvironmentInfo => ({
+  projectType: 'typescript',
+  testRunner: 'vitest',
+  detectedRunner: 'npm',
+  packageManager: 'npm',
+  workspaceRoot: '/ws',
+});
 
 describe('estimateNeedsSandbox', () => {
   it('needs a sandbox for rust or when timing', () => {
@@ -115,5 +130,78 @@ describe('estimateAudit', () => {
     });
     expect(r.fidelity).toBe('exact');
     expect(r.mutants).toBe(2);
+  });
+});
+
+describe('estimateAudit withTiming', () => {
+  it('runs baseline and sets estimatedMs + concurrency when withTiming=true', async () => {
+    mockRunShell.mockResolvedValueOnce({
+      stdout: '',
+      stderr: '',
+      exit: 0,
+      signal: null,
+    } as never);
+
+    const r = await estimateAudit({
+      absFile: __filename,
+      relFile: 'src/__tests__/estimate.test.ts',
+      projectType: 'typescript',
+      workDir: '/sandbox',
+      withTiming: true,
+      env: baseEnv(),
+      concurrency: 2,
+    });
+
+    expect(r.fidelity).toBe('approx');
+    expect(r.mutants).toBeGreaterThan(0);
+    expect(r.baselineMs).toBeTypeOf('number');
+    expect(r.concurrency).toBe(2);
+    expect(r.estimatedMs).toBeTypeOf('number');
+    // estimatedMs = ceil(mutants * baselineMs / 2)
+    expect(r.estimatedMs).toBe(Math.ceil((r.mutants * (r.baselineMs ?? 0)) / 2));
+  });
+
+  it('omits timing fields and appends note when runShell throws', async () => {
+    mockRunShell.mockRejectedValueOnce(new Error('test suite failed'));
+
+    const r = await estimateAudit({
+      absFile: __filename,
+      relFile: 'src/__tests__/estimate.test.ts',
+      projectType: 'typescript',
+      workDir: '/sandbox',
+      withTiming: true,
+      env: baseEnv(),
+    });
+
+    expect(r.fidelity).toBe('approx');
+    expect(r.mutants).toBeGreaterThan(0);
+    expect(r.baselineMs).toBeUndefined();
+    expect(r.estimatedMs).toBeUndefined();
+    expect(r.concurrency).toBeUndefined();
+    expect(r.note).toContain('timing unavailable');
+  });
+
+  it('omits timing when withTiming=true but env is missing', async () => {
+    const r = await estimateAudit({
+      absFile: __filename,
+      relFile: 'src/__tests__/estimate.test.ts',
+      projectType: 'typescript',
+      workDir: '/sandbox',
+      withTiming: true,
+      // no env
+    });
+    expect(r.baselineMs).toBeUndefined();
+  });
+
+  it('omits timing when withTiming=true but workDir is missing', async () => {
+    const r = await estimateAudit({
+      absFile: __filename,
+      relFile: 'src/__tests__/estimate.test.ts',
+      projectType: 'typescript',
+      withTiming: true,
+      env: baseEnv(),
+      // no workDir
+    });
+    expect(r.baselineMs).toBeUndefined();
   });
 });

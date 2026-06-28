@@ -1,7 +1,10 @@
 import { readFileSync } from 'node:fs';
 import type { SupportedProjectType } from './engines/registry.js';
+import type { EnvironmentInfo } from './utils/project-detector.js';
 import { estimateHeuristic } from './estimate-heuristic.js';
 import { invokeMutationTool, MutationToolStartupError } from './utils/exec-classify.js';
+import { runShell } from './utils/exec.js';
+import { resolveBaselineTestCommand, projectEstimatedMs } from './baseline-timing.js';
 
 export type Fidelity = 'exact' | 'approx';
 
@@ -21,9 +24,15 @@ export interface EstimateOptions {
   absFile: string;
   relFile: string;
   projectType: SupportedProjectType;
-  /** Sandbox directory; required for the native Rust path. */
+  /** Sandbox directory; required for the native Rust path and for withTiming. */
   workDir?: string;
   timeoutMs?: number;
+  /** When true (and workDir + env are present), run the test suite once to measure baselineMs. */
+  withTiming?: boolean;
+  /** Environment info; required when withTiming=true. */
+  env?: EnvironmentInfo;
+  /** Worker concurrency used to project total time; defaults to 1. */
+  concurrency?: number;
 }
 
 const ESTIMATE_TIMEOUT_MS = 60_000;
@@ -112,5 +121,27 @@ export async function estimateAudit(opts: EstimateOptions): Promise<EstimateResu
   }
 
   // TypeScript / Python / Go — heuristic from source.
-  return heuristicEstimate(opts);
+  const result = heuristicEstimate(opts);
+
+  // Timing: best-effort baseline run; never fails the estimate.
+  if (opts.withTiming && opts.workDir && opts.env) {
+    const cmd = resolveBaselineTestCommand(opts.env, opts.projectType);
+    if (cmd === undefined) {
+      result.note += ' (timing unavailable)';
+    } else {
+      try {
+        const t0 = Date.now();
+        await runShell(cmd.command, cmd.args, { cwd: opts.workDir });
+        const baselineMs = Date.now() - t0;
+        const concurrency = opts.concurrency ?? 1;
+        result.baselineMs = baselineMs;
+        result.concurrency = concurrency;
+        result.estimatedMs = projectEstimatedMs(result.mutants, baselineMs, concurrency);
+      } catch {
+        result.note += ' (timing unavailable)';
+      }
+    }
+  }
+
+  return result;
 }
