@@ -204,4 +204,56 @@ describe('estimateAudit withTiming', () => {
     });
     expect(r.baselineMs).toBeUndefined();
   });
+
+  it('rust + withTiming: sets timing fields when runShell resolves', async () => {
+    mockInvoke.mockResolvedValueOnce({
+      stdout: 'src/lib.rs:1:1: replace foo -> bar\nsrc/lib.rs:2:3: replace a + b with a - b\n',
+      stderr: '',
+    } as never);
+    mockRunShell.mockResolvedValueOnce({
+      stdout: '',
+      stderr: '',
+      exit: 0,
+      signal: null,
+    } as never);
+
+    const r = await estimateAudit({
+      absFile: '/ws/src/lib.rs',
+      relFile: 'src/lib.rs',
+      projectType: 'rust',
+      workDir: '/sandbox',
+      withTiming: true,
+      env: baseEnv(),
+      concurrency: 2,
+    });
+
+    expect(r.fidelity).toBe('exact');
+    expect(r.mutants).toBe(2);
+    expect(r.baselineMs).toBeTypeOf('number');
+    expect(r.concurrency).toBe(2);
+    expect(r.estimatedMs).toBeTypeOf('number');
+  });
+
+  it('rust + withTiming: returns exact count with timing unavailable note when runShell rejects', async () => {
+    mockInvoke.mockResolvedValueOnce({
+      stdout: 'src/lib.rs:1:1: replace foo -> bar\n',
+      stderr: '',
+    } as never);
+    mockRunShell.mockRejectedValueOnce(new Error('test suite failed'));
+
+    const r = await estimateAudit({
+      absFile: '/ws/src/lib.rs',
+      relFile: 'src/lib.rs',
+      projectType: 'rust',
+      workDir: '/sandbox',
+      withTiming: true,
+      env: baseEnv(),
+    });
+
+    expect(r.fidelity).toBe('exact');
+    expect(r.mutants).toBe(1);
+    expect(r.baselineMs).toBeUndefined();
+    expect(r.estimatedMs).toBeUndefined();
+    expect(r.note).toContain('timing unavailable');
+  });
 });

@@ -30,6 +30,7 @@ export function resolveBaselineTestCommand(
         return { command: runner, args: ['test'] };
       }
       if (runner === 'bun') return { command: 'bun', args: ['test'] };
+      if (runner === 'node:test') return { command: 'node', args: ['--test'] };
       // vitest/jest/mocha → invoke via npx
       return { command: 'npx', args: [runner] };
     }

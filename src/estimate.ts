@@ -84,14 +84,15 @@ function countCargoMutants(stdout: string): number {
 }
 
 /**
- * Estimate the number of mutants for a single file without running the full test suite.
+ * Compute the mutant count for a file without running the test suite.
+ * Non-startup ExecFailureErrors from cargo-mutants propagate to the caller.
  *
  * - Rust + workDir: runs `cargo mutants --list --file <relFile>` for an exact count.
  *   Falls back to heuristic if cargo-mutants is not installed.
  * - Rust without workDir: heuristic fallback (caller should have provisioned a sandbox).
  * - TS / Python / Go: reads `absFile` and applies the source-parse heuristic.
  */
-export async function estimateAudit(opts: EstimateOptions): Promise<EstimateResult> {
+async function computeCount(opts: EstimateOptions): Promise<EstimateResult> {
   if (opts.projectType === 'rust') {
     if (opts.workDir === undefined) {
       // Defensive: caller should have provisioned a sandbox for Rust.
@@ -121,27 +122,43 @@ export async function estimateAudit(opts: EstimateOptions): Promise<EstimateResu
   }
 
   // TypeScript / Python / Go — heuristic from source.
-  const result = heuristicEstimate(opts);
+  return heuristicEstimate(opts);
+}
 
-  // Timing: best-effort baseline run; never fails the estimate.
-  if (opts.withTiming && opts.workDir && opts.env) {
-    const cmd = resolveBaselineTestCommand(opts.env, opts.projectType);
-    if (cmd === undefined) {
-      result.note += ' (timing unavailable)';
-    } else {
-      try {
-        const t0 = Date.now();
-        await runShell(cmd.command, cmd.args, { cwd: opts.workDir });
-        const baselineMs = Date.now() - t0;
-        const concurrency = opts.concurrency ?? 1;
-        result.baselineMs = baselineMs;
-        result.concurrency = concurrency;
-        result.estimatedMs = projectEstimatedMs(result.mutants, baselineMs, concurrency);
-      } catch {
-        result.note += ' (timing unavailable)';
-      }
-    }
+/**
+ * Best-effort: run the baseline test suite and populate timing fields on `result`.
+ * On miss (no command resolved) or failure, appends ' (timing unavailable)' to result.note.
+ * Only runs when opts.withTiming && opts.workDir && opts.env.
+ */
+async function applyTiming(result: EstimateResult, opts: EstimateOptions): Promise<void> {
+  if (!opts.withTiming || !opts.workDir || !opts.env) return;
+
+  const cmd = resolveBaselineTestCommand(opts.env, opts.projectType);
+  if (cmd === undefined) {
+    result.note += ' (timing unavailable)';
+    return;
   }
+  try {
+    const t0 = Date.now();
+    await runShell(cmd.command, cmd.args, { cwd: opts.workDir });
+    const baselineMs = Date.now() - t0;
+    const concurrency = opts.concurrency ?? 1;
+    result.baselineMs = baselineMs;
+    result.concurrency = concurrency;
+    result.estimatedMs = projectEstimatedMs(result.mutants, baselineMs, concurrency);
+  } catch {
+    result.note += ' (timing unavailable)';
+  }
+}
 
+/**
+ * Estimate the number of mutants for a single file without running the full test suite.
+ *
+ * When withTiming=true (and workDir + env are present), runs the test suite once to
+ * measure baselineMs and populates estimatedMs. This applies to ALL languages including Rust.
+ */
+export async function estimateAudit(opts: EstimateOptions): Promise<EstimateResult> {
+  const result = await computeCount(opts);
+  await applyTiming(result, opts);
   return result;
 }

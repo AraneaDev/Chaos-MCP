@@ -66,4 +66,8 @@ describe('resolveBaselineTestCommand', () => {
     expect(cmd?.command).toBe('npx');
     expect(cmd?.args).toEqual(['vitest']);
   });
+  it('resolves node:test to node --test', () => {
+    const cmd = resolveBaselineTestCommand(env({ detectedRunner: 'node:test' }), 'typescript');
+    expect(cmd).toEqual({ command: 'node', args: ['--test'] });
+  });
 });
