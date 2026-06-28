@@ -33,6 +33,7 @@ describe('TOOL_DEFINITION contract', () => {
       runId: 'string',
       suppress: 'array',
       unsuppress: 'array',
+      minScore: 'number',
     };
     const props = TOOL_DEFINITION.inputSchema.properties as Record<string, { type: string }>;
     // Exactly these keys — no more, no fewer.
@@ -196,6 +197,30 @@ describe('TOOL_DEFINITION phase-3 additions', () => {
     };
     expect(ranking.items?.properties?.runId).toBeDefined();
     expect(ranking.items?.properties?.suppressedCount).toBeDefined();
+  });
+});
+
+describe('TOOL_DEFINITION phase-4 additions', () => {
+  it('audit input schema exposes minScore with numeric type and 0–100 bounds', () => {
+    const props = TOOL_DEFINITION.inputSchema.properties as Record<
+      string,
+      { type?: string; minimum?: number; maximum?: number }
+    >;
+    expect(props.minScore).toBeDefined();
+    expect(props.minScore.type).toBe('number');
+    expect(props.minScore.minimum).toBe(0);
+    expect(props.minScore.maximum).toBe(100);
+  });
+
+  it('audit output schema exposes gate with minScore and passed', () => {
+    const props = (TOOL_DEFINITION.outputSchema?.properties ?? {}) as Record<
+      string,
+      { type?: string; properties?: Record<string, { type?: string }> }
+    >;
+    expect(props.gate).toBeDefined();
+    expect(props.gate.type).toBe('object');
+    expect(props.gate.properties?.minScore?.type).toBe('number');
+    expect(props.gate.properties?.passed?.type).toBe('boolean');
   });
 });
 

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { buildResultPayload } from '../format.js';
+import { evaluateGate } from '../gate.js';
 import type { MutationResult } from '../engines/base.js';
 
 function result(overrides: Partial<MutationResult> = {}): MutationResult {
@@ -149,5 +150,32 @@ describe('buildResultPayload runId / suppressedCount', () => {
     const payload = buildResultPayload(r, {});
     expect(payload.runId).toBeUndefined();
     expect(payload.suppressedCount).toBeUndefined();
+  });
+});
+
+describe('buildResultPayload gate', () => {
+  it('threads a gate result into the payload', () => {
+    const r = {
+      target: 'a.ts',
+      totalMutants: 8,
+      killed: 6,
+      survived: 2,
+      mutationScore: '75.00%',
+      vulnerabilities: [],
+    };
+    const payload = buildResultPayload(r, { gate: evaluateGate('75.00%', 80) });
+    expect(payload.gate).toEqual({ minScore: 80, passed: false });
+  });
+
+  it('omits gate when not provided', () => {
+    const r = {
+      target: 'a.ts',
+      totalMutants: 4,
+      killed: 4,
+      survived: 0,
+      mutationScore: '100.00%',
+      vulnerabilities: [],
+    };
+    expect(buildResultPayload(r, {}).gate).toBeUndefined();
   });
 });

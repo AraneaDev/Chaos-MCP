@@ -169,6 +169,13 @@ export const TOOL_DEFINITION = {
           required: ['line', 'mutator'],
         },
       },
+      minScore: {
+        type: 'number',
+        minimum: 0,
+        maximum: 100,
+        description:
+          'Gate: if the mutation score is below this (0–100), the result reports gate.passed=false (never an error). Example: 80.',
+      },
       enrich: {
         type: 'boolean',
         description:
@@ -227,6 +234,10 @@ export const TOOL_DEFINITION = {
       enrichNote: { type: 'string' },
       runId: { type: 'string' },
       suppressedCount: { type: 'integer' },
+      gate: {
+        type: 'object',
+        properties: { minScore: { type: 'number' }, passed: { type: 'boolean' } },
+      },
       note: { type: 'string' },
     },
     required: ['target', 'mutationScore', 'summary', 'survivors', 'noCoverage', 'note'],

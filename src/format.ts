@@ -10,6 +10,7 @@
 import type { MutationResult } from './engines/base.js';
 import type { SupportedProjectType } from './engines/registry.js';
 import { enrichGroup, SEVERITY_RANK, type Severity, type Enrichment } from './enrich.js';
+import type { GateResult } from './gate.js';
 
 export interface EnrichContext {
   projectType: SupportedProjectType;
@@ -246,6 +247,7 @@ export interface ResultPayload {
   note: string;
   runId?: string;
   suppressedCount?: number;
+  gate?: GateResult;
 }
 
 export interface ResultPayloadOpts {
@@ -256,6 +258,7 @@ export interface ResultPayloadOpts {
   ignoredOptions?: string[];
   runId?: string;
   suppressedCount?: number;
+  gate?: GateResult;
 }
 
 /**
@@ -344,6 +347,7 @@ export function buildResultPayload(
     payload.suppressedCount = opts.suppressedCount;
     payload.note += ` ${opts.suppressedCount} equivalent mutant(s) suppressed and excluded from the score.`;
   }
+  if (opts.gate) payload.gate = opts.gate;
   return payload;
 }
 
