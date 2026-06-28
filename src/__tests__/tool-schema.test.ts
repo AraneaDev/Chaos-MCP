@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { TOOL_DEFINITION, TRIAGE_TOOL_DEFINITION } from '../tool-schema.js';
+import {
+  TOOL_DEFINITION,
+  TRIAGE_TOOL_DEFINITION,
+  ESTIMATE_TOOL_DEFINITION,
+} from '../tool-schema.js';
 
 describe('TOOL_DEFINITION contract', () => {
   it('exposes the audit_code_resilience tool with an object input schema', () => {
@@ -192,5 +196,21 @@ describe('TOOL_DEFINITION phase-3 additions', () => {
     };
     expect(ranking.items?.properties?.runId).toBeDefined();
     expect(ranking.items?.properties?.suppressedCount).toBeDefined();
+  });
+});
+
+describe('ESTIMATE_TOOL_DEFINITION contract', () => {
+  it('exposes estimate_audit definition', () => {
+    expect(ESTIMATE_TOOL_DEFINITION.name).toBe('estimate_audit');
+    const props = ESTIMATE_TOOL_DEFINITION.inputSchema.properties as Record<string, unknown>;
+    expect(props.filePath).toBeDefined();
+    expect(props.withTiming).toBeDefined();
+    expect(ESTIMATE_TOOL_DEFINITION.inputSchema.required).toContain('filePath');
+    const out = (ESTIMATE_TOOL_DEFINITION.outputSchema?.properties ?? {}) as Record<
+      string,
+      unknown
+    >;
+    expect(out.mutants).toBeDefined();
+    expect(out.fidelity).toBeDefined();
   });
 });

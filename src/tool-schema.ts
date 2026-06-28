@@ -330,3 +330,45 @@ export const TRIAGE_TOOL_DEFINITION = {
     required: ['mode', 'summary', 'ranking', 'errors', 'note'],
   },
 };
+
+export const ESTIMATE_TOOL_DEFINITION = {
+  name: 'estimate_audit',
+  description:
+    'Cheap pre-flight estimate of how big/long auditing a file will be, WITHOUT running the full ' +
+    'mutation test cycle. Returns an approximate mutant count (exact for Rust via cargo-mutants --list; ' +
+    'a source heuristic for TS/JS/Python/Go, labeled fidelity:"approx"). Set withTiming:true to also ' +
+    'run the test suite once and estimate wall-clock time. Use this before audit_code_resilience to ' +
+    'decide whether to audit now, scope down, or skip.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      filePath: {
+        type: 'string',
+        description:
+          'Path to the source file to estimate, within the workspace. Example: "src/math.ts".',
+      },
+      withTiming: {
+        type: 'boolean',
+        description:
+          'When true, run the test suite once to measure a baseline and estimate total wall-clock ' +
+          'time (mutants × baseline / concurrency). Default false (count only, no test run).',
+      },
+    },
+    required: ['filePath'],
+  },
+  outputSchema: {
+    type: 'object' as const,
+    properties: {
+      target: { type: 'string' },
+      language: { type: 'string' },
+      mutants: { type: 'integer' },
+      fidelity: { type: 'string', enum: ['exact', 'approx'] },
+      basis: { type: 'string' },
+      baselineMs: { type: 'integer' },
+      estimatedMs: { type: 'integer' },
+      concurrency: { type: 'integer' },
+      note: { type: 'string' },
+    },
+    required: ['target', 'language', 'mutants', 'fidelity', 'basis', 'note'],
+  },
+} as const;
