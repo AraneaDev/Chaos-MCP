@@ -3,9 +3,14 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { TOOL_DEFINITION, TRIAGE_TOOL_DEFINITION } from './tool-schema.js';
+import {
+  TOOL_DEFINITION,
+  TRIAGE_TOOL_DEFINITION,
+  ESTIMATE_TOOL_DEFINITION,
+} from './tool-schema.js';
 import { handleToolCall } from './handler.js';
 import { handleTriageCall } from './triage-handler.js';
+import { handleEstimateCall } from './estimate-handler.js';
 import { ChaosConfig } from './utils/config-loader.js';
 import { runCli } from './cli.js';
 
@@ -48,7 +53,7 @@ export async function startServer(config?: ChaosConfig): Promise<void> {
    */
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     return {
-      tools: [TOOL_DEFINITION, TRIAGE_TOOL_DEFINITION],
+      tools: [TOOL_DEFINITION, TRIAGE_TOOL_DEFINITION, ESTIMATE_TOOL_DEFINITION],
     };
   });
 
@@ -58,6 +63,9 @@ export async function startServer(config?: ChaosConfig): Promise<void> {
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (request.params.name === 'triage_test_coverage') {
       return handleTriageCall(request, config);
+    }
+    if (request.params.name === 'estimate_audit') {
+      return handleEstimateCall(request, config);
     }
     return handleToolCall(request, config);
   });

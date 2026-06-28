@@ -57,7 +57,7 @@ export function isRealPathInside(candidate: string, root: string): boolean {
 }
 
 /** Build an MCP error response from a single message. */
-function toolError(text: string): CallToolResult {
+export function toolError(text: string): CallToolResult {
   return { content: [{ type: 'text', text }], isError: true };
 }
 
