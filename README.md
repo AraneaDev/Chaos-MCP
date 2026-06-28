@@ -343,7 +343,7 @@ Additional output fields when `withTiming: true`:
 
 | Language | Fidelity | Basis |
 |----------|----------|-------|
-| Rust | `exact` | `cargo mutants --list` (no tests run) |
+| Rust | `exact` | `cargo-mutants --list` (no tests run) |
 | TypeScript / JavaScript | `approx` | source-parse heuristic |
 | Python | `approx` | source-parse heuristic |
 | Go | `approx` | source-parse heuristic |
