@@ -63,6 +63,7 @@ vi.mock('../utils/logger.js', () => ({
 }));
 
 import { handleToolCall } from '../index.js';
+import { validateToolArgs } from '../handler.js';
 import { TypeScriptEngine } from '../engines/typescript.js';
 import { GoEngine } from '../engines/go.js';
 import { detectEnvironment } from '../utils/project-detector.js';
@@ -3341,5 +3342,44 @@ describe('handleToolCall', () => {
       expect(json.killedCount).toBe(1);
       expect(json.nowKilled).toEqual([{ line: 7, mutator: 'GoMut' }]);
     });
+  });
+});
+
+describe('phase3 validators', () => {
+  const ok = (args: Record<string, unknown>) => validateToolArgs(args) === null;
+  const errText = (args: Record<string, unknown>) =>
+    (validateToolArgs(args)?.content?.[0] as { text?: string } | undefined)?.text ?? '';
+
+  it('accepts a valid runId alone', () => {
+    expect(ok({ filePath: 'a.ts', runId: 'a1b2c3d4' })).toBe(true);
+  });
+  it('rejects empty runId', () => {
+    expect(errText({ filePath: 'a.ts', runId: '' })).toContain('runId');
+  });
+  it('rejects runId with baseline/diffBase/lineScope', () => {
+    expect(errText({ filePath: 'a.ts', runId: 'x', diffBase: 'HEAD' })).toContain(
+      'mutually exclusive',
+    );
+    expect(errText({ filePath: 'a.ts', runId: 'x', baseline: { survivors: [] } })).toContain(
+      'mutually exclusive',
+    );
+    expect(errText({ filePath: 'a.ts', runId: 'x', lineScope: { start: 1, end: 2 } })).toContain(
+      'mutually exclusive',
+    );
+  });
+  it('accepts valid suppress / unsuppress', () => {
+    expect(ok({ filePath: 'a.ts', suppress: [{ line: 1, mutator: 'X', reason: 'eq' }] })).toBe(
+      true,
+    );
+    expect(ok({ filePath: 'a.ts', unsuppress: [{ line: 1, mutator: 'X' }] })).toBe(true);
+  });
+  it('rejects malformed suppress entries', () => {
+    expect(errText({ filePath: 'a.ts', suppress: [{ line: 0, mutator: 'X' }] })).toContain(
+      'suppress',
+    );
+    expect(errText({ filePath: 'a.ts', suppress: [{ line: 1, mutator: '' }] })).toContain(
+      'suppress',
+    );
+    expect(errText({ filePath: 'a.ts', suppress: 'nope' })).toContain('suppress');
   });
 });

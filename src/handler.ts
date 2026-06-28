@@ -263,17 +263,68 @@ function validateSeverityFloorArg(args: ToolArgs): string | null {
   return null;
 }
 
+/** runId (verify-from-cache): non-empty string, mutually exclusive with baseline/diffBase/lineScope. */
+function validateRunIdArg(args: ToolArgs): string | null {
+  if (args.runId === undefined) return null;
+  if (typeof args.runId !== 'string' || args.runId.trim().length === 0) {
+    return 'runId must be a non-empty string returned by a prior audit. Example: "a1b2c3d4".';
+  }
+  if (args.baseline !== undefined || args.diffBase !== undefined || args.lineScope !== undefined) {
+    return 'runId is mutually exclusive with baseline, diffBase, and lineScope — use only one at a time.';
+  }
+  return null;
+}
+
+/** Shared shape check for suppress/unsuppress arrays. `field` names the arg in errors. */
+function validateMutantKeyArray(
+  value: unknown,
+  field: string,
+  allowReason: boolean,
+): string | null {
+  if (value === undefined) return null;
+  if (!Array.isArray(value) || value.length === 0) {
+    return `${field} must be a non-empty array of { line: integer >= 1, mutator: string${allowReason ? ', reason?: string' : ''} }.`;
+  }
+  for (const e of value) {
+    const entry = e as Record<string, unknown> | null;
+    if (
+      entry === null ||
+      typeof entry !== 'object' ||
+      Array.isArray(entry) ||
+      !Number.isInteger(entry.line) ||
+      (entry.line as number) < 1 ||
+      typeof entry.mutator !== 'string' ||
+      entry.mutator.trim().length === 0 ||
+      (allowReason && entry.reason !== undefined && typeof entry.reason !== 'string')
+    ) {
+      return `each ${field} entry must be { line: integer >= 1, mutator: non-empty string${allowReason ? ', reason?: string' : ''} }.`;
+    }
+  }
+  return null;
+}
+
+function validateSuppressArg(args: ToolArgs): string | null {
+  return validateMutantKeyArray(args.suppress, 'suppress', true);
+}
+
+function validateUnsuppressArg(args: ToolArgs): string | null {
+  return validateMutantKeyArray(args.unsuppress, 'unsuppress', false);
+}
+
 /** Ordered per-field validators run by {@link validateToolArgs}. */
 const TOOL_ARG_VALIDATORS: ((args: ToolArgs) => string | null)[] = [
   validatePerMutantTimeoutMs,
   validatePrebuildCommand,
   validateConcurrencyArg,
+  validateRunIdArg, // before lineScope/diffBase/baseline so mutual-exclusion is reported first
   validateLineScopeArg,
   validateDiffBaseArg,
   validateBaselineArg,
   validateEnrichArg,
   validateMaxSurvivorsArg,
   validateSeverityFloorArg,
+  validateSuppressArg,
+  validateUnsuppressArg,
 ];
 
 /** Normalise an unknown into a well-formed `{ start, end }` lineScope, or `undefined`. */
