@@ -138,6 +138,37 @@ export const TOOL_DEFINITION = {
           noCoverage: { type: 'array', items: { type: 'object' } },
         },
       },
+      runId: {
+        type: 'string',
+        description:
+          'Verify mode by id: re-run against the cached survivor baseline from a prior audit (the runId it returned). ' +
+          'Auto-scoped to the baseline lines (StrykerJS) or whole-file (other languages). ' +
+          'Mutually exclusive with baseline, diffBase, and lineScope. Example: "a1b2c3d4".',
+      },
+      suppress: {
+        type: 'array',
+        description:
+          'Mark mutants as equivalent (unkillable) so future runs exclude them from the score and output. ' +
+          'Appended to .chaos-mcp/suppressions.json for this file. Example: [{ "line": 42, "mutator": "ConditionalExpression", "reason": "guard unreachable" }].',
+        items: {
+          type: 'object',
+          properties: {
+            line: { type: 'integer', minimum: 1 },
+            mutator: { type: 'string' },
+            reason: { type: 'string' },
+          },
+          required: ['line', 'mutator'],
+        },
+      },
+      unsuppress: {
+        type: 'array',
+        description: 'Remove previously-suppressed mutants for this file (undo a wrong suppress).',
+        items: {
+          type: 'object',
+          properties: { line: { type: 'integer', minimum: 1 }, mutator: { type: 'string' } },
+          required: ['line', 'mutator'],
+        },
+      },
       enrich: {
         type: 'boolean',
         description:
@@ -194,6 +225,8 @@ export const TOOL_DEFINITION = {
       noCoverageFiltered: { type: 'integer' },
       scopeNote: { type: 'string' },
       enrichNote: { type: 'string' },
+      runId: { type: 'string' },
+      suppressedCount: { type: 'integer' },
       note: { type: 'string' },
     },
     required: ['target', 'mutationScore', 'summary', 'survivors', 'noCoverage', 'note'],
@@ -280,7 +313,16 @@ export const TRIAGE_TOOL_DEFINITION = {
         },
         required: ['filesDiscovered', 'filesAudited', 'filesSkipped', 'filesErrored'],
       },
-      ranking: { type: 'array', items: { type: 'object' } },
+      ranking: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            runId: { type: 'string' },
+            suppressedCount: { type: 'integer' },
+          },
+        },
+      },
       errors: { type: 'array', items: { type: 'object' } },
       scopeNote: { type: 'string' },
       note: { type: 'string' },

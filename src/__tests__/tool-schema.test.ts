@@ -26,6 +26,9 @@ describe('TOOL_DEFINITION contract', () => {
       enrich: 'boolean',
       maxSurvivors: 'integer',
       severityFloor: 'string',
+      runId: 'string',
+      suppress: 'array',
+      unsuppress: 'array',
     };
     const props = TOOL_DEFINITION.inputSchema.properties as Record<string, { type: string }>;
     // Exactly these keys — no more, no fewer.
@@ -166,5 +169,28 @@ describe('TOOL_DEFINITION phase-1 additions', () => {
     expect(out.type).toBe('object');
     expect(out.properties.summary).toBeDefined();
     expect(out.properties.survivors).toBeDefined();
+  });
+});
+
+describe('TOOL_DEFINITION phase-3 additions', () => {
+  it('audit input schema exposes runId / suppress / unsuppress', () => {
+    const props = TOOL_DEFINITION.inputSchema.properties as Record<string, unknown>;
+    expect(props.runId).toBeDefined();
+    expect(props.suppress).toBeDefined();
+    expect(props.unsuppress).toBeDefined();
+  });
+
+  it('audit output schema exposes runId / suppressedCount', () => {
+    const props = (TOOL_DEFINITION.outputSchema?.properties ?? {}) as Record<string, unknown>;
+    expect(props.runId).toBeDefined();
+    expect(props.suppressedCount).toBeDefined();
+  });
+
+  it('triage ranking items expose runId / suppressedCount', () => {
+    const ranking = (TRIAGE_TOOL_DEFINITION.outputSchema?.properties?.ranking ?? {}) as {
+      items?: { properties?: Record<string, unknown> };
+    };
+    expect(ranking.items?.properties?.runId).toBeDefined();
+    expect(ranking.items?.properties?.suppressedCount).toBeDefined();
   });
 });
