@@ -208,13 +208,15 @@ export function buildTriagePayload(
   };
   if (scopeNote) payload.scopeNote = scopeNote;
   if (minScore !== undefined) {
-    for (const row of rows) {
-      row.passed = evaluateGate(row.mutationScore, minScore).passed;
-    }
-    const failingFiles = rows
+    const graded = rows.map((r) => ({
+      ...r,
+      passed: evaluateGate(r.mutationScore, minScore).passed,
+    }));
+    const failingFiles = graded
       .filter((r) => !r.passed)
       .map((r) => r.file)
       .sort();
+    payload.ranking = graded;
     payload.gate = { minScore, passed: failingFiles.length === 0, failingFiles };
     if (errors.length > 0) {
       payload.note += ` Note: ${errors.length} file(s) errored and are not graded.`;

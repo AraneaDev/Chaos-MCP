@@ -355,6 +355,7 @@ describe('buildTriagePayload gate computation', () => {
       0,
     );
     expect(payload.gate).toBeUndefined();
+    expect(payload.ranking[0].passed).toBeUndefined();
   });
 
   it('gate passes when all rows meet the threshold', () => {
@@ -390,6 +391,9 @@ describe('buildTriagePayload gate computation', () => {
     );
     expect(payload.note).toContain('errored');
     expect(payload.note).toContain('1');
+    // Errored files must NOT flip the gate — only ranked rows are graded.
+    expect(payload.gate?.passed).toBe(true);
+    expect(payload.gate?.failingFiles).not.toContain('b.ts');
   });
 });
 
