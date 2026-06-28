@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { listResources, readResource } from '../resources.js';
+import { ENGINE_REGISTRY } from '../engines/registry.js';
 
 describe('resources', () => {
   it('lists exactly the three resources', () => {
@@ -21,7 +22,11 @@ describe('resources', () => {
       string,
       { engine: string; supportsLineScope: boolean; estimateFidelity: string }
     >;
+    expect(Object.keys(data).sort()).toEqual(Object.keys(ENGINE_REGISTRY).sort());
     expect(data.typescript.supportsLineScope).toBe(true);
+    expect(data.python.supportsLineScope).toBe(false);
+    expect(data.go.supportsLineScope).toBe(false);
+    expect(data.rust.supportsLineScope).toBe(false);
     expect(data.rust.estimateFidelity).toBe('exact');
     expect(data.typescript.estimateFidelity).toBe('approx');
   });

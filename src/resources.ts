@@ -60,7 +60,11 @@ function languagesJson(): string {
 function configSchemaJson(): string {
   const keys = {
     defaultTimeoutMs: 'integer ms — per-run mutation timeout.',
+    defaultMaxFiles: 'integer ≥ 1 — cap on how many files triage scans (default 25).',
     perMutantTimeoutMs: 'integer ms — per-mutant timeout (StrykerJS).',
+    testRunner: 'string — test runner override when auto-detection is inconclusive.',
+    concurrency: 'integer 1–64 — global worker count for engines that support it (StrykerJS).',
+    mutatorAllowlist: 'string[] — mutator names to include (StrykerJS only).',
     mutatorDenylist: 'string[] — mutator names to skip.',
     defaultMaxSurvivors: 'integer ≥ 1 — cap on reported survivor groups (default 10).',
     defaultSeverityFloor: '"high"|"medium"|"low" — drop survivor groups below this severity.',
