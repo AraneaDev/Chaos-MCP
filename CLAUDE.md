@@ -33,7 +33,8 @@ npm run format:check       # prettier --check (format to write)
    - `detectProjectType` (by extension) → `detectEnvironment` (test runner, workspace root, package manager) → `makeEngine`.
    - Re-anchor the target path to `env.workspaceRoot` (matters in monorepos where the root is a subdir of cwd).
    - `validateToolArgs` runs an **ordered list of per-field validators** (`TOOL_ARG_VALIDATORS`) — strict checks the coarse JSON schema can't express. Runs **before** the sandbox copy so bad input is rejected for free.
-   - `computeScope` resolves line scoping on the **real tree** (before the expensive copy) from `diffBase` (A2, diff-aware) or `baseline` (A3, verify mode) — mutually exclusive. A "no changes" diff short-circuits with a synthetic 100% result; no sandbox is provisioned.
+   - `computeScope` resolves line scoping on the **real tree** (before the expensive copy) from `diffBase` (A2, diff-aware), `baseline` (A3, verify mode), or `runId` (verify by cached id, loaded via `loadRun` before the sandbox) — mutually exclusive. A "no changes" diff short-circuits with a synthetic 100% result; no sandbox is provisioned. Unknown/expired `runId` errors here before any sandbox is created.
+   - `suppress`/`unsuppress` entries write to the persistent suppression list (`suppressionsPath`) before the result is returned; `applySuppressions` then strips suppressed mutants from the result, removes them from the score denominator, and reports the count as `suppressedCount` in the output.
    - `createSandbox` copies the workspace to a tmpdir, then `auditFile` builds `RunOptions`, optionally runs the (gated) prebuild, and calls `engine.run`. The sandbox is **always** cleaned up in a `finally`.
    - `formatAuditOutput` renders standard vs. verify-mode output and appends a note listing any StrykerJS-only options the resolved engine ignored.
 2. **`triage-handler.ts` / `triage.ts`** (the `triage_test_coverage` path) walks a tree (`discoverFiles`), audits each file, and `rankResults` sorts weakest-first (score asc, survived desc, file asc).
@@ -49,6 +50,8 @@ npm run format:check       # prettier --check (format to write)
 - `config-loader.ts` — loads/validates `chaos-mcp.config.json`. Engine-specific sections (`stryker`/`mutmut`/`go`/`rust`) override globals; precedence is **args > engine section > global config > detected default** (see `buildRunOptions`).
 - `git-diff.ts` — `computeChangedRanges` for diff-aware scoping (returns tagged results: `not-a-repo` / `bad-ref` / `no-changes` / `untracked` / `ranges`).
 - `verify.ts` — A3 verify mode: parse a prior-run baseline, re-scope to those lines, and report which previously-surviving mutants are now killed.
+- `run-cache.ts` — `saveRun`/`loadRun`; ephemeral baseline cache in `os.tmpdir()/chaos-mcp-runs/` (8-char `runId` returned by every non-verify audit); TTL + count-cap eviction (defaults: 24 h / 200 entries; configurable via `runCacheTtlMs`/`runCacheMax`).
+- `suppression.ts` — durable equivalent-mutant list persisted to `<workspaceRoot>/.chaos-mcp/suppressions.json`; `applySuppressions` strips suppressed entries from results and recomputes the score with suppressed mutants removed from the denominator; `suppressedCount` is reported in output. Keyed by `file + line + mutator`; `addedAt`/`reason` fields aid manual pruning.
 
 ## Conventions & gotchas
 

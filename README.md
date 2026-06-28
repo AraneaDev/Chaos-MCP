@@ -174,8 +174,64 @@ Add or strengthen tests targeting these lines to kill the survivors.
 | `enrich` | `boolean` | No | Annotate each survivor with severity, why-it-matters, a test hint, and source context — and rank severity-first. **Default: `true`** (pass `false` to disable and return plain unranked output). Richest for TypeScript; Go can produce severity-ranked output when structured mutator data is available; Python degrades to `severity: "unknown"`. |
 | `maxSurvivors` | `integer ≥ 1` | No | Cap on how many survivor (and no-coverage) line groups are returned after severity ranking. Hidden groups counted in `survivorsTruncated`/`noCoverageTruncated`. Precedence: arg > `defaultMaxSurvivors` config > 10. |
 | `severityFloor` | `"high"` \| `"medium"` \| `"low"` | No | Drop survivor groups below this severity (requires enrichment, on by default). Dropped groups counted in `survivorsFiltered`/`noCoverageFiltered`. `"unknown"`-severity groups are below `"low"` and are dropped by any floor. |
+| `runId` | `string` | No | Verify mode by cached id: re-run against the survivor baseline saved from a prior audit (the `runId` it returned). Mutually exclusive with `baseline`, `diffBase`, and `lineScope`. Unknown or expired ids (cache TTL: ~24 h) return an error. |
+| `suppress` | `object[]` | No | Mark mutants as equivalent (unkillable). Each entry: `{ "line": N, "mutator": "MutatorName", "reason": "optional" }`. Persisted to `.chaos-mcp/suppressions.json`; suppressed mutants are auto-excluded from the score denominator and from future `audit` and `triage` output. The output field `suppressedCount` reports how many were excluded. |
+| `unsuppress` | `object[]` | No | Remove previously-suppressed mutants for this file. Each entry: `{ "line": N, "mutator": "MutatorName" }`. |
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for development setup and the full parameter semantics.
+
+## State & the verify loop
+
+### Verify loop via `runId`
+
+Every successful, non-verify `audit_code_resilience` call returns a `runId` (an 8-character id) in its JSON output. Use it to re-verify without copying the full `baseline` object:
+
+1. **Audit:** `{ "filePath": "src/utils/math.ts" }` → response includes `"runId": "a1b2c3d4"`.
+2. **Fix or add tests.**
+3. **Verify:** `{ "filePath": "src/utils/math.ts", "runId": "a1b2c3d4" }` → reports which previously-surviving mutants are now killed.
+
+`runId` is mutually exclusive with `baseline`, `diffBase`, and `lineScope`. The baseline cache lives in `os.tmpdir()/chaos-mcp-runs/` and is ephemeral (default TTL: 24 h; default max: 200 entries). Passing an unknown or expired `runId` returns an error.
+
+`triage_test_coverage` also mints and returns a `runId` per ranking row, so you can drill into a weak file and immediately verify after fixing its tests.
+
+### Suppressing equivalent mutants
+
+Some mutants are _equivalent_ — logically identical to the original under all possible inputs — and cannot be killed by any test. Suppress them so they stop appearing in the output and stop dragging down the score:
+
+```json
+{
+  "filePath": "src/utils/math.ts",
+  "suppress": [{ "line": 99, "mutator": "StringLiteral", "reason": "guard always true for this type" }]
+}
+```
+
+Suppressed mutants are:
+
+- **Persisted** to `<workspaceRoot>/.chaos-mcp/suppressions.json` (keyed by workspace-relative file path).
+- **Auto-excluded** from every future `audit` and `triage` call for that file — no flag needed.
+- **Removed from the score denominator** — `mutationScore` rises and the output field `suppressedCount` tells you how many were excluded.
+- **Excluded from verify mode** — suppressed mutants won't appear as "still surviving".
+
+To undo a wrong suppression:
+
+```json
+{
+  "filePath": "src/utils/math.ts",
+  "unsuppress": [{ "line": 99, "mutator": "StringLiteral" }]
+}
+```
+
+**`.gitignore` or commit?** Add `.chaos-mcp/` to `.gitignore` if the suppression list is personal, or commit it to share the equivalent-mutant list with the team. Suppression keys are workspace-relative, so the file is portable across machines.
+
+**Staleness caveat:** entries are keyed by `file + line + mutator`. Edits that shift line numbers can stale an entry. Each entry records an optional `reason` and an `addedAt` timestamp so you can audit and prune the list over time.
+
+### Config keys for state
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `suppressionsPath` | `.chaos-mcp/suppressions.json` | Path to the suppression file (workspace-relative or absolute) |
+| `runCacheTtlMs` | `86400000` (24 h) | Run-cache entry TTL in milliseconds |
+| `runCacheMax` | `200` | Max cached run entries; oldest are evicted when exceeded |
 
 ## Batch Triage — `triage_test_coverage`
 
