@@ -12,6 +12,13 @@ import { formatResultAsText, buildResultPayload, type EnrichContext } from './fo
 import type { Severity } from './enrich.js';
 import { suggestTestFile } from './test-file.js';
 import { computeChangedRanges } from './utils/git-diff.js';
+import { saveRun, loadRun } from './utils/run-cache.js';
+import {
+  loadSuppressions,
+  addSuppressions,
+  removeSuppressions,
+  applySuppressions,
+} from './utils/suppression.js';
 import {
   parseBaseline,
   baselineLines,
@@ -263,17 +270,70 @@ function validateSeverityFloorArg(args: ToolArgs): string | null {
   return null;
 }
 
+/** runId (verify-from-cache): non-empty string, mutually exclusive with baseline/diffBase/lineScope. */
+function validateRunIdArg(args: ToolArgs): string | null {
+  if (args.runId === undefined) return null;
+  if (typeof args.runId !== 'string' || args.runId.trim().length === 0) {
+    return 'runId must be a non-empty string returned by a prior audit. Example: "a1b2c3d4".';
+  }
+  if (args.baseline !== undefined || args.diffBase !== undefined || args.lineScope !== undefined) {
+    return 'runId is mutually exclusive with baseline, diffBase, and lineScope — use only one at a time.';
+  }
+  return null;
+}
+
+/** Shared shape validator for suppress/unsuppress arrays; `field` names the arg in errors. */
+function validateMutantKeyArray(
+  value: unknown,
+  field: string,
+  allowReason: boolean,
+): string | null {
+  if (value === undefined) return null;
+  if (!Array.isArray(value) || value.length === 0) {
+    return `${field} must be a non-empty array of { line: integer >= 1, mutator: string${allowReason ? ', reason?: string' : ''} }.`;
+  }
+  for (const e of value) {
+    const entry = e as Record<string, unknown> | null;
+    if (
+      entry === null ||
+      typeof entry !== 'object' ||
+      Array.isArray(entry) ||
+      !Number.isInteger(entry.line) ||
+      (entry.line as number) < 1 ||
+      typeof entry.mutator !== 'string' ||
+      entry.mutator.trim().length === 0 ||
+      (allowReason && entry.reason !== undefined && typeof entry.reason !== 'string')
+    ) {
+      return `each ${field} entry must be { line: integer >= 1, mutator: non-empty string${allowReason ? ', reason?: string' : ''} }.`;
+    }
+  }
+  return null;
+}
+
+/** suppress: non-empty array of { line >= 1, mutator, reason? } equivalent-mutant keys. */
+function validateSuppressArg(args: ToolArgs): string | null {
+  return validateMutantKeyArray(args.suppress, 'suppress', true);
+}
+
+/** unsuppress: non-empty array of { line >= 1, mutator } equivalent-mutant keys. */
+function validateUnsuppressArg(args: ToolArgs): string | null {
+  return validateMutantKeyArray(args.unsuppress, 'unsuppress', false);
+}
+
 /** Ordered per-field validators run by {@link validateToolArgs}. */
 const TOOL_ARG_VALIDATORS: ((args: ToolArgs) => string | null)[] = [
   validatePerMutantTimeoutMs,
   validatePrebuildCommand,
   validateConcurrencyArg,
+  validateRunIdArg, // before lineScope/diffBase/baseline so mutual-exclusion is reported first
   validateLineScopeArg,
   validateDiffBaseArg,
   validateBaselineArg,
   validateEnrichArg,
   validateMaxSurvivorsArg,
   validateSeverityFloorArg,
+  validateSuppressArg,
+  validateUnsuppressArg,
 ];
 
 /** Normalise an unknown into a well-formed `{ start, end }` lineScope, or `undefined`. */
@@ -535,6 +595,8 @@ async function computeScope(
   targetFile: string,
   env: EnvironmentInfo,
   projectType: SupportedProjectType,
+  cfg: ChaosConfig,
+  relFile: string,
 ): Promise<ScopeResolution> {
   let diffRanges: { start: number; end: number }[] | undefined;
   let scopeNote: string | undefined;
@@ -613,6 +675,43 @@ async function computeScope(
     }
   }
 
+  // ── Verify mode by cached id (A3-by-runId). Mutually exclusive with
+  // baseline/diffBase/lineScope (enforced by validateRunIdArg), so this never
+  // collides with the diff path above. Loads the prior run's survivors from the
+  // run cache and re-runs the existing verify path against them. ──
+  if (typeof earlyArgs.runId === 'string' && earlyArgs.runId.trim().length > 0) {
+    const cached = loadRun(earlyArgs.runId, {
+      ttlMs: cfg.runCacheTtlMs,
+      max: cfg.runCacheMax,
+    });
+    if (!cached) {
+      return {
+        kind: 'result',
+        result: toolError(
+          `runId "${earlyArgs.runId}" not found or expired; re-run audit to get a fresh runId.`,
+        ),
+      };
+    }
+    // C2 boundary: the cached run is bound to the file it audited; refuse to
+    // verify it against a different target. The cached `file` is the
+    // workspace-relative key (same expression triage uses), so compare against
+    // `relFile`, not the absolute path.
+    if (cached.file !== relFile) {
+      return {
+        kind: 'result',
+        result: toolError(
+          `runId "${earlyArgs.runId}" was for ${cached.file}, not ${relFile}; verify against the file it audited.`,
+        ),
+      };
+    }
+    baselineKeys = parseBaseline({ survivors: cached.survivors, noCoverage: cached.noCoverage });
+    // Mirror the baseline branch: only scope to lines on engines that support it
+    // (TS only); others run whole-file then filter (Fix 3 — consistency).
+    if (ENGINE_REGISTRY[projectType].supportsLineScope) {
+      diffRanges = baselineLines(baselineKeys).map((l) => ({ start: l, end: l }));
+    }
+  }
+
   return { kind: 'scope', diffRanges, scopeNote, baselineKeys };
 }
 
@@ -634,10 +733,22 @@ function formatAuditOutput(
   enrichCtx: EnrichContext | undefined,
   cfg: ChaosConfig,
   env: EnvironmentInfo,
+  suppressedCount: number,
+  runId: string | undefined,
+  relFromRoot: string,
 ): CallToolResult {
   if (baselineKeys) {
-    // verify-mode delta keeps its own formatters; enrichment is not applied here.
-    const delta = computeVerifyDelta(baselineKeys, auditResults);
+    // Task 9: filter suppressed equivalent mutants from BOTH the baseline keys
+    // AND the re-run result before computing the delta so known-equivalent mutants
+    // never appear as "still surviving" or "now killed" — they vanish entirely.
+    // Uses the same workspace-relative key (relFromRoot) as the standard audit
+    // path (Task 7) so the two modes read identical suppression entries (A9).
+    const suppressed = loadSuppressions(env.workspaceRoot, cfg.suppressionsPath).get(relFromRoot);
+    const rerun = applySuppressions(auditResults, suppressed).result;
+    const keptBaseline = suppressed
+      ? baselineKeys.filter((k) => !suppressed.has(`${k.line} ${k.mutator}`))
+      : baselineKeys;
+    const delta = computeVerifyDelta(keptBaseline, rerun);
     const verifyText =
       args.outputFormat === 'text'
         ? formatVerifyResultAsText(targetFile, delta)
@@ -660,6 +771,8 @@ function formatAuditOutput(
     ...enrichOpts,
     suggestedTestFile: suggestion,
     ignoredOptions: ignored.length > 0 ? ignored : undefined,
+    runId,
+    suppressedCount,
   });
 
   const text =
@@ -771,7 +884,17 @@ export async function handleToolCall(
 
     // Resolve the line scope (diff-aware A2 + verify-mode A3) on the REAL tree
     // before the sandbox copy, so a "no changes" diff can short-circuit.
-    const scope = await computeScope(earlyArgs, targetFile, env, projectType);
+    // Key verify-by-runId by the workspace-relative path (the same expression
+    // triage uses: `relative(env.workspaceRoot, resolvedFile)` == relFromRoot),
+    // so audit and triage agree on the cache key. Stays within workspaceRoot (C2).
+    const scope = await computeScope(
+      earlyArgs,
+      targetFile,
+      env,
+      projectType,
+      config ?? {},
+      relFromRoot,
+    );
     if (scope.kind === 'result') return scope.result;
     const { diffRanges, scopeNote, baselineKeys } = scope;
 
@@ -841,6 +964,72 @@ export async function handleToolCall(
         throw error;
       }
       if (scopeNote) auditResults.scopeNote = scopeNote;
+
+      // Suppression writes (explicit user action) happen first so the same
+      // call reflects them. Then auto-filter equivalent mutants from the result.
+      // C2 boundary: writes land under env.workspaceRoot (or cfg.suppressionsPath),
+      // keyed by the WORKSPACE-RELATIVE path (relFromRoot, the same expression
+      // triage uses) so the suppressions file is portable/committable and audit
+      // and triage agree on the key — never outside the workspace.
+      const wsRoot = env.workspaceRoot;
+      const supPath = cfg.suppressionsPath;
+      try {
+        if (Array.isArray(args.suppress) && args.suppress.length > 0) {
+          addSuppressions(
+            wsRoot,
+            relFromRoot,
+            args.suppress as { line: number; mutator: string; reason?: string }[],
+            supPath,
+          );
+        }
+        if (Array.isArray(args.unsuppress) && args.unsuppress.length > 0) {
+          removeSuppressions(
+            wsRoot,
+            relFromRoot,
+            args.unsuppress as { line: number; mutator: string }[],
+            supPath,
+          );
+        }
+      } catch (error: unknown) {
+        // A write failure surfaces a specific error rather than the generic
+        // "Chaos Engine Halted" (Fix 4). Sandbox cleanup still runs via finally.
+        const message = error instanceof Error ? error.message : String(error);
+        return toolError(`Failed to update suppression list: ${message}`);
+      }
+      // Filter only for non-verify runs. In verify mode (baselineKeys set), the
+      // filter is owned by Task 9: removing a now-suppressed mutant from the
+      // re-run but NOT from the baseline would make computeVerifyDelta misreport
+      // it as "now killed" (Fix 2). Writes above remain ungated (explicit action).
+      let suppressedCount = 0;
+      if (!baselineKeys) {
+        const suppressed = loadSuppressions(wsRoot, supPath).get(relFromRoot);
+        const filtered = applySuppressions(auditResults, suppressed);
+        auditResults = filtered.result;
+        suppressedCount = filtered.suppressedCount;
+      }
+
+      // Mint a runId for non-verify runs so the caller can verify later by id.
+      // A cache failure is non-fatal: omit the runId rather than fail the audit.
+      let mintedRunId: string | undefined;
+      if (!baselineKeys) {
+        try {
+          const compact = buildResultPayload(auditResults, {});
+          mintedRunId = saveRun(
+            {
+              // Workspace-relative key (relFromRoot) so the cached run matches
+              // the verify-by-runId check and triage (Task 8) on the same file.
+              file: relFromRoot,
+              projectType,
+              survivors: compact.survivors.map((g) => ({ line: g.line, mutators: g.mutators })),
+              noCoverage: compact.noCoverage.map((g) => ({ line: g.line, mutators: g.mutators })),
+            },
+            { ttlMs: cfg.runCacheTtlMs, max: cfg.runCacheMax },
+          );
+        } catch {
+          mintedRunId = undefined; // cache failure is non-fatal; omit runId
+        }
+      }
+
       const enrichCtx = buildEnrichContext(args, resolvedFile, projectType);
       return formatAuditOutput(
         auditResults,
@@ -851,6 +1040,9 @@ export async function handleToolCall(
         enrichCtx,
         cfg,
         env,
+        suppressedCount,
+        mintedRunId,
+        relFromRoot,
       );
     } finally {
       // Always clean up the sandbox, even if the engine threw

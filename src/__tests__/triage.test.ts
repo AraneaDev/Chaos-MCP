@@ -11,6 +11,7 @@ import {
   formatTriageAsJson,
   formatTriageAsText,
   buildTriagePayload,
+  type TriageRow,
 } from '../triage.js';
 
 const mr = (over: Partial<MutationResult>): MutationResult => ({
@@ -331,5 +332,40 @@ describe('buildTriagePayload', () => {
     const p = buildTriagePayload([], [], 0, 0);
     expect(p.note).toContain('given paths');
     expect(p.note).not.toContain('diff base');
+  });
+});
+
+describe('TriageRow optional runId and suppressedCount fields', () => {
+  it('carries runId and suppressedCount through buildTriagePayload into ranking', () => {
+    // RED: TriageRow lacks runId/suppressedCount; payload omits them.
+    // GREEN: after adding the fields to the interface and wiring in triage-handler.
+    const row: TriageRow = {
+      file: 'a.ts',
+      mutationScore: '50.00%',
+      total: 4,
+      killed: 2,
+      survived: 2,
+      noCoverage: 0,
+      runId: 'deadbeef',
+      suppressedCount: 1,
+    };
+    const payload = buildTriagePayload([row], [], 1, 0);
+    expect(payload.ranking[0].runId).toBe('deadbeef');
+    expect(payload.ranking[0].suppressedCount).toBe(1);
+  });
+
+  it('omits suppressedCount from ranking when not set', () => {
+    // Confirms suppressedCount is truly optional (undefined rows still round-trip cleanly).
+    const row: TriageRow = {
+      file: 'b.ts',
+      mutationScore: '75.00%',
+      total: 4,
+      killed: 3,
+      survived: 1,
+      noCoverage: 0,
+    };
+    const payload = buildTriagePayload([row], [], 1, 0);
+    expect(payload.ranking[0].suppressedCount).toBeUndefined();
+    expect(payload.ranking[0].runId).toBeUndefined();
   });
 });

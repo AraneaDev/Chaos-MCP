@@ -719,6 +719,42 @@ describe('validateConfig', () => {
   });
 });
 
+describe('phase3 config keys', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockExistsSync.mockReturnValue(true);
+  });
+
+  it('accepts suppressionsPath / runCacheTtlMs / runCacheMax', () => {
+    mockReadFileSync.mockReturnValue(
+      JSON.stringify({ suppressionsPath: '.x/sup.json', runCacheTtlMs: 1000, runCacheMax: 5 }),
+    );
+    const { config, warnings } = validateConfig('/tmp/config.json');
+    expect(config.suppressionsPath).toBe('.x/sup.json');
+    expect(config.runCacheTtlMs).toBe(1000);
+    expect(config.runCacheMax).toBe(5);
+    expect(warnings).toHaveLength(0);
+  });
+
+  it('warns on invalid runCacheMax', () => {
+    mockReadFileSync.mockReturnValue(JSON.stringify({ runCacheMax: 0 }));
+    const { warnings } = validateConfig('/tmp/config.json');
+    expect(warnings.some((w) => w.includes('runCacheMax'))).toBe(true);
+  });
+
+  it('warns on invalid suppressionsPath', () => {
+    mockReadFileSync.mockReturnValue(JSON.stringify({ suppressionsPath: '' }));
+    const { warnings } = validateConfig('/tmp/config.json');
+    expect(warnings.some((w) => w.includes('suppressionsPath'))).toBe(true);
+  });
+
+  it('warns on invalid runCacheTtlMs', () => {
+    mockReadFileSync.mockReturnValue(JSON.stringify({ runCacheTtlMs: 0 }));
+    const { warnings } = validateConfig('/tmp/config.json');
+    expect(warnings.some((w) => w.includes('runCacheTtlMs'))).toBe(true);
+  });
+});
+
 /**
  * Mutation-driven coverage. Chaos-MCP flagged surviving mutants in the
  * KNOWN_*_KEYS sets, the boundary comparisons (`> 0`, `>= 1`, `<= 64`,
@@ -746,6 +782,9 @@ describe('config-loader mutation hardening', () => {
       mutatorAllowlist: ['a'],
       mutatorDenylist: ['b'],
       perMutantTimeoutMs: 5000,
+      suppressionsPath: '.chaos-mcp/suppressions.json',
+      runCacheTtlMs: 1000,
+      runCacheMax: 10,
       stryker: { timeoutMs: 1 },
       mutmut: { timeoutMs: 1 },
       go: { timeoutMs: 1 },

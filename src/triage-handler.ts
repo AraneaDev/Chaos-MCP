@@ -20,6 +20,8 @@ import { mapPool } from './utils/pool.js';
 import { buildResultPayload } from './format.js';
 import type { ChaosConfig } from './utils/config-loader.js';
 import type { MutationResult } from './engines/base.js';
+import { saveRun } from './utils/run-cache.js';
+import { loadSuppressions, applySuppressions } from './utils/suppression.js';
 
 function triageError(text: string): CallToolResult {
   return { content: [{ type: 'text', text }], isError: true };
@@ -170,6 +172,12 @@ export async function handleTriageCall(
 
   const errors: TriageError[] = [];
 
+  // Load suppressions per workspaceRoot (memoized) — not once from rootCwd — so
+  // that monorepo packages whose workspaceRoot differs from rootCwd read the right
+  // suppressions file. Keys are workspace-relative paths (relFromRoot), matching
+  // the key used by audit_code_resilience (Task 7 / Key Contract).
+  const suppressionCache = new Map<string, Map<string, Set<string>>>();
+
   type AuditOutcome = { row: TriageRow } | { error: TriageError };
 
   const auditOne = async (file: string): Promise<AuditOutcome> => {
@@ -179,6 +187,11 @@ export async function handleTriageCall(
         return { error: { file, error: `Unsupported file type for ${file}` } };
       }
       const env = detectEnvironment(file);
+      let suppressionMap = suppressionCache.get(env.workspaceRoot);
+      if (suppressionMap === undefined) {
+        suppressionMap = loadSuppressions(env.workspaceRoot, cfg.suppressionsPath);
+        suppressionCache.set(env.workspaceRoot, suppressionMap);
+      }
       const engine = makeEngine(projectType);
 
       const resolvedFile = resolve(rootCwd, file);
@@ -238,15 +251,42 @@ export async function handleTriageCall(
         sandbox.cleanup();
       }
 
+      // Apply equivalent-mutant suppression before building the row. The key is
+      // relFromRoot — byte-identical to the key used by audit_code_resilience (Key
+      // Contract) so suppressions added via audit are honored in triage.
+      const sup = applySuppressions(result, suppressionMap.get(relFromRoot));
+      const cleanResult = sup.result;
+
       const row: TriageRow = {
         file,
-        mutationScore: result.mutationScore,
-        total: result.totalMutants,
-        killed: result.killed,
-        survived: result.survived,
-        noCoverage: Math.max(0, result.vulnerabilities.length - result.survived),
+        mutationScore: cleanResult.mutationScore,
+        total: cleanResult.totalMutants,
+        killed: cleanResult.killed,
+        survived: cleanResult.survived,
+        noCoverage: Math.max(0, cleanResult.vulnerabilities.length - cleanResult.survived),
       };
       if (rowScopeNote) row.scopeNote = rowScopeNote;
+      if (sup.suppressedCount > 0) row.suppressedCount = sup.suppressedCount;
+
+      // Mint a per-row runId so the caller can verify survivors from a triage result
+      // without re-auditing. A cache failure is non-fatal: omit the runId rather than
+      // fail the whole triage row.
+      let rowRunId: string | undefined;
+      try {
+        const compact = buildResultPayload(cleanResult, {});
+        rowRunId = saveRun(
+          {
+            file: relFromRoot,
+            projectType,
+            survivors: compact.survivors.map((g) => ({ line: g.line, mutators: g.mutators })),
+            noCoverage: compact.noCoverage.map((g) => ({ line: g.line, mutators: g.mutators })),
+          },
+          { ttlMs: cfg.runCacheTtlMs, max: cfg.runCacheMax },
+        );
+      } catch {
+        rowRunId = undefined;
+      }
+      if (rowRunId !== undefined) row.runId = rowRunId;
 
       // Enrich with inline survivors when the caller asked for them.
       // Source-read failure is non-fatal: enrichment works without source lines
@@ -258,7 +298,7 @@ export async function handleTriageCall(
         } catch {
           sourceLines = undefined;
         }
-        const payload = buildResultPayload(result, {
+        const payload = buildResultPayload(cleanResult, {
           enrich: { projectType, sourceLines },
           maxSurvivors: survivorsPerFile,
         });

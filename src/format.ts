@@ -17,7 +17,7 @@ export interface EnrichContext {
 }
 
 /** Matches the NoCoverage marker engines embed in a vulnerability description. */
-const NO_COVERAGE_RE = /no test reached|nocoverage/i;
+export const NO_COVERAGE_RE = /no test reached|nocoverage/i;
 
 /** Max distinct change-strings shown per line group before truncation. */
 const CHANGES_CAP = 3;
@@ -244,6 +244,8 @@ export interface ResultPayload {
   scopeNote?: string;
   enrichNote?: string;
   note: string;
+  runId?: string;
+  suppressedCount?: number;
 }
 
 export interface ResultPayloadOpts {
@@ -252,6 +254,8 @@ export interface ResultPayloadOpts {
   severityFloor?: Severity;
   suggestedTestFile?: { path: string; exists: boolean };
   ignoredOptions?: string[];
+  runId?: string;
+  suppressedCount?: number;
 }
 
 /**
@@ -335,6 +339,11 @@ export function buildResultPayload(
   if (opts.suggestedTestFile) payload.suggestedTestFile = opts.suggestedTestFile;
   if (opts.ignoredOptions && opts.ignoredOptions.length > 0)
     payload.ignoredOptions = opts.ignoredOptions;
+  if (opts.runId) payload.runId = opts.runId;
+  if (opts.suppressedCount && opts.suppressedCount > 0) {
+    payload.suppressedCount = opts.suppressedCount;
+    payload.note += ` ${opts.suppressedCount} equivalent mutant(s) suppressed and excluded from the score.`;
+  }
   return payload;
 }
 

@@ -16,6 +16,9 @@ const KNOWN_KEYS = new Set([
   'mutatorDenylist',
   'perMutantTimeoutMs',
   'allowPrebuild',
+  'suppressionsPath',
+  'runCacheTtlMs',
+  'runCacheMax',
   'stryker',
   'mutmut',
   'go',
@@ -140,6 +143,15 @@ export interface ChaosConfig {
    * the `CHAOS_MCP_ALLOW_PREBUILD` environment variable.
    */
   allowPrebuild?: boolean;
+
+  /** Path to suppressions file (optional string). */
+  suppressionsPath?: string;
+
+  /** TTL for run cache entries in milliseconds (integer > 0). */
+  runCacheTtlMs?: number;
+
+  /** Maximum number of run cache entries (integer >= 1). */
+  runCacheMax?: number;
 
   /** StrykerJS-specific overrides (precedence over global defaults). */
   stryker?: StrykerConfig;
@@ -314,6 +326,23 @@ function buildConfig(raw: Record<string, unknown>): ChaosConfig {
   ) {
     result.defaultFileConcurrency = raw.defaultFileConcurrency;
   }
+  if (typeof raw.suppressionsPath === 'string' && raw.suppressionsPath.trim().length > 0) {
+    result.suppressionsPath = raw.suppressionsPath;
+  }
+  if (
+    typeof raw.runCacheTtlMs === 'number' &&
+    Number.isInteger(raw.runCacheTtlMs) &&
+    raw.runCacheTtlMs > 0
+  ) {
+    result.runCacheTtlMs = raw.runCacheTtlMs;
+  }
+  if (
+    typeof raw.runCacheMax === 'number' &&
+    Number.isInteger(raw.runCacheMax) &&
+    raw.runCacheMax >= 1
+  ) {
+    result.runCacheMax = raw.runCacheMax;
+  }
   if (
     raw.defaultSeverityFloor === 'high' ||
     raw.defaultSeverityFloor === 'medium' ||
@@ -454,6 +483,32 @@ export function validateConfig(configPath?: string): { config: ChaosConfig; warn
   ) {
     warnings.push(
       `defaultFileConcurrency must be an integer between 1 and 64, got ${typeof raw.defaultFileConcurrency === 'number' ? raw.defaultFileConcurrency : typeof raw.defaultFileConcurrency}.`,
+    );
+  }
+  if (
+    'suppressionsPath' in raw &&
+    (typeof raw.suppressionsPath !== 'string' || raw.suppressionsPath.trim().length === 0)
+  ) {
+    warnings.push('suppressionsPath must be a non-empty string.');
+  }
+  if (
+    'runCacheTtlMs' in raw &&
+    (typeof raw.runCacheTtlMs !== 'number' ||
+      !Number.isInteger(raw.runCacheTtlMs) ||
+      raw.runCacheTtlMs <= 0)
+  ) {
+    warnings.push(
+      `runCacheTtlMs must be an integer > 0, got ${typeof raw.runCacheTtlMs === 'number' ? raw.runCacheTtlMs : typeof raw.runCacheTtlMs}.`,
+    );
+  }
+  if (
+    'runCacheMax' in raw &&
+    (typeof raw.runCacheMax !== 'number' ||
+      !Number.isInteger(raw.runCacheMax) ||
+      raw.runCacheMax < 1)
+  ) {
+    warnings.push(
+      `runCacheMax must be an integer >= 1, got ${typeof raw.runCacheMax === 'number' ? raw.runCacheMax : typeof raw.runCacheMax}.`,
     );
   }
 

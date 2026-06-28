@@ -120,3 +120,34 @@ describe('buildResultPayload worstSeverity', () => {
     expect(payload.summary.worstSeverity).toBe('high');
   });
 });
+
+describe('buildResultPayload runId / suppressedCount', () => {
+  it('threads runId and suppressedCount into the payload', () => {
+    const r = {
+      target: 'a.ts',
+      totalMutants: 8,
+      killed: 6,
+      survived: 2,
+      mutationScore: '75.00%',
+      vulnerabilities: [],
+    };
+    const payload = buildResultPayload(r, { runId: 'abc123de', suppressedCount: 2 });
+    expect(payload.runId).toBe('abc123de');
+    expect(payload.suppressedCount).toBe(2);
+    expect(payload.note).toContain('suppressed');
+  });
+
+  it('omits runId/suppressedCount when not provided', () => {
+    const r = {
+      target: 'a.ts',
+      totalMutants: 4,
+      killed: 4,
+      survived: 0,
+      mutationScore: '100.00%',
+      vulnerabilities: [],
+    };
+    const payload = buildResultPayload(r, {});
+    expect(payload.runId).toBeUndefined();
+    expect(payload.suppressedCount).toBeUndefined();
+  });
+});
