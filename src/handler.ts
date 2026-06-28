@@ -735,10 +735,20 @@ function formatAuditOutput(
   env: EnvironmentInfo,
   suppressedCount: number,
   runId: string | undefined,
+  relFromRoot: string,
 ): CallToolResult {
   if (baselineKeys) {
-    // verify-mode delta keeps its own formatters; enrichment is not applied here.
-    const delta = computeVerifyDelta(baselineKeys, auditResults);
+    // Task 9: filter suppressed equivalent mutants from BOTH the baseline keys
+    // AND the re-run result before computing the delta so known-equivalent mutants
+    // never appear as "still surviving" or "now killed" — they vanish entirely.
+    // Uses the same workspace-relative key (relFromRoot) as the standard audit
+    // path (Task 7) so the two modes read identical suppression entries (A9).
+    const suppressed = loadSuppressions(env.workspaceRoot, cfg.suppressionsPath).get(relFromRoot);
+    const rerun = applySuppressions(auditResults, suppressed).result;
+    const keptBaseline = suppressed
+      ? baselineKeys.filter((k) => !suppressed.has(`${k.line} ${k.mutator}`))
+      : baselineKeys;
+    const delta = computeVerifyDelta(keptBaseline, rerun);
     const verifyText =
       args.outputFormat === 'text'
         ? formatVerifyResultAsText(targetFile, delta)
@@ -1032,6 +1042,7 @@ export async function handleToolCall(
         env,
         suppressedCount,
         mintedRunId,
+        relFromRoot,
       );
     } finally {
       // Always clean up the sandbox, even if the engine threw

@@ -3,6 +3,8 @@ import type { CallToolRequest } from '@modelcontextprotocol/sdk/types.js';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { computeVerifyDelta } from '../verify.js';
+import { applySuppressions } from '../utils/suppression.js';
 
 // ── Mocks (mirror handler.test.ts so handleToolCall can run with a stub engine) ──
 vi.mock('../engines/typescript.js', () => ({ TypeScriptEngine: vi.fn() }));
@@ -232,11 +234,11 @@ describe('handleToolCall phase3 wiring', () => {
     expect(persisted?.has('7 ConditionalExpression')).toBe(true);
   });
 
-  it('does NOT filter the verify-mode re-run by an existing suppression (Fix 2)', async () => {
-    // A suppression exists for the same (line, mutator) that the baseline tracks.
-    // In verify mode the filter is owned by Task 9: applying it here would drop
-    // the survivor from the re-run only, making computeVerifyDelta misreport it
-    // as "now killed". The re-run input must stay UNFILTERED.
+  it('suppressed mutants are excluded from verify-mode delta (not stillSurviving nor nowKilled)', async () => {
+    // Task 9: a suppression for the same (line, mutator) that the baseline tracks
+    // must cause that mutant to vanish from the delta entirely — neither reported as
+    // stillSurviving nor nowKilled. Both the baseline keys and the re-run are
+    // filtered by the suppression set before computeVerifyDelta (A9).
     addSuppressions(WS, FILE, [{ line: 7, mutator: 'ConditionalExpression' }], supPath);
     const runId = saveRun({
       file: FILE,
@@ -255,8 +257,38 @@ describe('handleToolCall phase3 wiring', () => {
       killedCount: number;
       stillSurviving: { line: number; mutator: string }[];
     };
-    // Unfiltered → the mutant is still surviving, NOT reported as now-killed.
+    // Suppressed → excluded from both stillSurviving and nowKilled.
     expect(delta.killedCount).toBe(0);
-    expect(delta.stillSurviving).toContainEqual({ line: 7, mutator: 'ConditionalExpression' });
+    expect(delta.stillSurviving).not.toContainEqual({ line: 7, mutator: 'ConditionalExpression' });
+    expect(delta.stillSurviving).toEqual([]);
+  });
+});
+
+// ── Task 9: composition unit test — codifies applySuppressions + computeVerifyDelta ──
+describe('task-9 verify-mode suppression composition', () => {
+  it('suppressed mutants are excluded from verify "still surviving"', () => {
+    const baseline = [
+      { line: 1, mutator: 'A' },
+      { line: 2, mutator: 'B' },
+    ];
+    const rerun = {
+      target: 'a.ts',
+      totalMutants: 2,
+      killed: 0,
+      survived: 2,
+      mutationScore: '0.00%',
+      vulnerabilities: [
+        { line: 1, mutator: 'A', description: 'x' },
+        { line: 2, mutator: 'B', description: 'x' },
+      ],
+    };
+    // Suppress "1 A": it should not count as still-surviving.
+    const filtered = applySuppressions(rerun, new Set(['1 A']));
+    const delta = computeVerifyDelta(
+      baseline.filter((k) => `${k.line} ${k.mutator}` !== '1 A'),
+      filtered.result,
+    );
+    expect(delta.stillSurviving.find((k) => k.line === 1)).toBeUndefined();
+    expect(delta.stillSurviving.find((k) => k.line === 2)).toBeDefined();
   });
 });
