@@ -3392,3 +3392,14 @@ describe('phase3 validators', () => {
     expect(errText({ filePath: 'a.ts', unsuppress: 'nope' })).toContain('unsuppress');
   });
 });
+
+describe('validateToolArgs minScore', () => {
+  it('rejects out-of-range minScore', () => {
+    const res = validateToolArgs({ filePath: 'a.ts', minScore: 150 });
+    expect((res?.content?.[0] as { text?: string })?.text ?? '').toMatch(/minScore/);
+  });
+
+  it('accepts a valid minScore', () => {
+    expect(validateToolArgs({ filePath: 'a.ts', minScore: 80 })).toBeNull();
+  });
+});

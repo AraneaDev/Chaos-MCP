@@ -9,6 +9,7 @@ import { runShellCommand } from './utils/exec.js';
 import { ChaosConfig } from './utils/config-loader.js';
 import { log, isVerbose } from './utils/logger.js';
 import { formatResultAsText, buildResultPayload, type EnrichContext } from './format.js';
+import { evaluateGate, validateMinScore } from './gate.js';
 import type { Severity } from './enrich.js';
 import { suggestTestFile } from './test-file.js';
 import { computeChangedRanges } from './utils/git-diff.js';
@@ -57,7 +58,7 @@ export function isRealPathInside(candidate: string, root: string): boolean {
 }
 
 /** Build an MCP error response from a single message. */
-function toolError(text: string): CallToolResult {
+export function toolError(text: string): CallToolResult {
   return { content: [{ type: 'text', text }], isError: true };
 }
 
@@ -320,6 +321,11 @@ function validateUnsuppressArg(args: ToolArgs): string | null {
   return validateMutantKeyArray(args.unsuppress, 'unsuppress', false);
 }
 
+/** minScore: number in [0, 100] when present. */
+function validateMinScoreArg(args: ToolArgs): string | null {
+  return validateMinScore(args.minScore);
+}
+
 /** Ordered per-field validators run by {@link validateToolArgs}. */
 const TOOL_ARG_VALIDATORS: ((args: ToolArgs) => string | null)[] = [
   validatePerMutantTimeoutMs,
@@ -334,6 +340,7 @@ const TOOL_ARG_VALIDATORS: ((args: ToolArgs) => string | null)[] = [
   validateSeverityFloorArg,
   validateSuppressArg,
   validateUnsuppressArg,
+  validateMinScoreArg,
 ];
 
 /** Normalise an unknown into a well-formed `{ start, end }` lineScope, or `undefined`. */
@@ -767,12 +774,18 @@ function formatAuditOutput(
       ? suggestTestFile(targetFile, projectType, env.workspaceRoot)
       : undefined;
 
+  const gate =
+    typeof args.minScore === 'number'
+      ? evaluateGate(auditResults.mutationScore, args.minScore)
+      : undefined;
+
   const payload = buildResultPayload(auditResults, {
     ...enrichOpts,
     suggestedTestFile: suggestion,
     ignoredOptions: ignored.length > 0 ? ignored : undefined,
     runId,
     suppressedCount,
+    gate,
   });
 
   const text =

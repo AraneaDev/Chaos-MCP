@@ -169,6 +169,13 @@ export const TOOL_DEFINITION = {
           required: ['line', 'mutator'],
         },
       },
+      minScore: {
+        type: 'number',
+        minimum: 0,
+        maximum: 100,
+        description:
+          'Gate: if the mutation score is below this (0–100), the result reports gate.passed=false (never an error). Example: 80.',
+      },
       enrich: {
         type: 'boolean',
         description:
@@ -227,6 +234,10 @@ export const TOOL_DEFINITION = {
       enrichNote: { type: 'string' },
       runId: { type: 'string' },
       suppressedCount: { type: 'integer' },
+      gate: {
+        type: 'object',
+        properties: { minScore: { type: 'number' }, passed: { type: 'boolean' } },
+      },
       note: { type: 'string' },
     },
     required: ['target', 'mutationScore', 'summary', 'survivors', 'noCoverage', 'note'],
@@ -295,6 +306,13 @@ export const TRIAGE_TOOL_DEFINITION = {
           "How many files to audit in parallel. Default min(4, cpus-1). When >1, each StrykerJS run's " +
           'worker count is capped so total CPU use stays near the core count. Example: 4',
       },
+      minScore: {
+        type: 'number',
+        minimum: 0,
+        maximum: 100,
+        description:
+          "Gate: if any file's mutation score is below this (0–100), the result reports gate.passed=false and lists the failing files. Never causes an error. Example: 80.",
+      },
     },
     required: [],
     additionalProperties: false,
@@ -320,13 +338,65 @@ export const TRIAGE_TOOL_DEFINITION = {
           properties: {
             runId: { type: 'string' },
             suppressedCount: { type: 'integer' },
+            passed: { type: 'boolean' },
           },
         },
       },
       errors: { type: 'array', items: { type: 'object' } },
       scopeNote: { type: 'string' },
       note: { type: 'string' },
+      gate: {
+        type: 'object',
+        properties: {
+          minScore: { type: 'number' },
+          passed: { type: 'boolean' },
+          failingFiles: { type: 'array', items: { type: 'string' } },
+        },
+      },
     },
     required: ['mode', 'summary', 'ranking', 'errors', 'note'],
   },
 };
+
+export const ESTIMATE_TOOL_DEFINITION = {
+  name: 'estimate_audit',
+  description:
+    'Cheap pre-flight estimate of how big/long auditing a file will be, WITHOUT running the full ' +
+    'mutation test cycle. Returns an approximate mutant count (exact for Rust via cargo-mutants --list; ' +
+    'a source heuristic for TS/JS/Python/Go, labeled fidelity:"approx"). Set withTiming:true to also ' +
+    'run the test suite once and estimate wall-clock time. Use this before audit_code_resilience to ' +
+    'decide whether to audit now, scope down, or skip.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      filePath: {
+        type: 'string',
+        description:
+          'Path to the source file to estimate, within the workspace. Example: "src/math.ts".',
+      },
+      withTiming: {
+        type: 'boolean',
+        description:
+          'When true, run the test suite once to measure a baseline and estimate total wall-clock ' +
+          'time (mutants × baseline / concurrency). Default false (count only, no test run).',
+      },
+    },
+    required: ['filePath'],
+    additionalProperties: false,
+  },
+  outputSchema: {
+    type: 'object' as const,
+    properties: {
+      target: { type: 'string' },
+      language: { type: 'string' },
+      mutants: { type: 'integer' },
+      fidelity: { type: 'string', enum: ['exact', 'approx'] },
+      basis: { type: 'string' },
+      baselineMs: { type: 'integer' },
+      estimatedMs: { type: 'integer' },
+      concurrency: { type: 'integer' },
+      note: { type: 'string' },
+    },
+    required: ['target', 'language', 'mutants', 'fidelity', 'basis', 'note'],
+  },
+} as const;

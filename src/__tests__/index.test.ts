@@ -29,17 +29,26 @@ vi.mock('@modelcontextprotocol/sdk/server/stdio.js', () => ({
 vi.mock('../tool-schema.js', () => ({
   TOOL_DEFINITION: { name: 'audit_code_resilience' },
   TRIAGE_TOOL_DEFINITION: { name: 'triage_test_coverage' },
+  ESTIMATE_TOOL_DEFINITION: { name: 'estimate_audit' },
 }));
 vi.mock('../handler.js', () => ({ handleToolCall: vi.fn(() => Promise.resolve({ content: [] })) }));
 vi.mock('../triage-handler.js', () => ({
   handleTriageCall: vi.fn(() => Promise.resolve({ content: [] })),
 }));
+vi.mock('../estimate-handler.js', () => ({
+  handleEstimateCall: vi.fn(() => Promise.resolve({ content: [] })),
+}));
 vi.mock('../cli.js', () => ({ runCli: vi.fn() }));
 
 import { startServer, APP_VERSION } from '../index.js';
-import { TOOL_DEFINITION, TRIAGE_TOOL_DEFINITION } from '../tool-schema.js';
+import {
+  TOOL_DEFINITION,
+  TRIAGE_TOOL_DEFINITION,
+  ESTIMATE_TOOL_DEFINITION,
+} from '../tool-schema.js';
 import { handleToolCall } from '../handler.js';
 import { handleTriageCall } from '../triage-handler.js';
+import { handleEstimateCall } from '../estimate-handler.js';
 
 describe('startServer', () => {
   beforeEach(() => {
@@ -55,14 +64,16 @@ describe('startServer', () => {
     );
   });
 
-  it('registers the tools/list handler returning both tool definitions', async () => {
+  it('registers the tools/list handler returning all three tool definitions', async () => {
     await startServer();
     const handler = sdk.setRequestHandler.mock.calls.find(
       (c) => c[0] === ListToolsRequestSchema,
     )?.[1];
     expect(handler).toBeTypeOf('function');
     const result = await (handler as () => Promise<unknown>)();
-    expect(result).toEqual({ tools: [TOOL_DEFINITION, TRIAGE_TOOL_DEFINITION] });
+    expect(result).toEqual({
+      tools: [TOOL_DEFINITION, TRIAGE_TOOL_DEFINITION, ESTIMATE_TOOL_DEFINITION],
+    });
   });
 
   it('registers the tools/call handler delegating to handleToolCall with the config', async () => {
@@ -89,6 +100,20 @@ describe('startServer', () => {
     await (handler as (req: unknown) => Promise<unknown>)(request);
     expect(handleTriageCall).toHaveBeenCalledWith(request, config);
     expect(handleToolCall).not.toHaveBeenCalled();
+  });
+
+  it('routes estimate_audit to handleEstimateCall with the config', async () => {
+    const config = { defaultTimeoutMs: 30_000 };
+    await startServer(config);
+    const handler = sdk.setRequestHandler.mock.calls.find(
+      (c) => c[0] === CallToolRequestSchema,
+    )?.[1];
+    expect(handler).toBeTypeOf('function');
+    const request = { params: { name: 'estimate_audit', arguments: { filePath: 'src/math.ts' } } };
+    await (handler as (req: unknown) => Promise<unknown>)(request);
+    expect(handleEstimateCall).toHaveBeenCalledWith(request, config);
+    expect(handleToolCall).not.toHaveBeenCalled();
+    expect(handleTriageCall).not.toHaveBeenCalled();
   });
 
   it('connects the server over a stdio transport', async () => {

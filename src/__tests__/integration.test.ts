@@ -123,12 +123,13 @@ describe('chaos-mcp integration', () => {
     expect(response.id).toBe(2);
     expect(response.result?.tools).toBeDefined();
     expect(Array.isArray(response.result?.tools)).toBe(true);
-    expect(response.result?.tools).toHaveLength(2);
+    expect(response.result?.tools).toHaveLength(3);
 
     const tools = response.result?.tools as Record<string, unknown>[];
     const toolNames = tools.map((t) => t.name);
     expect(toolNames).toContain('audit_code_resilience');
     expect(toolNames).toContain('triage_test_coverage');
+    expect(toolNames).toContain('estimate_audit');
 
     const tool = tools.find((t) => t.name === 'audit_code_resilience');
     expect(tool).toBeDefined();

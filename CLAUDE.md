@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Chaos-MCP is an MCP (Model Context Protocol) **stdio server** that runs isolated mutation testing against a target codebase to find holes in its test suite. It exposes two tools: `audit_code_resilience` (one file) and `triage_test_coverage` (rank a tree weakest-first). It wraps four language-specific mutation tools — StrykerJS (TS/JS), Mutmut (Python), go-mutesting (Go), cargo-mutants (Rust). Pre-release: not on npm; install from source. ESM throughout (`"type": "module"`, `.js` import specifiers that resolve to `.ts`).
+Chaos-MCP is an MCP (Model Context Protocol) **stdio server** that runs isolated mutation testing against a target codebase to find holes in its test suite. It exposes three tools: `audit_code_resilience` (one file), `triage_test_coverage` (rank a tree weakest-first), and `estimate_audit` (cheap pre-flight mutant count / timing estimate, no test cycle). It wraps four language-specific mutation tools — StrykerJS (TS/JS), Mutmut (Python), go-mutesting (Go), cargo-mutants (Rust). Pre-release: not on npm; install from source. ESM throughout (`"type": "module"`, `.js` import specifiers that resolve to `.ts`).
 
 ## Commands
 
@@ -26,7 +26,7 @@ npm run format:check       # prettier --check (format to write)
 
 ## Architecture: the request pipeline
 
-`index.ts` (`startServer`) registers two tools and dispatches by name. The non-trivial logic lives in the handlers, not the entry point:
+`index.ts` (`startServer`) registers three tools and dispatches by name. The non-trivial logic lives in the handlers, not the entry point:
 
 1. **`handler.ts` → `handleToolCall`** (the `audit_code_resilience` path) is the orchestrator and the file to read first. Flow:
    - Validate `filePath` and enforce the **workspace boundary** — `isRealPathInside` resolves symlinks and rejects any path outside `process.cwd()` (an LLM must not be tricked into auditing arbitrary host files).
@@ -37,7 +37,9 @@ npm run format:check       # prettier --check (format to write)
    - `createSandbox` copies the workspace to a tmpdir, then `auditFile` builds `RunOptions`, optionally runs the (gated) prebuild, and calls `engine.run`. The sandbox is **always** cleaned up in a `finally`.
    - Post-run, `suppress`/`unsuppress` entries write to `suppressionsPath`; `applySuppressions` then filters the result and adjusts the score (`suppressedCount` in output).
    - `formatAuditOutput` renders standard vs. verify-mode output and appends a note listing any StrykerJS-only options the resolved engine ignored.
-2. **`triage-handler.ts` / `triage.ts`** (the `triage_test_coverage` path) walks a tree (`discoverFiles`), audits each file, and `rankResults` sorts weakest-first (score asc, survived desc, file asc).
+2. **`triage-handler.ts` / `triage.ts`** (the `triage_test_coverage` path) walks a tree (`discoverFiles`), audits each file, and `rankResults` sorts weakest-first (score asc, survived desc, file asc). Both the audit and triage paths accept `minScore` (0–100); a failing gate writes `gate: { minScore, passed }` on audit and `gate: { minScore, passed, failingFiles }` on triage — never an error.
+3. **`estimate-handler.ts`** (the `estimate_audit` path) enforces the workspace boundary and calls `estimateAudit` (`src/estimate.ts`). `estimate.ts` runs `cargo mutants --list` for an exact Rust count (`fidelity: "exact"`), or applies a source-parse heuristic (`src/estimate-heuristic.ts`) for TS/JS/Python/Go (`fidelity: "approx"`). When `withTiming: true`, a sandbox is provisioned and `src/baseline-timing.ts` drives a one-off test-suite run to compute `baselineMs`/`estimatedMs`/`concurrency`.
+4. **`gate.ts`** — `evaluateGate(scoreText, minScore)` grades a formatted score string against the threshold and returns `{ minScore, passed }`. `validateMinScore` validates the input (0–100). Called by both the audit and triage handlers.
 
 ### Engines (`src/engines/`)
 - `base.ts` defines `BaseEngine` (abstract `run()`), plus the `RunOptions` / `MutationResult` / `Vulnerability` contracts. **`RunOptions` is the canonical doc** for which options each engine honors — most are StrykerJS-only (see `STRYKER_ONLY_OPTIONS` in `handler.ts`).
