@@ -65,9 +65,9 @@ const DEFAULT_TIMEOUT_MS = 300_000;
  */
 export function runShellCommand(
   command: string,
-  options: { cwd?: string; timeoutMs?: number } = {},
+  options: { cwd?: string; timeoutMs?: number; signal?: AbortSignal } = {},
 ): Promise<ExecResult> {
-  const { cwd = process.cwd(), timeoutMs = DEFAULT_TIMEOUT_MS } = options;
+  const { cwd = process.cwd(), timeoutMs = DEFAULT_TIMEOUT_MS, signal } = options;
 
   if (isVerbose()) {
     log(`exec-shell: ${command}  (cwd=${cwd}, timeout=${timeoutMs}ms)`);
@@ -79,6 +79,7 @@ export function runShellCommand(
       {
         cwd,
         timeout: timeoutMs,
+        signal,
         encoding: 'utf-8',
         maxBuffer: 10 * 1024 * 1024, // 10 MB stdout/stderr cap
         windowsHide: true,
@@ -156,9 +157,9 @@ export function runShellCommand(
 export function runShell(
   command: string,
   args: string[],
-  options: { cwd?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv } = {},
+  options: { cwd?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv; signal?: AbortSignal } = {},
 ): Promise<ExecResult> {
-  const { cwd = process.cwd(), timeoutMs = DEFAULT_TIMEOUT_MS, env } = options;
+  const { cwd = process.cwd(), timeoutMs = DEFAULT_TIMEOUT_MS, env, signal } = options;
 
   if (isVerbose()) {
     log(`exec: ${command} ${args.join(' ')}  (cwd=${cwd}, timeout=${timeoutMs}ms)`);
@@ -172,6 +173,7 @@ export function runShell(
         cwd,
         timeout: timeoutMs,
         env,
+        signal,
         encoding: 'utf-8',
         maxBuffer: 10 * 1024 * 1024, // 10 MB stdout/stderr cap
         windowsHide: true,
@@ -206,14 +208,14 @@ export function runShell(
           // on the spawn-error object, causing every non-zero exit to be
           // reported as exit=null. Always read `err.code` and gate on its type.)
           const exitCode = typeof errnoError.code === 'number' ? errnoError.code : null;
-          const signal =
+          const procSignal =
             typeof errnoError.signal === 'string' ? (errnoError.signal as NodeJS.Signals) : null;
 
           const result: ExecResult = {
             stdout: stdoutStr,
             stderr: stderrStr,
             exit: exitCode,
-            signal,
+            signal: procSignal,
           };
 
           // ENOENT: binary not found — propagate with a clear code.

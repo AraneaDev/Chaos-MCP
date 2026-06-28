@@ -175,6 +175,9 @@ export interface RunOptions {
    * Example: "npm run build"
    */
   prebuildCommand?: string;
+
+  /** Abort signal; when aborted, the mutation subprocess is killed. */
+  signal?: AbortSignal;
 }
 
 /**

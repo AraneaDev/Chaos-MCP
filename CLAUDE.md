@@ -26,7 +26,7 @@ npm run format:check       # prettier --check (format to write)
 
 ## Architecture: the request pipeline
 
-`index.ts` (`startServer`) registers three tools and dispatches by name. The non-trivial logic lives in the handlers, not the entry point:
+`index.ts` (`startServer`) registers three tools and dispatches by name. The server now advertises `resources` and `prompts` capabilities alongside `tools`. A `ToolContext` (abort signal + optional token-gated progress reporter) is built per call via `makeToolContext` (`src/tool-context.ts`) and threaded as an optional last arg into all three tool handlers — when omitted, all context-gated behaviour is a no-op, preserving existing callers. Cancellation flows via `RunOptions.signal` from the handler through the engine into the in-flight subprocess. The non-trivial logic lives in the handlers, not the entry point:
 
 1. **`handler.ts` → `handleToolCall`** (the `audit_code_resilience` path) is the orchestrator and the file to read first. Flow:
    - Validate `filePath` and enforce the **workspace boundary** — `isRealPathInside` resolves symlinks and rejects any path outside `process.cwd()` (an LLM must not be tricked into auditing arbitrary host files).
@@ -45,6 +45,11 @@ npm run format:check       # prettier --check (format to write)
 - `base.ts` defines `BaseEngine` (abstract `run()`), plus the `RunOptions` / `MutationResult` / `Vulnerability` contracts. **`RunOptions` is the canonical doc** for which options each engine honors — most are StrykerJS-only (see `STRYKER_ONLY_OPTIONS` in `handler.ts`).
 - `registry.ts` is the **single source of truth per language**: `ENGINE_REGISTRY` maps each `SupportedProjectType` → `{ make, configKey, supportsLineScope, prebuild? }`. Adding a language touches three places: implement a `BaseEngine`, add an entry here, add detection in `project-detector.ts` and a config section in `config-loader.ts`. Only TypeScript (`supportsLineScope: true`) supports `lineScope`/diff-scoping/verify-rescoping; the others always run whole-file.
 - Engines shell out via `invokeMutationTool` (from `utils/exec-classify.ts`) over `utils/exec.ts`. **All subprocess execution is async** (`execFile`/`exec`); only the one-time sandbox copy is sync. A non-zero exit is thrown as `ExecFailureError` so callers distinguish "expected survivors" (non-zero) from real crashes (signal) or missing binary (`ENOENT`); startup failures become `MutationToolStartupError`. `BaseEngine.toExecFailure` normalizes this for the Go/Rust engines.
+
+### Protocol layer (`src/`)
+- `tool-context.ts` — `makeToolContext(request, extra)` builds a `ToolContext` with an optional `AbortSignal` (`ctx.signal`) and an optional `reportProgress` function. The progress reporter is created only when both a `progressToken` is present in `request.params._meta` and a `sendNotification` channel is available in `extra`; otherwise `ctx.reportProgress` is `undefined` and callers no-op via optional chaining (`ctx?.reportProgress?.(...)`). Progress sends are fire-and-forget — a rejected notification is swallowed so it can never break an actual run.
+- `resources.ts` — `listResources()` / `readResource(uri)` serve three static URIs: `chaos://languages` (JSON, built from `ENGINE_REGISTRY`), `chaos://config-schema` (JSON, inline config-key docs), `chaos://capabilities` (Markdown, tool args + triage→audit→verify loop). Registered in `index.ts` via `ListResourcesRequestSchema` / `ReadResourceRequestSchema`.
+- `prompts.ts` — `listPrompts()` / `getPrompt(name, args)` serve two prompts: `harden_file(filePath)` and `triage_changes(diffBase)`. Each returns a `user`-role message that walks an agent through the audit/triage/verify loop. Registered in `index.ts` via `ListPromptsRequestSchema` / `GetPromptRequestSchema`.
 
 ### Utils (`src/utils/`)
 - `sandbox.ts` — `createSandbox` copies the workspace to `os.tmpdir()`, symlinks `node_modules`/`.venv` (so heavy deps aren't copied), enforces a size guard, and registers exit handlers (`exit`/SIGTERM/SIGINT/SIGHUP/SIGQUIT) that remove leaked sandboxes. Has its own `isPathInside` boundary check (defense-in-depth).

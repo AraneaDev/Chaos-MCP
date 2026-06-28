@@ -258,6 +258,35 @@ describe('handleEstimateCall', () => {
 
   // ── Python / Go / other supported types ──────────────────────────────────
 
+  // ── Cancellation ──────────────────────────────────────────────────────────
+
+  it('returns a cancelled error immediately when ctx.signal is pre-aborted', async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    const res = await handleEstimateCall(req({ filePath: 'src/math.ts' }), undefined, {
+      signal: controller.signal,
+    });
+
+    expect(res.isError).toBe(true);
+    expect(text(res)).toMatch(/cancelled/i);
+    // estimateAudit should NOT have been called
+    expect(mockEstimateAudit).not.toHaveBeenCalled();
+  });
+
+  it('passes signal from ctx into estimateAudit', async () => {
+    mockEstimateAudit.mockResolvedValue(approxResult);
+    const controller = new AbortController();
+
+    await handleEstimateCall(req({ filePath: 'src/math.ts' }), undefined, {
+      signal: controller.signal,
+    });
+
+    expect(mockEstimateAudit).toHaveBeenCalledWith(
+      expect.objectContaining({ signal: controller.signal }),
+    );
+  });
+
   it('handles a Python file (.py) successfully', async () => {
     mockDetectEnv.mockReturnValue({
       projectType: 'python',

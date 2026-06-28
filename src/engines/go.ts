@@ -172,6 +172,7 @@ export class GoEngine extends BaseEngine {
       const result = await invokeMutationTool('go-mutesting', 'go-mutesting', [filePath], {
         cwd,
         timeoutMs,
+        signal: options?.signal,
       });
       stdout = result.stdout;
       stderr = result.stderr;

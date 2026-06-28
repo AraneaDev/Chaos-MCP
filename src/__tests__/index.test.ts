@@ -1,5 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import {
+  ListToolsRequestSchema,
+  CallToolRequestSchema,
+  ListResourcesRequestSchema,
+  ReadResourceRequestSchema,
+  ListPromptsRequestSchema,
+  GetPromptRequestSchema,
+} from '@modelcontextprotocol/sdk/types.js';
 
 // Shared spies for the mocked MCP SDK server, hoisted so the vi.mock factory
 // (which is hoisted above imports) can close over them.
@@ -40,6 +47,49 @@ vi.mock('../estimate-handler.js', () => ({
 }));
 vi.mock('../cli.js', () => ({ runCli: vi.fn() }));
 
+// Fixed ctx returned by makeToolContext; used to assert handlers receive it.
+const FIXED_CTX = { signal: undefined };
+vi.mock('../tool-context.js', () => ({
+  makeToolContext: vi.fn(() => FIXED_CTX),
+}));
+
+// Minimal stubs so the resource/prompt modules can be imported without touching
+// the real engine registry or file system.
+vi.mock('../resources.js', () => ({
+  listResources: vi.fn(() => [
+    {
+      uri: 'chaos://languages',
+      name: 'Supported languages',
+      description: '',
+      mimeType: 'application/json',
+    },
+    {
+      uri: 'chaos://config-schema',
+      name: 'Config schema',
+      description: '',
+      mimeType: 'application/json',
+    },
+    {
+      uri: 'chaos://capabilities',
+      name: 'Capabilities overview',
+      description: '',
+      mimeType: 'text/markdown',
+    },
+  ]),
+  readResource: vi.fn((uri: string) => ({ uri, mimeType: 'application/json', text: '{}' })),
+}));
+
+vi.mock('../prompts.js', () => ({
+  listPrompts: vi.fn(() => [
+    { name: 'harden_file', description: 'Harden a file.', arguments: [] },
+    { name: 'triage_changes', description: 'Triage changed files.', arguments: [] },
+  ]),
+  getPrompt: vi.fn((_name: string, _args: Record<string, string>) => ({
+    description: 'Harden src/foo.ts against surviving mutants.',
+    messages: [{ role: 'user', content: { type: 'text', text: 'Harden src/foo.ts' } }],
+  })),
+}));
+
 import { startServer, APP_VERSION } from '../index.js';
 import {
   TOOL_DEFINITION,
@@ -49,6 +99,9 @@ import {
 import { handleToolCall } from '../handler.js';
 import { handleTriageCall } from '../triage-handler.js';
 import { handleEstimateCall } from '../estimate-handler.js';
+import { makeToolContext } from '../tool-context.js';
+import { listResources, readResource } from '../resources.js';
+import { listPrompts, getPrompt } from '../prompts.js';
 
 describe('startServer', () => {
   beforeEach(() => {
@@ -60,7 +113,7 @@ describe('startServer', () => {
     await startServer();
     expect(sdk.serverCtor).toHaveBeenCalledWith(
       { name: 'chaos-mcp', version: APP_VERSION },
-      { capabilities: { tools: {} } },
+      { capabilities: { tools: {}, resources: {}, prompts: {} } },
     );
   });
 
@@ -76,7 +129,7 @@ describe('startServer', () => {
     });
   });
 
-  it('registers the tools/call handler delegating to handleToolCall with the config', async () => {
+  it('registers the tools/call handler delegating to handleToolCall with the config and ctx', async () => {
     const config = { defaultTimeoutMs: 4242 };
     await startServer(config);
     const handler = sdk.setRequestHandler.mock.calls.find(
@@ -84,12 +137,14 @@ describe('startServer', () => {
     )?.[1];
     expect(handler).toBeTypeOf('function');
     const request = { params: { name: 'audit_code_resilience', arguments: {} } };
-    await (handler as (req: unknown) => Promise<unknown>)(request);
-    expect(handleToolCall).toHaveBeenCalledWith(request, config);
+    const extra = { signal: undefined };
+    await (handler as (req: unknown, extra: unknown) => Promise<unknown>)(request, extra);
+    expect(makeToolContext).toHaveBeenCalledWith(request, extra);
+    expect(handleToolCall).toHaveBeenCalledWith(request, config, FIXED_CTX);
     expect(handleTriageCall).not.toHaveBeenCalled();
   });
 
-  it('routes triage_test_coverage to handleTriageCall with the config', async () => {
+  it('routes triage_test_coverage to handleTriageCall with the config and ctx', async () => {
     const config = { defaultMaxFiles: 7 };
     await startServer(config);
     const handler = sdk.setRequestHandler.mock.calls.find(
@@ -97,12 +152,14 @@ describe('startServer', () => {
     )?.[1];
     expect(handler).toBeTypeOf('function');
     const request = { params: { name: 'triage_test_coverage', arguments: { paths: ['src'] } } };
-    await (handler as (req: unknown) => Promise<unknown>)(request);
-    expect(handleTriageCall).toHaveBeenCalledWith(request, config);
+    const extra = { signal: undefined };
+    await (handler as (req: unknown, extra: unknown) => Promise<unknown>)(request, extra);
+    expect(makeToolContext).toHaveBeenCalledWith(request, extra);
+    expect(handleTriageCall).toHaveBeenCalledWith(request, config, FIXED_CTX);
     expect(handleToolCall).not.toHaveBeenCalled();
   });
 
-  it('routes estimate_audit to handleEstimateCall with the config', async () => {
+  it('routes estimate_audit to handleEstimateCall with the config and ctx', async () => {
     const config = { defaultTimeoutMs: 30_000 };
     await startServer(config);
     const handler = sdk.setRequestHandler.mock.calls.find(
@@ -110,10 +167,56 @@ describe('startServer', () => {
     )?.[1];
     expect(handler).toBeTypeOf('function');
     const request = { params: { name: 'estimate_audit', arguments: { filePath: 'src/math.ts' } } };
-    await (handler as (req: unknown) => Promise<unknown>)(request);
-    expect(handleEstimateCall).toHaveBeenCalledWith(request, config);
+    const extra = { signal: undefined };
+    await (handler as (req: unknown, extra: unknown) => Promise<unknown>)(request, extra);
+    expect(makeToolContext).toHaveBeenCalledWith(request, extra);
+    expect(handleEstimateCall).toHaveBeenCalledWith(request, config, FIXED_CTX);
     expect(handleToolCall).not.toHaveBeenCalled();
     expect(handleTriageCall).not.toHaveBeenCalled();
+  });
+
+  it('registers the resources/list handler returning all three resources', async () => {
+    await startServer();
+    const handler = sdk.setRequestHandler.mock.calls.find(
+      (c) => c[0] === ListResourcesRequestSchema,
+    )?.[1];
+    expect(handler).toBeTypeOf('function');
+    const result = await (handler as () => Promise<unknown>)();
+    expect(result).toEqual({ resources: listResources() });
+  });
+
+  it('registers the resources/read handler returning contents for a known URI', async () => {
+    await startServer();
+    const handler = sdk.setRequestHandler.mock.calls.find(
+      (c) => c[0] === ReadResourceRequestSchema,
+    )?.[1];
+    expect(handler).toBeTypeOf('function');
+    const request = { params: { uri: 'chaos://languages' } };
+    const result = await (handler as (req: unknown) => Promise<unknown>)(request);
+    expect(readResource).toHaveBeenCalledWith('chaos://languages');
+    expect(result).toEqual({ contents: [readResource('chaos://languages')] });
+  });
+
+  it('registers the prompts/list handler returning all two prompts', async () => {
+    await startServer();
+    const handler = sdk.setRequestHandler.mock.calls.find(
+      (c) => c[0] === ListPromptsRequestSchema,
+    )?.[1];
+    expect(handler).toBeTypeOf('function');
+    const result = await (handler as () => Promise<unknown>)();
+    expect(result).toEqual({ prompts: listPrompts() });
+  });
+
+  it('registers the prompts/get handler delegating to getPrompt', async () => {
+    await startServer();
+    const handler = sdk.setRequestHandler.mock.calls.find(
+      (c) => c[0] === GetPromptRequestSchema,
+    )?.[1];
+    expect(handler).toBeTypeOf('function');
+    const request = { params: { name: 'harden_file', arguments: { filePath: 'src/foo.ts' } } };
+    const result = await (handler as (req: unknown) => Promise<unknown>)(request);
+    expect(getPrompt).toHaveBeenCalledWith('harden_file', { filePath: 'src/foo.ts' });
+    expect(result).toEqual(getPrompt('harden_file', { filePath: 'src/foo.ts' }));
   });
 
   it('connects the server over a stdio transport', async () => {

@@ -33,6 +33,8 @@ export interface EstimateOptions {
   env?: EnvironmentInfo;
   /** Worker concurrency used to project total time; defaults to 1. */
   concurrency?: number;
+  /** Abort signal; forwarded to subprocesses so the caller can cancel in-flight work. */
+  signal?: AbortSignal;
 }
 
 const ESTIMATE_TIMEOUT_MS = 60_000;
@@ -103,7 +105,11 @@ async function computeCount(opts: EstimateOptions): Promise<EstimateResult> {
         'cargo-mutants',
         'cargo',
         ['mutants', '--list', '--file', opts.relFile],
-        { cwd: opts.workDir, timeoutMs: opts.timeoutMs ?? ESTIMATE_TIMEOUT_MS },
+        {
+          cwd: opts.workDir,
+          timeoutMs: opts.timeoutMs ?? ESTIMATE_TIMEOUT_MS,
+          signal: opts.signal,
+        },
       );
       return {
         target: opts.relFile,
@@ -140,7 +146,7 @@ async function applyTiming(result: EstimateResult, opts: EstimateOptions): Promi
   }
   try {
     const t0 = Date.now();
-    await runShell(cmd.command, cmd.args, { cwd: opts.workDir });
+    await runShell(cmd.command, cmd.args, { cwd: opts.workDir, signal: opts.signal });
     const baselineMs = Date.now() - t0;
     const concurrency = opts.concurrency ?? 1;
     result.baselineMs = baselineMs;

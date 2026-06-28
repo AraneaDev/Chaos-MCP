@@ -507,6 +507,119 @@ describe('handleTriageCall minScore gate', () => {
   });
 });
 
+describe('handleTriageCall ctx: progress + cancellation', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockDetectEnv.mockReturnValue(tsEnv);
+  });
+
+  it('fires reportProgress once per file (including errored files), done increments, total=N', async () => {
+    // Three files: first succeeds, second throws, third succeeds.
+    // The finally in auditOne must fire for ALL three → 3 progress calls.
+    mockDiscover.mockReturnValue({ files: ['a.ts', 'b.ts', 'c.ts'], discovered: 3, skipped: 0 });
+    mockAuditFile
+      .mockResolvedValueOnce(mrOf({ mutationScore: '80.00%', survived: 2 }))
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValueOnce(mrOf({ mutationScore: '60.00%', survived: 4 }));
+
+    const calls: [number, number | undefined, string | undefined][] = [];
+    const ctx = {
+      reportProgress: vi.fn((progress: number, total?: number, message?: string) => {
+        calls.push([progress, total, message]);
+      }),
+    };
+
+    await handleTriageCall(req({ paths: ['src'] }), undefined, ctx);
+
+    // One call per file.
+    expect(ctx.reportProgress).toHaveBeenCalledTimes(3);
+    // total is always 3 (the discovered file count).
+    expect(calls.every(([, total]) => total === 3)).toBe(true);
+    // done values are 1, 2, 3 (in some order — pool may interleave, but sequentially
+    // in unit tests with synchronous mocks they arrive 1,2,3).
+    const dones = calls.map(([d]) => d).sort((a, b) => a - b);
+    expect(dones).toEqual([1, 2, 3]);
+    // Final call has done = total = 3.
+    const lastCall = calls[calls.length - 1];
+    expect(lastCall[0]).toBe(3);
+    expect(lastCall[1]).toBe(3);
+    // Message matches pattern "audited N/N".
+    expect(lastCall[2]).toMatch(/audited 3\/3/);
+  });
+
+  it('does NOT fire reportProgress when no ctx is supplied (backward compat)', async () => {
+    // Existing call-site (no ctx) must still work — progress is a no-op.
+    mockDiscover.mockReturnValue({ files: ['a.ts'], discovered: 1, skipped: 0 });
+    mockAuditFile.mockResolvedValue(mrOf({}));
+    // Should resolve without throwing — the reportProgress guard must handle undefined ctx.
+    await expect(handleTriageCall(req({ paths: ['src'] }))).resolves.toBeDefined();
+  });
+
+  it('fires reportProgress N times with done=1..N even when all files error', async () => {
+    // Invariant: the finally block in auditOne must advance done for all files,
+    // including those that throw (error path) or return early (signal-aborted skip path).
+    // This test covers the error path: mocking all auditFile calls to reject, verifying
+    // progress fires 3 times with done advancing 1→2→3 despite all files failing.
+    mockDiscover.mockReturnValue({ files: ['a.ts', 'b.ts', 'c.ts'], discovered: 3, skipped: 0 });
+    mockAuditFile
+      .mockRejectedValueOnce(new Error('error 1'))
+      .mockRejectedValueOnce(new Error('error 2'))
+      .mockRejectedValueOnce(new Error('error 3'));
+
+    const calls: [number, number | undefined][] = [];
+    const ctx = {
+      reportProgress: vi.fn((progress: number, total?: number) => {
+        calls.push([progress, total]);
+      }),
+    };
+
+    const res = await handleTriageCall(req({ paths: ['src'] }), undefined, ctx);
+
+    // All three files errored, so reportProgress fires 3 times.
+    expect(ctx.reportProgress).toHaveBeenCalledTimes(3);
+    // Done values must be 1, 2, 3 (in that sequential order).
+    const dones = calls.map(([d]) => d);
+    expect(dones).toEqual([1, 2, 3]);
+    // Total is always the discovered count (3).
+    expect(calls.every(([, total]) => total === 3)).toBe(true);
+    // All three errors recorded in result.
+    expect(res.isError).toBeUndefined();
+    const json = JSON.parse((res.content[0] as { text: string }).text);
+    expect(json.errors.length).toBe(3);
+    expect(json.summary.filesErrored).toBe(3);
+  });
+
+  it('returns a cancelled result immediately when ctx.signal is pre-aborted (before discovery)', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const ctx = { signal: controller.signal };
+    // Mock safety net: if abort check regresses, discovery is called but returns empty
+    // rather than crashing with TypeError, so the test fails on the assertion.
+    mockDiscover.mockReturnValue({ files: [], discovered: 0, skipped: 0 });
+
+    const res = await handleTriageCall(req({ paths: ['src'] }), undefined, ctx);
+
+    expect(res.isError).toBe(true);
+    expect((res.content[0] as { text: string }).text).toContain('cancelled');
+    // Discovery must not be invoked.
+    expect(mockDiscover).not.toHaveBeenCalled();
+    expect(mockAuditFile).not.toHaveBeenCalled();
+  });
+
+  it('threads ctx.signal into each auditFile call as a top-level signal field', async () => {
+    mockDiscover.mockReturnValue({ files: ['a.ts'], discovered: 1, skipped: 0 });
+    mockAuditFile.mockResolvedValue(mrOf({}));
+    const controller = new AbortController();
+    const ctx = { signal: controller.signal };
+
+    await handleTriageCall(req({ paths: ['src'] }), undefined, ctx);
+
+    expect(mockAuditFile).toHaveBeenCalledWith(
+      expect.objectContaining({ signal: controller.signal }),
+    );
+  });
+});
+
 describe('resolveStrykerConcurrency', () => {
   it('returns undefined for a single-file pool', () => {
     expect(resolveStrykerConcurrency(1, 8)).toBeUndefined();
