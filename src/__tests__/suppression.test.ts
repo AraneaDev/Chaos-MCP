@@ -65,8 +65,17 @@ describe('suppression', () => {
     expect(suppressedCount).toBe(2);
     expect(result.vulnerabilities).toEqual([{ line: 1, mutator: 'B', description: 'x' }]);
     expect(result.totalMutants).toBe(8); // 10 - 2
-    expect(result.survived).toBe(2); // 4 - 2
+    expect(result.survived).toBe(3); // 4 - 1 (only '1 A' is a true survivor; '2 A' is NoCoverage)
     expect(result.mutationScore).toBe('75.00%'); // 6 / 8
+  });
+
+  it('applySuppressions suppressing only a NoCoverage mutant leaves survived unchanged', () => {
+    // '2 A' has description 'no test reached this line' → NoCoverage, not a true survivor
+    const { result, suppressedCount } = applySuppressions(makeResult(), new Set(['2 A']));
+    expect(suppressedCount).toBe(1);
+    expect(result.totalMutants).toBe(9); // 10 - 1
+    expect(result.survived).toBe(4); // unchanged — NoCoverage doesn't count against survived
+    expect(result.mutationScore).toBe('66.67%'); // 6 / 9
   });
 
   it('applySuppressions with undefined set is a no-op', () => {

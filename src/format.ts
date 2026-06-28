@@ -17,7 +17,7 @@ export interface EnrichContext {
 }
 
 /** Matches the NoCoverage marker engines embed in a vulnerability description. */
-const NO_COVERAGE_RE = /no test reached|nocoverage/i;
+export const NO_COVERAGE_RE = /no test reached|nocoverage/i;
 
 /** Max distinct change-strings shown per line group before truncation. */
 const CHANGES_CAP = 3;

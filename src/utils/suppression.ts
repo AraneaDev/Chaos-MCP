@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join } from 'node:path';
 import type { MutationResult } from '../engines/base.js';
+import { NO_COVERAGE_RE } from '../format.js';
 
 export interface SuppressionInput {
   line: number;
@@ -127,8 +128,12 @@ export function applySuppressions(
   const kept = result.vulnerabilities.filter((v) => !suppressed.has(keyOf(v.line, v.mutator)));
   const suppressedCount = result.vulnerabilities.length - kept.length;
   if (suppressedCount === 0) return { result, suppressedCount: 0 };
+  // Only true survivors (not NoCoverage) count against result.survived.
+  const suppressedSurvivors = result.vulnerabilities.filter(
+    (v) => suppressed.has(keyOf(v.line, v.mutator)) && !NO_COVERAGE_RE.test(v.description),
+  ).length;
   const totalMutants = Math.max(0, result.totalMutants - suppressedCount);
-  const survived = Math.max(0, result.survived - suppressedCount);
+  const survived = Math.max(0, result.survived - suppressedSurvivors);
   const score = totalMutants === 0 ? 100 : (result.killed / totalMutants) * 100;
   return {
     result: {
