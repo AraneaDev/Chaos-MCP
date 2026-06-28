@@ -546,7 +546,7 @@ export async function auditFile(input: AuditFileInput): Promise<MutationResult> 
   if (lineRanges) runOptions.lineRanges = lineRanges;
   // Thread the abort signal from the MCP request context into the engine run so
   // in-flight subprocesses are killed when the caller cancels.
-  runOptions.signal = input.signal;
+  if (input.signal) runOptions.signal = input.signal;
 
   if (prebuildCmd !== null) {
     if (isVerbose()) {

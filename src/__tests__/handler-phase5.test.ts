@@ -71,11 +71,13 @@ import { handleToolCall } from '../index.js';
 import { TypeScriptEngine } from '../engines/typescript.js';
 import { detectEnvironment } from '../utils/project-detector.js';
 import { createSandbox } from '../utils/sandbox.js';
+import { computeChangedRanges } from '../utils/git-diff.js';
 import type { ToolContext } from '../tool-context.js';
 
 const MockTSEngine = vi.mocked(TypeScriptEngine);
 const mockDetectEnv = vi.mocked(detectEnvironment);
 const mockCreateSandbox = vi.mocked(createSandbox);
+const mockComputeChangedRanges = vi.mocked(computeChangedRanges);
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -230,5 +232,58 @@ describe('handleToolCall — Phase 5: progress milestones + cancellation', () =>
     expect(response.isError).toBe(true);
     expect(response.content).toHaveLength(1);
     expect(response.content[0]).toMatchObject({ type: 'text', text: 'Operation cancelled.' });
+  });
+
+  // ── (c) Milestone 4 on no-changes short-circuit path ─────────────────────
+
+  it('emits (4,4,complete) on the no-changes short-circuit terminal path', async () => {
+    // diffBase triggers computeChangedRanges; no-changes causes computeScope to
+    // return { kind: 'result' } immediately (before sandbox provisioning).
+    // handler.ts line ~928: if (!scope.result.isError) ctx?.reportProgress?.(4, 4, 'complete')
+    stubWorkspaceEnv();
+    // Engine stub not needed — the short-circuit fires before auditFile is called.
+    mockComputeChangedRanges.mockResolvedValue({ kind: 'no-changes' });
+
+    const calls: [number, number | undefined, string | undefined][] = [];
+    const ctx: ToolContext = {
+      reportProgress: (progress, total, message) => {
+        calls.push([progress, total, message]);
+      },
+    };
+
+    const request = makeRequest({ filePath: 'src/math.ts', diffBase: 'HEAD' });
+    const response = await handleToolCall(request, undefined, ctx);
+
+    expect(response.isError).toBeUndefined();
+    // Sandbox must not have been provisioned — we short-circuited before it.
+    expect(mockCreateSandbox).not.toHaveBeenCalled();
+    // The last call must be the complete milestone.
+    expect(calls[calls.length - 1]).toEqual([4, 4, 'complete']);
+  });
+
+  // ── (d) Milestone 4 on verify-mode terminal path ─────────────────────────
+
+  it('emits (4,4,complete) on the verify-mode terminal path', async () => {
+    // baseline arg drives verify mode: computeScope returns { kind: 'scope', baselineKeys }
+    // and the main branch emits milestone 4 at line ~1081 before formatAuditOutput.
+    stubCleanRun();
+    stubWorkspaceEnv();
+
+    const calls: [number, number | undefined, string | undefined][] = [];
+    const ctx: ToolContext = {
+      reportProgress: (progress, total, message) => {
+        calls.push([progress, total, message]);
+      },
+    };
+
+    const request = makeRequest({
+      filePath: 'src/math.ts',
+      baseline: { survivors: [{ line: 1, mutators: { ArithmeticOperator: 1 } }] },
+    });
+    const response = await handleToolCall(request, undefined, ctx);
+
+    expect(response.isError).toBeUndefined();
+    // The last call must be the complete milestone (emitted before formatAuditOutput).
+    expect(calls[calls.length - 1]).toEqual([4, 4, 'complete']);
   });
 });
