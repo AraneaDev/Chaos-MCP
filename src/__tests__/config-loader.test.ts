@@ -719,6 +719,30 @@ describe('validateConfig', () => {
   });
 });
 
+describe('phase3 config keys', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockExistsSync.mockReturnValue(true);
+  });
+
+  it('accepts suppressionsPath / runCacheTtlMs / runCacheMax', () => {
+    mockReadFileSync.mockReturnValue(
+      JSON.stringify({ suppressionsPath: '.x/sup.json', runCacheTtlMs: 1000, runCacheMax: 5 }),
+    );
+    const { config, warnings } = validateConfig('/tmp/config.json');
+    expect(config.suppressionsPath).toBe('.x/sup.json');
+    expect(config.runCacheTtlMs).toBe(1000);
+    expect(config.runCacheMax).toBe(5);
+    expect(warnings).toHaveLength(0);
+  });
+
+  it('warns on invalid runCacheMax', () => {
+    mockReadFileSync.mockReturnValue(JSON.stringify({ runCacheMax: 0 }));
+    const { warnings } = validateConfig('/tmp/config.json');
+    expect(warnings.some((w) => w.includes('runCacheMax'))).toBe(true);
+  });
+});
+
 /**
  * Mutation-driven coverage. Chaos-MCP flagged surviving mutants in the
  * KNOWN_*_KEYS sets, the boundary comparisons (`> 0`, `>= 1`, `<= 64`,
