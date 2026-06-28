@@ -208,14 +208,14 @@ export function runShell(
           // on the spawn-error object, causing every non-zero exit to be
           // reported as exit=null. Always read `err.code` and gate on its type.)
           const exitCode = typeof errnoError.code === 'number' ? errnoError.code : null;
-          const signal =
+          const procSignal =
             typeof errnoError.signal === 'string' ? (errnoError.signal as NodeJS.Signals) : null;
 
           const result: ExecResult = {
             stdout: stdoutStr,
             stderr: stderrStr,
             exit: exitCode,
-            signal,
+            signal: procSignal,
           };
 
           // ENOENT: binary not found — propagate with a clear code.
