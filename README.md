@@ -467,6 +467,60 @@ chaos-mcp [flags]
   --verbose   Enable diagnostic logging to stderr
 ```
 
+## Protocol features
+
+### Progress notifications
+
+When an MCP client includes a `progressToken` in a tool call's `_meta` field, Chaos-MCP emits `notifications/progress` events during the run. Clients that omit `progressToken` receive no notifications — there is zero overhead for clients that do not opt in.
+
+**Triage** emits one notification per file as it completes:
+
+| Field | Value |
+|-------|-------|
+| `progress` | files completed so far |
+| `total` | total files to audit |
+| `message` | `"audited X/N"` |
+
+**Audit** emits four coarse milestones:
+
+| `progress` | `total` | `message` |
+|------------|---------|-----------|
+| 1 | 4 | `"validating"` |
+| 2 | 4 | `"provisioning sandbox"` |
+| 3 | 4 | `"running mutation engine"` |
+| 4 | 4 | `"complete"` |
+
+**Estimate** does not emit progress notifications.
+
+### Cancellation
+
+Cancelling an in-flight MCP request aborts the run cleanly:
+
+- The abort signal propagates through the tool handler into `RunOptions.signal` and from there into the mutation engine subprocess, killing it immediately.
+- The sandbox is always cleaned up even if cancellation occurs mid-run.
+- The cancelled call returns `"Operation cancelled."` as a tool error rather than throwing.
+
+All three tools (`audit_code_resilience`, `triage_test_coverage`, `estimate_audit`) respect cancellation.
+
+### Resources
+
+The server exposes three static resources, discoverable via `resources/list` and readable via `resources/read`:
+
+| URI | MIME type | Contents |
+|-----|-----------|----------|
+| `chaos://languages` | `application/json` | Per-language entry: engine name, `supportsLineScope`, estimate fidelity (`"exact"` or `"approx"`), config key, and whether an auto-prebuild runs. |
+| `chaos://config-schema` | `application/json` | Every `chaos-mcp.config.json` key with its type and a short description. |
+| `chaos://capabilities` | `text/markdown` | All three tools (args summary) and the triage → audit → verify workflow loop. |
+
+### Prompts
+
+The server exposes two prompts, discoverable via `prompts/list` and retrieved via `prompts/get`:
+
+| Prompt | Required argument | Purpose |
+|--------|-------------------|---------|
+| `harden_file` | `filePath` | Returns a `user`-role message walking an agent through: optional estimate → audit → write tests for survivors → verify by `runId` → repeat until clean. |
+| `triage_changes` | `diffBase` | Returns a `user`-role message walking an agent through: triage changed files weakest-first → harden the weakest → move down the ranking until the score bar is met. |
+
 ## Development
 
 ```bash
