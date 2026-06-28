@@ -2,7 +2,15 @@
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import {
+  CallToolRequestSchema,
+  ListToolsRequestSchema,
+  ListResourcesRequestSchema,
+  ReadResourceRequestSchema,
+  ListPromptsRequestSchema,
+  GetPromptRequestSchema,
+  type GetPromptResult,
+} from '@modelcontextprotocol/sdk/types.js';
 import {
   TOOL_DEFINITION,
   TRIAGE_TOOL_DEFINITION,
@@ -11,6 +19,9 @@ import {
 import { handleToolCall } from './handler.js';
 import { handleTriageCall } from './triage-handler.js';
 import { handleEstimateCall } from './estimate-handler.js';
+import { makeToolContext } from './tool-context.js';
+import { listResources, readResource } from './resources.js';
+import { listPrompts, getPrompt } from './prompts.js';
 import { ChaosConfig } from './utils/config-loader.js';
 import { runCli } from './cli.js';
 
@@ -43,7 +54,7 @@ export async function startServer(config?: ChaosConfig): Promise<void> {
       version: APP_VERSION,
     },
     {
-      capabilities: { tools: {} },
+      capabilities: { tools: {}, resources: {}, prompts: {} },
     },
   );
 
@@ -57,17 +68,37 @@ export async function startServer(config?: ChaosConfig): Promise<void> {
     };
   });
 
+  server.setRequestHandler(ListResourcesRequestSchema, async () => ({
+    resources: listResources(),
+  }));
+
+  server.setRequestHandler(ReadResourceRequestSchema, async (request) => ({
+    contents: [readResource(request.params.uri)],
+  }));
+
+  server.setRequestHandler(ListPromptsRequestSchema, async () => ({ prompts: listPrompts() }));
+
+  server.setRequestHandler(
+    GetPromptRequestSchema,
+    async (request) =>
+      getPrompt(
+        request.params.name,
+        (request.params.arguments ?? {}) as Record<string, string>,
+      ) as unknown as GetPromptResult,
+  );
+
   /**
    * Dispatch tool calls to the appropriate handler.
    */
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
+    const ctx = makeToolContext(request, extra as unknown as Parameters<typeof makeToolContext>[1]);
     if (request.params.name === 'triage_test_coverage') {
-      return handleTriageCall(request, config);
+      return handleTriageCall(request, config, ctx);
     }
     if (request.params.name === 'estimate_audit') {
-      return handleEstimateCall(request, config);
+      return handleEstimateCall(request, config, ctx);
     }
-    return handleToolCall(request, config);
+    return handleToolCall(request, config, ctx);
   });
 
   const transport = new StdioServerTransport();
