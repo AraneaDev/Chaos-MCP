@@ -62,10 +62,16 @@ function heuristicEstimate(opts: EstimateOptions, basisSuffix = ''): EstimateRes
 
 /** Count mutants from `cargo mutants --list` output (one mutant per non-empty line). */
 function countCargoMutants(stdout: string): number {
-  return stdout
+  const lines = stdout
     .split('\n')
     .map((l) => l.trim())
-    .filter((l) => l.length > 0).length;
+    .filter((l) => l.length > 0);
+  // cargo-mutants --list prints one mutant per line as "path:line:col: description".
+  // Match on the :line:col: shape (not anchored, so Windows-style drive letters and
+  // leading path segments are fine). Fall back to all non-empty lines if NOTHING
+  // matches — never under-report an "exact" count to 0 due to an unexpected format.
+  const entries = lines.filter((l) => /:\d+:\d+:/.test(l));
+  return entries.length > 0 ? entries.length : lines.length;
 }
 
 /**

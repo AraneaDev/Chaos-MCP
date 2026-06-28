@@ -62,4 +62,58 @@ describe('estimateAudit', () => {
     expect(r.fidelity).toBe('approx');
     expect(r.basis).toMatch(/not installed|heuristic/);
   });
+
+  it('falls back to heuristic when rust has no workDir (defensive path)', async () => {
+    const r = await estimateAudit({
+      absFile: __filename,
+      relFile: 'src/x.rs',
+      projectType: 'rust',
+      // no workDir
+    });
+    expect(r.fidelity).toBe('approx');
+    expect(r.basis).toContain('no sandbox');
+  });
+
+  it('rethrows non-startup errors from invokeMutationTool', async () => {
+    mockInvoke.mockRejectedValueOnce(new Error('boom'));
+    await expect(
+      estimateAudit({
+        absFile: __filename,
+        relFile: 'src/x.rs',
+        projectType: 'rust',
+        workDir: '/sandbox',
+      }),
+    ).rejects.toThrow('boom');
+  });
+
+  it('excludes summary lines when counting cargo-mutants output (Fix 1)', async () => {
+    mockInvoke.mockResolvedValueOnce({
+      stdout:
+        'src/lib.rs:1:1: replace foo -> bar\nsrc/lib.rs:2:3: replace a + b with a - b\nFound 2 mutants in 1 file.\n',
+      stderr: '',
+    } as never);
+    const r = await estimateAudit({
+      absFile: '/ws/src/lib.rs',
+      relFile: 'src/lib.rs',
+      projectType: 'rust',
+      workDir: '/sandbox',
+    });
+    expect(r.fidelity).toBe('exact');
+    expect(r.mutants).toBe(2);
+  });
+
+  it('falls back to all non-empty lines when no :n:n: entries match', async () => {
+    mockInvoke.mockResolvedValueOnce({
+      stdout: 'some line\nanother line\n',
+      stderr: '',
+    } as never);
+    const r = await estimateAudit({
+      absFile: '/ws/src/lib.rs',
+      relFile: 'src/lib.rs',
+      projectType: 'rust',
+      workDir: '/sandbox',
+    });
+    expect(r.fidelity).toBe('exact');
+    expect(r.mutants).toBe(2);
+  });
 });
