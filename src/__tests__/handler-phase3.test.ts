@@ -97,6 +97,28 @@ function resultWithSurvivor(): MutationResult {
   };
 }
 
+function resultWithTwoSurvivors(): MutationResult {
+  return {
+    target: FILE,
+    totalMutants: 5,
+    killed: 3,
+    survived: 2,
+    mutationScore: '60.00%',
+    vulnerabilities: [
+      {
+        line: 7,
+        mutator: 'ConditionalExpression',
+        description: 'Survived: changed condition',
+      },
+      {
+        line: 8,
+        mutator: 'ArithmeticOperator',
+        description: 'Survived: arithmetic operator change',
+      },
+    ],
+  };
+}
+
 describe('phase3 run-cache integration seam', () => {
   it('a saved run is retrievable by the id it returns', () => {
     const id = saveRun({
@@ -239,14 +261,20 @@ describe('handleToolCall phase3 wiring', () => {
     // must cause that mutant to vanish from the delta entirely — neither reported as
     // stillSurviving nor nowKilled. Both the baseline keys and the re-run are
     // filtered by the suppression set before computeVerifyDelta (A9).
+    // Strengthened: include a non-suppressed mutant to ensure filtering doesn't corrupt
+    // the entire result — this catches misimplementations that filter neither, only
+    // baseline, or only re-run.
     addSuppressions(WS, FILE, [{ line: 7, mutator: 'ConditionalExpression' }], supPath);
     const runId = saveRun({
       file: FILE,
       projectType: 'typescript',
-      survivors: [{ line: 7, mutators: { ConditionalExpression: 1 } }],
+      survivors: [
+        { line: 7, mutators: { ConditionalExpression: 1 } },
+        { line: 8, mutators: { ArithmeticOperator: 1 } },
+      ],
       noCoverage: [],
     });
-    stubEngine(resultWithSurvivor()); // re-run still surfaces the line-7 survivor
+    stubEngine(resultWithTwoSurvivors()); // re-run still surfaces both survivors
     const res = await handleToolCall(makeRequest({ filePath: FILE, runId }), {
       suppressionsPath: supPath,
     });
@@ -256,11 +284,13 @@ describe('handleToolCall phase3 wiring', () => {
     const delta = JSON.parse(res.content[0].text as string) as {
       killedCount: number;
       stillSurviving: { line: number; mutator: string }[];
+      nowKilled: { line: number; mutator: string }[];
     };
-    // Suppressed → excluded from both stillSurviving and nowKilled.
+    // Suppressed (line 7) → excluded from both stillSurviving and nowKilled.
+    // Non-suppressed (line 8) → retained in stillSurviving.
     expect(delta.killedCount).toBe(0);
-    expect(delta.stillSurviving).not.toContainEqual({ line: 7, mutator: 'ConditionalExpression' });
-    expect(delta.stillSurviving).toEqual([]);
+    expect(delta.stillSurviving).toEqual([{ line: 8, mutator: 'ArithmeticOperator' }]);
+    expect(delta.nowKilled).toEqual([]);
   });
 });
 
