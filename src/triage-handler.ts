@@ -21,6 +21,7 @@ import { mapPool } from './utils/pool.js';
 import { buildResultPayload } from './format.js';
 import type { ChaosConfig } from './utils/config-loader.js';
 import type { MutationResult } from './engines/base.js';
+import type { ToolContext } from './tool-context.js';
 import { saveRun } from './utils/run-cache.js';
 import { loadSuppressions, applySuppressions } from './utils/suppression.js';
 
@@ -45,6 +46,7 @@ export function resolveStrykerConcurrency(poolSize: number, cpuCount: number): n
 export async function handleTriageCall(
   request: CallToolRequest,
   config?: ChaosConfig,
+  ctx?: ToolContext,
 ): Promise<CallToolResult> {
   const args = request.params.arguments ?? {};
   const cfg = config ?? {};
@@ -133,6 +135,9 @@ export async function handleTriageCall(
       ? (args.survivorsPerFile as number)
       : 0;
 
+  // Early abort before hitting the network (git) or filesystem (discovery). (Task 6)
+  if (ctx?.signal?.aborted) return triageError('Operation cancelled.');
+
   let files: string[];
   let discovered: number;
   let skipped: number;
@@ -182,10 +187,19 @@ export async function handleTriageCall(
   // the key used by audit_code_resilience (Task 7 / Key Contract).
   const suppressionCache = new Map<string, Map<string, Set<string>>>();
 
+  // Per-file progress tracking (Task 6). Single-threaded JS: `++done` over the
+  // concurrent pool is race-free (completions arrive one event-loop turn at a time).
+  let done = 0;
+  const total = files.length;
+
   type AuditOutcome = { row: TriageRow } | { error: TriageError };
 
   const auditOne = async (file: string): Promise<AuditOutcome> => {
     try {
+      // Skip not-yet-started files quickly when already cancelled. (Task 6)
+      if (ctx?.signal?.aborted) {
+        return { error: { file, error: 'Operation cancelled.' } };
+      }
       const projectType = detectProjectType(file);
       if (projectType === 'unsupported') {
         return { error: { file, error: `Unsupported file type for ${file}` } };
@@ -250,6 +264,7 @@ export async function handleTriageCall(
           workDir: sandbox.workDir,
           prebuildCmd,
           lineRanges,
+          signal: ctx?.signal, // Task 6: thread abort signal so in-flight subprocesses are killed
         });
       } finally {
         sandbox.cleanup();
@@ -315,8 +330,15 @@ export async function handleTriageCall(
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       return { error: { file, error: message } };
+    } finally {
+      // Advance progress counter in finally so even errored files are counted. (Task 6)
+      ctx?.reportProgress?.(++done, total, `audited ${done}/${total}`);
     }
   };
+
+  // Second abort check: skip the pool entirely if already cancelled before we start.
+  // (Task 6 — mirrors the pre-discovery check above.)
+  if (ctx?.signal?.aborted) return triageError('Operation cancelled.');
 
   const outcomes = await mapPool(files, poolSize, (file) => auditOne(file));
   const auditedRows: TriageRow[] = [];
