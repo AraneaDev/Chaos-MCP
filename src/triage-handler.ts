@@ -172,10 +172,11 @@ export async function handleTriageCall(
 
   const errors: TriageError[] = [];
 
-  // Load suppressions once here — not per-file inside the pool — to avoid
-  // repeated disk I/O. The map is keyed by workspace-relative path (relFromRoot),
-  // matching the key used by audit_code_resilience (Task 7 / Key Contract).
-  const suppressionMap = loadSuppressions(rootCwd, cfg.suppressionsPath);
+  // Load suppressions per workspaceRoot (memoized) — not once from rootCwd — so
+  // that monorepo packages whose workspaceRoot differs from rootCwd read the right
+  // suppressions file. Keys are workspace-relative paths (relFromRoot), matching
+  // the key used by audit_code_resilience (Task 7 / Key Contract).
+  const suppressionCache = new Map<string, Map<string, Set<string>>>();
 
   type AuditOutcome = { row: TriageRow } | { error: TriageError };
 
@@ -186,6 +187,11 @@ export async function handleTriageCall(
         return { error: { file, error: `Unsupported file type for ${file}` } };
       }
       const env = detectEnvironment(file);
+      let suppressionMap = suppressionCache.get(env.workspaceRoot);
+      if (suppressionMap === undefined) {
+        suppressionMap = loadSuppressions(env.workspaceRoot, cfg.suppressionsPath);
+        suppressionCache.set(env.workspaceRoot, suppressionMap);
+      }
       const engine = makeEngine(projectType);
 
       const resolvedFile = resolve(rootCwd, file);

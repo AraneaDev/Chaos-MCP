@@ -25,11 +25,17 @@ vi.mock('../handler.js', async () => {
   const actual = await vi.importActual<typeof import('../handler.js')>('../handler.js');
   return { ...actual, auditFile: vi.fn(), makeEngine: vi.fn(() => ({ run: vi.fn() })) };
 });
+vi.mock('../utils/suppression.js', async () => {
+  const actual =
+    await vi.importActual<typeof import('../utils/suppression.js')>('../utils/suppression.js');
+  return { ...actual, loadSuppressions: vi.fn(() => new Map()) };
+});
 
 import { discoverFiles, discoverChangedFiles } from '../triage.js';
 import { detectEnvironment } from '../utils/project-detector.js';
 import { auditFile } from '../handler.js';
 import { listChangedFiles, computeChangedRanges } from '../utils/git-diff.js';
+import { loadSuppressions } from '../utils/suppression.js';
 import { handleTriageCall } from '../triage-handler.js';
 
 const mockDiscover = vi.mocked(discoverFiles);
@@ -38,6 +44,7 @@ const mockDetectEnv = vi.mocked(detectEnvironment);
 const mockAuditFile = vi.mocked(auditFile);
 const mockListChangedFiles = vi.mocked(listChangedFiles);
 const mockComputeChangedRanges = vi.mocked(computeChangedRanges);
+const mockLoadSuppressions = vi.mocked(loadSuppressions);
 
 const req = (args: Record<string, unknown>): CallToolRequest =>
   ({
@@ -419,6 +426,42 @@ describe('handleTriageCall', () => {
     const row = parsed.ranking[0];
     expect(row.survivors).toBeUndefined();
     expect(row.worstSeverity).toBeUndefined();
+  });
+
+  it('filters suppressed mutants and reflects suppressedCount in the row', async () => {
+    // Validates the load→filter seam: a suppression entry matching a surviving mutant
+    // must be removed from the result and reflected in row.suppressedCount.
+    // loadSuppressions is stubbed to return a map keyed by the workspace-relative path
+    // (tsEnv.workspaceRoot = process.cwd(), file = 'src/foo.ts' → key 'src/foo.ts').
+    const mrWithSurvivor = {
+      target: 'src/foo.ts',
+      totalMutants: 5,
+      killed: 4,
+      survived: 1,
+      mutationScore: '80.00%',
+      vulnerabilities: [
+        { line: 10, mutator: 'ConditionalExpression', description: 'a conditional' },
+      ],
+    };
+    mockDiscover.mockReturnValue({ files: ['src/foo.ts'], discovered: 1, skipped: 0 });
+    mockAuditFile.mockResolvedValue(mrWithSurvivor);
+
+    // Stub suppressions: the surviving mutant at line 10 is an equivalent mutant.
+    const suppMap = new Map<string, Set<string>>();
+    suppMap.set('src/foo.ts', new Set(['10 ConditionalExpression']));
+    mockLoadSuppressions.mockReturnValueOnce(suppMap);
+
+    const res = await handleTriageCall(req({ paths: ['src/foo.ts'], survivorsPerFile: 10 }));
+    const parsed = JSON.parse((res.content[0] as { text: string }).text);
+    const row = parsed.ranking[0];
+
+    // The suppressed mutant must be counted and the survivor absent from the row.
+    expect(row.suppressedCount).toBe(1);
+    // survived drops to 0 after suppression, so survivorsPerFile enrichment has
+    // nothing to inline — row.survivors must be absent.
+    expect(row.survivors).toBeUndefined();
+    // loadSuppressions was called with the per-file workspaceRoot, not rootCwd.
+    expect(mockLoadSuppressions).toHaveBeenCalledWith(tsEnv.workspaceRoot, undefined);
   });
 });
 
