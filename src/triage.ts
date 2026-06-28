@@ -15,6 +15,10 @@ export interface TriageRow {
   worstSeverity?: Severity;
   survivors?: LineGroup[];
   noCoverageGroups?: LineGroup[];
+  /** Cached run id — pass to audit_code_resilience as `runId` to verify survivors. */
+  runId?: string;
+  /** Number of equivalent mutants suppressed for this file (from the suppressions list). */
+  suppressedCount?: number;
 }
 
 export interface TriageError {
