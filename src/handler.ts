@@ -1,6 +1,7 @@
 import { resolve, isAbsolute, relative, join } from 'path';
 import { existsSync, realpathSync, readFileSync } from 'fs';
 import type { CallToolRequest, CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import type { ToolContext } from './tool-context.js';
 import { BaseEngine, RunOptions, MutationResult } from './engines/base.js';
 import { ENGINE_REGISTRY, type SupportedProjectType } from './engines/registry.js';
 import { detectProjectType, detectEnvironment, EnvironmentInfo } from './utils/project-detector.js';
@@ -527,6 +528,8 @@ export interface AuditFileInput {
   workDir: string;
   prebuildCmd: string | null;
   lineRanges?: { start: number; end: number }[];
+  /** Abort signal forwarded from the MCP request context; kills in-flight subprocesses. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -541,6 +544,9 @@ export async function auditFile(input: AuditFileInput): Promise<MutationResult> 
     input;
   const runOptions = buildRunOptions(args, config, env, workDir, projectType);
   if (lineRanges) runOptions.lineRanges = lineRanges;
+  // Thread the abort signal from the MCP request context into the engine run so
+  // in-flight subprocesses are killed when the caller cancels.
+  runOptions.signal = input.signal;
 
   if (prebuildCmd !== null) {
     if (isVerbose()) {
@@ -817,14 +823,23 @@ function formatAuditOutput(
  * @param request - The MCP tool call request.
  * @param config - Optional ChaosConfig loaded from a config file. Tool call arguments
  *   override config defaults.
+ * @param ctx - Optional per-request context: abort signal + progress reporter.
+ *   When omitted (existing callers), all ctx-gated behaviour is no-op.
  */
 export async function handleToolCall(
   request: CallToolRequest,
   config?: ChaosConfig,
+  ctx?: ToolContext,
 ): Promise<CallToolResult> {
   if (request.params.name !== 'audit_code_resilience') {
     throw new Error(`Method unrecognized: ${request.params.name}`);
   }
+
+  // Abort short-circuit #1 — before any validation work.
+  if (ctx?.signal?.aborted) return toolError('Operation cancelled.');
+
+  // Milestone 1: signal that argument validation is beginning.
+  ctx?.reportProgress?.(1, 4, 'validating');
 
   const rawFilePath = request.params.arguments?.filePath;
 
@@ -908,8 +923,18 @@ export async function handleToolCall(
       config ?? {},
       relFromRoot,
     );
-    if (scope.kind === 'result') return scope.result;
+    if (scope.kind === 'result') {
+      // Emit complete only on successful short-circuits (no-changes = no isError).
+      if (!scope.result.isError) ctx?.reportProgress?.(4, 4, 'complete');
+      return scope.result;
+    }
     const { diffRanges, scopeNote, baselineKeys } = scope;
+
+    // Abort short-circuit #2 — after scope resolution, before sandbox provisioning.
+    if (ctx?.signal?.aborted) return toolError('Operation cancelled.');
+
+    // Milestone 2: sandbox copy is about to be provisioned.
+    ctx?.reportProgress?.(2, 4, 'provisioning sandbox');
 
     // Provision a sandbox so mutation runs never touch the real workspace tree.
     let sandbox;
@@ -954,6 +979,13 @@ export async function handleToolCall(
         }
       }
 
+      // Abort short-circuit #3 — after prebuild gate, before engine run.
+      // The sandbox finally-block still cleans up even when we return here.
+      if (ctx?.signal?.aborted) return toolError('Operation cancelled.');
+
+      // Milestone 3: mutation engine is about to start.
+      ctx?.reportProgress?.(3, 4, 'running mutation engine');
+
       let auditResults: MutationResult;
       try {
         auditResults = await auditFile({
@@ -966,6 +998,7 @@ export async function handleToolCall(
           workDir: sandbox.workDir,
           prebuildCmd,
           lineRanges: diffRanges,
+          signal: ctx?.signal,
         });
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error);
@@ -1044,6 +1077,8 @@ export async function handleToolCall(
       }
 
       const enrichCtx = buildEnrichContext(args, resolvedFile, projectType);
+      // Milestone 4: every successful terminal path reports complete.
+      ctx?.reportProgress?.(4, 4, 'complete');
       return formatAuditOutput(
         auditResults,
         args,
