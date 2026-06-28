@@ -87,8 +87,8 @@ export function makeToolContext(
   Check `ctx?.signal?.aborted` at phase boundaries — **before** the expensive sandbox copy and
   **before** the engine run — to short-circuit with a cancelled result without wasted work.
 - **On abort:** the subprocess is killed, the per-run `finally` still removes the sandbox (no leak),
-  and the handler returns a clean tool result `"Operation cancelled."` (a normal result, not
-  `isError`; harmless if the client already discarded the request). Triage marks remaining files as
+  and the handler returns `toolError('Operation cancelled.')` (`isError: true`; a clean, expected
+  outcome harmless if the client already discarded the request). Triage marks remaining files as
   not-audited and returns what completed.
 
 ## Component 4 — Resources (#14, `src/resources.ts`)
@@ -140,7 +140,7 @@ export function getPrompt(name: string, args: Record<string, string>): { descrip
 
 - No `progressToken` → `reportProgress` undefined → all progress calls no-op.
 - `sendNotification` rejection → swallowed (progress is best-effort).
-- Abort → subprocess killed, sandbox cleaned in `finally`, cancelled result returned; never a leak.
+- Abort → subprocess killed, sandbox cleaned in `finally`, `toolError('Operation cancelled.')` returned (`isError: true`); never a leak.
 - Unknown resource URI / unknown prompt name / missing required prompt arg → McpError.
 - Existing tool error paths unchanged.
 

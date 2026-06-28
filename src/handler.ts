@@ -1004,6 +1004,7 @@ export async function handleToolCall(
         const message = error instanceof Error ? error.message : String(error);
         // Prebuild failures keep their specific tool error; engine errors
         // propagate to the outer catch (unchanged behavior).
+        // Note: abort firing during engine run surfaces as "Chaos Engine Halted" (not the phase-boundary "Operation cancelled." shape) — this is intentional.
         if (message.startsWith('Prebuild command failed in sandbox:')) {
           return toolError(message);
         }
