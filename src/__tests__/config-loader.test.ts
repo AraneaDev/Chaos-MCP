@@ -741,6 +741,18 @@ describe('phase3 config keys', () => {
     const { warnings } = validateConfig('/tmp/config.json');
     expect(warnings.some((w) => w.includes('runCacheMax'))).toBe(true);
   });
+
+  it('warns on invalid suppressionsPath', () => {
+    mockReadFileSync.mockReturnValue(JSON.stringify({ suppressionsPath: '' }));
+    const { warnings } = validateConfig('/tmp/config.json');
+    expect(warnings.some((w) => w.includes('suppressionsPath'))).toBe(true);
+  });
+
+  it('warns on invalid runCacheTtlMs', () => {
+    mockReadFileSync.mockReturnValue(JSON.stringify({ runCacheTtlMs: 0 }));
+    const { warnings } = validateConfig('/tmp/config.json');
+    expect(warnings.some((w) => w.includes('runCacheTtlMs'))).toBe(true);
+  });
 });
 
 /**
@@ -770,6 +782,9 @@ describe('config-loader mutation hardening', () => {
       mutatorAllowlist: ['a'],
       mutatorDenylist: ['b'],
       perMutantTimeoutMs: 5000,
+      suppressionsPath: '.chaos-mcp/suppressions.json',
+      runCacheTtlMs: 1000,
+      runCacheMax: 10,
       stryker: { timeoutMs: 1 },
       mutmut: { timeoutMs: 1 },
       go: { timeoutMs: 1 },
