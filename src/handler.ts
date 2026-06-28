@@ -12,6 +12,13 @@ import { formatResultAsText, buildResultPayload, type EnrichContext } from './fo
 import type { Severity } from './enrich.js';
 import { suggestTestFile } from './test-file.js';
 import { computeChangedRanges } from './utils/git-diff.js';
+import { saveRun, loadRun } from './utils/run-cache.js';
+import {
+  loadSuppressions,
+  addSuppressions,
+  removeSuppressions,
+  applySuppressions,
+} from './utils/suppression.js';
 import {
   parseBaseline,
   baselineLines,
@@ -588,6 +595,8 @@ async function computeScope(
   targetFile: string,
   env: EnvironmentInfo,
   projectType: SupportedProjectType,
+  cfg: ChaosConfig,
+  resolvedFile: string,
 ): Promise<ScopeResolution> {
   let diffRanges: { start: number; end: number }[] | undefined;
   let scopeNote: string | undefined;
@@ -666,6 +675,37 @@ async function computeScope(
     }
   }
 
+  // ── Verify mode by cached id (A3-by-runId). Mutually exclusive with
+  // baseline/diffBase/lineScope (enforced by validateRunIdArg), so this never
+  // collides with the diff path above. Loads the prior run's survivors from the
+  // run cache and re-runs the existing verify path against them. ──
+  if (typeof earlyArgs.runId === 'string' && earlyArgs.runId.trim().length > 0) {
+    const cached = loadRun(earlyArgs.runId, {
+      ttlMs: cfg.runCacheTtlMs,
+      max: cfg.runCacheMax,
+    });
+    if (!cached) {
+      return {
+        kind: 'result',
+        result: toolError(
+          `runId "${earlyArgs.runId}" not found or expired; re-run audit to get a fresh runId.`,
+        ),
+      };
+    }
+    // C2 boundary: the cached run is bound to the file it audited; refuse to
+    // verify it against a different target.
+    if (cached.file !== resolvedFile) {
+      return {
+        kind: 'result',
+        result: toolError(
+          `runId "${earlyArgs.runId}" was for ${cached.file}, not ${resolvedFile}; verify against the file it audited.`,
+        ),
+      };
+    }
+    baselineKeys = parseBaseline({ survivors: cached.survivors, noCoverage: cached.noCoverage });
+    diffRanges = baselineLines(baselineKeys).map((l) => ({ start: l, end: l }));
+  }
+
   return { kind: 'scope', diffRanges, scopeNote, baselineKeys };
 }
 
@@ -687,6 +727,8 @@ function formatAuditOutput(
   enrichCtx: EnrichContext | undefined,
   cfg: ChaosConfig,
   env: EnvironmentInfo,
+  suppressedCount: number,
+  runId: string | undefined,
 ): CallToolResult {
   if (baselineKeys) {
     // verify-mode delta keeps its own formatters; enrichment is not applied here.
@@ -713,6 +755,8 @@ function formatAuditOutput(
     ...enrichOpts,
     suggestedTestFile: suggestion,
     ignoredOptions: ignored.length > 0 ? ignored : undefined,
+    runId,
+    suppressedCount,
   });
 
   const text =
@@ -824,7 +868,14 @@ export async function handleToolCall(
 
     // Resolve the line scope (diff-aware A2 + verify-mode A3) on the REAL tree
     // before the sandbox copy, so a "no changes" diff can short-circuit.
-    const scope = await computeScope(earlyArgs, targetFile, env, projectType);
+    const scope = await computeScope(
+      earlyArgs,
+      targetFile,
+      env,
+      projectType,
+      config ?? {},
+      resolvedFile,
+    );
     if (scope.kind === 'result') return scope.result;
     const { diffRanges, scopeNote, baselineKeys } = scope;
 
@@ -894,6 +945,53 @@ export async function handleToolCall(
         throw error;
       }
       if (scopeNote) auditResults.scopeNote = scopeNote;
+
+      // Suppression writes (explicit user action) happen first so the same
+      // call reflects them. Then auto-filter equivalent mutants from the result.
+      // C2 boundary: writes land under env.workspaceRoot (or cfg.suppressionsPath),
+      // keyed by the workspace-validated resolvedFile — never outside it.
+      const wsRoot = env.workspaceRoot;
+      const supPath = cfg.suppressionsPath;
+      if (Array.isArray(args.suppress) && args.suppress.length > 0) {
+        addSuppressions(
+          wsRoot,
+          resolvedFile,
+          args.suppress as { line: number; mutator: string; reason?: string }[],
+          supPath,
+        );
+      }
+      if (Array.isArray(args.unsuppress) && args.unsuppress.length > 0) {
+        removeSuppressions(
+          wsRoot,
+          resolvedFile,
+          args.unsuppress as { line: number; mutator: string }[],
+          supPath,
+        );
+      }
+      const suppressed = loadSuppressions(wsRoot, supPath).get(resolvedFile);
+      const filtered = applySuppressions(auditResults, suppressed);
+      auditResults = filtered.result;
+
+      // Mint a runId for non-verify runs so the caller can verify later by id.
+      // A cache failure is non-fatal: omit the runId rather than fail the audit.
+      let mintedRunId: string | undefined;
+      if (!baselineKeys) {
+        try {
+          const compact = buildResultPayload(auditResults, {});
+          mintedRunId = saveRun(
+            {
+              file: resolvedFile,
+              projectType,
+              survivors: compact.survivors.map((g) => ({ line: g.line, mutators: g.mutators })),
+              noCoverage: compact.noCoverage.map((g) => ({ line: g.line, mutators: g.mutators })),
+            },
+            { ttlMs: cfg.runCacheTtlMs, max: cfg.runCacheMax },
+          );
+        } catch {
+          mintedRunId = undefined; // cache failure is non-fatal; omit runId
+        }
+      }
+
       const enrichCtx = buildEnrichContext(args, resolvedFile, projectType);
       return formatAuditOutput(
         auditResults,
@@ -904,6 +1002,8 @@ export async function handleToolCall(
         enrichCtx,
         cfg,
         env,
+        filtered.suppressedCount,
+        mintedRunId,
       );
     } finally {
       // Always clean up the sandbox, even if the engine threw
