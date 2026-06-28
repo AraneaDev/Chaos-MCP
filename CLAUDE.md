@@ -34,8 +34,8 @@ npm run format:check       # prettier --check (format to write)
    - Re-anchor the target path to `env.workspaceRoot` (matters in monorepos where the root is a subdir of cwd).
    - `validateToolArgs` runs an **ordered list of per-field validators** (`TOOL_ARG_VALIDATORS`) — strict checks the coarse JSON schema can't express. Runs **before** the sandbox copy so bad input is rejected for free.
    - `computeScope` resolves line scoping on the **real tree** (before the expensive copy) from `diffBase` (A2, diff-aware), `baseline` (A3, verify mode), or `runId` (verify by cached id, loaded via `loadRun` before the sandbox) — mutually exclusive. A "no changes" diff short-circuits with a synthetic 100% result; no sandbox is provisioned. Unknown/expired `runId` errors here before any sandbox is created.
-   - `suppress`/`unsuppress` entries write to the persistent suppression list (`suppressionsPath`) before the result is returned; `applySuppressions` then strips suppressed mutants from the result, removes them from the score denominator, and reports the count as `suppressedCount` in the output.
    - `createSandbox` copies the workspace to a tmpdir, then `auditFile` builds `RunOptions`, optionally runs the (gated) prebuild, and calls `engine.run`. The sandbox is **always** cleaned up in a `finally`.
+   - Post-run, `suppress`/`unsuppress` entries write to `suppressionsPath`; `applySuppressions` then filters the result and adjusts the score (`suppressedCount` in output).
    - `formatAuditOutput` renders standard vs. verify-mode output and appends a note listing any StrykerJS-only options the resolved engine ignored.
 2. **`triage-handler.ts` / `triage.ts`** (the `triage_test_coverage` path) walks a tree (`discoverFiles`), audits each file, and `rankResults` sorts weakest-first (score asc, survived desc, file asc).
 
