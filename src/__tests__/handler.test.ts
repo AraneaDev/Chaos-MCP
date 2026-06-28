@@ -3382,4 +3382,13 @@ describe('phase3 validators', () => {
     );
     expect(errText({ filePath: 'a.ts', suppress: 'nope' })).toContain('suppress');
   });
+  it('rejects empty suppress array', () => {
+    expect(errText({ filePath: 'a.ts', suppress: [] })).toContain('suppress');
+  });
+  it('rejects malformed unsuppress entries', () => {
+    expect(errText({ filePath: 'a.ts', unsuppress: [{ line: 0, mutator: 'X' }] })).toContain(
+      'unsuppress',
+    );
+    expect(errText({ filePath: 'a.ts', unsuppress: 'nope' })).toContain('unsuppress');
+  });
 });

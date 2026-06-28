@@ -275,7 +275,7 @@ function validateRunIdArg(args: ToolArgs): string | null {
   return null;
 }
 
-/** Shared shape check for suppress/unsuppress arrays. `field` names the arg in errors. */
+/** Shared shape validator for suppress/unsuppress arrays; `field` names the arg in errors. */
 function validateMutantKeyArray(
   value: unknown,
   field: string,
@@ -303,10 +303,12 @@ function validateMutantKeyArray(
   return null;
 }
 
+/** suppress: non-empty array of { line >= 1, mutator, reason? } equivalent-mutant keys. */
 function validateSuppressArg(args: ToolArgs): string | null {
   return validateMutantKeyArray(args.suppress, 'suppress', true);
 }
 
+/** unsuppress: non-empty array of { line >= 1, mutator } equivalent-mutant keys. */
 function validateUnsuppressArg(args: ToolArgs): string | null {
   return validateMutantKeyArray(args.unsuppress, 'unsuppress', false);
 }
