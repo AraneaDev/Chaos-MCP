@@ -56,7 +56,6 @@ const mockCreateSandbox = vi.mocked(createSandbox);
 
 const WS = '/workspace';
 const FILE = 'src/math.ts';
-const RESOLVED = `${WS}/${FILE}`;
 
 function makeRequest(args: Record<string, unknown>): CallToolRequest {
   return { method: 'tools/call', params: { name: 'audit_code_resilience', arguments: args } };
@@ -141,13 +140,34 @@ describe('handleToolCall phase3 wiring', () => {
     const runId = sc.runId as string;
     expect(typeof runId).toBe('string');
     const cached = loadRun(runId);
-    expect(cached?.file).toBe(RESOLVED);
+    // Keyed by the workspace-relative path (relative(workspaceRoot, resolvedFile)),
+    // which equals FILE here since cwd === workspaceRoot.
+    expect(cached?.file).toBe(FILE);
     expect(cached?.survivors[0]).toMatchObject({ line: 7 });
+  });
+
+  it('keys the run-cache by the workspace-relative path when cwd differs from workspaceRoot', async () => {
+    // workspaceRoot is a subdir of cwd (monorepo). The cached `file` must be
+    // relative to workspaceRoot, NOT the absolute resolvedFile — this is where
+    // the absolute-vs-relative bug manifested (and where triage keys must agree).
+    const subRoot = `${WS}/packages/app`;
+    mockDetectEnv.mockReturnValue({
+      projectType: 'typescript',
+      testRunner: 'vitest',
+      detectedRunner: 'vitest',
+      workspaceRoot: subRoot,
+    });
+    stubEngine(resultWithSurvivor());
+    const res = await handleToolCall(makeRequest({ filePath: 'packages/app/src/math.ts' }));
+    expect(res.isError).toBeUndefined();
+    const sc = res.structuredContent as Record<string, unknown>;
+    const cached = loadRun(sc.runId as string);
+    expect(cached?.file).toBe('src/math.ts');
   });
 
   it('does NOT mint a runId on a verify-by-runId run', async () => {
     const runId = saveRun({
-      file: RESOLVED,
+      file: FILE, // workspace-relative key (matches relative(workspaceRoot, resolvedFile))
       projectType: 'typescript',
       survivors: [{ line: 7, mutators: { ConditionalExpression: 1 } }],
       noCoverage: [],
@@ -173,7 +193,7 @@ describe('handleToolCall phase3 wiring', () => {
 
   it('rejects a runId whose cached file does not match the target', async () => {
     const runId = saveRun({
-      file: `${WS}/src/other.ts`,
+      file: 'src/other.ts', // a different workspace-relative file than the target
       projectType: 'typescript',
       survivors: [{ line: 1, mutators: { Cond: 1 } }],
       noCoverage: [],
@@ -185,7 +205,7 @@ describe('handleToolCall phase3 wiring', () => {
   });
 
   it('filters suppressed mutants out of the result and reports suppressedCount', async () => {
-    addSuppressions(WS, RESOLVED, [{ line: 7, mutator: 'ConditionalExpression' }], supPath);
+    addSuppressions(WS, FILE, [{ line: 7, mutator: 'ConditionalExpression' }], supPath);
     stubEngine(resultWithSurvivor());
     const res = await handleToolCall(makeRequest({ filePath: FILE }), {
       suppressionsPath: supPath,
@@ -208,7 +228,35 @@ describe('handleToolCall phase3 wiring', () => {
     expect(res.isError).toBeUndefined();
     const sc = res.structuredContent as Record<string, unknown>;
     expect(sc.suppressedCount).toBe(1);
-    const persisted = loadSuppressions(WS, supPath).get(RESOLVED);
+    const persisted = loadSuppressions(WS, supPath).get(FILE);
     expect(persisted?.has('7 ConditionalExpression')).toBe(true);
+  });
+
+  it('does NOT filter the verify-mode re-run by an existing suppression (Fix 2)', async () => {
+    // A suppression exists for the same (line, mutator) that the baseline tracks.
+    // In verify mode the filter is owned by Task 9: applying it here would drop
+    // the survivor from the re-run only, making computeVerifyDelta misreport it
+    // as "now killed". The re-run input must stay UNFILTERED.
+    addSuppressions(WS, FILE, [{ line: 7, mutator: 'ConditionalExpression' }], supPath);
+    const runId = saveRun({
+      file: FILE,
+      projectType: 'typescript',
+      survivors: [{ line: 7, mutators: { ConditionalExpression: 1 } }],
+      noCoverage: [],
+    });
+    stubEngine(resultWithSurvivor()); // re-run still surfaces the line-7 survivor
+    const res = await handleToolCall(makeRequest({ filePath: FILE, runId }), {
+      suppressionsPath: supPath,
+    });
+    expect(res.isError).toBeUndefined();
+    // Verify mode keeps its own formatter (no structuredContent).
+    expect(res.structuredContent).toBeUndefined();
+    const delta = JSON.parse(res.content[0].text as string) as {
+      killedCount: number;
+      stillSurviving: { line: number; mutator: string }[];
+    };
+    // Unfiltered → the mutant is still surviving, NOT reported as now-killed.
+    expect(delta.killedCount).toBe(0);
+    expect(delta.stillSurviving).toContainEqual({ line: 7, mutator: 'ConditionalExpression' });
   });
 });

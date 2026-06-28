@@ -596,7 +596,7 @@ async function computeScope(
   env: EnvironmentInfo,
   projectType: SupportedProjectType,
   cfg: ChaosConfig,
-  resolvedFile: string,
+  relFile: string,
 ): Promise<ScopeResolution> {
   let diffRanges: { start: number; end: number }[] | undefined;
   let scopeNote: string | undefined;
@@ -693,17 +693,23 @@ async function computeScope(
       };
     }
     // C2 boundary: the cached run is bound to the file it audited; refuse to
-    // verify it against a different target.
-    if (cached.file !== resolvedFile) {
+    // verify it against a different target. The cached `file` is the
+    // workspace-relative key (same expression triage uses), so compare against
+    // `relFile`, not the absolute path.
+    if (cached.file !== relFile) {
       return {
         kind: 'result',
         result: toolError(
-          `runId "${earlyArgs.runId}" was for ${cached.file}, not ${resolvedFile}; verify against the file it audited.`,
+          `runId "${earlyArgs.runId}" was for ${cached.file}, not ${relFile}; verify against the file it audited.`,
         ),
       };
     }
     baselineKeys = parseBaseline({ survivors: cached.survivors, noCoverage: cached.noCoverage });
-    diffRanges = baselineLines(baselineKeys).map((l) => ({ start: l, end: l }));
+    // Mirror the baseline branch: only scope to lines on engines that support it
+    // (TS only); others run whole-file then filter (Fix 3 — consistency).
+    if (ENGINE_REGISTRY[projectType].supportsLineScope) {
+      diffRanges = baselineLines(baselineKeys).map((l) => ({ start: l, end: l }));
+    }
   }
 
   return { kind: 'scope', diffRanges, scopeNote, baselineKeys };
@@ -868,13 +874,16 @@ export async function handleToolCall(
 
     // Resolve the line scope (diff-aware A2 + verify-mode A3) on the REAL tree
     // before the sandbox copy, so a "no changes" diff can short-circuit.
+    // Key verify-by-runId by the workspace-relative path (the same expression
+    // triage uses: `relative(env.workspaceRoot, resolvedFile)` == relFromRoot),
+    // so audit and triage agree on the cache key. Stays within workspaceRoot (C2).
     const scope = await computeScope(
       earlyArgs,
       targetFile,
       env,
       projectType,
       config ?? {},
-      resolvedFile,
+      relFromRoot,
     );
     if (scope.kind === 'result') return scope.result;
     const { diffRanges, scopeNote, baselineKeys } = scope;
@@ -949,28 +958,45 @@ export async function handleToolCall(
       // Suppression writes (explicit user action) happen first so the same
       // call reflects them. Then auto-filter equivalent mutants from the result.
       // C2 boundary: writes land under env.workspaceRoot (or cfg.suppressionsPath),
-      // keyed by the workspace-validated resolvedFile — never outside it.
+      // keyed by the WORKSPACE-RELATIVE path (relFromRoot, the same expression
+      // triage uses) so the suppressions file is portable/committable and audit
+      // and triage agree on the key — never outside the workspace.
       const wsRoot = env.workspaceRoot;
       const supPath = cfg.suppressionsPath;
-      if (Array.isArray(args.suppress) && args.suppress.length > 0) {
-        addSuppressions(
-          wsRoot,
-          resolvedFile,
-          args.suppress as { line: number; mutator: string; reason?: string }[],
-          supPath,
-        );
+      try {
+        if (Array.isArray(args.suppress) && args.suppress.length > 0) {
+          addSuppressions(
+            wsRoot,
+            relFromRoot,
+            args.suppress as { line: number; mutator: string; reason?: string }[],
+            supPath,
+          );
+        }
+        if (Array.isArray(args.unsuppress) && args.unsuppress.length > 0) {
+          removeSuppressions(
+            wsRoot,
+            relFromRoot,
+            args.unsuppress as { line: number; mutator: string }[],
+            supPath,
+          );
+        }
+      } catch (error: unknown) {
+        // A write failure surfaces a specific error rather than the generic
+        // "Chaos Engine Halted" (Fix 4). Sandbox cleanup still runs via finally.
+        const message = error instanceof Error ? error.message : String(error);
+        return toolError(`Failed to update suppression list: ${message}`);
       }
-      if (Array.isArray(args.unsuppress) && args.unsuppress.length > 0) {
-        removeSuppressions(
-          wsRoot,
-          resolvedFile,
-          args.unsuppress as { line: number; mutator: string }[],
-          supPath,
-        );
+      // Filter only for non-verify runs. In verify mode (baselineKeys set), the
+      // filter is owned by Task 9: removing a now-suppressed mutant from the
+      // re-run but NOT from the baseline would make computeVerifyDelta misreport
+      // it as "now killed" (Fix 2). Writes above remain ungated (explicit action).
+      let suppressedCount = 0;
+      if (!baselineKeys) {
+        const suppressed = loadSuppressions(wsRoot, supPath).get(relFromRoot);
+        const filtered = applySuppressions(auditResults, suppressed);
+        auditResults = filtered.result;
+        suppressedCount = filtered.suppressedCount;
       }
-      const suppressed = loadSuppressions(wsRoot, supPath).get(resolvedFile);
-      const filtered = applySuppressions(auditResults, suppressed);
-      auditResults = filtered.result;
 
       // Mint a runId for non-verify runs so the caller can verify later by id.
       // A cache failure is non-fatal: omit the runId rather than fail the audit.
@@ -980,7 +1006,9 @@ export async function handleToolCall(
           const compact = buildResultPayload(auditResults, {});
           mintedRunId = saveRun(
             {
-              file: resolvedFile,
+              // Workspace-relative key (relFromRoot) so the cached run matches
+              // the verify-by-runId check and triage (Task 8) on the same file.
+              file: relFromRoot,
               projectType,
               survivors: compact.survivors.map((g) => ({ line: g.line, mutators: g.mutators })),
               noCoverage: compact.noCoverage.map((g) => ({ line: g.line, mutators: g.mutators })),
@@ -1002,7 +1030,7 @@ export async function handleToolCall(
         enrichCtx,
         cfg,
         env,
-        filtered.suppressedCount,
+        suppressedCount,
         mintedRunId,
       );
     } finally {
