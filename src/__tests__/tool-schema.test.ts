@@ -213,4 +213,24 @@ describe('ESTIMATE_TOOL_DEFINITION contract', () => {
     expect(out.mutants).toBeDefined();
     expect(out.fidelity).toBeDefined();
   });
+
+  it('forbids additional properties in inputSchema', () => {
+    expect(
+      (ESTIMATE_TOOL_DEFINITION.inputSchema as Record<string, unknown>).additionalProperties,
+    ).toBe(false);
+  });
+
+  it('does not require withTiming in inputSchema', () => {
+    expect(ESTIMATE_TOOL_DEFINITION.inputSchema.required).not.toContain('withTiming');
+  });
+
+  it('requires fidelity and mutants in outputSchema', () => {
+    const outputRequired = (ESTIMATE_TOOL_DEFINITION.outputSchema as Record<string, unknown>)
+      .required as string[];
+    expect(outputRequired).toContain('fidelity');
+    expect(outputRequired).toContain('mutants');
+    expect(outputRequired).not.toContain('baselineMs');
+    expect(outputRequired).not.toContain('estimatedMs');
+    expect(outputRequired).not.toContain('concurrency');
+  });
 });

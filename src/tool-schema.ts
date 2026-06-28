@@ -355,6 +355,7 @@ export const ESTIMATE_TOOL_DEFINITION = {
       },
     },
     required: ['filePath'],
+    additionalProperties: false,
   },
   outputSchema: {
     type: 'object' as const,
