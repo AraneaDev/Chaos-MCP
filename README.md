@@ -41,6 +41,22 @@ claude mcp add chaos-mcp -- node /absolute/path/to/ChaosMCP/build/index.js
 
 > **Planned (not available yet):** once published, install will be `npm install -g chaos-mcp` or run on demand via `npx chaos-mcp`. These do not work until the package ships to npm.
 
+### Prerequisites — language mutation tools
+
+Chaos-MCP does **not** bundle the per-language mutation engines or install them for you; it shells out to whichever tool matches the file you audit. Install only the one(s) for the languages you intend to audit. If a tool is missing, the audit returns a clear error naming the exact install command — it never fails silently.
+
+| Language | Engine | Install |
+| --- | --- | --- |
+| TypeScript / JavaScript | [StrykerJS](https://stryker-mutator.io/) | `npm install --save-dev @stryker-mutator/core` (in the target project) |
+| Python | [mutmut](https://github.com/boxed/mutmut) **v3+** | `pipx install mutmut` — or `pip install mutmut` inside a virtualenv |
+| Go | [go-mutesting](https://github.com/zimmski/go-mutesting) | `go install github.com/zimmski/go-mutesting/cmd/go-mutesting@latest` |
+| Rust | [cargo-mutants](https://github.com/sourcefrog/cargo-mutants) | `cargo install cargo-mutants` |
+
+Notes:
+- The tool itself must be on `PATH` (or, for StrykerJS, resolvable from the target project's `node_modules`), and the **language toolchain** it builds on must already be present — Node.js for StrykerJS, a Python interpreter for mutmut, the Go toolchain for go-mutesting, and a Rust/Cargo toolchain for cargo-mutants.
+- **Python / mutmut:** install **v3 or newer** — Chaos-MCP targets mutmut v3's output format. On modern distros a bare `pip install mutmut` is blocked by [PEP 668](https://peps.python.org/pep-0668/) ("externally-managed-environment"); use `pipx install mutmut` (isolated) or install inside an activated virtualenv. mutmut reads its runner/source config from `[tool.mutmut]` in the target project's `pyproject.toml`.
+- These engines run **inside the sandbox** against a copy of your workspace; Chaos-MCP never installs or modifies anything in your real project.
+
 ## Quick Start
 
 ### 1. Start the Server
