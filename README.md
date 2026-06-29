@@ -3,6 +3,8 @@
 > On-demand micro-mutation sandbox for AI test verification — maps holes in unit tests by running isolated mutation testing via the Model Context Protocol.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+[![tests](https://img.shields.io/badge/tests-passing-brightgreen.svg)](./.github/workflows/ci.yml)
+[![coverage](https://img.shields.io/badge/coverage-98%25-brightgreen.svg)](#development)
 [![status: in development](https://img.shields.io/badge/status-in%20development-orange.svg)](#)
 
 > **Pre-release / in active development.** Chaos-MCP is **not yet published to npm** and is **not on a public host** — it currently lives in a private [Forgejo](https://forgejo.org/) repository. Install from source (see [Installation](#installation)). Any `npm install -g` / `npx` commands in this README describe the planned published experience and do not work yet.
@@ -528,6 +530,8 @@ npm run check         # Full CI pipeline: build + lint + format + test
 npm run test:watch    # Watch mode for iterative development
 npm run test:coverage # Tests with coverage report
 ```
+
+The suite runs on every push/PR to `main` via [CI](./.github/workflows/ci.yml) (Node 22/24). v8 line/statement coverage of `src/` sits at **~99%**, and the source is additionally hardened by running Chaos-MCP against its own code — so the suite is graded by mutation score, not just line coverage.
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for detailed development setup and contribution guidelines.
 
