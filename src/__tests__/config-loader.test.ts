@@ -233,6 +233,22 @@ describe('loadConfig', () => {
     expect(config.cosmicray).toEqual({ timeoutMs: 120000, testRunner: 'pytest' });
   });
 
+  it('loads cosmicray testSelection and excludeOperators arrays', () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue(
+      JSON.stringify({
+        cosmicray: {
+          testSelection: ['tests/unit/test_x.py'],
+          excludeOperators: ['core/NumberReplacer', 'core/.*String.*'],
+        },
+      }),
+    );
+
+    const config = loadConfig('/tmp/config.json');
+    expect(config.cosmicray?.testSelection).toEqual(['tests/unit/test_x.py']);
+    expect(config.cosmicray?.excludeOperators).toEqual(['core/NumberReplacer', 'core/.*String.*']);
+  });
+
   it('loads go engine-specific config', () => {
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue(JSON.stringify({ go: { timeoutMs: 180000 } }));

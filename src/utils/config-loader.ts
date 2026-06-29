@@ -38,7 +38,12 @@ const KNOWN_STRYKER_KEYS = new Set([
 ]);
 
 /** Valid keys within a CosmicRayConfig section. */
-const KNOWN_COSMICRAY_KEYS = new Set(['timeoutMs', 'testRunner', 'testSelection']);
+const KNOWN_COSMICRAY_KEYS = new Set([
+  'timeoutMs',
+  'testRunner',
+  'testSelection',
+  'excludeOperators',
+]);
 
 /** Valid keys within a GoMutestingConfig section. */
 const KNOWN_GO_KEYS = new Set(['timeoutMs']);
@@ -83,6 +88,12 @@ export interface CosmicRayConfig {
    * `["-m","unit"]`). Opt-in: narrowing changes which tests can kill a mutant.
    */
   testSelection?: string[];
+  /**
+   * Operator-name regexes to exclude (applied via `cr-filter-operators`) to bound
+   * the mutant count on large files — cosmic-ray has no operator allowlist or
+   * line-scoping. Excluded mutants drop out of the score (a scoped audit).
+   */
+  excludeOperators?: string[];
 }
 
 /**
@@ -245,6 +256,11 @@ function parseCosmicRayConfig(raw: unknown): CosmicRayConfig | undefined {
   const testSelection = stringArray(s.testSelection);
   if (testSelection) {
     result.testSelection = testSelection;
+    hasAny = true;
+  }
+  const excludeOperators = stringArray(s.excludeOperators);
+  if (excludeOperators) {
+    result.excludeOperators = excludeOperators;
     hasAny = true;
   }
 

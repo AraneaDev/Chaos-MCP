@@ -189,6 +189,17 @@ export interface RunOptions {
    * run would kill).
    */
   pythonTestSelection?: string[];
+
+  /**
+   * Operator-name regexes to exclude from a Python (cosmic-ray) run, applied via
+   * `cr-filter-operators` between init and exec. cosmic-ray always enumerates its
+   * full operator set and has no line-scoping, so this is the lever for bounding
+   * the mutant count (and wall-clock) on large files. Excluded mutants are
+   * dropped from the score (a scoped audit).
+   *
+   * **Python (cosmic-ray) only.**
+   */
+  pythonExcludeOperators?: string[];
 }
 
 /**

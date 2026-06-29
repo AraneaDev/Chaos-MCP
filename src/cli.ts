@@ -58,7 +58,7 @@ Configuration (chaos-mcp.config.json):
   corresponding global defaults. Stryker sections support: timeoutMs, concurrency,
   mutatorDenylist, perMutantTimeoutMs, dryRun, incremental.
   All other engine sections support: timeoutMs. cosmicray also supports:
-  testRunner, testSelection.
+  testRunner, testSelection, excludeOperators.
 
 Tool: audit_code_resilience
   Parameters:

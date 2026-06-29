@@ -143,4 +143,29 @@ describe('buildCosmicRayConfig', () => {
     });
     expect(toml).not.toContain('[cosmic-ray.operators]');
   });
+
+  it('emits an operators-filter section when excludeOperators is given', () => {
+    const toml = buildCosmicRayConfig({
+      modulePath: 'm.py',
+      testCommand: 'pytest',
+      timeoutSeconds: 30,
+      excludeOperators: ['core/NumberReplacer', 'core/.*String.*'],
+    });
+    expect(toml).toContain('[cosmic-ray.filters.operators-filter]');
+    expect(toml).toContain('exclude-operators = ["core/NumberReplacer", "core/.*String.*"]');
+  });
+
+  it('omits the operators-filter section when excludeOperators is empty/absent', () => {
+    expect(
+      buildCosmicRayConfig({ modulePath: 'm.py', testCommand: 'pytest', timeoutSeconds: 30 }),
+    ).not.toContain('operators-filter');
+    expect(
+      buildCosmicRayConfig({
+        modulePath: 'm.py',
+        testCommand: 'pytest',
+        timeoutSeconds: 30,
+        excludeOperators: [],
+      }),
+    ).not.toContain('operators-filter');
+  });
 });

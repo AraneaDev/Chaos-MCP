@@ -440,9 +440,11 @@ export function buildRunOptions(
     ignorePatterns: Array.isArray(args.ignorePatterns)
       ? (args.ignorePatterns as string[]).filter((v) => typeof v === 'string')
       : undefined,
-    // Python (cosmic-ray) only: scope the test-command on large projects.
-    // Sourced from the cosmicray config section; ignored by the other engines.
+    // Python (cosmic-ray) only: scope the test-command and bound the mutant
+    // count on large projects. Sourced from the cosmicray config section;
+    // ignored by the other engines.
     pythonTestSelection: cfg.cosmicray?.testSelection,
+    pythonExcludeOperators: cfg.cosmicray?.excludeOperators,
   };
 }
 

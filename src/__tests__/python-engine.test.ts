@@ -162,6 +162,42 @@ describe('PythonEngine (cosmic-ray)', () => {
     expect(lastConfig()).toContain('test-command = "python -m pytest -x -q tests/unit/test_x.py"');
   });
 
+  it('runs cr-filter-operators between init and exec when excludeOperators is set', async () => {
+    // 5 calls now: baseline, init, cr-filter-operators, exec, dump.
+    mockRunShell
+      .mockResolvedValueOnce(ok()) // baseline
+      .mockResolvedValueOnce(ok()) // init
+      .mockResolvedValueOnce(ok()) // cr-filter-operators
+      .mockResolvedValueOnce(ok()) // exec
+      .mockResolvedValueOnce(ok('')); // dump
+    await engine.run('m.py', {
+      workDir: '/tmp/sandbox',
+      pythonExcludeOperators: ['core/NumberReplacer'],
+    });
+    const commands = mockRunShell.mock.calls.map((c) => c[0] as string);
+    expect(commands).toEqual([
+      'cosmic-ray',
+      'cosmic-ray',
+      'cr-filter-operators',
+      'cosmic-ray',
+      'cosmic-ray',
+    ]);
+    // the filter runs on the session with the config: `cr-filter-operators <session> <config>`
+    const filterArgs = mockRunShell.mock.calls[2][1] as string[];
+    expect(filterArgs[0]).toMatch(/chaos-cosmic-ray\.sqlite$/);
+    expect(filterArgs[1]).toMatch(/chaos-cosmic-ray\.toml$/);
+    // the emitted config carries the exclude list for the filter to read
+    expect(lastConfig()).toContain('[cosmic-ray.filters.operators-filter]');
+  });
+
+  it('does not run a filter step when excludeOperators is absent (4 calls)', async () => {
+    queueRun('');
+    await engine.run('m.py', { workDir: '/tmp/sandbox' });
+    const commands = mockRunShell.mock.calls.map((c) => c[0] as string);
+    expect(commands).not.toContain('cr-filter-operators');
+    expect(commands).toHaveLength(4);
+  });
+
   it('uses `python -m unittest` when the runner is unittest', async () => {
     queueRun('');
     await engine.run('m.py', { workDir: '/tmp/sandbox', testRunner: 'unittest' });

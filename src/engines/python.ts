@@ -20,6 +20,12 @@ export interface CosmicRayConfigOptions {
   testCommand: string;
   /** Per-mutant test timeout in seconds. */
   timeoutSeconds: number;
+  /**
+   * Operator-name regexes to exclude (read by `cr-filter-operators`). cosmic-ray
+   * always enumerates its full operator set, so this is how the mutant count is
+   * bounded on large files — matching mutants are marked skipped before exec.
+   */
+  excludeOperators?: string[];
 }
 
 /**
@@ -27,22 +33,29 @@ export interface CosmicRayConfigOptions {
  * place and runs the test-command from the project root, so a real app's
  * conftest (`from main import app`) resolves normally.
  *
- * Note: cosmic-ray always runs its full operator set (the `[cosmic-ray.operators]`
- * section only parameterizes operators, it is NOT an allowlist), so mutant count
- * is bounded only by the target file. Large files are therefore slow.
+ * Note: cosmic-ray always enumerates its full operator set (the
+ * `[cosmic-ray.operators]` section only parameterizes operators, it is NOT an
+ * allowlist). To bound the mutant count on large files, supply `excludeOperators`
+ * — `cr-filter-operators` marks matching mutants skipped (see {@link PythonEngine}).
  */
 export function buildCosmicRayConfig(opts: CosmicRayConfigOptions): string {
-  return (
-    [
-      '[cosmic-ray]',
-      `module-path = ${JSON.stringify(opts.modulePath)}`,
-      `timeout = ${opts.timeoutSeconds}`,
-      `test-command = ${JSON.stringify(opts.testCommand)}`,
+  const lines = [
+    '[cosmic-ray]',
+    `module-path = ${JSON.stringify(opts.modulePath)}`,
+    `timeout = ${opts.timeoutSeconds}`,
+    `test-command = ${JSON.stringify(opts.testCommand)}`,
+    '',
+    '[cosmic-ray.distributor]',
+    'name = "local"',
+  ];
+  if (opts.excludeOperators && opts.excludeOperators.length > 0) {
+    lines.push(
       '',
-      '[cosmic-ray.distributor]',
-      'name = "local"',
-    ].join('\n') + '\n'
-  );
+      '[cosmic-ray.filters.operators-filter]',
+      `exclude-operators = [${opts.excludeOperators.map((o) => JSON.stringify(o)).join(', ')}]`,
+    );
+  }
+  return `${lines.join('\n')}\n`;
 }
 
 /** Extract original→mutated source from a cosmic-ray unified `diff`. */
@@ -165,6 +178,7 @@ export class PythonEngine extends BaseEngine {
       modulePath: filePath,
       testCommand: resolveTestCommand(options),
       timeoutSeconds: DEFAULT_PER_MUTANT_TIMEOUT_S,
+      excludeOperators: options?.pythonExcludeOperators,
     });
     try {
       writeFileSync(configPath, config, 'utf8');
@@ -200,6 +214,23 @@ export class PythonEngine extends BaseEngine {
       signal: options?.signal,
     });
 
+    // Step 2.5: operator filter — mark mutants matching excludeOperators as
+    // skipped so exec doesn't run them. cosmic-ray has no operator allowlist and
+    // no line-scoping, so this is the lever for bounding the mutant count (hence
+    // wall-clock) on large files. `cr-filter-operators <session> <config>` ships
+    // with cosmic-ray. Skipped mutants are omitted from `dump`, so they simply
+    // drop out of the score (a scoped audit). Only runs when a list is supplied.
+    if (options?.pythonExcludeOperators && options.pythonExcludeOperators.length > 0) {
+      await this.invoke([sessionPath, configPath], cwd, timeoutMs, {
+        command: 'cr-filter-operators',
+        onExecFailure: (e) =>
+          new Error(
+            `cosmic-ray operator filter failed (exit ${e.exit}): ${(e.stderr || e.message).slice(0, 500)}`,
+          ),
+        signal: options?.signal,
+      });
+    }
+
     // Step 3: exec — apply each mutant and run the test-command.
     await this.invoke(['exec', configPath, sessionPath], cwd, timeoutMs, {
       onExecFailure: (e) =>
@@ -230,10 +261,16 @@ export class PythonEngine extends BaseEngine {
     args: string[],
     cwd: string,
     timeoutMs: number,
-    opts: { onExecFailure: (e: ExecFailureError) => Error; signal?: AbortSignal },
+    opts: {
+      onExecFailure: (e: ExecFailureError) => Error;
+      signal?: AbortSignal;
+      command?: string;
+    },
   ): Promise<{ stdout: string; stderr: string }> {
     try {
-      return await invokeMutationTool('cosmic-ray', 'cosmic-ray', args, {
+      // The filter ships with cosmic-ray (`cr-filter-operators`); label it
+      // 'cosmic-ray' so a missing binary yields the cosmic-ray install hint.
+      return await invokeMutationTool('cosmic-ray', opts.command ?? 'cosmic-ray', args, {
         cwd,
         timeoutMs,
         signal: opts.signal,
