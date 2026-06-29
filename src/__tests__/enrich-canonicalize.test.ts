@@ -82,6 +82,39 @@ describe('canonicalizeMutator', () => {
   });
 });
 
+describe('canonicalizeMutator (python — inferred from the mutmut show diff)', () => {
+  // The Python engine now captures original→mutated from `mutmut show`, which
+  // buildChange renders as "<original> → <mutated>" changeText. Python uses
+  // WORD operators (and/or/not, True/False), so the rules differ from Rust's.
+  it('classifies a comparison flip as EqualityOperator', () => {
+    expect(canonicalizeMutator('Mutation', 'python', 'if n > 10: → if n >= 10:')).toBe(
+      'EqualityOperator',
+    );
+  });
+  it('classifies an arithmetic-operator swap as ArithmeticOperator', () => {
+    expect(canonicalizeMutator('Mutation', 'python', 'total = a + b → total = a - b')).toBe(
+      'ArithmeticOperator',
+    );
+  });
+  it('classifies an and/or swap as LogicalOperator', () => {
+    expect(canonicalizeMutator('Mutation', 'python', 'x and y → x or y')).toBe('LogicalOperator');
+  });
+  it('classifies a True/False flip as BooleanLiteral', () => {
+    expect(canonicalizeMutator('Mutation', 'python', 'return True → return False')).toBe(
+      'BooleanLiteral',
+    );
+  });
+  it('classifies a not removal as UnaryOperator', () => {
+    expect(canonicalizeMutator('Mutation', 'python', 'if not x: → if x:')).toBe('UnaryOperator');
+  });
+  it('returns unknown for a Python change with no recognizable operator (e.g. a string)', () => {
+    expect(canonicalizeMutator('Mutation', 'python', '"big" → "small"')).toBe('unknown');
+  });
+  it('returns unknown for Python when no changeText was captured (show unavailable)', () => {
+    expect(canonicalizeMutator('Mutation', 'python', undefined)).toBe('unknown');
+  });
+});
+
 describe('canonicalizeMutator (go)', () => {
   it('maps go-mutesting branch mutators to ConditionalExpression', () => {
     expect(canonicalizeMutator('branch/if', 'go')).toBe('ConditionalExpression');

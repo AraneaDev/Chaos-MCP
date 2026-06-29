@@ -35,7 +35,7 @@ export class MutationToolStartupError extends Error {
 
 const INSTALL_HINTS: Record<ExecutableTool, string> = {
   StrykerJS: 'npm install --save-dev @stryker-mutator/core',
-  mutmut: 'pip install mutmut',
+  mutmut: 'pipx install mutmut (or: pip install mutmut in a virtualenv)',
   'go-mutesting': 'go install github.com/zimmski/go-mutesting/cmd/go-mutesting@latest',
   'cargo-mutants': 'cargo install cargo-mutants',
 };

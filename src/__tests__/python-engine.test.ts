@@ -36,10 +36,21 @@ vi.mock('../utils/logger.js', () => ({
   isVerbose: vi.fn().mockReturnValue(false),
 }));
 
+// Mock fs so the v3 path's read of mutants/mutmut-cicd-stats.json is injectable.
+// Default: ENOENT (no stats file) so v2-format tests take the legacy path.
+vi.mock('node:fs', () => ({
+  readFileSync: vi.fn(() => {
+    throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+  }),
+}));
+
+import { readFileSync } from 'node:fs';
 import { runShell, ExecFailureError } from '../utils/exec.js';
 import { PythonEngine } from '../engines/python.js';
 
 const mockRunShell = vi.mocked(runShell);
+const mockReadFileSync = vi.mocked(readFileSync);
+const CICD_STATS_JSON = JSON.stringify({ killed: 1, survived: 1, total: 2 });
 
 function makeExecResult(
   stdout = '',
@@ -185,7 +196,7 @@ describe('PythonEngine', () => {
     mockRunShell.mockRejectedValueOnce(makeExecFailure({ code: 'ENOENT' }));
 
     await expect(engine.run('src/test.py')).rejects.toThrow(
-      'mutmut is not installed. Install it with: pip install mutmut',
+      'mutmut is not installed. Install it with: pipx install mutmut (or: pip install mutmut in a virtualenv)',
     );
   });
 
@@ -244,9 +255,10 @@ describe('PythonEngine', () => {
 
     const runCall = mockRunShell.mock.calls[0];
     const args = runCall?.[1] as string[];
-    // mutmut v3 uses positional pattern, v2 used --paths-to-mutate
+    // mutmut v3 `run` takes a mutant-name glob (module.*), NOT a file path —
+    // `mutmut run src/test.py` errors with "nothing matches".
     expect(args[0]).toBe('run');
-    expect(args[1]).toBe('src/test.py');
+    expect(args[1]).toBe('src.test.*');
     expect(args).toContain('--runner');
     expect(args).toContain('python -m unittest');
   });
@@ -640,8 +652,63 @@ describe('PythonEngine', () => {
     mockRunShell.mockResolvedValueOnce(makeExecResult(mutmutResults({ killed: 1 })));
     await engine.run('src/test.py');
 
-    expect(mockedLog).toHaveBeenCalledWith('PythonEngine: mutmut run src/test.py');
+    expect(mockedLog).toHaveBeenCalledWith('PythonEngine: mutmut run src.test.*');
     vi.mocked(isVerbose).mockReturnValue(false);
+  });
+
+  // ─── mutmut v3: per-mutant status lines + `mutmut show` enrichment ────────
+
+  const v3ShowDiff = [
+    '# calc.x_classify__mutmut_1: survived',
+    '--- calc.py',
+    '+++ calc.py',
+    '@@ -1,4 +1,4 @@',
+    ' def classify(n):',
+    '-    if n > 10:',
+    '+    if n >= 10:',
+    '         return "big"',
+  ].join('\n');
+
+  it('parses v3 `<id>: <status>` results and enriches survivors via `mutmut show`', async () => {
+    mockRunShell.mockResolvedValueOnce(makeExecResult('')); // run: spinner stdout, not parseable
+    mockRunShell.mockResolvedValueOnce(makeExecResult('calc.x_classify__mutmut_1: survived')); // results (v3)
+    mockRunShell.mockResolvedValueOnce(makeExecResult('')); // export-cicd-stats
+    mockRunShell.mockResolvedValueOnce(makeExecResult(v3ShowDiff)); // show <id>
+    // counts come from the cicd JSON, NOT the results text
+    mockReadFileSync.mockReturnValueOnce(CICD_STATS_JSON);
+
+    const result = await engine.run('calc.py');
+
+    expect(result.killed).toBe(1);
+    expect(result.survived).toBe(1);
+    expect(result.totalMutants).toBe(2);
+    expect(result.mutationScore).toBe('50.00%'); // 1/2 from the JSON, not the text
+    expect(result.vulnerabilities).toHaveLength(1);
+    const v = result.vulnerabilities[0];
+    expect(v.line).toBe(2);
+    expect(v.original).toBe('if n > 10:');
+    expect(v.mutated).toBe('if n >= 10:');
+    // `mutmut show` was invoked with the surviving mutant's id.
+    expect(mockRunShell).toHaveBeenNthCalledWith(
+      4,
+      'mutmut',
+      ['show', 'calc.x_classify__mutmut_1'],
+      expect.any(Object),
+    );
+  });
+
+  it('keeps the survivor (best-effort) when `mutmut show` fails', async () => {
+    mockRunShell.mockResolvedValueOnce(makeExecResult('')); // run
+    mockRunShell.mockResolvedValueOnce(makeExecResult('calc.x_f__mutmut_1: survived')); // results
+    mockRunShell.mockResolvedValueOnce(makeExecResult('')); // export-cicd-stats
+    mockRunShell.mockRejectedValueOnce(makeExecFailure({ exit: 1, stderr: 'no such mutant' })); // show fails
+    mockReadFileSync.mockReturnValueOnce(CICD_STATS_JSON);
+
+    const result = await engine.run('calc.py');
+
+    expect(result.survived).toBe(1);
+    expect(result.vulnerabilities).toHaveLength(1);
+    expect(result.vulnerabilities[0].line).toBe(0); // unchanged — no diff to enrich from
   });
 
   it('does not log the inline-skip message when verbose mode is off', async () => {

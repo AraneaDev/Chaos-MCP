@@ -147,6 +147,21 @@ const RUST_DESCRIPTION_RULES: { test: RegExp; category: string }[] = [
 ];
 
 /**
+ * Keyword rules for inferring a canonical category from a Python (mutmut) change
+ * rendered as "<original> → <mutated>" (captured via `mutmut show`). Python uses
+ * WORD operators (`and`/`or`/`not`, `True`/`False`) where Rust/JS use symbols, so
+ * these differ from {@link RUST_DESCRIPTION_RULES}. Order matters: logical and
+ * unary keywords before the comparison rule (which would otherwise shadow them).
+ */
+const PYTHON_DESCRIPTION_RULES: { test: RegExp; category: string }[] = [
+  { test: /\b(and|or)\b/, category: 'LogicalOperator' },
+  { test: /\bnot\b/, category: 'UnaryOperator' },
+  { test: /<=|>=|==|!=|[<>]/, category: 'EqualityOperator' },
+  { test: /\b(True|False)\b/, category: 'BooleanLiteral' },
+  { test: /[+\-*/%]/, category: 'ArithmeticOperator' },
+];
+
+/**
  * Normalize an engine-specific mutator into a canonical category present in
  * {@link MUTATOR_SEMANTICS}, or `'unknown'`.
  *
@@ -155,7 +170,8 @@ const RUST_DESCRIPTION_RULES: { test: RegExp; category: string }[] = [
  * - Go: maps `<group>/<name>` mutator strings via `GO_MUTATOR_MAP` when the
  *   structured output provides them (e.g. via go-mutesting's JSON reporter);
  *   unmapped names fall back to `'unknown'`.
- * - Python: coarse labels with no per-mutant operator — always `'unknown'`.
+ * - Python: infer from `changeText` (the `mutmut show` original→mutated diff)
+ *   using Python-keyword rules; `'unknown'` when no diff was captured.
  */
 export function canonicalizeMutator(
   rawMutator: string,
@@ -172,6 +188,11 @@ export function canonicalizeMutator(
     const normalizedText = changeText.replace(/->/g, ' ');
     for (const rule of RUST_DESCRIPTION_RULES) {
       if (rule.test.test(normalizedText)) return rule.category;
+    }
+  }
+  if (projectType === 'python' && changeText) {
+    for (const rule of PYTHON_DESCRIPTION_RULES) {
+      if (rule.test.test(changeText)) return rule.category;
     }
   }
   if (projectType === 'go') {

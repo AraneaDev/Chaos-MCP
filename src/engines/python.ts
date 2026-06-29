@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { BaseEngine, RunOptions, MutationResult, Vulnerability } from './base.js';
 import { ExecFailureError } from '../utils/exec.js';
 import { invokeMutationTool, MutationToolStartupError } from '../utils/exec-classify.js';
@@ -5,6 +7,16 @@ import { log, isVerbose } from '../utils/logger.js';
 
 /** Default timeout for mutmut runs (5 minutes). */
 const DEFAULT_TIMEOUT_MS = 300_000;
+
+/** Where mutmut v3 `export-cicd-stats` writes its JSON, relative to the run cwd. */
+const CICD_STATS_PATH = ['mutants', 'mutmut-cicd-stats.json'];
+
+/**
+ * Cap on `mutmut show` enrichment calls per audit. Survivors beyond this stay
+ * located only by id (the handler ranks + caps the displayed set anyway, and
+ * unenriched survivors sort last as severity "unknown").
+ */
+const MAX_SHOW_CALLS = 50;
 
 /**
  * Category labels emitted by `mutmut results`, paired with the emoji that
@@ -75,6 +87,192 @@ function extractLineFromId(mutantId: string): number {
  * @param resultsText - Raw stdout from `mutmut results`
  * @param filePath - The target file path (for the result `target` field)
  */
+/**
+ * mutmut v3 `mutmut results` line shape: `<id>: <status>` (e.g.
+ * `calc.x_classify__mutmut_1: survived`). v3 `results` lists ONLY non-killed
+ * mutants (killed ones are omitted) — so this is the SURVIVOR-ID source, not a
+ * count source. v2 category text (`Survived 🙂 (3)`) never matches this shape.
+ */
+const V3_STATUS_LINE =
+  /^(\S.*?):\s+(survived|suspicious|no_tests|skipped|killed|timeout|caught_by_type_check|segfault)$/;
+
+/** v3 statuses that mean the mutant survived (a coverage hole / ambiguous). */
+const V3_SURVIVING_STATUSES = new Set(['survived', 'suspicious', 'no_tests']);
+
+/**
+ * Extract the mutmut mutant id the engine embeds in a survivor's description
+ * (`… mutant "calc.x_f__mutmut_1" …`) so it can `mutmut show <id>` to enrich
+ * the survivor with a line number + diff. Returns undefined when absent.
+ */
+export function extractMutantId(description: string): string | undefined {
+  return description.match(/mutant "([^"]+)"/)?.[1];
+}
+
+/**
+ * Convert a workspace-relative `.py` file path into a mutmut v3 mutant-name
+ * glob. v3's `mutmut run <filter>` filters by mutant NAME (`module.func__mutmut_N`),
+ * NOT by path — `mutmut run pkg/calc.py` errors with "nothing matches". The
+ * module is the dotted path with the `.py` extension stripped; `.*` matches all
+ * mutants in that module.
+ *
+ *   "calc.py"      → "calc.*"
+ *   "pkg/calc.py"  → "pkg.calc.*"
+ */
+export function mutmutModuleGlob(filePath: string): string {
+  const noExt = filePath.replace(/\.py$/i, '');
+  const dotted = noExt.replace(/[/\\]/g, '.');
+  return `${dotted}.*`;
+}
+
+/**
+ * Parse a single `mutmut show <id>` unified diff into the changed line number
+ * (1-based, new-side) and the original/mutated source for that line. Returns
+ * null when the output carries no diff hunk (e.g. "no diff available").
+ *
+ * Example input:
+ *   # calc.x_classify__mutmut_1: survived
+ *   --- calc.py
+ *   +++ calc.py
+ *   @@ -1,4 +1,4 @@
+ *    def classify(n):
+ *   -    if n > 10:
+ *   +    if n >= 10:
+ *        return "big"
+ */
+export function parseMutmutShow(
+  showText: string,
+): { line: number; original?: string; mutated?: string } | null {
+  const lines = showText.split('\n');
+  const hunkRe = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/;
+  let header: RegExpMatchArray | null = null;
+  let hunkIdx = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(hunkRe);
+    if (m) {
+      header = m;
+      hunkIdx = i;
+      break;
+    }
+  }
+  if (!header) return null;
+
+  // new-side line counter; pre-decremented so the first body line lands on newStart.
+  let newLine = parseInt(header[1], 10) - 1;
+  let changeLine = 0;
+  let original: string | undefined;
+  let mutated: string | undefined;
+
+  for (let i = hunkIdx + 1; i < lines.length; i++) {
+    const raw = lines[i];
+    if (raw.startsWith('+')) {
+      newLine++;
+      if (mutated === undefined) {
+        mutated = raw.slice(1).trim();
+        if (changeLine === 0) changeLine = newLine;
+      }
+    } else if (raw.startsWith('-')) {
+      if (original === undefined) {
+        original = raw.slice(1).trim();
+        if (changeLine === 0) changeLine = newLine + 1;
+      }
+    } else {
+      // Context line (or trailing blank) — advances the new-side counter only.
+      newLine++;
+    }
+  }
+
+  if (original === undefined && mutated === undefined) return null;
+  return { line: changeLine, original, mutated };
+}
+
+/** A surviving (non-killed) mutmut v3 mutant: its id and reported status. */
+export interface MutmutSurvivor {
+  id: string;
+  status: string;
+}
+
+/**
+ * Extract surviving mutant ids from mutmut v3 `mutmut results` text. v3 lists
+ * one `<id>: <status>` line per non-killed mutant; we keep the surviving
+ * statuses (survived / suspicious / no_tests). Returns [] for v2 text or empty
+ * output (no line matches the v3 shape).
+ */
+export function parseMutmutSurvivors(resultsText: string): MutmutSurvivor[] {
+  const out: MutmutSurvivor[] = [];
+  for (const raw of resultsText.split('\n')) {
+    const m = raw.trim().match(V3_STATUS_LINE);
+    if (m && V3_SURVIVING_STATUSES.has(m[2])) {
+      out.push({ id: m[1], status: m[2] });
+    }
+  }
+  return out;
+}
+
+/** Raw shape of `mutants/mutmut-cicd-stats.json` (mutmut v3 `export-cicd-stats`). */
+interface MutmutCicdStats {
+  killed?: number;
+  survived?: number;
+  total?: number;
+  no_tests?: number;
+  skipped?: number;
+  suspicious?: number;
+  timeout?: number;
+  segfault?: number;
+}
+
+/**
+ * Parse mutmut v3's `mutants/mutmut-cicd-stats.json` into authoritative counts.
+ * This is the ONLY reliable count source in v3 — `mutmut results` omits killed
+ * mutants. Returns the count portion of a MutationResult (the engine attaches
+ * vulnerabilities from {@link parseMutmutSurvivors}); null on malformed JSON.
+ *
+ * Mapping to our semantics (mirrors the v2 parser):
+ *  - caught (killed) = killed + timeout + segfault, PLUS any total-vs-explicit
+ *    remainder (e.g. v3's `caught_by_type_check`, which is in `total` but not a
+ *    JSON field) — the suite/type-checker detected those, so they count killed.
+ *  - survived (holes) = survived + suspicious + no_tests.
+ *  - totalMutants = the JSON `total` (authoritative; includes skipped).
+ */
+export function parseMutmutCicdStats(
+  jsonText: string,
+  filePath: string,
+): Pick<
+  MutationResult,
+  'target' | 'totalMutants' | 'killed' | 'survived' | 'mutationScore'
+> | null {
+  let raw: MutmutCicdStats;
+  try {
+    raw = JSON.parse(jsonText) as MutmutCicdStats;
+  } catch {
+    return null;
+  }
+  const killed = raw.killed ?? 0;
+  const survived = raw.survived ?? 0;
+  const noTests = raw.no_tests ?? 0;
+  const skipped = raw.skipped ?? 0;
+  const suspicious = raw.suspicious ?? 0;
+  const timeout = raw.timeout ?? 0;
+  const segfault = raw.segfault ?? 0;
+  const total =
+    raw.total ?? killed + survived + noTests + skipped + suspicious + timeout + segfault;
+
+  const explicit = killed + survived + noTests + skipped + suspicious + timeout + segfault;
+  // Categories present in `total` but not emitted as JSON fields (e.g.
+  // caught_by_type_check) — those mutants were caught, so fold into killed.
+  const reconciledKilled = Math.max(0, total - explicit);
+  const effectiveKilled = killed + timeout + segfault + reconciledKilled;
+  const survivedCount = survived + suspicious + noTests;
+  const score = total > 0 ? ((effectiveKilled / total) * 100).toFixed(2) : '100.00';
+
+  return {
+    target: filePath,
+    totalMutants: total,
+    killed: effectiveKilled,
+    survived: survivedCount,
+    mutationScore: `${score}%`,
+  };
+}
+
 export function parseMutmutResults(resultsText: string, filePath: string): MutationResult {
   const lines = resultsText.split('\n');
 
@@ -237,15 +435,13 @@ export class PythonEngine extends BaseEngine {
 
     // Build the mutmut run command.
     //
-    // Mutmut v2 used `--paths-to-mutate <file>` and `--runner <cmd>` CLI flags.
-    // Mutmut v3 (3.x) uses positional wildcard patterns (`mutmut run "src/calculator*"`)
-    // and configures the runner via `[tool.mutmut]` in pyproject.toml.
-    //
-    // We pass the filePath as a positional argument so it works as a wildcard
-    // match in v3 and as a path hint in v2. The --runner flag is only added
-    // for v2 compatibility; v3 ignores unknown flags or reads from config.
+    // Mutmut v3's `run` positional is a mutant-NAME filter (module.func__mutmut_N),
+    // NOT a file path: `mutmut run pkg/calc.py` errors with "nothing matches".
+    // We pass a module glob (`pkg.calc.*`) derived from the path so the run is
+    // scoped to that file's mutants. The --runner flag overrides the test runner
+    // (v3 also honors `[tool.mutmut]` in pyproject.toml; pytest is the default).
     const resolvedRunner = options?.testRunner ?? 'pytest';
-    const runArgs = ['run', filePath];
+    const runArgs = ['run', mutmutModuleGlob(filePath)];
     if (resolvedRunner !== 'pytest') {
       runArgs.push('--runner', resolvedRunner);
     }
@@ -292,7 +488,7 @@ export class PythonEngine extends BaseEngine {
         if (isVerbose()) {
           log('PythonEngine: parsed results from mutmut run stdout, skipping mutmut results call');
         }
-        return inlineResult;
+        return await this.enrichSurvivors(inlineResult, cwd, timeoutMs, options?.signal);
       }
     }
 
@@ -321,7 +517,123 @@ export class PythonEngine extends BaseEngine {
       }
     }
 
-    // Step 3: Parse the text results
-    return parseMutmutResults(resultsText, filePath);
+    // Step 3a: mutmut v3 detection. v3 `mutmut results` lists one
+    // `<id>: <status>` line per NON-killed mutant (killed are omitted), so the
+    // presence of such lines means v3 — and counts MUST come from the cicd JSON,
+    // not this text. v2 output (category headers / empty) yields no survivors
+    // here and falls through to the legacy parser below, so v2 callers/tests are
+    // unaffected.
+    const v3Survivors = parseMutmutSurvivors(resultsText);
+    if (v3Survivors.length > 0) {
+      const v3 = await this.buildV3Result(filePath, v3Survivors, cwd, timeoutMs, options?.signal);
+      if (v3) return await this.enrichSurvivors(v3, cwd, timeoutMs, options?.signal);
+      // export-cicd-stats unavailable/unparseable (should not happen on a working
+      // v3 install): fall through to the legacy parser as a best-effort.
+    }
+
+    // Step 3b: Parse the text results (mutmut v2 category format).
+    return await this.enrichSurvivors(
+      parseMutmutResults(resultsText, filePath),
+      cwd,
+      timeoutMs,
+      options?.signal,
+    );
+  }
+
+  /**
+   * Build a v3 MutationResult: authoritative counts from `mutmut export-cicd-stats`
+   * (`mutants/mutmut-cicd-stats.json`) + a vulnerability per surviving mutant id
+   * (from `mutmut results`). Returns null when the JSON can't be produced/parsed,
+   * so the caller can fall back to the legacy text parser.
+   */
+  private async buildV3Result(
+    filePath: string,
+    survivors: MutmutSurvivor[],
+    cwd: string,
+    timeoutMs: number,
+    signal?: AbortSignal,
+  ): Promise<MutationResult | null> {
+    // Generate the stats JSON (best-effort; ignore failures and try to read).
+    try {
+      await invokeMutationTool('mutmut', 'mutmut', ['export-cicd-stats'], {
+        cwd,
+        timeoutMs,
+        signal,
+      });
+    } catch {
+      // export-cicd-stats may not exist or may warn-exit; the read below decides.
+    }
+
+    let counts: ReturnType<typeof parseMutmutCicdStats> = null;
+    try {
+      counts = parseMutmutCicdStats(readFileSync(join(cwd, ...CICD_STATS_PATH), 'utf8'), filePath);
+    } catch {
+      counts = null;
+    }
+    if (!counts) return null;
+
+    // One vulnerability per surviving mutant id (line 0 until `mutmut show`
+    // enrichment locates it). no_tests → a no-coverage description the formatter
+    // groups separately.
+    const vulnerabilities: Vulnerability[] = survivors.map(({ id, status }) => ({
+      line: 0,
+      mutator: 'Mutation',
+      description:
+        status === 'no_tests'
+          ? `No test reached mutant "${id}" (no coverage). Run \`mutmut show ${id}\` for the exact location.`
+          : `Surviving mutant "${id}" bypassed the test suite. Run \`mutmut show ${id}\` for the exact location.`,
+    }));
+
+    // The JSON survived count is authoritative; if it exceeds the ids `mutmut
+    // results` listed, note the remainder so the score and detail stay coherent.
+    const missing = counts.survived - vulnerabilities.length;
+    if (missing > 0) {
+      vulnerabilities.push({
+        line: 0,
+        mutator: 'Mutation',
+        description: `${missing} additional surviving mutant(s) not individually listed. Run \`mutmut results\` for the full set.`,
+      });
+    }
+
+    return { ...counts, vulnerabilities };
+  }
+
+  /**
+   * Enrich line-less survivors (mutmut v3 ids carry no line) with a real line
+   * number + original/mutated source by parsing `mutmut show <id>`. Best-effort:
+   * a failed or unparseable `show` leaves the survivor as-is (located only by
+   * id). The captured original/mutated feed canonicalizeMutator so Python
+   * survivors get a real severity instead of "unknown".
+   */
+  private async enrichSurvivors(
+    result: MutationResult,
+    cwd: string,
+    timeoutMs: number,
+    signal?: AbortSignal,
+  ): Promise<MutationResult> {
+    let shown = 0;
+    for (const v of result.vulnerabilities) {
+      if (v.line !== 0) continue; // already located (v2 file:line ids)
+      if (shown >= MAX_SHOW_CALLS) break;
+      const id = extractMutantId(v.description);
+      if (!id) continue;
+      shown++;
+      try {
+        const showResult = await invokeMutationTool('mutmut', 'mutmut', ['show', id], {
+          cwd,
+          timeoutMs,
+          signal,
+        });
+        const diff = parseMutmutShow(showResult.stdout);
+        if (diff) {
+          v.line = diff.line;
+          if (diff.original !== undefined) v.original = diff.original;
+          if (diff.mutated !== undefined) v.mutated = diff.mutated;
+        }
+      } catch {
+        // best-effort: keep the id + "mutmut show" hint already in the description
+      }
+    }
+    return result;
   }
 }
