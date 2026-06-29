@@ -33,10 +33,18 @@ describe('resolveBaselineTestCommand', () => {
     });
     expect(resolveBaselineTestCommand(env(), 'rust')).toEqual({ command: 'cargo', args: ['test'] });
   });
-  it('resolves python to pytest', () => {
-    expect(resolveBaselineTestCommand(env({ detectedRunner: 'pytest' }), 'python')?.command).toBe(
-      'pytest',
-    );
+  it('resolves python to pytest with empty args', () => {
+    expect(resolveBaselineTestCommand(env({ detectedRunner: 'pytest' }), 'python')).toEqual({
+      command: 'pytest',
+      args: [],
+    });
+  });
+  it('resolves a non-pytest python runner to that runner verbatim', () => {
+    // The ternary `runner.includes('pytest') ? 'pytest' : runner` false arm.
+    expect(resolveBaselineTestCommand(env({ detectedRunner: 'nose2' }), 'python')).toEqual({
+      command: 'nose2',
+      args: [],
+    });
   });
   it('resolves python with default to pytest when no detectedRunner', () => {
     expect(resolveBaselineTestCommand(env({ detectedRunner: '' }), 'python')?.command).toBe(
@@ -48,6 +56,13 @@ describe('resolveBaselineTestCommand', () => {
     expect(cmd).toBeDefined();
     expect(cmd?.command).toBe('npm');
     expect(cmd?.args).toEqual(['test']);
+  });
+  it('defaults a TS runner-less env to npm test', () => {
+    // `env.detectedRunner || 'npm'` — an empty detectedRunner must fall back to npm.
+    expect(resolveBaselineTestCommand(env({ detectedRunner: '' }), 'typescript')).toEqual({
+      command: 'npm',
+      args: ['test'],
+    });
   });
   it('resolves yarn', () => {
     const cmd = resolveBaselineTestCommand(env({ detectedRunner: 'yarn' }), 'typescript');
@@ -69,5 +84,8 @@ describe('resolveBaselineTestCommand', () => {
   it('resolves node:test to node --test', () => {
     const cmd = resolveBaselineTestCommand(env({ detectedRunner: 'node:test' }), 'typescript');
     expect(cmd).toEqual({ command: 'node', args: ['--test'] });
+  });
+  it('returns undefined for an unsupported project type (default arm)', () => {
+    expect(resolveBaselineTestCommand(env(), 'cobol' as never)).toBeUndefined();
   });
 });

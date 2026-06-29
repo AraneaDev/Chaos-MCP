@@ -14,6 +14,12 @@ describe('evaluateGate', () => {
   it('parses a score without a percent sign', () => {
     expect(evaluateGate('90', 80).passed).toBe(true);
   });
+  it('grades an integer-only score below the threshold as failing', () => {
+    // A bare integer (no decimal) must still parse and grade. This distinguishes
+    // the optional-decimal regex `(?:\.\d+)?` from a mutant that requires a
+    // decimal — under which "72" would not match and would spuriously pass.
+    expect(evaluateGate('72', 80)).toEqual({ minScore: 80, passed: false });
+  });
   it('treats an unparseable score as passing', () => {
     expect(evaluateGate('n/a', 80)).toEqual({ minScore: 80, passed: true });
     expect(evaluateGate('', 80).passed).toBe(true);

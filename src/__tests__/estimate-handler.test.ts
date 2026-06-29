@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
+import { cpus } from 'os';
 import type { CallToolRequest } from '@modelcontextprotocol/sdk/types.js';
 
 // Mock estimate functions before importing the handler.
@@ -285,6 +286,86 @@ describe('handleEstimateCall', () => {
     expect(mockEstimateAudit).toHaveBeenCalledWith(
       expect.objectContaining({ signal: controller.signal }),
     );
+  });
+
+  it('does not throw when ctx is supplied without a signal', async () => {
+    // `ctx?.signal?.aborted` must stay null-safe when signal is absent (kills the
+    // mutant that drops the optional chain after `.signal`).
+    mockEstimateAudit.mockResolvedValue(approxResult);
+    const res = await handleEstimateCall(req({ filePath: 'src/math.ts' }), undefined, {});
+    expect(res.isError).toBeUndefined();
+    expect(mockEstimateAudit).toHaveBeenCalled();
+  });
+
+  it('emits the result as a "text" content block', async () => {
+    mockEstimateAudit.mockResolvedValue(approxResult);
+    const res = await handleEstimateCall(req({ filePath: 'src/math.ts' }));
+    expect((res.content?.[0] as { type?: string }).type).toBe('text');
+  });
+
+  // ── relFile re-anchoring (line 74) ────────────────────────────────────────
+
+  it('falls back to the raw filePath when the workspace root is below the target', async () => {
+    // workspaceRoot deeper than the file → relative() yields a "../" path, which
+    // must NOT be used; relFile falls back to rawFilePath.
+    mockDetectEnv.mockReturnValue({ ...defaultEnv, workspaceRoot: '/workspace/pkg' });
+    mockEstimateAudit.mockResolvedValue(approxResult);
+    await handleEstimateCall(req({ filePath: 'src/math.ts' }));
+    expect(mockEstimateAudit).toHaveBeenCalledWith(
+      expect.objectContaining({ relFile: 'src/math.ts' }),
+    );
+  });
+
+  // ── Concurrency projection (line 83) ──────────────────────────────────────
+
+  it('passes concurrency = max(1, cpus-1) to estimateAudit', async () => {
+    mockEstimateAudit.mockResolvedValue(approxResult);
+    await handleEstimateCall(req({ filePath: 'src/math.ts' }));
+    expect(mockEstimateAudit).toHaveBeenCalledWith(
+      expect.objectContaining({ concurrency: Math.max(1, cpus().length - 1) }),
+    );
+  });
+
+  // ── Timeout config plumbing (line 108) ────────────────────────────────────
+
+  it('passes timeoutMs=undefined when no config is supplied', async () => {
+    mockEstimateAudit.mockResolvedValue(approxResult);
+    await handleEstimateCall(req({ filePath: 'src/math.ts' }));
+    expect(mockEstimateAudit).toHaveBeenCalledWith(
+      expect.objectContaining({ timeoutMs: undefined }),
+    );
+  });
+
+  it('treats a non-positive defaultTimeoutMs as undefined (not a real cap)', async () => {
+    mockEstimateAudit.mockResolvedValue(approxResult);
+    await handleEstimateCall(req({ filePath: 'src/math.ts' }), { defaultTimeoutMs: 0 });
+    expect(mockEstimateAudit).toHaveBeenCalledWith(
+      expect.objectContaining({ timeoutMs: undefined }),
+    );
+  });
+
+  it('treats a non-numeric defaultTimeoutMs as undefined', async () => {
+    mockEstimateAudit.mockResolvedValue(approxResult);
+    await handleEstimateCall(req({ filePath: 'src/math.ts' }), {
+      defaultTimeoutMs: 'soon' as never,
+    });
+    expect(mockEstimateAudit).toHaveBeenCalledWith(
+      expect.objectContaining({ timeoutMs: undefined }),
+    );
+  });
+
+  // ── Sandbox provisioning failure (line 91) ────────────────────────────────
+
+  it('returns a provisioning error when createSandbox throws', async () => {
+    mockEstimateNeedsSandbox.mockReturnValue(true);
+    mockCreateSandbox.mockImplementationOnce(() => {
+      throw new Error('disk full');
+    });
+    const res = await handleEstimateCall(req({ filePath: 'src/math.ts' }));
+    expect(res.isError).toBe(true);
+    expect(text(res)).toMatch(/Failed to provision sandbox/i);
+    // estimateAudit must NOT run if the sandbox could not be created.
+    expect(mockEstimateAudit).not.toHaveBeenCalled();
   });
 
   it('handles a Python file (.py) successfully', async () => {

@@ -230,4 +230,68 @@ describe('listChangedFiles', () => {
     const calls = mockRunShell.mock.calls.map((c) => c[1].join(' '));
     expect(calls.some((c) => c.includes('merge-base'))).toBe(false);
   });
+
+  it('runs every git call as "git" in the workspace with the read-only timeout', async () => {
+    mockRunShell
+      .mockResolvedValueOnce(ok('true\n')) // work-tree
+      .mockResolvedValueOnce(ok('abc123\n')) // merge-base
+      .mockResolvedValueOnce(ok('src/a.ts\n')) // diff --name-only
+      .mockResolvedValueOnce(ok('')); // ls-files --others
+    await listChangedFiles('/workspace', 'main');
+    for (const call of mockRunShell.mock.calls) {
+      expect(call[0]).toBe('git');
+      expect(call[2]).toMatchObject({ cwd: '/workspace', timeoutMs: 15_000 });
+    }
+  });
+
+  it('calls rev-parse, merge-base, diff --name-only and ls-files --others with exact args', async () => {
+    mockRunShell
+      .mockResolvedValueOnce(ok('true\n')) // work-tree
+      .mockResolvedValueOnce(ok('abc123\n')) // merge-base (trailing newline trimmed)
+      .mockResolvedValueOnce(ok('src/a.ts\n')) // diff --name-only
+      .mockResolvedValueOnce(ok('')); // ls-files --others
+    await listChangedFiles('/ws', 'main');
+    expect(mockRunShell.mock.calls[0][1]).toEqual(['rev-parse', '--is-inside-work-tree']);
+    expect(mockRunShell.mock.calls[1][1]).toEqual(['merge-base', 'main', 'HEAD']);
+    // The diff command must use the TRIMMED merge-base SHA.
+    expect(mockRunShell.mock.calls[2][1]).toEqual(['diff', '--name-only', 'abc123']);
+    expect(mockRunShell.mock.calls[3][1]).toEqual(['ls-files', '--others', '--exclude-standard']);
+  });
+
+  it('uses exact --cached --name-only args for the staged base', async () => {
+    mockRunShell
+      .mockResolvedValueOnce(ok('true\n')) // work-tree
+      .mockResolvedValueOnce(ok('src/a.ts\n')) // diff --cached --name-only
+      .mockResolvedValueOnce(ok('')); // ls-files --others
+    await listChangedFiles('/ws', 'staged');
+    expect(mockRunShell.mock.calls[1][1]).toEqual(['diff', '--cached', '--name-only']);
+  });
+
+  it('does not run the diff command when merge-base fails', async () => {
+    mockRunShell
+      .mockResolvedValueOnce(ok('true\n')) // work-tree
+      .mockRejectedValueOnce(new ExecFailureError('bad ref')); // merge-base
+    const r = await listChangedFiles('/ws', 'nope');
+    expect(r).toEqual({ kind: 'bad-ref', ref: 'nope' });
+    // Only rev-parse + merge-base — the catch must return, not fall through.
+    expect(mockRunShell).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns bad-ref when the name-only diff itself fails', async () => {
+    mockRunShell
+      .mockResolvedValueOnce(ok('true\n')) // work-tree
+      .mockResolvedValueOnce(ok('abc123\n')) // merge-base
+      .mockRejectedValueOnce(new ExecFailureError('diff failed')); // diff --name-only
+    expect(await listChangedFiles('/ws', 'main')).toEqual({ kind: 'bad-ref', ref: 'main' });
+  });
+
+  it('tolerates a failing untracked-files probe (returns tracked changes only)', async () => {
+    mockRunShell
+      .mockResolvedValueOnce(ok('true\n')) // work-tree
+      .mockResolvedValueOnce(ok('abc123\n')) // merge-base
+      .mockResolvedValueOnce(ok('src/a.ts\nsrc/b.ts\n')) // diff --name-only
+      .mockRejectedValueOnce(new ExecFailureError('ls-files blew up')); // ls-files --others
+    const r = await listChangedFiles('/ws', 'main');
+    expect(r).toEqual({ kind: 'files', files: ['src/a.ts', 'src/b.ts'] });
+  });
 });

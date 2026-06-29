@@ -158,7 +158,12 @@ describe('handleToolCall phase3 wiring', () => {
 
   it('mints a runId on a non-verify run and the cache round-trips the survivors', async () => {
     stubEngine(resultWithSurvivor());
-    const res = await handleToolCall(makeRequest({ filePath: FILE }));
+    // Pin an isolated suppressions path: with the default, this would read
+    // <workspaceRoot>/.chaos-mcp on machines where the mocked /workspace exists,
+    // letting stray suppressions filter out the survivor under test.
+    const res = await handleToolCall(makeRequest({ filePath: FILE }), {
+      suppressionsPath: supPath,
+    });
     expect(res.isError).toBeUndefined();
     const sc = res.structuredContent as Record<string, unknown>;
     const runId = sc.runId as string;
@@ -182,7 +187,9 @@ describe('handleToolCall phase3 wiring', () => {
       workspaceRoot: subRoot,
     });
     stubEngine(resultWithSurvivor());
-    const res = await handleToolCall(makeRequest({ filePath: 'packages/app/src/math.ts' }));
+    const res = await handleToolCall(makeRequest({ filePath: 'packages/app/src/math.ts' }), {
+      suppressionsPath: supPath,
+    });
     expect(res.isError).toBeUndefined();
     const sc = res.structuredContent as Record<string, unknown>;
     const cached = loadRun(sc.runId as string);
