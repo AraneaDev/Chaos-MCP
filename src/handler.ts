@@ -402,13 +402,13 @@ export function buildRunOptions(
   // testRunner must come from the section that matches the engine being run.
   // Previously stryker.testRunner was consulted first for ALL project types,
   // so a Python audit could receive Stryker's runner (e.g. "vitest") and pass
-  // it to mutmut (audit Med#2). Only the Stryker/Mutmut sections carry a
+  // it to mutmut (audit Med#2). Only the Stryker/cosmic-ray sections carry a
   // testRunner; the timeout-only Go/Rust sections don't (→ undefined, as before).
   const engineTestRunner =
     configKey === 'stryker'
       ? cfg.stryker?.testRunner
-      : configKey === 'mutmut'
-        ? cfg.mutmut?.testRunner
+      : configKey === 'cosmicray'
+        ? cfg.cosmicray?.testRunner
         : undefined;
 
   return {
@@ -440,9 +440,9 @@ export function buildRunOptions(
     ignorePatterns: Array.isArray(args.ignorePatterns)
       ? (args.ignorePatterns as string[]).filter((v) => typeof v === 'string')
       : undefined,
-    // Python (mutmut) only: scope the baseline test run on large suites. Sourced
-    // from the mutmut config section; ignored by the other engines.
-    pythonTestSelection: cfg.mutmut?.testSelection,
+    // Python (cosmic-ray) only: scope the test-command on large projects.
+    // Sourced from the cosmicray config section; ignored by the other engines.
+    pythonTestSelection: cfg.cosmicray?.testSelection,
   };
 }
 

@@ -147,18 +147,21 @@ const RUST_DESCRIPTION_RULES: { test: RegExp; category: string }[] = [
 ];
 
 /**
- * Keyword rules for inferring a canonical category from a Python (mutmut) change
- * rendered as "<original> → <mutated>" (captured via `mutmut show`). Python uses
- * WORD operators (`and`/`or`/`not`, `True`/`False`) where Rust/JS use symbols, so
- * these differ from {@link RUST_DESCRIPTION_RULES}. Order matters: logical and
- * unary keywords before the comparison rule (which would otherwise shadow them).
+ * Map a Python (cosmic-ray) operator NAME to a canonical category. cosmic-ray
+ * emits authoritative operator names (e.g. `core/ReplaceComparisonOperator_Lt_LtE`,
+ * `core/ReplaceBinaryOperator_Add_Sub`), so this is a deterministic name match —
+ * far more reliable than inferring from a diff. Order matters: the more specific
+ * `BooleanOperator` (and/or) is matched before the generic True/False rule, and
+ * `Comparison` before `BinaryOperator`.
  */
-const PYTHON_DESCRIPTION_RULES: { test: RegExp; category: string }[] = [
-  { test: /\b(and|or)\b/, category: 'LogicalOperator' },
-  { test: /\bnot\b/, category: 'UnaryOperator' },
-  { test: /<=|>=|==|!=|[<>]/, category: 'EqualityOperator' },
-  { test: /\b(True|False)\b/, category: 'BooleanLiteral' },
-  { test: /[+\-*/%]/, category: 'ArithmeticOperator' },
+const PYTHON_OPERATOR_RULES: { test: RegExp; category: string }[] = [
+  { test: /Comparison/i, category: 'EqualityOperator' },
+  { test: /BinaryOperator/i, category: 'ArithmeticOperator' },
+  { test: /BooleanOperator|AndWith|OrWith/i, category: 'LogicalOperator' },
+  { test: /Unary|AddNot|RemoveNot/i, category: 'UnaryOperator' },
+  { test: /True|False|Boolean/i, category: 'BooleanLiteral' },
+  { test: /Number/i, category: 'ArithmeticOperator' },
+  { test: /String/i, category: 'StringLiteral' },
 ];
 
 /**
@@ -170,8 +173,8 @@ const PYTHON_DESCRIPTION_RULES: { test: RegExp; category: string }[] = [
  * - Go: maps `<group>/<name>` mutator strings via `GO_MUTATOR_MAP` when the
  *   structured output provides them (e.g. via go-mutesting's JSON reporter);
  *   unmapped names fall back to `'unknown'`.
- * - Python: infer from `changeText` (the `mutmut show` original→mutated diff)
- *   using Python-keyword rules; `'unknown'` when no diff was captured.
+ * - Python: map the cosmic-ray operator NAME via {@link PYTHON_OPERATOR_RULES}
+ *   (authoritative); unmapped operators → `'unknown'`.
  */
 export function canonicalizeMutator(
   rawMutator: string,
@@ -190,9 +193,9 @@ export function canonicalizeMutator(
       if (rule.test.test(normalizedText)) return rule.category;
     }
   }
-  if (projectType === 'python' && changeText) {
-    for (const rule of PYTHON_DESCRIPTION_RULES) {
-      if (rule.test.test(changeText)) return rule.category;
+  if (projectType === 'python') {
+    for (const rule of PYTHON_OPERATOR_RULES) {
+      if (rule.test.test(rawMutator)) return rule.category;
     }
   }
   if (projectType === 'go') {

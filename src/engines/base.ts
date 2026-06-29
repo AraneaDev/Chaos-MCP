@@ -69,7 +69,7 @@ export interface RunOptions {
    * Concurrency hint for mutation engines that support parallel execution.
    *
    * **Supported by:** StrykerJS (via `--concurrency`).
-   * **Ignored by:** Mutmut, go-mutesting, cargo-mutants (which manage their
+   * **Ignored by:** cosmic-ray, go-mutesting, cargo-mutants (which manage their
    * own parallelism or run serially).
    *
    * When omitted, the engine uses its own default (StrykerJS auto-detects
@@ -81,7 +81,7 @@ export interface RunOptions {
    * Optionally constrain mutations to a specific line range (1-based, inclusive).
    *
    * **Supported by:** StrykerJS (via `--mutate` line-range syntax).
-   * **Not supported by:** Mutmut (Python engine ignores this).
+   * **Not supported by:** cosmic-ray (Python engine ignores this).
    */
   lineScope?: { start: number; end: number };
 
@@ -89,7 +89,7 @@ export interface RunOptions {
    * Multiple 1-based inclusive line ranges to constrain mutation to (the
    * diff-aware superset of {@link lineScope}). When set, takes precedence over
    * `lineScope`. **StrykerJS only** — emitted as comma-separated `--mutate`
-   * patterns. Ignored by Mutmut, go-mutesting, cargo-mutants.
+   * patterns. Ignored by cosmic-ray, go-mutesting, cargo-mutants.
    */
   lineRanges?: { start: number; end: number }[];
 
@@ -149,7 +149,7 @@ export interface RunOptions {
    * test run is allowed before being considered a timeout (and killed).
    *
    * **Supported by:** StrykerJS (via `--timeoutMs`).
-   * **Ignored by:** Mutmut, go-mutesting, cargo-mutants.
+   * **Ignored by:** cosmic-ray, go-mutesting, cargo-mutants.
    *
    * Distinct from {@link timeoutMs} (total run cap). Use this to prevent
    * a single slow mutant from hanging the entire mutation run.
@@ -180,14 +180,13 @@ export interface RunOptions {
   signal?: AbortSignal;
 
   /**
-   * Optional pytest selection args used to scope mutmut v3's baseline test run
-   * (emitted as `pytest_add_cli_args_test_selection` in the injected
-   * `[tool.mutmut]` config). Use a test path (`["tests/unit/test_x.py"]`) or a
-   * marker (`["-m","unit"]`) to keep the baseline fast on large suites.
+   * Optional extra args appended to the Python test-command (cosmic-ray
+   * `test-command`). Use a test path (`["tests/unit/test_x.py"]`) or a marker
+   * (`["-m","unit"]`) to scope the suite on large projects.
    *
-   * **Python (mutmut) only.** Scoping changes which tests can kill a mutant, so
-   * it is opt-in (a narrow selection can make mutants survive that a broader run
-   * would kill).
+   * **Python (cosmic-ray) only.** Scoping changes which tests can kill a mutant,
+   * so it is opt-in (a narrow selection can make mutants survive that a broader
+   * run would kill).
    */
   pythonTestSelection?: string[];
 }

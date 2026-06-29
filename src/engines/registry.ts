@@ -25,7 +25,7 @@ export interface EngineDescriptor {
    * The {@link ChaosConfig} section key holding this engine's overrides
    * (`cfg[configKey]`). Mirrors the section keys parsed in config-loader.ts.
    */
-  configKey: 'stryker' | 'mutmut' | 'go' | 'rust';
+  configKey: 'stryker' | 'cosmicray' | 'go' | 'rust';
 
   /**
    * Whether the engine supports line-level scoping — `lineScope`, diff-aware
@@ -53,7 +53,7 @@ export const ENGINE_REGISTRY: Record<SupportedProjectType, EngineDescriptor> = {
   },
   python: {
     make: () => new PythonEngine(),
-    configKey: 'mutmut',
+    configKey: 'cosmicray',
     supportsLineScope: false,
   },
   go: {

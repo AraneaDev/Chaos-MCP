@@ -20,7 +20,7 @@ const KNOWN_KEYS = new Set([
   'runCacheTtlMs',
   'runCacheMax',
   'stryker',
-  'mutmut',
+  'cosmicray',
   'go',
   'rust',
 ]);
@@ -37,8 +37,8 @@ const KNOWN_STRYKER_KEYS = new Set([
   'testRunner',
 ]);
 
-/** Valid keys within a MutmutConfig section. */
-const KNOWN_MUTMUT_KEYS = new Set(['timeoutMs', 'testRunner', 'testSelection']);
+/** Valid keys within a CosmicRayConfig section. */
+const KNOWN_COSMICRAY_KEYS = new Set(['timeoutMs', 'testRunner', 'testSelection']);
 
 /** Valid keys within a GoMutestingConfig section. */
 const KNOWN_GO_KEYS = new Set(['timeoutMs']);
@@ -70,18 +70,17 @@ export interface StrykerConfig {
 }
 
 /**
- * Mutmut (Python)-specific config overrides.
+ * cosmic-ray (Python)-specific config overrides.
  */
-export interface MutmutConfig {
-  /** Timeout override for mutmut runs (ms). */
+export interface CosmicRayConfig {
+  /** Timeout override for the whole cosmic-ray run (ms). */
   timeoutMs?: number;
-  /** Test runner override (e.g. "pytest", "unittest"). */
+  /** Test runner override (e.g. "pytest", "unittest", or a full command). */
   testRunner?: string;
   /**
-   * pytest selection args used to scope mutmut v3's baseline test run on large
-   * suites (a test path like `["tests/unit/test_x.py"]` or a marker like
-   * `["-m","unit"]`). Injected as `pytest_add_cli_args_test_selection`. Opt-in:
-   * narrowing the selection changes which tests can kill a mutant.
+   * Extra args appended to the Python test-command to scope the suite on large
+   * projects (a test path like `["tests/unit/test_x.py"]` or a marker like
+   * `["-m","unit"]`). Opt-in: narrowing changes which tests can kill a mutant.
    */
   testSelection?: string[];
 }
@@ -107,7 +106,7 @@ export interface CargoMutantsConfig {
  * Loaded from a JSON config file at startup and merged with per-call arguments.
  * Tool call arguments always take precedence over config defaults.
  *
- * Engine-specific sections (`stryker`, `mutmut`, `go`, `rust`) override their
+ * Engine-specific sections (`stryker`, `cosmicray`, `go`, `rust`) override their
  * corresponding global defaults. This lets you set a short global timeout while
  * giving Rust/Go builds more time, or tune Stryker concurrency independently.
  */
@@ -163,8 +162,8 @@ export interface ChaosConfig {
   /** StrykerJS-specific overrides (precedence over global defaults). */
   stryker?: StrykerConfig;
 
-  /** Mutmut (Python)-specific overrides (precedence over global defaults). */
-  mutmut?: MutmutConfig;
+  /** cosmic-ray (Python)-specific overrides (precedence over global defaults). */
+  cosmicray?: CosmicRayConfig;
 
   /** go-mutesting-specific overrides (precedence over global defaults). */
   go?: GoMutestingConfig;
@@ -225,10 +224,10 @@ function parseStrykerConfig(raw: unknown): StrykerConfig | undefined {
   return hasAny ? result : undefined;
 }
 
-function parseMutmutConfig(raw: unknown): MutmutConfig | undefined {
+function parseCosmicRayConfig(raw: unknown): CosmicRayConfig | undefined {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return undefined;
   const s = raw as Record<string, unknown>;
-  const result: MutmutConfig = {};
+  const result: CosmicRayConfig = {};
   let hasAny = false;
 
   if (typeof s.timeoutMs === 'number' && s.timeoutMs > 0) {
@@ -239,12 +238,13 @@ function parseMutmutConfig(raw: unknown): MutmutConfig | undefined {
     result.testRunner = s.testRunner;
     hasAny = true;
   }
-  if (
-    Array.isArray(s.testSelection) &&
-    s.testSelection.length > 0 &&
-    s.testSelection.every((v) => typeof v === 'string' && v.length > 0)
-  ) {
-    result.testSelection = s.testSelection as string[];
+  const stringArray = (v: unknown): string[] | undefined =>
+    Array.isArray(v) && v.length > 0 && v.every((e) => typeof e === 'string' && e.length > 0)
+      ? (v as string[])
+      : undefined;
+  const testSelection = stringArray(s.testSelection);
+  if (testSelection) {
+    result.testSelection = testSelection;
     hasAny = true;
   }
 
@@ -277,12 +277,12 @@ function parseTimeoutOnlyConfig(raw: unknown): { timeoutMs?: number } | undefine
  * language adds one entry here.
  */
 const ENGINE_CONFIG_SECTIONS: {
-  key: 'stryker' | 'mutmut' | 'go' | 'rust';
+  key: 'stryker' | 'cosmicray' | 'go' | 'rust';
   knownKeys: Set<string>;
   parse: (raw: unknown) => object | undefined;
 }[] = [
   { key: 'stryker', knownKeys: KNOWN_STRYKER_KEYS, parse: parseStrykerConfig },
-  { key: 'mutmut', knownKeys: KNOWN_MUTMUT_KEYS, parse: parseMutmutConfig },
+  { key: 'cosmicray', knownKeys: KNOWN_COSMICRAY_KEYS, parse: parseCosmicRayConfig },
   { key: 'go', knownKeys: KNOWN_GO_KEYS, parse: parseTimeoutOnlyConfig },
   { key: 'rust', knownKeys: KNOWN_RUST_KEYS, parse: parseTimeoutOnlyConfig },
 ];

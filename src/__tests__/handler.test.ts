@@ -1736,7 +1736,7 @@ describe('handleToolCall', () => {
     );
   });
 
-  it('uses mutmut engine config timeoutMs for Python files', async () => {
+  it('uses cosmicray engine config timeoutMs for Python files', async () => {
     const { PythonEngine } = await import('../engines/python.js');
     const MockPyEngine = vi.mocked(PythonEngine);
 
@@ -1760,7 +1760,7 @@ describe('handleToolCall', () => {
     });
 
     const config = {
-      mutmut: { timeoutMs: 120000 },
+      cosmicray: { timeoutMs: 120000 },
     };
 
     const request = makeRequest('audit_code_resilience', { filePath: 'src/calc.py' });
@@ -1772,7 +1772,7 @@ describe('handleToolCall', () => {
     );
   });
 
-  it('uses mutmut engine config testRunner override for Python files', async () => {
+  it('uses cosmicray engine config testRunner override for Python files', async () => {
     const { PythonEngine } = await import('../engines/python.js');
     const MockPyEngine = vi.mocked(PythonEngine);
 
@@ -1796,7 +1796,7 @@ describe('handleToolCall', () => {
     });
 
     const config = {
-      mutmut: { testRunner: 'python -m unittest' },
+      cosmicray: { testRunner: 'python -m unittest' },
     };
 
     const request = makeRequest('audit_code_resilience', { filePath: 'src/calc.py' });

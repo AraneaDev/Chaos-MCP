@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Chaos-MCP is an MCP (Model Context Protocol) **stdio server** that runs isolated mutation testing against a target codebase to find holes in its test suite. It exposes three tools: `audit_code_resilience` (one file), `triage_test_coverage` (rank a tree weakest-first), and `estimate_audit` (cheap pre-flight mutant count / timing estimate, no test cycle). It wraps four language-specific mutation tools — StrykerJS (TS/JS), Mutmut (Python), go-mutesting (Go), cargo-mutants (Rust). Pre-release: not on npm; install from source. ESM throughout (`"type": "module"`, `.js` import specifiers that resolve to `.ts`).
+Chaos-MCP is an MCP (Model Context Protocol) **stdio server** that runs isolated mutation testing against a target codebase to find holes in its test suite. It exposes three tools: `audit_code_resilience` (one file), `triage_test_coverage` (rank a tree weakest-first), and `estimate_audit` (cheap pre-flight mutant count / timing estimate, no test cycle). It wraps four language-specific mutation tools — StrykerJS (TS/JS), cosmic-ray (Python), go-mutesting (Go), cargo-mutants (Rust). Pre-release: not on npm; install from source. ESM throughout (`"type": "module"`, `.js` import specifiers that resolve to `.ts`).
 
 ## Commands
 
@@ -54,7 +54,7 @@ npm run format:check       # prettier --check (format to write)
 ### Utils (`src/utils/`)
 - `sandbox.ts` — `createSandbox` copies the workspace to `os.tmpdir()`, symlinks `node_modules`/`.venv` (so heavy deps aren't copied), enforces a size guard, and registers exit handlers (`exit`/SIGTERM/SIGINT/SIGHUP/SIGQUIT) that remove leaked sandboxes. Has its own `isPathInside` boundary check (defense-in-depth).
 - `project-detector.ts` — extension → `ProjectType`, plus per-language test-runner / package-manager / workspace-root detection.
-- `config-loader.ts` — loads/validates `chaos-mcp.config.json`. Engine-specific sections (`stryker`/`mutmut`/`go`/`rust`) override globals; precedence is **args > engine section > global config > detected default** (see `buildRunOptions`).
+- `config-loader.ts` — loads/validates `chaos-mcp.config.json`. Engine-specific sections (`stryker`/`cosmicray`/`go`/`rust`) override globals; precedence is **args > engine section > global config > detected default** (see `buildRunOptions`).
 - `git-diff.ts` — `computeChangedRanges` for diff-aware scoping (returns tagged results: `not-a-repo` / `bad-ref` / `no-changes` / `untracked` / `ranges`).
 - `verify.ts` — A3 verify mode: parse a prior-run baseline, re-scope to those lines, and report which previously-surviving mutants are now killed.
 - `run-cache.ts` — `saveRun`/`loadRun`; ephemeral baseline cache in `os.tmpdir()/chaos-mcp-runs/` (8-char `runId` returned by every non-verify audit); TTL + count-cap eviction (defaults: 24 h / 200 entries; configurable via `runCacheTtlMs`/`runCacheMax`).

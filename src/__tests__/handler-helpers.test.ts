@@ -221,23 +221,23 @@ describe('buildRunOptions', () => {
     ).toBe(99);
   });
 
-  it('resolves TS testRunner precedence: stryker > global > env (mutmut ignored)', () => {
+  it('resolves TS testRunner precedence: stryker > global > env (cosmicray ignored)', () => {
     // For TypeScript the Stryker section wins; Mutmut's runner must NOT leak in.
     expect(
       buildRunOptions(
         {},
-        { stryker: { testRunner: 'a' }, mutmut: { testRunner: 'b' }, testRunner: 'c' },
+        { stryker: { testRunner: 'a' }, cosmicray: { testRunner: 'b' }, testRunner: 'c' },
         env(),
         '/sb',
         'typescript',
       ).testRunner,
     ).toBe('a');
-    // Med#2: no stryker section → mutmut must NOT be used for a TS target; fall
+    // Med#2: no stryker section → cosmicray must NOT be used for a TS target; fall
     // through to the global default instead.
     expect(
       buildRunOptions(
         {},
-        { mutmut: { testRunner: 'b' }, testRunner: 'c' },
+        { cosmicray: { testRunner: 'b' }, testRunner: 'c' },
         env(),
         '/sb',
         'typescript',
@@ -251,12 +251,12 @@ describe('buildRunOptions', () => {
     );
   });
 
-  it('resolves Python testRunner from the mutmut section, never from stryker', () => {
-    // Both sections present → Python must take mutmut's runner, not Stryker's.
+  it('resolves Python testRunner from the cosmicray section, never from stryker', () => {
+    // Both sections present → Python must take cosmicray's runner, not Stryker's.
     expect(
       buildRunOptions(
         {},
-        { stryker: { testRunner: 'vitest' }, mutmut: { testRunner: 'unittest' } },
+        { stryker: { testRunner: 'vitest' }, cosmicray: { testRunner: 'unittest' } },
         env({ testRunner: 'pytest' }),
         '/sb',
         'python',
@@ -358,7 +358,7 @@ describe('buildRunOptions', () => {
     expect(
       buildRunOptions(
         {},
-        { mutmut: { timeoutMs: 7 } },
+        { cosmicray: { timeoutMs: 7 } },
         env({ projectType: 'python' }),
         '/sb',
         'python',
@@ -477,12 +477,12 @@ describe('validateToolArgs — baseline arms', () => {
 });
 
 describe('buildRunOptions — mutation hardening', () => {
-  it('never sources a testRunner from the mutmut section for a non-mutmut engine', () => {
-    // `configKey === 'mutmut' → true` would leak mutmut's runner into a Go run.
+  it('never sources a testRunner from the cosmicray section for a non-cosmicray engine', () => {
+    // `configKey === 'cosmicray' → true` would leak cosmicray's runner into a Go run.
     expect(
       buildRunOptions(
         {},
-        { mutmut: { testRunner: 'leaked' } },
+        { cosmicray: { testRunner: 'leaked' } },
         env({ projectType: 'go', testRunner: 'gotest' }),
         '/sb',
         'go',

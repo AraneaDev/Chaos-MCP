@@ -43,7 +43,7 @@ Description:
   "audit_code_resilience", which runs isolated mutation testing against a target
   source file to identify weaknesses in the local test suite.
 
-  It supports TypeScript/JavaScript (via StrykerJS), Python (via Mutmut),
+  It supports TypeScript/JavaScript (via StrykerJS), Python (via cosmic-ray),
   Go (via go-mutesting), and Rust (via cargo-mutants). All mutation runs execute inside temporary sandbox
   directories — your real working tree is never touched.
 
@@ -54,10 +54,11 @@ Configuration (chaos-mcp.config.json):
     "rust": { "timeoutMs": 600000 }
   }
 
-  Engine-specific sections ("stryker", "mutmut", "go", "rust") override the
+  Engine-specific sections ("stryker", "cosmicray", "go", "rust") override the
   corresponding global defaults. Stryker sections support: timeoutMs, concurrency,
   mutatorDenylist, perMutantTimeoutMs, dryRun, incremental.
-  All other engine sections support: timeoutMs. Mutmut also supports: testRunner.
+  All other engine sections support: timeoutMs. cosmicray also supports:
+  testRunner, testSelection.
 
 Tool: audit_code_resilience
   Parameters:
@@ -84,7 +85,7 @@ Tool: audit_code_resilience
 Links:
   https://codebuff.com/docs
   https://stryker-mutator.io
-  https://github.com/boxed/mutmut
+  https://github.com/sixty-north/cosmic-ray
   https://github.com/zimmski/go-mutesting
   https://github.com/sourcefrog/cargo-mutants
 `;

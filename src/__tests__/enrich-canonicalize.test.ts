@@ -82,36 +82,45 @@ describe('canonicalizeMutator', () => {
   });
 });
 
-describe('canonicalizeMutator (python — inferred from the mutmut show diff)', () => {
-  // The Python engine now captures original→mutated from `mutmut show`, which
-  // buildChange renders as "<original> → <mutated>" changeText. Python uses
-  // WORD operators (and/or/not, True/False), so the rules differ from Rust's.
-  it('classifies a comparison flip as EqualityOperator', () => {
-    expect(canonicalizeMutator('Mutation', 'python', 'if n > 10: → if n >= 10:')).toBe(
+describe('canonicalizeMutator (python — cosmic-ray operator names)', () => {
+  // cosmic-ray emits authoritative operator names; the Python branch maps the
+  // NAME directly (no diff inference). Comparison is matched before BinaryOperator,
+  // and BooleanOperator (and/or) before the generic True/False rule.
+  it('maps a comparison-operator replacement to EqualityOperator', () => {
+    expect(canonicalizeMutator('core/ReplaceComparisonOperator_Lt_LtE', 'python')).toBe(
       'EqualityOperator',
     );
   });
-  it('classifies an arithmetic-operator swap as ArithmeticOperator', () => {
-    expect(canonicalizeMutator('Mutation', 'python', 'total = a + b → total = a - b')).toBe(
+  it('maps a binary-operator replacement to ArithmeticOperator', () => {
+    expect(canonicalizeMutator('core/ReplaceBinaryOperator_Add_Sub', 'python')).toBe(
+      'ArithmeticOperator',
+    );
+    // bitwise variants live under the same operator family
+    expect(canonicalizeMutator('core/ReplaceBinaryOperator_Add_BitOr', 'python')).toBe(
       'ArithmeticOperator',
     );
   });
-  it('classifies an and/or swap as LogicalOperator', () => {
-    expect(canonicalizeMutator('Mutation', 'python', 'x and y → x or y')).toBe('LogicalOperator');
-  });
-  it('classifies a True/False flip as BooleanLiteral', () => {
-    expect(canonicalizeMutator('Mutation', 'python', 'return True → return False')).toBe(
-      'BooleanLiteral',
+  it('maps a boolean-operator (and/or) replacement to LogicalOperator', () => {
+    expect(canonicalizeMutator('core/ReplaceBooleanOperator_And_Or', 'python')).toBe(
+      'LogicalOperator',
     );
   });
-  it('classifies a not removal as UnaryOperator', () => {
-    expect(canonicalizeMutator('Mutation', 'python', 'if not x: → if x:')).toBe('UnaryOperator');
+  it('maps a unary-operator replacement to UnaryOperator', () => {
+    expect(canonicalizeMutator('core/ReplaceUnaryOperator_Not_Nothing', 'python')).toBe(
+      'UnaryOperator',
+    );
   });
-  it('returns unknown for a Python change with no recognizable operator (e.g. a string)', () => {
-    expect(canonicalizeMutator('Mutation', 'python', '"big" → "small"')).toBe('unknown');
+  it('maps True/False replacement to BooleanLiteral (not LogicalOperator)', () => {
+    expect(canonicalizeMutator('core/ReplaceTrueWithFalse', 'python')).toBe('BooleanLiteral');
   });
-  it('returns unknown for Python when no changeText was captured (show unavailable)', () => {
-    expect(canonicalizeMutator('Mutation', 'python', undefined)).toBe('unknown');
+  it('maps NumberReplacer to ArithmeticOperator (a wrong constant is a value bug)', () => {
+    expect(canonicalizeMutator('core/NumberReplacer', 'python')).toBe('ArithmeticOperator');
+  });
+  it('maps a string replacement to StringLiteral', () => {
+    expect(canonicalizeMutator('core/StringReplacer', 'python')).toBe('StringLiteral');
+  });
+  it('returns unknown for an unrecognized cosmic-ray operator', () => {
+    expect(canonicalizeMutator('core/ZeroIterationForLoop', 'python')).toBe('unknown');
   });
 });
 

@@ -39,7 +39,7 @@ describe('resources', () => {
       { engine: string; configKey: string; autoPrebuild: boolean }
     >;
     expect(data.typescript.engine).toBe('StrykerJS');
-    expect(data.python.engine).toBe('Mutmut');
+    expect(data.python.engine).toBe('cosmic-ray');
     expect(data.go.engine).toBe('go-mutesting');
     expect(data.rust.engine).toBe('cargo-mutants');
     // Structural fields sourced from ENGINE_REGISTRY (configKey + autoPrebuild).

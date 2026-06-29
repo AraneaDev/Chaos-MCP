@@ -221,16 +221,16 @@ describe('loadConfig', () => {
     });
   });
 
-  it('loads mutmut engine-specific config', () => {
+  it('loads cosmicray engine-specific config', () => {
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue(
       JSON.stringify({
-        mutmut: { timeoutMs: 120000, testRunner: 'pytest' },
+        cosmicray: { timeoutMs: 120000, testRunner: 'pytest' },
       }),
     );
 
     const config = loadConfig('/tmp/config.json');
-    expect(config.mutmut).toEqual({ timeoutMs: 120000, testRunner: 'pytest' });
+    expect(config.cosmicray).toEqual({ timeoutMs: 120000, testRunner: 'pytest' });
   });
 
   it('loads go engine-specific config', () => {
@@ -264,9 +264,9 @@ describe('loadConfig', () => {
     expect(config.stryker?.timeoutMs).toBe(60000);
     expect(config.stryker?.concurrency).toBe(2);
     expect(config.rust?.timeoutMs).toBe(600000);
-    // No go/mutmut sections should be present
+    // No go/cosmicray sections should be present
     expect(config.go).toBeUndefined();
-    expect(config.mutmut).toBeUndefined();
+    expect(config.cosmicray).toBeUndefined();
   });
 
   it('filters invalid values from stryker config section', () => {
@@ -425,12 +425,12 @@ describe('validateConfig', () => {
     expect(config.stryker?.testRunner).toBe('vitest');
   });
 
-  it('loads mutmut testRunner from config file', () => {
+  it('loads cosmicray testRunner from config file', () => {
     mockExistsSync.mockReturnValue(true);
-    mockReadFileSync.mockReturnValue(JSON.stringify({ mutmut: { testRunner: 'unittest' } }));
+    mockReadFileSync.mockReturnValue(JSON.stringify({ cosmicray: { testRunner: 'unittest' } }));
 
     const config = loadConfig('/tmp/config.json');
-    expect(config.mutmut?.testRunner).toBe('unittest');
+    expect(config.cosmicray?.testRunner).toBe('unittest');
   });
 
   it('returns undefined for stryker config when only empty testRunner is provided', () => {
@@ -573,14 +573,16 @@ describe('validateConfig', () => {
 
   // ─── Engine-specific validation edge cases ──────────────────────────────
 
-  it('warns about unknown keys in mutmut engine section', () => {
+  it('warns about unknown keys in cosmicray engine section', () => {
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue(
-      JSON.stringify({ mutmut: { timeoutMs: 60000, bogusMutmutKey: true } }),
+      JSON.stringify({ cosmicray: { timeoutMs: 60000, bogusMutmutKey: true } }),
     );
 
     const { warnings } = validateConfig('/tmp/config.json');
-    expect(warnings.some((w) => w.includes('bogusMutmutKey') && w.includes('mutmut'))).toBe(true);
+    expect(warnings.some((w) => w.includes('bogusMutmutKey') && w.includes('cosmicray'))).toBe(
+      true,
+    );
   });
 
   it('warns about wrong type for go timeoutMs', () => {
@@ -631,12 +633,12 @@ describe('validateConfig', () => {
     expect(warnings.some((w) => w.includes('concurrency') && w.includes('integer'))).toBe(true);
   });
 
-  it('warns about non-object mutmut section', () => {
+  it('warns about non-object cosmicray section', () => {
     mockExistsSync.mockReturnValue(true);
-    mockReadFileSync.mockReturnValue(JSON.stringify({ mutmut: 'not-an-object' }));
+    mockReadFileSync.mockReturnValue(JSON.stringify({ cosmicray: 'not-an-object' }));
 
     const { warnings } = validateConfig('/tmp/config.json');
-    expect(warnings.some((w) => w.includes('mutmut') && w.includes('must be an object'))).toBe(
+    expect(warnings.some((w) => w.includes('cosmicray') && w.includes('must be an object'))).toBe(
       true,
     );
   });
@@ -661,13 +663,13 @@ describe('validateConfig', () => {
     ).toBe(true);
   });
 
-  it('warns about mutmut timeoutMs <= 0', () => {
+  it('warns about cosmicray timeoutMs <= 0', () => {
     mockExistsSync.mockReturnValue(true);
-    mockReadFileSync.mockReturnValue(JSON.stringify({ mutmut: { timeoutMs: 0 } }));
+    mockReadFileSync.mockReturnValue(JSON.stringify({ cosmicray: { timeoutMs: 0 } }));
 
     const { warnings } = validateConfig('/tmp/config.json');
     expect(
-      warnings.some((w) => w.includes('mutmut.timeoutMs') && w.includes('must be positive')),
+      warnings.some((w) => w.includes('cosmicray.timeoutMs') && w.includes('must be positive')),
     ).toBe(true);
   });
 
@@ -786,7 +788,7 @@ describe('config-loader mutation hardening', () => {
       runCacheTtlMs: 1000,
       runCacheMax: 10,
       stryker: { timeoutMs: 1 },
-      mutmut: { timeoutMs: 1 },
+      cosmicray: { timeoutMs: 1 },
       go: { timeoutMs: 1 },
       rust: { timeoutMs: 1 },
     });
@@ -811,10 +813,10 @@ describe('config-loader mutation hardening', () => {
     expect(warnings.some((w) => w.includes('Unknown key') && w.includes('stryker'))).toBe(false);
   });
 
-  it('accepts every known mutmut key without an unknown-key warning', () => {
-    setConfig({ mutmut: { timeoutMs: 1, testRunner: 'pytest' } });
+  it('accepts every known cosmicray key without an unknown-key warning', () => {
+    setConfig({ cosmicray: { timeoutMs: 1, testRunner: 'pytest' } });
     const { warnings } = validateConfig('/tmp/config.json');
-    expect(warnings.some((w) => w.includes('Unknown key') && w.includes('mutmut'))).toBe(false);
+    expect(warnings.some((w) => w.includes('Unknown key') && w.includes('cosmicray'))).toBe(false);
   });
 
   // ── validateConfig global type checks (327/328, 336/337 were NoCoverage) ──
@@ -887,7 +889,7 @@ describe('config-loader mutation hardening', () => {
       defaultTimeoutMs: 1,
       perMutantTimeoutMs: 1,
       stryker: { timeoutMs: 1 },
-      mutmut: { timeoutMs: 1 },
+      cosmicray: { timeoutMs: 1 },
       go: { timeoutMs: 1 },
       rust: { timeoutMs: 1 },
     });
@@ -895,7 +897,7 @@ describe('config-loader mutation hardening', () => {
     expect(cfg.defaultTimeoutMs).toBe(1);
     expect(cfg.perMutantTimeoutMs).toBe(1);
     expect(cfg.stryker?.timeoutMs).toBe(1);
-    expect(cfg.mutmut?.timeoutMs).toBe(1);
+    expect(cfg.cosmicray?.timeoutMs).toBe(1);
     expect(cfg.go?.timeoutMs).toBe(1);
     expect(cfg.rust?.timeoutMs).toBe(1);
   });
@@ -905,7 +907,7 @@ describe('config-loader mutation hardening', () => {
       defaultTimeoutMs: 0,
       perMutantTimeoutMs: 0,
       stryker: { timeoutMs: 0 },
-      mutmut: { timeoutMs: 0 },
+      cosmicray: { timeoutMs: 0 },
       go: { timeoutMs: 0 },
       rust: { timeoutMs: 0 },
     });
@@ -913,7 +915,7 @@ describe('config-loader mutation hardening', () => {
     expect(cfg.defaultTimeoutMs).toBeUndefined();
     expect(cfg.perMutantTimeoutMs).toBeUndefined();
     expect(cfg.stryker).toBeUndefined();
-    expect(cfg.mutmut).toBeUndefined();
+    expect(cfg.cosmicray).toBeUndefined();
     expect(cfg.go).toBeUndefined();
     expect(cfg.rust).toBeUndefined();
   });
@@ -959,9 +961,9 @@ describe('config-loader mutation hardening', () => {
     expect(loadConfig('/tmp/config.json').stryker).toBeUndefined();
   });
 
-  it('drops a mutmut section whose only field is an empty testRunner', () => {
-    setConfig({ mutmut: { testRunner: '' } });
-    expect(loadConfig('/tmp/config.json').mutmut).toBeUndefined();
+  it('drops a cosmicray section whose only field is an empty testRunner', () => {
+    setConfig({ cosmicray: { testRunner: '' } });
+    expect(loadConfig('/tmp/config.json').cosmicray).toBeUndefined();
   });
 
   it('drops the global testRunner when it is an empty string', () => {
@@ -1013,7 +1015,7 @@ describe('config-loader mutation hardening', () => {
       defaultTimeoutMs: '5',
       perMutantTimeoutMs: '5',
       stryker: { timeoutMs: '5', perMutantTimeoutMs: '5' },
-      mutmut: { timeoutMs: '5' },
+      cosmicray: { timeoutMs: '5' },
       go: { timeoutMs: '5' },
       rust: { timeoutMs: '5' },
     });
@@ -1021,7 +1023,7 @@ describe('config-loader mutation hardening', () => {
     expect(cfg.defaultTimeoutMs).toBeUndefined();
     expect(cfg.perMutantTimeoutMs).toBeUndefined();
     expect(cfg.stryker).toBeUndefined();
-    expect(cfg.mutmut).toBeUndefined();
+    expect(cfg.cosmicray).toBeUndefined();
     expect(cfg.go).toBeUndefined();
     expect(cfg.rust).toBeUndefined();
   });
@@ -1043,10 +1045,10 @@ describe('config-loader mutation hardening', () => {
   // ── A null engine section must yield `undefined`, not a null-deref crash.
   //    Kills `raw === null → false` in each parser. ──
   it('treats a null engine section as absent without crashing', () => {
-    setConfig({ stryker: null, mutmut: null, go: null, rust: null });
+    setConfig({ stryker: null, cosmicray: null, go: null, rust: null });
     const cfg = loadConfig('/tmp/config.json');
     expect(cfg.stryker).toBeUndefined();
-    expect(cfg.mutmut).toBeUndefined();
+    expect(cfg.cosmicray).toBeUndefined();
     expect(cfg.go).toBeUndefined();
     expect(cfg.rust).toBeUndefined();
   });

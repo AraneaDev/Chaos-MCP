@@ -12,7 +12,7 @@ describe('ENGINE_REGISTRY', () => {
 
   it('maps each language to the correct config section key', () => {
     expect(ENGINE_REGISTRY.typescript.configKey).toBe('stryker');
-    expect(ENGINE_REGISTRY.python.configKey).toBe('mutmut');
+    expect(ENGINE_REGISTRY.python.configKey).toBe('cosmicray');
     expect(ENGINE_REGISTRY.go.configKey).toBe('go');
     expect(ENGINE_REGISTRY.rust.configKey).toBe('rust');
   });

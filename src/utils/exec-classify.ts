@@ -5,7 +5,7 @@ import { ExecResult, ExecFailureError, runShell } from './exec.js';
  * install hint surfaced when the binary is missing. Names match the
  * user-facing labels used in docs (e.g. StrykerJS — not `stryker`).
  */
-export type ExecutableTool = 'StrykerJS' | 'mutmut' | 'go-mutesting' | 'cargo-mutants';
+export type ExecutableTool = 'StrykerJS' | 'cosmic-ray' | 'go-mutesting' | 'cargo-mutants';
 
 /**
  * Typed error thrown by {@link invokeMutationTool} when the mutation tool
@@ -35,7 +35,7 @@ export class MutationToolStartupError extends Error {
 
 const INSTALL_HINTS: Record<ExecutableTool, string> = {
   StrykerJS: 'npm install --save-dev @stryker-mutator/core',
-  mutmut: 'pipx install mutmut (or: pip install mutmut in a virtualenv)',
+  'cosmic-ray': 'pipx install cosmic-ray (or: pip install cosmic-ray in a virtualenv)',
   'go-mutesting': 'go install github.com/zimmski/go-mutesting/cmd/go-mutesting@latest',
   'cargo-mutants': 'cargo install cargo-mutants',
 };

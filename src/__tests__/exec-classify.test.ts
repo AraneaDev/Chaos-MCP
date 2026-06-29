@@ -55,15 +55,15 @@ describe('invokeMutationTool', () => {
     );
   });
 
-  it('throws MutationToolStartupError with install hint for mutmut ENOENT', async () => {
+  it('throws MutationToolStartupError with install hint for cosmic-ray ENOENT', async () => {
     const enoentError = new ExecFailureError(
       { stdout: '', stderr: '', exit: null, signal: null, code: 'ENOENT' },
       'Command not found',
     );
     mockRunShell.mockRejectedValue(enoentError);
 
-    await expect(invokeMutationTool('mutmut', 'mutmut', ['run'])).rejects.toThrow(
-      /pip install mutmut/,
+    await expect(invokeMutationTool('cosmic-ray', 'cosmic-ray', ['init'])).rejects.toThrow(
+      /pip install cosmic-ray/,
     );
   });
 

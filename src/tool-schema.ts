@@ -9,7 +9,7 @@ export const TOOL_DEFINITION = {
   description:
     'Runs on-demand, sandbox-isolated mutation testing against a single source file to identify gaps in unit test coverage. ' +
     'Chaos-MCP generates mutants (logical faults like changing `>` to `>=`) and checks whether the local test suite catches them. ' +
-    'Surviving mutants indicate test coverage holes. Supports TypeScript/JavaScript (StrykerJS), Python (Mutmut), Go (go-mutesting), and Rust (cargo-mutants).',
+    'Surviving mutants indicate test coverage holes. Supports TypeScript/JavaScript (StrykerJS), Python (cosmic-ray), Go (go-mutesting), and Rust (cargo-mutants).',
   inputSchema: {
     type: 'object' as const,
     properties: {

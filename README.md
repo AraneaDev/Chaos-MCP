@@ -13,7 +13,7 @@ Chaos-MCP is an [MCP (Model Context Protocol)](https://modelcontextprotocol.io/)
 
 ## Features
 
-- **4 Languages Supported** — TypeScript/JavaScript (StrykerJS), Python (Mutmut), Go (go-mutesting), Rust (cargo-mutants)
+- **4 Languages Supported** — TypeScript/JavaScript (StrykerJS), Python (cosmic-ray), Go (go-mutesting), Rust (cargo-mutants)
 - **Sandbox Isolation** — all mutation runs execute in temporary directories; your real workspace is never touched
 - **Auto-Detection** — automatically detects project type, test runner, and workspace root
 - **Async Subprocesses** — all mutation-tool execution uses async `execFile`/`exec` (subprocess runs never block the event loop; the one-time sandbox copy is synchronous)
@@ -48,13 +48,13 @@ Chaos-MCP does **not** bundle the per-language mutation engines or install them 
 | Language | Engine | Install |
 | --- | --- | --- |
 | TypeScript / JavaScript | [StrykerJS](https://stryker-mutator.io/) | `npm install --save-dev @stryker-mutator/core` (in the target project) |
-| Python | [mutmut](https://github.com/boxed/mutmut) **v3+** | `pipx install mutmut` — or `pip install mutmut` inside a virtualenv |
+| Python | [cosmic-ray](https://github.com/sixty-north/cosmic-ray) | `pipx install cosmic-ray` — or `pip install cosmic-ray` inside a virtualenv |
 | Go | [go-mutesting](https://github.com/zimmski/go-mutesting) | `go install github.com/zimmski/go-mutesting/cmd/go-mutesting@latest` |
 | Rust | [cargo-mutants](https://github.com/sourcefrog/cargo-mutants) | `cargo install cargo-mutants` |
 
 Notes:
-- The tool itself must be on `PATH` (or, for StrykerJS, resolvable from the target project's `node_modules`), and the **language toolchain** it builds on must already be present — Node.js for StrykerJS, a Python interpreter for mutmut, the Go toolchain for go-mutesting, and a Rust/Cargo toolchain for cargo-mutants.
-- **Python / mutmut:** install **v3 or newer** — Chaos-MCP targets mutmut v3's output format. On modern distros a bare `pip install mutmut` is blocked by [PEP 668](https://peps.python.org/pep-0668/) ("externally-managed-environment"); use `pipx install mutmut` (isolated) or install inside an activated virtualenv. mutmut reads its runner/source config from `[tool.mutmut]` in the target project's `pyproject.toml`.
+- The tool itself must be on `PATH` (or, for StrykerJS, resolvable from the target project's `node_modules`), and the **language toolchain** it builds on must already be present — Node.js for StrykerJS, a Python interpreter for cosmic-ray, the Go toolchain for go-mutesting, and a Rust/Cargo toolchain for cargo-mutants.
+- **Python / cosmic-ray:** on modern distros a bare `pip install cosmic-ray` is blocked by [PEP 668](https://peps.python.org/pep-0668/) ("externally-managed-environment"); use `pipx install cosmic-ray` (isolated) or install inside an activated virtualenv. Chaos-MCP generates cosmic-ray's `config.toml` for you (scoped to the target file) and runs `baseline → init → exec → dump` in the sandbox — no per-project config needed. cosmic-ray runs its **full operator set** (no per-file line-scoping), so auditing a large file is slow; scope the baseline test run with the `cosmicray.testSelection` config option on big suites.
 - These engines run **inside the sandbox** against a copy of your workspace; Chaos-MCP never installs or modifies anything in your real project.
 
 ## Quick Start
@@ -102,7 +102,7 @@ The primary tool is `audit_code_resilience` (the batch tool `triage_test_coverag
 
 Enrichment is enabled by default. Each surviving / no-coverage line is augmented with four fields: a `severity` rating (`high`, `medium`, or `low`) based on the mutator's semantics (e.g. boundary operators and logical operators rank high), a `why` explanation of why the gap is dangerous, a `hint` describing the kind of test that would kill it, and a `context` snippet of the surrounding source lines. Survivors are re-ranked severity-first so the most critical gaps appear first. To disable enrichment and return the plain unranked output, pass `"enrich": false`.
 
-TypeScript targets produce the richest output because StrykerJS exposes per-mutant operator detail; Go targets can also produce severity-ranked output when the mutation tool emits structured data with mutator names; Python targets report `severity: "unknown"` with a generic why/hint because mutmut does not expose per-mutant operator detail.
+TypeScript targets produce the richest output because StrykerJS exposes per-mutant operator detail; Python (cosmic-ray) and Go targets also produce severity-ranked output, mapping each tool's authoritative operator name to a canonical category; targets whose tool can't expose a per-mutant operator fall back to `severity: "unknown"` with a generic why/hint.
 
 **Cap and filter the survivor list:**
 ```json
@@ -470,7 +470,7 @@ The `prebuildCommand` tool argument runs an arbitrary shell command inside the s
 | Language | Mutation Tool | Detected Runners |
 |----------|--------------|------------------|
 | TypeScript/JS | StrykerJS | vitest, jest, mocha, jasmine, bun, node:test |
-| Python | Mutmut | pytest, tox, nox |
+| Python | cosmic-ray | pytest, unittest |
 | Go | go-mutesting | go test, testify, ginkgo |
 | Rust | cargo-mutants | cargo test, cargo-nextest |
 
@@ -559,7 +559,7 @@ MIT — See [LICENSE](LICENSE) for details.
 
 - [MCP Documentation](https://modelcontextprotocol.io/)
 - [StrykerJS](https://stryker-mutator.io/)
-- [Mutmut](https://github.com/boxed/mutmut)
+- [cosmic-ray](https://github.com/sixty-north/cosmic-ray)
 - [go-mutesting](https://github.com/zimmski/go-mutesting)
 - [cargo-mutants](https://github.com/sourcefrog/cargo-mutants)
 - [Changelog](CHANGELOG.md)

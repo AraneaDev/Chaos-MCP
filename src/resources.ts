@@ -37,7 +37,7 @@ export function listResources(): ResourceListing[] {
 /** Engine display names keyed by language (kept here as the doc-facing label). */
 const ENGINE_NAMES: Record<SupportedProjectType, string> = {
   typescript: 'StrykerJS',
-  python: 'Mutmut',
+  python: 'cosmic-ray',
   go: 'go-mutesting',
   rust: 'cargo-mutants',
 };
@@ -75,7 +75,7 @@ function configSchemaJson(): string {
     runCacheMax: 'integer ≥ 1 — runId cache max entries (default 200).',
     allowPrebuild: 'boolean — allow caller-supplied prebuildCommand (default false).',
     stryker: 'object — StrykerJS-specific overrides.',
-    mutmut: 'object — Mutmut-specific overrides.',
+    cosmicray: 'object — cosmic-ray (Python)-specific overrides.',
     go: 'object — go-mutesting-specific overrides.',
     rust: 'object — cargo-mutants-specific overrides.',
   };
