@@ -5,6 +5,7 @@ import {
   mutmutModuleGlob,
   parseMutmutCicdStats,
   parseMutmutSurvivors,
+  buildMutmutConfigInjection,
 } from '../engines/python.js';
 
 describe('parseMutmutResults', () => {
@@ -306,6 +307,51 @@ describe('parseMutmutResults', () => {
     it('returns an empty list for v2 text or empty output', () => {
       expect(parseMutmutSurvivors('Survived 🙂 (3)')).toEqual([]);
       expect(parseMutmutSurvivors('')).toEqual([]);
+    });
+  });
+
+  // ─── Gap A/B: inject [tool.mutmut] into the sandbox pyproject ─────────────
+  // mutmut v3 cannot start without source_paths; most projects don't configure
+  // [tool.mutmut]. The engine injects it into the sandbox copy (never the real
+  // project). Optional test selection scopes the baseline for large suites.
+  describe('buildMutmutConfigInjection', () => {
+    const rel = 'core/cve_scanners/apt.py';
+
+    it('creates a pyproject with [tool.mutmut] + source_paths when none exists', () => {
+      const out = buildMutmutConfigInjection(null, rel);
+      expect(out).toContain('[tool.mutmut]');
+      expect(out).toContain('source_paths = ["core/cve_scanners/apt.py"]');
+    });
+
+    it('appends [tool.mutmut] to an existing pyproject, preserving its content', () => {
+      const existing = '[tool.pytest.ini_options]\ntestpaths = ["tests"]\n';
+      const out = buildMutmutConfigInjection(existing, rel) ?? '';
+      expect(out).toContain('[tool.pytest.ini_options]'); // original kept
+      expect(out).toContain('[tool.mutmut]'); // section added
+      expect(out.indexOf('[tool.pytest.ini_options]')).toBeLessThan(out.indexOf('[tool.mutmut]'));
+    });
+
+    it('returns null when [tool.mutmut] is already configured (respects the project)', () => {
+      const existing = '[tool.mutmut]\nsource_paths = ["pkg"]\n';
+      expect(buildMutmutConfigInjection(existing, rel)).toBeNull();
+    });
+
+    it('adds pytest_add_cli_args_test_selection when a test selection is given', () => {
+      const out = buildMutmutConfigInjection(null, rel, ['tests/unit/test_apt_version_compare.py']);
+      expect(out).toContain(
+        'pytest_add_cli_args_test_selection = ["tests/unit/test_apt_version_compare.py"]',
+      );
+    });
+
+    it('omits the test-selection line when no selection is given', () => {
+      expect(buildMutmutConfigInjection(null, rel)).not.toContain(
+        'pytest_add_cli_args_test_selection',
+      );
+    });
+
+    it('quotes multiple selection args as a TOML string array', () => {
+      const out = buildMutmutConfigInjection(null, rel, ['-m', 'unit']);
+      expect(out).toContain('pytest_add_cli_args_test_selection = ["-m", "unit"]');
     });
   });
 

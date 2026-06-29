@@ -38,7 +38,7 @@ const KNOWN_STRYKER_KEYS = new Set([
 ]);
 
 /** Valid keys within a MutmutConfig section. */
-const KNOWN_MUTMUT_KEYS = new Set(['timeoutMs', 'testRunner']);
+const KNOWN_MUTMUT_KEYS = new Set(['timeoutMs', 'testRunner', 'testSelection']);
 
 /** Valid keys within a GoMutestingConfig section. */
 const KNOWN_GO_KEYS = new Set(['timeoutMs']);
@@ -77,6 +77,13 @@ export interface MutmutConfig {
   timeoutMs?: number;
   /** Test runner override (e.g. "pytest", "unittest"). */
   testRunner?: string;
+  /**
+   * pytest selection args used to scope mutmut v3's baseline test run on large
+   * suites (a test path like `["tests/unit/test_x.py"]` or a marker like
+   * `["-m","unit"]`). Injected as `pytest_add_cli_args_test_selection`. Opt-in:
+   * narrowing the selection changes which tests can kill a mutant.
+   */
+  testSelection?: string[];
 }
 
 /**
@@ -230,6 +237,14 @@ function parseMutmutConfig(raw: unknown): MutmutConfig | undefined {
   }
   if (typeof s.testRunner === 'string' && s.testRunner.length > 0) {
     result.testRunner = s.testRunner;
+    hasAny = true;
+  }
+  if (
+    Array.isArray(s.testSelection) &&
+    s.testSelection.length > 0 &&
+    s.testSelection.every((v) => typeof v === 'string' && v.length > 0)
+  ) {
+    result.testSelection = s.testSelection as string[];
     hasAny = true;
   }
 

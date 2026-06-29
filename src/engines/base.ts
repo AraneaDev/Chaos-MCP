@@ -178,6 +178,18 @@ export interface RunOptions {
 
   /** Abort signal; when aborted, the mutation subprocess is killed. */
   signal?: AbortSignal;
+
+  /**
+   * Optional pytest selection args used to scope mutmut v3's baseline test run
+   * (emitted as `pytest_add_cli_args_test_selection` in the injected
+   * `[tool.mutmut]` config). Use a test path (`["tests/unit/test_x.py"]`) or a
+   * marker (`["-m","unit"]`) to keep the baseline fast on large suites.
+   *
+   * **Python (mutmut) only.** Scoping changes which tests can kill a mutant, so
+   * it is opt-in (a narrow selection can make mutants survive that a broader run
+   * would kill).
+   */
+  pythonTestSelection?: string[];
 }
 
 /**

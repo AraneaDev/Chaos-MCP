@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { BaseEngine, RunOptions, MutationResult, Vulnerability } from './base.js';
 import { ExecFailureError } from '../utils/exec.js';
@@ -183,6 +183,40 @@ export function parseMutmutShow(
 
   if (original === undefined && mutated === undefined) return null;
   return { line: changeLine, original, mutated };
+}
+
+/**
+ * Build the `[tool.mutmut]` config the engine injects into the SANDBOX
+ * pyproject.toml so mutmut v3 can run. mutmut v3 refuses to start without
+ * `source_paths`, and most projects don't carry a `[tool.mutmut]` section — so
+ * we provide one scoped to the target file. This only ever writes to the
+ * throwaway sandbox copy, never the user's real project.
+ *
+ * @param existingPyproject - current sandbox pyproject.toml content, or null if absent.
+ * @param relFile - workspace-relative target file (becomes `source_paths`).
+ * @param testSelection - optional pytest selection args (e.g. a test file or
+ *   `["-m","unit"]`) to scope the baseline for large suites; emitted as
+ *   `pytest_add_cli_args_test_selection`.
+ * @returns the full pyproject.toml content to write, or null when the project
+ *   already declares `[tool.mutmut]` (we respect the user's own config).
+ */
+export function buildMutmutConfigInjection(
+  existingPyproject: string | null,
+  relFile: string,
+  testSelection?: string[],
+): string | null {
+  if (existingPyproject !== null && /^\s*\[tool\.mutmut\]/m.test(existingPyproject)) {
+    return null;
+  }
+  const lines = ['[tool.mutmut]', `source_paths = [${JSON.stringify(relFile)}]`];
+  if (testSelection && testSelection.length > 0) {
+    lines.push(
+      `pytest_add_cli_args_test_selection = [${testSelection.map((s) => JSON.stringify(s)).join(', ')}]`,
+    );
+  }
+  const block = `${lines.join('\n')}\n`;
+  if (existingPyproject === null || existingPyproject.trim() === '') return block;
+  return `${existingPyproject.replace(/\s*$/, '')}\n\n${block}`;
 }
 
 /** A surviving (non-killed) mutmut v3 mutant: its id and reported status. */
@@ -444,6 +478,24 @@ export class PythonEngine extends BaseEngine {
     const runArgs = ['run', mutmutModuleGlob(filePath)];
     if (resolvedRunner !== 'pytest') {
       runArgs.push('--runner', resolvedRunner);
+    }
+
+    // Ensure mutmut has a [tool.mutmut] config: v3 refuses to start without
+    // `source_paths`, and most projects carry no such section. Inject one scoped
+    // to the target file into the SANDBOX pyproject only (never the real
+    // project). Best-effort — if the write fails, mutmut surfaces its own error.
+    try {
+      const pyprojectPath = join(cwd, 'pyproject.toml');
+      const existing = existsSync(pyprojectPath) ? readFileSync(pyprojectPath, 'utf8') : null;
+      const injected = buildMutmutConfigInjection(existing, filePath, options?.pythonTestSelection);
+      if (injected !== null) {
+        writeFileSync(pyprojectPath, injected, 'utf8');
+        if (isVerbose()) {
+          log('PythonEngine: injected [tool.mutmut] source_paths into the sandbox pyproject');
+        }
+      }
+    } catch {
+      // best-effort: a missing/un-writable config surfaces as a mutmut error below
     }
 
     if (isVerbose()) {

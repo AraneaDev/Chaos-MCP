@@ -440,6 +440,9 @@ export function buildRunOptions(
     ignorePatterns: Array.isArray(args.ignorePatterns)
       ? (args.ignorePatterns as string[]).filter((v) => typeof v === 'string')
       : undefined,
+    // Python (mutmut) only: scope the baseline test run on large suites. Sourced
+    // from the mutmut config section; ignored by the other engines.
+    pythonTestSelection: cfg.mutmut?.testSelection,
   };
 }
 

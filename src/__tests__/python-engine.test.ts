@@ -37,11 +37,15 @@ vi.mock('../utils/logger.js', () => ({
 }));
 
 // Mock fs so the v3 path's read of mutants/mutmut-cicd-stats.json is injectable.
-// Default: ENOENT (no stats file) so v2-format tests take the legacy path.
+// Default readFileSync: ENOENT (no stats file) so v2-format tests take the
+// legacy path. existsSync=false means the [tool.mutmut] config injection reads
+// nothing and just writes (writeFileSync is a noop here).
 vi.mock('node:fs', () => ({
   readFileSync: vi.fn(() => {
     throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
   }),
+  existsSync: vi.fn(() => false),
+  writeFileSync: vi.fn(),
 }));
 
 import { readFileSync } from 'node:fs';
