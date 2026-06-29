@@ -31,6 +31,28 @@ describe('resources', () => {
     expect(data.typescript.estimateFidelity).toBe('approx');
   });
 
+  it('reports the correct engine display name per language', () => {
+    // Pins the ENGINE_NAMES map (the doc-facing engine labels are a contract);
+    // kills the object-emptied and per-string-literal mutants.
+    const data = JSON.parse(readResource('chaos://languages').text) as Record<
+      string,
+      { engine: string; configKey: string; autoPrebuild: boolean }
+    >;
+    expect(data.typescript.engine).toBe('StrykerJS');
+    expect(data.python.engine).toBe('Mutmut');
+    expect(data.go.engine).toBe('go-mutesting');
+    expect(data.rust.engine).toBe('cargo-mutants');
+    // Structural fields sourced from ENGINE_REGISTRY (configKey + autoPrebuild).
+    for (const [key, entry] of Object.entries(ENGINE_REGISTRY)) {
+      expect(data[key].configKey).toBe(entry.configKey);
+      expect(data[key].autoPrebuild).toBe(Boolean(entry.prebuild));
+    }
+    // Go and Rust declare auto-prebuilds; TS and Python do not.
+    expect(data.go.autoPrebuild).toBe(true);
+    expect(data.rust.autoPrebuild).toBe(true);
+    expect(data.typescript.autoPrebuild).toBe(false);
+  });
+
   it('reads config-schema as JSON listing known keys', () => {
     const res = readResource('chaos://config-schema');
     expect(res.mimeType).toBe('application/json');

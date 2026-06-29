@@ -29,6 +29,14 @@ describe('mapPool', () => {
     expect(peak).toBeLessThanOrEqual(3);
   });
 
+  it('still processes every item when concurrency is 0 (floored to 1)', async () => {
+    // Math.max(1, …) floors the worker count: concurrency 0 must NOT mean "no
+    // workers" (which would return an unfilled array). Kills the `Math.max → Math.min`
+    // mutant, under which limit would be 0 and nothing would run.
+    const out = await mapPool([1, 2, 3], 0, async (n) => n * 10);
+    expect(out).toEqual([10, 20, 30]);
+  });
+
   it('does not let one rejection sink the others', async () => {
     const out = await mapPool([0, 1, 2], 3, async (n) => {
       if (n === 1) throw new Error('boom');

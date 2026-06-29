@@ -60,4 +60,49 @@ describe('makeToolContext', () => {
       params: { progressToken: 'p', progress: 5 },
     });
   });
+
+  it('omits the total/message KEYS entirely when undefined (not key:undefined)', () => {
+    // toHaveBeenCalledWith above treats {progress:5} and {progress:5,total:undefined}
+    // as equal, so it does NOT pin the `if (total !== undefined)` guards. Assert key
+    // ABSENCE to kill the `total !== undefined → true` / `message !== undefined → true`
+    // mutants (which would add total:undefined / message:undefined).
+    const sent: { params: Record<string, unknown> }[] = [];
+    const sendNotification = vi.fn(async (n: unknown) => {
+      sent.push(n as { params: Record<string, unknown> });
+    });
+    const ctx = makeToolContext(
+      { params: { _meta: { progressToken: 'p' } } },
+      { sendNotification },
+    );
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+    ctx.reportProgress!(5);
+    expect(Object.keys(sent[0].params).sort()).toEqual(['progress', 'progressToken']);
+  });
+
+  it('includes the total key but omits message when only total is given', () => {
+    const sent: { params: Record<string, unknown> }[] = [];
+    const sendNotification = vi.fn(async (n: unknown) => {
+      sent.push(n as { params: Record<string, unknown> });
+    });
+    const ctx = makeToolContext(
+      { params: { _meta: { progressToken: 'p' } } },
+      { sendNotification },
+    );
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+    ctx.reportProgress!(5, 10);
+    expect(sent[0].params.total).toBe(10);
+    expect('message' in sent[0].params).toBe(false);
+  });
+
+  it('does not throw when the request has no params object', () => {
+    // Kills `request.params?._meta → request.params._meta` (would deref undefined).
+    expect(() => makeToolContext({}, { sendNotification: vi.fn() })).not.toThrow();
+  });
+
+  it('does not throw when extra is omitted, and yields no reporter or signal', () => {
+    // Kills `extra?.sendNotification → extra.sendNotification` and `extra?.signal`.
+    const ctx = makeToolContext({ params: { _meta: { progressToken: 'x' } } });
+    expect(ctx.reportProgress).toBeUndefined();
+    expect(ctx.signal).toBeUndefined();
+  });
 });

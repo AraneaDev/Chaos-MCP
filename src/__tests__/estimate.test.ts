@@ -159,6 +159,9 @@ describe('estimateAudit withTiming', () => {
     expect(r.estimatedMs).toBeTypeOf('number');
     // estimatedMs = ceil(mutants * baselineMs / 2)
     expect(r.estimatedMs).toBe(Math.ceil((r.mutants * (r.baselineMs ?? 0)) / 2));
+    // baselineMs = Date.now() - t0 must be a small elapsed duration. A `Date.now() + t0`
+    // mutant would yield ~2× the epoch (>1e12); pin it to a sane upper bound.
+    expect(r.baselineMs).toBeLessThan(60_000);
   });
 
   it('omits timing fields and appends note when runShell throws', async () => {
@@ -178,6 +181,23 @@ describe('estimateAudit withTiming', () => {
     expect(r.baselineMs).toBeUndefined();
     expect(r.estimatedMs).toBeUndefined();
     expect(r.concurrency).toBeUndefined();
+    expect(r.note).toContain('timing unavailable');
+  });
+
+  it('reports timing unavailable when no baseline command resolves for the project type', async () => {
+    // resolveBaselineTestCommand returns undefined for an unrecognized type → the
+    // `cmd === undefined` guard appends "(timing unavailable)" and returns without
+    // running a baseline. Kills the guard + its block + the note string.
+    const r = await estimateAudit({
+      absFile: __filename,
+      relFile: 'src/x.unknown',
+      projectType: 'cobol' as never,
+      workDir: '/sandbox',
+      withTiming: true,
+      env: baseEnv(),
+    });
+    expect(r.baselineMs).toBeUndefined();
+    expect(r.estimatedMs).toBeUndefined();
     expect(r.note).toContain('timing unavailable');
   });
 
@@ -279,6 +299,28 @@ describe('estimateAudit signal forwarding', () => {
       'cargo',
       ['mutants', '--list', '--file', 'src/lib.rs'],
       expect.objectContaining({ signal: controller.signal }),
+    );
+  });
+
+  it('forwards a caller timeoutMs into the cargo-mutants invocation (not the default)', async () => {
+    // Kills `opts.timeoutMs ?? ESTIMATE_TIMEOUT_MS → opts.timeoutMs && ESTIMATE_TIMEOUT_MS`,
+    // under which a provided timeout would be discarded in favor of the default.
+    mockInvoke.mockResolvedValueOnce({
+      stdout: 'src/lib.rs:1:1: replace foo -> bar\n',
+      stderr: '',
+    } as never);
+    await estimateAudit({
+      absFile: '/ws/src/lib.rs',
+      relFile: 'src/lib.rs',
+      projectType: 'rust',
+      workDir: '/sandbox',
+      timeoutMs: 12_345,
+    });
+    expect(mockInvoke).toHaveBeenCalledWith(
+      'cargo-mutants',
+      'cargo',
+      expect.any(Array),
+      expect.objectContaining({ timeoutMs: 12_345 }),
     );
   });
 
