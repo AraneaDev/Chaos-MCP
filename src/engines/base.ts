@@ -207,6 +207,22 @@ export interface RunOptions {
    * **Python (cosmic-ray) only.**
    */
   pythonExcludeOperators?: string[];
+
+  /**
+   * Worker count forwarded to Infection's `--threads` (a positive integer as a
+   * string, or "max"). Sourced from the `infection` config section.
+   *
+   * **PHP (Infection) only.**
+   */
+  phpThreads?: string;
+
+  /**
+   * Extra options forwarded to Infection's PHP test framework via
+   * `--test-framework-options` (e.g. "--testsuite=unit").
+   *
+   * **PHP (Infection) only.**
+   */
+  phpTestFrameworkOptions?: string;
 }
 
 /**

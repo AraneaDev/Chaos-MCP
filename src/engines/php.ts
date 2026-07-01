@@ -1,0 +1,217 @@
+import { writeFileSync, existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { BaseEngine, RunOptions, MutationResult, Vulnerability } from './base.js';
+import { invokeMutationTool } from '../utils/exec-classify.js';
+import { log, isVerbose } from '../utils/logger.js';
+
+/** Default timeout for the whole Infection run (5 minutes). */
+const DEFAULT_TIMEOUT_MS = 300_000;
+/** Name of the config we generate when the project ships none. */
+const GENERATED_CONFIG_NAME = 'infection.json';
+/** Config files Infection already recognises — if present, we do NOT overwrite. */
+const PROJECT_CONFIG_NAMES = ['infection.json', 'infection.json5'];
+/** Sandbox-relative JSON log path we always read results from. */
+const JSON_LOG_NAME = 'chaos-infection-log.json';
+
+/** Top path segment of a workspace-relative file, used as the generated `source.directories` root. */
+export function inferSourceDir(filePath: string): string {
+  const norm = filePath.replace(/\\/g, '/');
+  const slash = norm.indexOf('/');
+  return slash > 0 ? norm.slice(0, slash) : '.';
+}
+
+/** Build a minimal Infection config for a bare PHPUnit project (hybrid fallback). */
+export function buildInfectionConfig(sourceDir: string, jsonLogName: string): string {
+  return (
+    JSON.stringify(
+      {
+        source: { directories: [sourceDir] },
+        testFramework: 'phpunit',
+        logs: { json: jsonLogName },
+      },
+      null,
+      2,
+    ) + '\n'
+  );
+}
+
+/** One mutant entry in Infection's JSON log. */
+interface InfectionMutant {
+  mutator?: { mutatorName?: string; originalFilePath?: string; originalStartLine?: number };
+  diff?: string;
+}
+interface InfectionJsonLog {
+  stats?: {
+    totalMutantsCount?: number;
+    killedCount?: number;
+    escapedCount?: number;
+    timeOutCount?: number;
+    timedOutCount?: number;
+  };
+  escaped?: InfectionMutant[];
+  killed?: InfectionMutant[];
+  timeouted?: InfectionMutant[];
+  timedOut?: InfectionMutant[];
+}
+
+/**
+ * Parse Infection's `--logger-json` output into a MutationResult.
+ *
+ * Consistent with the Python/Rust engines: the denominator is `killed + survived`
+ * only. `escaped` mutants are the reported survivors (real coverage gaps).
+ * Timed-out mutants are counted as killed (the suite detected them by hanging).
+ * `notCovered`/`errored` are excluded from the score entirely (missing coverage or
+ * a crashed mutation — not a scored pass/fail), mirroring how the Python engine
+ * drops `incompetent`.
+ *
+ * Field names read defensively (stats when present, array lengths as fallback;
+ * `timeOutCount`/`timedOutCount` and `timeouted`/`timedOut` both tolerated) so a
+ * minor Infection version bump does not silently zero the count. The E2E in
+ * Task 4 is the reality check.
+ */
+export function parseInfectionJsonLog(logText: string, filePath: string): MutationResult {
+  let parsed: InfectionJsonLog;
+  try {
+    parsed = JSON.parse(logText) as InfectionJsonLog;
+  } catch {
+    return blankResult(filePath);
+  }
+
+  const escaped = Array.isArray(parsed.escaped) ? parsed.escaped : [];
+  const killedArr = Array.isArray(parsed.killed) ? parsed.killed : [];
+  const timedOutArr = Array.isArray(parsed.timeouted)
+    ? parsed.timeouted
+    : Array.isArray(parsed.timedOut)
+      ? parsed.timedOut
+      : [];
+
+  const stats = parsed.stats ?? {};
+  const survived = stats.escapedCount ?? escaped.length;
+  const timeouts = stats.timeOutCount ?? stats.timedOutCount ?? timedOutArr.length;
+  const killed = (stats.killedCount ?? killedArr.length) + timeouts;
+  const totalMutants = killed + survived;
+
+  const vulnerabilities: Vulnerability[] = escaped.map((e) => {
+    const line = e.mutator?.originalStartLine ?? 0;
+    const mutator = e.mutator?.mutatorName ?? 'PHP Mutation Operator';
+    const vuln: Vulnerability = {
+      line,
+      mutator,
+      description: `Mutation survived at line ${line}. The PHP test suite did not catch this change.`,
+    };
+    if (e.diff) vuln.mutated = e.diff.trim();
+    return vuln;
+  });
+
+  const score = totalMutants > 0 ? ((killed / totalMutants) * 100).toFixed(2) : '100.00';
+  return {
+    target: filePath,
+    totalMutants,
+    killed,
+    survived,
+    mutationScore: `${score}%`,
+    vulnerabilities,
+  };
+}
+
+function blankResult(filePath: string): MutationResult {
+  return {
+    target: filePath,
+    totalMutants: 0,
+    killed: 0,
+    survived: 0,
+    mutationScore: '100.00%',
+    vulnerabilities: [],
+  };
+}
+
+/**
+ * Mutation testing engine for PHP files, backed by the Infection CLI.
+ *
+ * Flow (inside the sandbox `workDir`): hybrid config (use the project's
+ * infection.json/.json5 if present, else write a minimal one) → run
+ * `infection --filter=<file> --logger-json=<tmp> --no-progress --no-interaction
+ * --threads=<n|max>` → read + parse the JSON log.
+ *
+ * Coarse: no line scoping (`supportsLineScope: false`). Requires a coverage
+ * driver (Xdebug or PCOV); a missing driver surfaces as the baseline error below.
+ */
+export class PhpEngine extends BaseEngine {
+  async run(filePath: string, options?: RunOptions): Promise<MutationResult> {
+    const cwd = options?.workDir ?? process.cwd();
+    const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    const jsonLogPath = join(cwd, JSON_LOG_NAME);
+
+    // Hybrid config: only generate when the project ships none.
+    const hasProjectConfig = PROJECT_CONFIG_NAMES.some((n) => existsSync(join(cwd, n)));
+    if (!hasProjectConfig) {
+      try {
+        writeFileSync(
+          join(cwd, GENERATED_CONFIG_NAME),
+          buildInfectionConfig(inferSourceDir(filePath), JSON_LOG_NAME),
+          'utf8',
+        );
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`Failed to write generated infection.json: ${message}`);
+      }
+    }
+
+    // Prefer the vendored binary; fall back to a global `infection` on PATH.
+    const vendored = join(cwd, 'vendor', 'bin', 'infection');
+    const bin = existsSync(vendored) ? vendored : 'infection';
+
+    const threads =
+      options?.phpThreads ?? (options?.concurrency ? String(options.concurrency) : 'max');
+    const args = [
+      `--filter=${filePath}`,
+      `--logger-json=${JSON_LOG_NAME}`,
+      '--no-progress',
+      '--no-interaction',
+      `--threads=${threads}`,
+    ];
+    if (options?.phpTestFrameworkOptions) {
+      args.push(`--test-framework-options=${options.phpTestFrameworkOptions}`);
+    }
+
+    if (isVerbose()) log(`PhpEngine: ${bin} ${args.join(' ')}`);
+
+    let stderr = '';
+    try {
+      const res = await invokeMutationTool('Infection', bin, args, {
+        cwd,
+        timeoutMs,
+        signal: options?.signal,
+      });
+      stderr = res.stderr;
+    } catch (error: unknown) {
+      // Startup failures (missing binary/timeout/crash) rethrow via toExecFailure.
+      const execErr = this.toExecFailure(error, 'Infection');
+      stderr = execErr.stderr;
+      // Infection exits non-zero when mutants escape (MSI below threshold). That
+      // is the normal survivors case AS LONG AS the JSON log was produced. If no
+      // log exists, the initial (coverage) run failed — surface the likely cause.
+      if (!existsSync(jsonLogPath)) {
+        throw new Error(
+          `Infection failed (exit ${execErr.exit}) without producing a JSON log. This usually means ` +
+            `the initial test run failed — ensure the PHPUnit suite passes (vendor/bin/phpunit) and a ` +
+            `coverage driver (Xdebug or PCOV) is enabled. stderr: ${execErr.stderr?.slice(0, 500) ?? ''}`,
+        );
+      }
+    }
+
+    if (isVerbose() && stderr) log(`Infection stderr: ${stderr.slice(0, 500)}`);
+
+    let logText: string;
+    try {
+      logText = readFileSync(jsonLogPath, 'utf8');
+    } catch {
+      throw new Error(
+        `Infection produced no readable JSON log at ${JSON_LOG_NAME}. Ensure a coverage driver ` +
+          `(Xdebug or PCOV) is enabled and the PHPUnit suite runs from the project root.`,
+      );
+    }
+
+    return parseInfectionJsonLog(logText, filePath);
+  }
+}

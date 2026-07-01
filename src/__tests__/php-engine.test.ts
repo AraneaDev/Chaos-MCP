@@ -1,0 +1,202 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+vi.mock('../utils/exec-classify.js', async () => {
+  const actual = await vi.importActual<typeof import('../utils/exec-classify.js')>(
+    '../utils/exec-classify.js',
+  );
+  return { ...actual, invokeMutationTool: vi.fn() };
+});
+vi.mock('fs', async () => {
+  const actual = await vi.importActual<typeof import('fs')>('fs');
+  return { ...actual, existsSync: vi.fn(), writeFileSync: vi.fn(), readFileSync: vi.fn() };
+});
+
+import { existsSync, writeFileSync, readFileSync } from 'fs';
+import { invokeMutationTool, MutationToolStartupError } from '../utils/exec-classify.js';
+import { ExecFailureError } from '../utils/exec.js';
+import {
+  PhpEngine,
+  parseInfectionJsonLog,
+  buildInfectionConfig,
+  inferSourceDir,
+} from '../engines/php.js';
+
+const mockInvoke = vi.mocked(invokeMutationTool);
+const mockExists = vi.mocked(existsSync);
+const mockWrite = vi.mocked(writeFileSync);
+const mockRead = vi.mocked(readFileSync);
+
+// A minimal Infection JSON log: 3 killed, 1 timed-out, 1 escaped → killed 4, survived 1.
+const SAMPLE_LOG = JSON.stringify({
+  stats: { totalMutantsCount: 5, killedCount: 3, escapedCount: 1, timeOutCount: 1 },
+  escaped: [
+    {
+      mutator: {
+        mutatorName: 'GreaterThan',
+        originalFilePath: 'src/Calculator.php',
+        originalStartLine: 12,
+      },
+      diff: '--- Original\n+++ New\n@@ @@\n- return $a > $b;\n+ return $a >= $b;',
+    },
+  ],
+  killed: [{}, {}, {}],
+  timeouted: [{}],
+});
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  mockExists.mockReturnValue(false);
+  mockWrite.mockReturnValue(undefined);
+});
+
+describe('inferSourceDir', () => {
+  it('returns the top path segment', () => {
+    expect(inferSourceDir('src/Calculator.php')).toBe('src');
+    expect(inferSourceDir('app/Service/Math.php')).toBe('app');
+  });
+  it('returns "." for a bare filename', () => {
+    expect(inferSourceDir('Calculator.php')).toBe('.');
+  });
+});
+
+describe('buildInfectionConfig', () => {
+  it('generates minimal phpunit config with the json log path', () => {
+    const cfg = JSON.parse(buildInfectionConfig('src', 'chaos-infection-log.json'));
+    expect(cfg.source.directories).toEqual(['src']);
+    expect(cfg.testFramework).toBe('phpunit');
+    expect(cfg.logs.json).toBe('chaos-infection-log.json');
+  });
+});
+
+describe('parseInfectionJsonLog', () => {
+  it('maps escaped→survivors, timed-out→killed, and computes killed/(killed+survived)', () => {
+    const r = parseInfectionJsonLog(SAMPLE_LOG, 'src/Calculator.php');
+    expect(r.killed).toBe(4); // 3 killed + 1 timed-out
+    expect(r.survived).toBe(1);
+    expect(r.totalMutants).toBe(5);
+    expect(r.mutationScore).toBe('80.00%');
+    expect(r.vulnerabilities).toHaveLength(1);
+    expect(r.vulnerabilities[0]).toMatchObject({ line: 12, mutator: 'GreaterThan' });
+    expect(r.vulnerabilities[0].mutated).toContain('>=');
+  });
+
+  it('excludes notCovered/errored from the denominator', () => {
+    const log = JSON.stringify({
+      stats: { killedCount: 1, escapedCount: 1 },
+      escaped: [{ mutator: { mutatorName: 'Plus', originalStartLine: 3 } }],
+      killed: [{}],
+      notCovered: [{}, {}],
+      errored: [{}],
+    });
+    const r = parseInfectionJsonLog(log, 'src/X.php');
+    expect(r.killed).toBe(1);
+    expect(r.survived).toBe(1);
+    expect(r.totalMutants).toBe(2); // notCovered + errored NOT counted
+    expect(r.mutationScore).toBe('50.00%');
+  });
+
+  it('returns a clean 100% when there are zero scored mutants', () => {
+    const r = parseInfectionJsonLog(JSON.stringify({ stats: {}, escaped: [] }), 'src/X.php');
+    expect(r.totalMutants).toBe(0);
+    expect(r.mutationScore).toBe('100.00%');
+    expect(r.vulnerabilities).toEqual([]);
+  });
+});
+
+describe('PhpEngine.run', () => {
+  it('generates a config when none exists, filters to the file, and parses the log', async () => {
+    // existsSync: no infection.json/.json5, no vendor/bin/infection, but the log IS produced.
+    mockExists.mockImplementation((p) => String(p).endsWith('chaos-infection-log.json'));
+    mockRead.mockReturnValue(SAMPLE_LOG);
+    mockInvoke.mockResolvedValue({ stdout: '', stderr: '', exit: 0, signal: null });
+
+    const engine = new PhpEngine();
+    const result = await engine.run('src/Calculator.php', { workDir: '/sb' });
+
+    // Generated config written (no project config present).
+    expect(mockWrite).toHaveBeenCalledWith(
+      expect.stringContaining('infection.json'),
+      expect.stringContaining('"testFramework"'),
+      'utf8',
+    );
+    // Invoked with --filter scoped to the file and the json logger.
+    const [, bin, args] = mockInvoke.mock.calls[0];
+    expect(bin).toBe('infection'); // no vendor/bin/infection → global fallback
+    expect(args).toContain('--filter=src/Calculator.php');
+    expect(args).toContain('--logger-json=chaos-infection-log.json');
+    expect(args).toContain('--no-progress');
+    expect(args).toContain('--no-interaction');
+    expect(result.survived).toBe(1);
+  });
+
+  it('does NOT overwrite an existing project infection.json and prefers vendor/bin/infection', async () => {
+    mockExists.mockImplementation((p) => {
+      const s = String(p);
+      return (
+        s.endsWith('infection.json') ||
+        s.endsWith('vendor/bin/infection') ||
+        s.endsWith('chaos-infection-log.json')
+      );
+    });
+    mockRead.mockReturnValue(SAMPLE_LOG);
+    mockInvoke.mockResolvedValue({ stdout: '', stderr: '', exit: 0, signal: null });
+
+    const engine = new PhpEngine();
+    await engine.run('src/Calculator.php', { workDir: '/sb' });
+
+    expect(mockWrite).not.toHaveBeenCalled(); // project config respected
+    const [, bin] = mockInvoke.mock.calls[0];
+    expect(String(bin)).toContain('vendor/bin/infection');
+  });
+
+  it('parses the log even when Infection exits non-zero (mutants escaped)', async () => {
+    mockExists.mockImplementation((p) => String(p).endsWith('chaos-infection-log.json'));
+    mockRead.mockReturnValue(SAMPLE_LOG);
+    mockInvoke.mockRejectedValue(
+      new ExecFailureError(
+        { stdout: '', stderr: 'MSI below threshold', exit: 1, signal: null, code: undefined },
+        'nonzero',
+      ),
+    );
+
+    const engine = new PhpEngine();
+    const result = await engine.run('src/Calculator.php', { workDir: '/sb' });
+    expect(result.survived).toBe(1);
+  });
+
+  it('throws a coverage-driver hint when no JSON log is produced', async () => {
+    mockExists.mockReturnValue(false); // no log file ever appears
+    mockInvoke.mockRejectedValue(
+      new ExecFailureError(
+        {
+          stdout: '',
+          stderr: 'No code coverage driver found',
+          exit: 1,
+          signal: null,
+          code: undefined,
+        },
+        'nonzero',
+      ),
+    );
+
+    const engine = new PhpEngine();
+    await expect(engine.run('src/Calculator.php', { workDir: '/sb' })).rejects.toThrow(
+      /Xdebug or PCOV/,
+    );
+  });
+
+  it('rethrows the install hint when the binary is missing', async () => {
+    mockExists.mockReturnValue(false);
+    mockInvoke.mockRejectedValue(
+      new MutationToolStartupError(
+        'Infection',
+        'Infection is not installed. Install it with: composer require --dev infection/infection',
+      ),
+    );
+
+    const engine = new PhpEngine();
+    await expect(engine.run('src/Calculator.php', { workDir: '/sb' })).rejects.toThrow(
+      /composer require --dev infection\/infection/,
+    );
+  });
+});

@@ -5,7 +5,7 @@ import { ExecResult, ExecFailureError, runShell } from './exec.js';
  * install hint surfaced when the binary is missing. Names match the
  * user-facing labels used in docs (e.g. StrykerJS — not `stryker`).
  */
-export type ExecutableTool = 'StrykerJS' | 'cosmic-ray' | 'cargo-mutants';
+export type ExecutableTool = 'StrykerJS' | 'cosmic-ray' | 'cargo-mutants' | 'Infection';
 
 /**
  * Typed error thrown by {@link invokeMutationTool} when the mutation tool
@@ -37,6 +37,8 @@ const INSTALL_HINTS: Record<ExecutableTool, string> = {
   StrykerJS: 'npm install --save-dev @stryker-mutator/core',
   'cosmic-ray': 'pipx install cosmic-ray (or: pip install cosmic-ray in a virtualenv)',
   'cargo-mutants': 'cargo install cargo-mutants',
+  Infection:
+    'composer require --dev infection/infection (also enable a coverage driver: Xdebug or PCOV)',
 };
 
 /**
