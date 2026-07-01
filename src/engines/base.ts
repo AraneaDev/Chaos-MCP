@@ -39,6 +39,13 @@ export interface MutationResult {
    * whole file mutated"). Surfaced in the formatted output when present.
    */
   scopeNote?: string;
+  /**
+   * Mutants the tool could not score because the mutated code failed before a
+   * real pass/fail (cosmic-ray `incompetent`, Stryker compile errors). Excluded
+   * from the denominator. A non-zero value with `totalMutants === 0` means the
+   * test command never actually ran — see PythonEngine's degenerate-run guard.
+   */
+  incompetent?: number;
 }
 
 /**

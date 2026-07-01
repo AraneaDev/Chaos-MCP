@@ -172,14 +172,24 @@ export function formatResultAsText(
   const compact = compactSurvivors(result);
   let survivors = compact.survivors;
   let noCoverage = compact.noCoverage;
+  // A file with zero enumerated mutants AND no scope note has no mutable logic
+  // (only constants, type hints, or straight delegation). Reporting "100%" there
+  // reads as proven coverage when nothing was actually tested — show "n/a".
+  // A scopeNote (e.g. diff "no changed lines") is a different, already-explained
+  // zero, so leave it untouched.
+  const noMutants = result.totalMutants === 0 && !result.scopeNote;
   const lines: string[] = [
     `Chaos-MCP Audit Report: ${result.target}`,
-    `Mutation score: ${result.mutationScore} (${result.killed}/${result.totalMutants} killed, ${result.survived} survived)`,
+    `Mutation score: ${noMutants ? 'n/a' : result.mutationScore} (${result.killed}/${result.totalMutants} killed, ${result.survived} survived)`,
   ];
   if (result.scopeNote) lines.push(`Scope: ${result.scopeNote}`);
 
   if (survivors.length === 0 && noCoverage.length === 0) {
-    lines.push('No surviving mutants — your tests caught all mutations.');
+    lines.push(
+      noMutants
+        ? 'No mutants generated — this file has no mutable logic, so mutation testing is not meaningful here (this is not the same as proven coverage).'
+        : 'No surviving mutants — your tests caught all mutations.',
+    );
     return lines.join('\n');
   }
 
@@ -321,14 +331,21 @@ export function buildResultPayload(
   };
   if (worstSeverity) summary.worstSeverity = worstSeverity;
 
+  // Zero enumerated mutants and no scope note ⇒ no mutable logic; "100%" would
+  // misread as proven coverage. Surface "n/a" + an honest note instead
+  // (evaluateGate treats a non-numeric score as passing, so gates are
+  // unaffected). A scopeNote-carrying zero (e.g. diff no-change) is left as-is.
+  const noMutants = result.totalMutants === 0 && !result.scopeNote;
   const payload: ResultPayload = {
     target: result.target,
-    mutationScore: result.mutationScore,
+    mutationScore: noMutants ? 'n/a' : result.mutationScore,
     summary,
     survivors,
     noCoverage,
     note: clean
-      ? 'No surviving mutants — the test suite caught every mutation.'
+      ? noMutants
+        ? 'No mutants generated — this file has no mutable logic, so mutation testing is not meaningful here (not the same as proven coverage).'
+        : 'No surviving mutants — the test suite caught every mutation.'
       : hasChanges
         ? `${baseNote} changes = sampled original→mutated edits for that line (capped).`
         : baseNote,

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Mock the async exec helper (runShell). invokeMutationTool runs for real on top
 // of it, so startup-class classification (ENOENT/TIMEOUT/signal) is exercised.
@@ -41,7 +41,7 @@ vi.mock('node:fs', () => ({ writeFileSync: vi.fn() }));
 
 import { writeFileSync } from 'node:fs';
 import { runShell, ExecFailureError } from '../utils/exec.js';
-import { PythonEngine } from '../engines/python.js';
+import { PythonEngine, parseCosmicRayDump, _resetInterpreterCache } from '../engines/python.js';
 
 const mockRunShell = vi.mocked(runShell);
 const mockWriteFileSync = vi.mocked(writeFileSync);
@@ -116,7 +116,15 @@ describe('PythonEngine (cosmic-ray)', () => {
   let engine: PythonEngine;
   beforeEach(() => {
     vi.clearAllMocks();
+    // Pin the interpreter so the generated test-command is deterministic
+    // regardless of whether the host has `python` or only `python3`.
+    process.env.CHAOS_MCP_PYTHON = 'python';
+    _resetInterpreterCache();
     engine = new PythonEngine();
+  });
+  afterEach(() => {
+    delete process.env.CHAOS_MCP_PYTHON;
+    _resetInterpreterCache();
   });
 
   it('runs baseline → init → exec → dump and parses the result', async () => {
@@ -224,6 +232,56 @@ describe('PythonEngine (cosmic-ray)', () => {
     await expect(engine.run('m.py', { workDir: '/tmp/sandbox' })).rejects.toThrow(
       /baseline failed.*test suite fails before mutation/i,
     );
+  });
+
+  it('falls back to python3 when `python` is not on PATH', async () => {
+    // No env override → real interpreter probe. `python` is absent on this host
+    // (python3-only), so the generated command must use python3, not python.
+    delete process.env.CHAOS_MCP_PYTHON;
+    _resetInterpreterCache();
+    queueRun('');
+    await engine.run('m.py', { workDir: '/tmp/sandbox' });
+    expect(lastConfig()).toContain('test-command = "python3 -m pytest -x -q"');
+  });
+
+  it('fails loudly when every mutant is incompetent (interpreter/test-command broken)', async () => {
+    // baseline/init/exec all return exit 0 (cosmic-ray does not catch a missing
+    // interpreter), and dump reports two mutants — both 'incompetent'. This must
+    // NOT be reported as a clean 100%/total:0 run.
+    mockRunShell
+      .mockResolvedValueOnce(ok()) // baseline
+      .mockResolvedValueOnce(ok()) // init
+      .mockResolvedValueOnce(ok()) // exec
+      .mockResolvedValueOnce(
+        ok(
+          [
+            dumpLine('core/ReplaceBinaryOperator_Add_Sub', 10, 'incompetent'),
+            dumpLine('core/ReplaceComparisonOperator_Eq_GtE', 22, 'incompetent'),
+          ].join('\n'),
+        ),
+      ); // dump
+    await expect(engine.run('m.py', { workDir: '/tmp/sandbox' })).rejects.toThrow(
+      /ran 2 mutant\(s\).*scored none.*incompetent.*never produced a real pass\/fail/is,
+    );
+  });
+
+  it('treats a file with zero enumerated mutants as a genuine clean run (no guard)', async () => {
+    // Empty dump → no mutants at all (tiny file). This is a legitimate 100%,
+    // not a broken run, so the degenerate-run guard must stay silent.
+    queueRun('');
+    const result = await engine.run('m.py', { workDir: '/tmp/sandbox' });
+    expect(result.totalMutants).toBe(0);
+    expect(result.mutationScore).toBe('100.00%');
+  });
+
+  it('parseCosmicRayDump excludes incompetent mutants and reports the count', () => {
+    const dump = [dumpLine('core/A', 1, 'killed'), dumpLine('core/B', 2, 'incompetent')].join('\n');
+    const r = parseCosmicRayDump(dump, 'm.py') as ReturnType<typeof parseCosmicRayDump> & {
+      incompetent?: number;
+    };
+    expect(r.killed).toBe(1);
+    expect(r.totalMutants).toBe(1); // incompetent excluded from denominator
+    expect(r.incompetent).toBe(1);
   });
 
   it('reports an init failure', async () => {

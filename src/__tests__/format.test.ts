@@ -56,6 +56,25 @@ describe('formatResultAsText', () => {
     );
   });
 
+  it('renders n/a and an honest note for a file with zero enumerated mutants', () => {
+    const text = formatResultAsText(
+      result({
+        mutationScore: '100.00%',
+        killed: 0,
+        totalMutants: 0,
+        survived: 0,
+        vulnerabilities: [],
+      }),
+    );
+    expect(text).toBe(
+      [
+        'Chaos-MCP Audit Report: src/foo.ts',
+        'Mutation score: n/a (0/0 killed, 0 survived)',
+        'No mutants generated — this file has no mutable logic, so mutation testing is not meaningful here (this is not the same as proven coverage).',
+      ].join('\n'),
+    );
+  });
+
   it('groups survivors by line, sorts ascending, and collapses duplicate mutators to counts', () => {
     // Deliberately out of line order, with a duplicated mutator on line 3.
     const text = formatResultAsText(

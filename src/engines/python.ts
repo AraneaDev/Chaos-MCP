@@ -1,5 +1,6 @@
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { BaseEngine, RunOptions, MutationResult, Vulnerability } from './base.js';
 import { ExecFailureError } from '../utils/exec.js';
 import { invokeMutationTool, MutationToolStartupError } from '../utils/exec-classify.js';
@@ -86,6 +87,8 @@ function extractDiffChange(diff: string): { original?: string; mutated?: string 
 export function parseCosmicRayDump(dumpText: string, filePath: string): MutationResult {
   let killed = 0;
   let survived = 0;
+  let incompetent = 0;
+  let completed = 0;
   const vulnerabilities: Vulnerability[] = [];
 
   for (const raw of dumpText.split('\n')) {
@@ -103,8 +106,10 @@ export function parseCosmicRayDump(dumpText: string, filePath: string): Mutation
     };
     const result = parsed[1] as { test_outcome?: string; diff?: string } | null;
     if (!result) continue; // pending job
+    completed++;
 
     const outcome = result.test_outcome;
+    if (outcome === 'incompetent') incompetent++;
     if (outcome === 'killed') {
       killed++;
     } else if (outcome === 'survived') {
@@ -135,17 +140,62 @@ export function parseCosmicRayDump(dumpText: string, filePath: string): Mutation
     survived,
     mutationScore: `${score}%`,
     vulnerabilities,
-  };
+    incompetent,
+    // `completed` rides along on the result so the engine can distinguish
+    // "no mutants enumerated" (genuine 100%) from "mutants ran but none were
+    // scorable" (broken test command). Not part of the public payload.
+    ...(completed > 0 ? { _completed: completed } : {}),
+  } as MutationResult & { _completed?: number };
+}
+
+/**
+ * Resolve which Python interpreter the generated test-command should invoke.
+ *
+ * Hardcoding `python` is a silent failure on the many modern systems that ship
+ * only `python3` (Debian/Ubuntu without `python-is-python3`, most CI images):
+ * cosmic-ray's `baseline` returns exit 0 even when the test binary is missing,
+ * and every mutant is then marked `incompetent` — which {@link parseCosmicRayDump}
+ * drops from the denominator, yielding a meaningless `total:0` / `100%`.
+ *
+ * Precedence: the `CHAOS_MCP_PYTHON` env override (deterministic, used by tests)
+ * → `python` when it is actually on PATH (back-compat) → `python3`. Cached after
+ * the first probe.
+ */
+let cachedInterpreter: string | undefined;
+function resolvePythonInterpreter(): string {
+  if (cachedInterpreter) return cachedInterpreter;
+  const override = process.env.CHAOS_MCP_PYTHON?.trim();
+  if (override) {
+    cachedInterpreter = override;
+    return override;
+  }
+  try {
+    const probe = spawnSync('python', ['--version'], { stdio: 'ignore' });
+    if (!probe.error && probe.status === 0) {
+      cachedInterpreter = 'python';
+      return 'python';
+    }
+  } catch {
+    // fall through to python3
+  }
+  cachedInterpreter = 'python3';
+  return cachedInterpreter;
+}
+
+/** Reset the cached interpreter probe. Exported for tests only. */
+export function _resetInterpreterCache(): void {
+  cachedInterpreter = undefined;
 }
 
 /** Resolve the shell test-command cosmic-ray runs per mutant. */
 function resolveTestCommand(options?: RunOptions): string {
   const runner = options?.testRunner;
+  const py = resolvePythonInterpreter();
   // A custom non-pytest/unittest runner string is used verbatim as the command.
   let base: string;
-  if (runner === 'unittest') base = 'python -m unittest';
+  if (runner === 'unittest') base = `${py} -m unittest`;
   else if (runner && runner !== 'pytest' && !runner.includes('pytest')) base = runner;
-  else base = 'python -m pytest -x -q';
+  else base = `${py} -m pytest -x -q`;
 
   const selection = options?.pythonTestSelection;
   if (selection && selection.length > 0) base += ` ${selection.join(' ')}`;
@@ -249,7 +299,33 @@ export class PythonEngine extends BaseEngine {
       signal: options?.signal,
     });
 
-    return parseCosmicRayDump(dump.stdout, filePath);
+    const result = parseCosmicRayDump(dump.stdout, filePath) as MutationResult & {
+      _completed?: number;
+    };
+
+    // Degenerate-run guard. cosmic-ray's `baseline` returns exit 0 even when the
+    // test binary is missing or collects nothing, so a broken run reaches here
+    // looking like a clean one: mutants were enumerated and executed, but every
+    // result was `incompetent` (the mutated code never reached a real pass/fail).
+    // parseCosmicRayDump drops `incompetent` from the denominator, which would
+    // otherwise surface as a dangerously misleading `total:0` / `100%` ("caught
+    // every mutation") when in truth NO test ever ran. Detect it — mutants
+    // completed, none were scorable — and fail loudly with the resolved command
+    // so the operator can fix the interpreter / test-command. A genuinely tiny
+    // file with zero enumerated mutants has `_completed === 0` and is untouched.
+    const completed = result._completed ?? 0;
+    delete result._completed;
+    if (result.totalMutants === 0 && completed > 0) {
+      throw new Error(
+        `cosmic-ray ran ${completed} mutant(s) on ${filePath} but scored none of them — ` +
+          `every mutation came back 'incompetent', meaning the test command never produced a ` +
+          `real pass/fail. This usually means the Python interpreter or pytest is missing, or ` +
+          `the test-command is wrong. Resolved test-command: "${resolveTestCommand(options)}". ` +
+          `Verify it runs the suite from the project root before re-auditing.`,
+      );
+    }
+
+    return result;
   }
 
   /**
