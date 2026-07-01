@@ -1808,7 +1808,7 @@ describe('handleToolCall', () => {
     );
   });
 
-  it('uses go engine config timeout for Go files', async () => {
+  it('ignores a legacy go config section timeout for Go files (falls back to defaultTimeoutMs)', async () => {
     const mockRun = vi.fn().mockResolvedValue({
       target: 'src/main.go',
       totalMutants: 0,
@@ -1843,7 +1843,7 @@ describe('handleToolCall', () => {
 
     expect(mockRun).toHaveBeenCalledWith(
       'src/main.go',
-      expect.objectContaining({ timeoutMs: 180000 }),
+      expect.objectContaining({ timeoutMs: 300000 }),
     );
   });
 

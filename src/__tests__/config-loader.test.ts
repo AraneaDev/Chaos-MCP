@@ -1,17 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// Mock fs (but keep real writeFileSync for back-compat test)
-vi.mock('fs', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('fs')>();
-  return {
-    existsSync: vi.fn(),
-    readFileSync: vi.fn(),
-    writeFileSync: actual.writeFileSync,
-  };
-});
-
-// Don't mock os and path - we need them for the back-compat test
-// (they're not affected by the fs mock)
+// Mock fs
+vi.mock('fs', () => ({
+  existsSync: vi.fn(),
+  readFileSync: vi.fn(),
+}));
 
 import { existsSync, readFileSync } from 'fs';
 import { loadConfig, validateConfig } from '../utils/config-loader.js';
@@ -279,8 +272,7 @@ describe('loadConfig', () => {
     expect(config.stryker?.timeoutMs).toBe(60000);
     expect(config.stryker?.concurrency).toBe(2);
     expect(config.rust?.timeoutMs).toBe(600000);
-    // No go/cosmicray sections should be present
-    expect(config.go).toBeUndefined();
+    // No cosmicray section should be present
     expect(config.cosmicray).toBeUndefined();
   });
 

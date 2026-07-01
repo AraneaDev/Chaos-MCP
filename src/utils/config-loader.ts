@@ -254,7 +254,7 @@ function parseCosmicRayConfig(raw: unknown): CosmicRayConfig | undefined {
 
 /**
  * Parse a config section that supports only a positive `timeoutMs` field.
- * Shared by the structurally-identical go-mutesting and cargo-mutants sections.
+ * Used by the cargo-mutants (Rust) section.
  * Returns `undefined` when the section is absent, malformed, or has no valid field.
  */
 function parseTimeoutOnlyConfig(raw: unknown): { timeoutMs?: number } | undefined {

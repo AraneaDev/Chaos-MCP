@@ -364,10 +364,13 @@ describe('buildRunOptions', () => {
         'python',
       ).timeoutMs,
     ).toBe(7);
+    // Legacy `go` config section is no longer wired up (go-mutesting config
+    // section removed); a go-shaped section is ignored and timeoutMs falls
+    // back to cfg.defaultTimeoutMs (undefined here since none was set).
     expect(
       buildRunOptions({}, { go: { timeoutMs: 8 } }, env({ projectType: 'go' }), '/sb', 'go')
         .timeoutMs,
-    ).toBe(8);
+    ).toBeUndefined();
     expect(
       buildRunOptions({}, { rust: { timeoutMs: 9 } }, env({ projectType: 'rust' }), '/sb', 'rust')
         .timeoutMs,
