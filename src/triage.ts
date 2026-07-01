@@ -29,7 +29,7 @@ export interface TriageError {
   error: string;
 }
 
-const SUPPORTED_EXT = ['.ts', '.js', '.tsx', '.jsx', '.py', '.go', '.rs'];
+const SUPPORTED_EXT = ['.ts', '.js', '.tsx', '.jsx', '.py', '.rs'];
 const IGNORE_DIRS = new Set([
   'node_modules',
   'build',
@@ -41,7 +41,7 @@ const IGNORE_DIRS = new Set([
   '__tests__',
   'tests',
 ]);
-const TEST_FILE_RE = /(\.test\.|\.spec\.|_test\.(go|py|rs)$|(^|\/)test_[^/]*\.py$)/;
+const TEST_FILE_RE = /(\.test\.|\.spec\.|_test\.(py|rs)$|(^|\/)test_[^/]*\.py$)/;
 
 /** True if a path is a mutation-testable source file (supported ext, not a test). */
 export function isSupportedSourceFile(path: string): boolean {

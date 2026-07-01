@@ -1,7 +1,6 @@
 import type { BaseEngine } from './base.js';
 import { TypeScriptEngine } from './typescript.js';
 import { PythonEngine } from './python.js';
-import { GoEngine } from './go.js';
 import { RustEngine } from './rust.js';
 import type { ProjectType } from '../utils/project-detector.js';
 
@@ -25,7 +24,7 @@ export interface EngineDescriptor {
    * The {@link ChaosConfig} section key holding this engine's overrides
    * (`cfg[configKey]`). Mirrors the section keys parsed in config-loader.ts.
    */
-  configKey: 'stryker' | 'cosmicray' | 'go' | 'rust';
+  configKey: 'stryker' | 'cosmicray' | 'rust';
 
   /**
    * Whether the engine supports line-level scoping — `lineScope`, diff-aware
@@ -55,12 +54,6 @@ export const ENGINE_REGISTRY: Record<SupportedProjectType, EngineDescriptor> = {
     make: () => new PythonEngine(),
     configKey: 'cosmicray',
     supportsLineScope: false,
-  },
-  go: {
-    make: () => new GoEngine(),
-    configKey: 'go',
-    supportsLineScope: false,
-    prebuild: { marker: 'go.mod', command: 'go mod download' },
   },
   rust: {
     make: () => new RustEngine(),

@@ -16,8 +16,6 @@ import {
   detectPythonTestRunner,
   detectRawJsRunner,
   detectRawPythonRunner,
-  detectGoTestRunner,
-  detectRawGoRunner,
   detectRustTestRunner,
   detectRawRustRunner,
   detectPythonPackageManager,
@@ -43,14 +41,11 @@ describe('detectProjectType', () => {
     });
   });
 
-  describe('Go files', () => {
-    it('detects .go files as go', () => {
-      expect(detectProjectType('src/main.go')).toBe('go');
-    });
-
-    it('detects deeply nested .go files', () => {
-      expect(detectProjectType('pkg/core/utils/helpers.go')).toBe('go');
-    });
+  it('treats .go files as unsupported after Go removal', () => {
+    expect(detectProjectType('src/main.go')).toBe('unsupported');
+    const env = detectEnvironment('src/main.go');
+    expect(env.projectType).toBe('unsupported');
+    expect(env.testRunner).toBe('unknown');
   });
 
   describe('Rust files', () => {
@@ -648,17 +643,6 @@ describe('detectEnvironment', () => {
     expect(result.testRunner).toBe('pytest');
   });
 
-  it('detects Go project with go.mod', () => {
-    mockExistsSync.mockImplementation((p) => {
-      return String(p).endsWith('go.mod');
-    });
-
-    const result = detectEnvironment('src/main.go');
-    expect(result.projectType).toBe('go');
-    expect(result.testRunner).toBe('go test');
-    expect(result.detectedRunner).toBe('go test');
-  });
-
   it('includes a workspaceRoot in the result', () => {
     mockExistsSync.mockImplementation((p) => {
       return String(p).endsWith('package.json');
@@ -684,22 +668,6 @@ describe('detectEnvironment', () => {
     expect(result.testRunner).toBe('command');
     // Raw detection: we actually saw bun
     expect(result.detectedRunner).toBe('bun');
-  });
-
-  it('detects Go project with testify framework', () => {
-    mockExistsSync.mockImplementation((p) => {
-      return String(p).endsWith('go.mod');
-    });
-    mockReadFileSync.mockImplementation((p) => {
-      if (String(p).endsWith('go.mod')) {
-        return 'module example.com\nrequire github.com/stretchr/testify v1.10.0';
-      }
-      throw new Error('ENOENT');
-    });
-
-    const result = detectEnvironment('src/main.go');
-    expect(result.projectType).toBe('go');
-    expect(result.testRunner).toBe('testify');
   });
 
   it('detects Rust project with nextest', () => {
@@ -919,66 +887,6 @@ describe('detectEnvironment packageManager', () => {
     const result = detectEnvironment('main.rb');
     expect(result.projectType).toBe('unsupported');
     expect(result.packageManager).toBe('');
-  });
-});
-
-// ─── detectGoTestRunner tests ───────────────────────────────────────────────
-
-describe('detectGoTestRunner', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockExistsSync.mockReturnValue(false);
-    mockReadFileSync.mockImplementation(() => {
-      throw new Error('ENOENT');
-    });
-  });
-
-  it('detects testify from go.mod', () => {
-    mockReadFileSync.mockImplementation((p) => {
-      if (String(p).endsWith('go.mod')) {
-        return 'module example.com/my-project\n\ngo 1.23\n\nrequire (\n  github.com/stretchr/testify v1.10.0\n)';
-      }
-      throw new Error('ENOENT');
-    });
-
-    expect(detectGoTestRunner('/workspace')).toBe('testify');
-  });
-
-  it('detects ginkgo from go.mod', () => {
-    mockReadFileSync.mockImplementation((p) => {
-      if (String(p).endsWith('go.mod')) {
-        return 'module example.com/my-project\n\ngo 1.23\n\nrequire (\n  github.com/onsi/ginkgo/v2 v2.22.0\n  github.com/onsi/gomega v1.36.0\n)';
-      }
-      throw new Error('ENOENT');
-    });
-
-    expect(detectGoTestRunner('/workspace')).toBe('ginkgo');
-  });
-
-  it('returns go test when go.mod has no framework deps', () => {
-    mockReadFileSync.mockImplementation((p) => {
-      if (String(p).endsWith('go.mod')) {
-        return 'module example.com/my-project\n\ngo 1.23';
-      }
-      throw new Error('ENOENT');
-    });
-
-    expect(detectGoTestRunner('/workspace')).toBe('go test');
-  });
-
-  it('returns go test when go.mod does not exist', () => {
-    expect(detectGoTestRunner('/workspace')).toBe('go test');
-  });
-
-  it('detectRawGoRunner returns same as detectGoTestRunner', () => {
-    mockReadFileSync.mockImplementation((p) => {
-      if (String(p).endsWith('go.mod')) {
-        return 'require github.com/stretchr/testify v1.10.0';
-      }
-      throw new Error('ENOENT');
-    });
-
-    expect(detectRawGoRunner('/workspace')).toBe('testify');
   });
 });
 
@@ -1278,7 +1186,6 @@ describe('project-detector mutation hardening (mutmut + dispatch)', () => {
   it.each([
     ['/repo/src/a.ts', 'package.json'],
     ['/repo/src/a.py', 'pyproject.toml'],
-    ['/repo/src/a.go', 'go.mod'],
     ['/repo/src/a.rs', 'Cargo.toml'],
   ])('resolves the workspace root of %s via its %s marker', (file, marker) => {
     mockExistsSync.mockImplementation((p) => String(p) === join(resolve('/repo'), marker));

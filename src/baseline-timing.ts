@@ -16,8 +16,6 @@ export function resolveBaselineTestCommand(
   projectType: SupportedProjectType,
 ): BaselineCommand | undefined {
   switch (projectType) {
-    case 'go':
-      return { command: 'go', args: ['test', './...'] };
     case 'rust':
       return { command: 'cargo', args: ['test'] };
     case 'python': {

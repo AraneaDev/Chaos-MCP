@@ -30,6 +30,17 @@ describe('buildResultPayload', () => {
     });
   });
 
+  it('reports n/a and an honest note when zero mutants were enumerated', () => {
+    const payload = buildResultPayload(
+      result({ survived: 0, killed: 0, totalMutants: 0, mutationScore: '100.00%' }),
+    );
+    expect(payload).toMatchObject({
+      mutationScore: 'n/a',
+      summary: { total: 0, killed: 0, survived: 0 },
+      note: 'No mutants generated — this file has no mutable logic, so mutation testing is not meaningful here (not the same as proven coverage).',
+    });
+  });
+
   it('groups survivors by line with mutator counts', () => {
     const payload = buildResultPayload(
       result({

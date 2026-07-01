@@ -26,20 +26,20 @@ const mr = (over: Partial<MutationResult>): MutationResult => ({
 
 describe('isSupportedSourceFile', () => {
   it('accepts supported extensions', () => {
-    for (const f of ['a.ts', 'a.js', 'a.tsx', 'a.jsx', 'a.py', 'a.go', 'a.rs']) {
+    for (const f of ['a.ts', 'a.js', 'a.tsx', 'a.jsx', 'a.py', 'a.rs']) {
       expect(isSupportedSourceFile(f)).toBe(true);
     }
   });
   it('rejects unsupported extensions and test files', () => {
-    for (const f of ['a.md', 'a.test.ts', 'a.spec.js', 'x_test.go', 'test_x.py', 'x_test.rs']) {
+    for (const f of ['a.md', 'a.test.ts', 'a.spec.js', 'test_x.py', 'x_test.rs']) {
       expect(isSupportedSourceFile(f)).toBe(false);
     }
   });
 
   it('anchors the `_test.<lang>` / `test_*.py` rules to the file extension end', () => {
-    // `_test.go` / `.py` only mark a test when they are the actual extension.
+    // `_test.rs` / `test_*.py` only mark a test when they are the actual extension.
     // Removing the trailing `$` would wrongly flag these as tests.
-    expect(isSupportedSourceFile('a_test.go.ts')).toBe(true);
+    expect(isSupportedSourceFile('a_test.rs.ts')).toBe(true);
     expect(isSupportedSourceFile('test_x.py.ts')).toBe(true);
   });
 
@@ -184,7 +184,7 @@ describe('discoverFiles (real temp tree)', () => {
     writeFileSync(join(root, 'b.py'), '');
     writeFileSync(join(root, 'a.test.ts'), '');
     writeFileSync(join(root, 'readme.md'), '');
-    writeFileSync(join(root, 'sub', 'c.go'), '');
+    writeFileSync(join(root, 'sub', 'c.rs'), '');
     writeFileSync(join(root, 'node_modules', 'd.ts'), '');
     writeFileSync(join(root, '__tests__', 'e.ts'), '');
   });
@@ -192,7 +192,7 @@ describe('discoverFiles (real temp tree)', () => {
 
   it('recurses a directory, keeping supported non-test source files', () => {
     const { files, discovered, skipped } = discoverFiles(['.'], root, 25);
-    expect(files.sort()).toEqual(['a.ts', 'b.py', 'sub/c.go'].sort());
+    expect(files.sort()).toEqual(['a.ts', 'b.py', 'sub/c.rs'].sort());
     expect(discovered).toBe(3);
     expect(skipped).toBe(0);
   });
@@ -275,11 +275,11 @@ describe('discoverFiles skips non-file directory entries', () => {
 });
 
 describe('discoverChangedFiles', () => {
-  const changed = ['src/a.ts', 'src/util/b.ts', 'README.md', 'src/a.test.ts', 'pkg/c.go'];
+  const changed = ['src/a.ts', 'src/util/b.ts', 'README.md', 'src/a.test.ts', 'pkg/c.rs'];
 
   it('keeps only supported non-test source files', () => {
     const r = discoverChangedFiles(changed, undefined, 25);
-    expect(r.files).toEqual(['pkg/c.go', 'src/a.ts', 'src/util/b.ts']);
+    expect(r.files).toEqual(['pkg/c.rs', 'src/a.ts', 'src/util/b.ts']);
     expect(r.discovered).toBe(3);
     expect(r.skipped).toBe(0);
   });
@@ -291,7 +291,7 @@ describe('discoverChangedFiles', () => {
 
   it('caps at maxFiles and reports skipped', () => {
     const r = discoverChangedFiles(changed, undefined, 1);
-    expect(r.files).toEqual(['pkg/c.go']);
+    expect(r.files).toEqual(['pkg/c.rs']);
     expect(r.discovered).toBe(3);
     expect(r.skipped).toBe(2);
   });

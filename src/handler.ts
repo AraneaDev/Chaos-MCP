@@ -12,7 +12,7 @@ import { log, isVerbose } from './utils/logger.js';
 import { formatResultAsText, buildResultPayload, type EnrichContext } from './format.js';
 import { evaluateGate, validateMinScore } from './gate.js';
 import type { Severity } from './enrich.js';
-import { suggestTestFile } from './test-file.js';
+import { suggestTestFile, findPythonTestSelection } from './test-file.js';
 import { computeChangedRanges } from './utils/git-diff.js';
 import { saveRun, loadRun } from './utils/run-cache.js';
 import {
@@ -403,7 +403,7 @@ export function buildRunOptions(
   // Previously stryker.testRunner was consulted first for ALL project types,
   // so a Python audit could receive Stryker's runner (e.g. "vitest") and pass
   // it to mutmut (audit Med#2). Only the Stryker/cosmic-ray sections carry a
-  // testRunner; the timeout-only Go/Rust sections don't (→ undefined, as before).
+  // testRunner; the timeout-only Rust section doesn't (→ undefined, as before).
   const engineTestRunner =
     configKey === 'stryker'
       ? cfg.stryker?.testRunner
@@ -549,6 +549,21 @@ export async function auditFile(input: AuditFileInput): Promise<MutationResult> 
     input;
   const runOptions = buildRunOptions(args, config, env, workDir, projectType);
   if (lineRanges) runOptions.lineRanges = lineRanges;
+  // Python only: when neither the tool args nor the config scoped the suite,
+  // default to the target file's own test module(s). cosmic-ray otherwise runs
+  // the WHOLE suite per mutant — impractical on real projects, and a single
+  // unrelated failing/slow test breaks the baseline. Discovery is best-effort;
+  // an empty result leaves the whole-suite default untouched.
+  if (
+    projectType === 'python' &&
+    (!runOptions.pythonTestSelection || runOptions.pythonTestSelection.length === 0)
+  ) {
+    const auto = findPythonTestSelection(targetFile, env.workspaceRoot);
+    if (auto.length > 0) {
+      runOptions.pythonTestSelection = auto;
+      if (isVerbose()) log(`PythonEngine: auto-scoped test-command to ${auto.join(' ')}`);
+    }
+  }
   // Thread the abort signal from the MCP request context into the engine run so
   // in-flight subprocesses are killed when the caller cancels.
   if (input.signal) runOptions.signal = input.signal;

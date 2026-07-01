@@ -67,18 +67,6 @@ describe('invokeMutationTool', () => {
     );
   });
 
-  it('throws MutationToolStartupError with install hint for go-mutesting ENOENT', async () => {
-    const enoentError = new ExecFailureError(
-      { stdout: '', stderr: '', exit: null, signal: null, code: 'ENOENT' },
-      'Command not found',
-    );
-    mockRunShell.mockRejectedValue(enoentError);
-
-    await expect(invokeMutationTool('go-mutesting', 'go-mutesting', [])).rejects.toThrow(
-      /go install github.com\/zimmski/,
-    );
-  });
-
   it('throws MutationToolStartupError with install hint for cargo-mutants ENOENT', async () => {
     const enoentError = new ExecFailureError(
       { stdout: '', stderr: '', exit: null, signal: null, code: 'ENOENT' },
@@ -152,7 +140,7 @@ describe('invokeMutationTool', () => {
     );
     mockRunShell.mockRejectedValue(crashError);
 
-    await expect(invokeMutationTool('go-mutesting', 'go-mutesting', [])).rejects.toThrow(
+    await expect(invokeMutationTool('cargo-mutants', 'cargo-mutants', [])).rejects.toThrow(
       /stack trace dump/,
     );
   });

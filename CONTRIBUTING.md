@@ -60,7 +60,6 @@ src/
 │   ├── base.ts                  # Abstract BaseEngine + RunOptions + MutationResult types
 │   ├── typescript.ts            # StrykerJS engine (async, concurrency, dryRun, incremental)
 │   ├── python.ts                # Mutmut engine (text results parsing)
-│   ├── go.ts                    # go-mutesting engine
 │   └── rust.ts                  # cargo-mutants engine
 ├── utils/
 │   ├── exec.ts                  # Async runShell helper + ExecFailureError class
@@ -72,7 +71,6 @@ src/
     ├── handler.test.ts           # Tool dispatch + option wiring unit tests
     ├── typescript-engine.test.ts # Stryker engine unit tests
     ├── python-engine.test.ts     # Mutmut engine unit tests
-    ├── go-engine.test.ts         # Go engine unit tests
     ├── rust-engine.test.ts       # Rust engine unit tests
     ├── project-detector.test.ts  # Detection logic unit tests
     ├── sandbox.test.ts           # Sandbox utility unit tests
@@ -149,7 +147,7 @@ Both trigger paths run the full E2E suite (MCP pipeline + Stryker mutations) on 
 
 - New engine implementation touching subprocess flow
 - Sandbox, config-loader, or handler changes
-- Stryker / Mutmut / cargo-mutants / go-mutesting major version bumps
+- Stryker / Mutmut / cargo-mutants major version bumps
 - Any change that could affect the full happy-path sandboxing + mutation-test cycle
 
 ### What gets exercised

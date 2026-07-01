@@ -92,7 +92,7 @@ function countCargoMutants(stdout: string): number {
  * - Rust + workDir: runs `cargo mutants --list --file <relFile>` for an exact count.
  *   Falls back to heuristic if cargo-mutants is not installed.
  * - Rust without workDir: heuristic fallback (caller should have provisioned a sandbox).
- * - TS / Python / Go: reads `absFile` and applies the source-parse heuristic.
+ * - TS / Python: reads `absFile` and applies the source-parse heuristic.
  */
 async function computeCount(opts: EstimateOptions): Promise<EstimateResult> {
   if (opts.projectType === 'rust') {
@@ -127,7 +127,7 @@ async function computeCount(opts: EstimateOptions): Promise<EstimateResult> {
     }
   }
 
-  // TypeScript / Python / Go — heuristic from source.
+  // TypeScript / Python — heuristic from source.
   return heuristicEstimate(opts);
 }
 

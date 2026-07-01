@@ -21,7 +21,6 @@ const KNOWN_KEYS = new Set([
   'runCacheMax',
   'stryker',
   'cosmicray',
-  'go',
   'rust',
 ]);
 
@@ -44,9 +43,6 @@ const KNOWN_COSMICRAY_KEYS = new Set([
   'testSelection',
   'excludeOperators',
 ]);
-
-/** Valid keys within a GoMutestingConfig section. */
-const KNOWN_GO_KEYS = new Set(['timeoutMs']);
 
 /** Valid keys within a CargoMutantsConfig section. */
 const KNOWN_RUST_KEYS = new Set(['timeoutMs']);
@@ -97,14 +93,6 @@ export interface CosmicRayConfig {
 }
 
 /**
- * go-mutesting-specific config overrides.
- */
-export interface GoMutestingConfig {
-  /** Timeout override for go-mutesting runs (ms). */
-  timeoutMs?: number;
-}
-
-/**
  * cargo-mutants-specific config overrides.
  */
 export interface CargoMutantsConfig {
@@ -117,9 +105,9 @@ export interface CargoMutantsConfig {
  * Loaded from a JSON config file at startup and merged with per-call arguments.
  * Tool call arguments always take precedence over config defaults.
  *
- * Engine-specific sections (`stryker`, `cosmicray`, `go`, `rust`) override their
+ * Engine-specific sections (`stryker`, `cosmicray`, `rust`) override their
  * corresponding global defaults. This lets you set a short global timeout while
- * giving Rust/Go builds more time, or tune Stryker concurrency independently.
+ * giving Rust builds more time, or tune Stryker concurrency independently.
  */
 export interface ChaosConfig {
   /** Default timeout in milliseconds for all mutation runs. */
@@ -155,8 +143,8 @@ export interface ChaosConfig {
   /**
    * Allow an explicit `prebuildCommand` tool argument to run an arbitrary shell
    * command in the sandbox. Disabled by default because the command can reach
-   * outside the sandbox (audit Med#10). Auto-detected prebuilds (go mod
-   * download, cargo check) are unaffected by this flag. Can also be enabled via
+   * outside the sandbox (audit Med#10). Auto-detected prebuilds (cargo check)
+   * are unaffected by this flag. Can also be enabled via
    * the `CHAOS_MCP_ALLOW_PREBUILD` environment variable.
    */
   allowPrebuild?: boolean;
@@ -175,9 +163,6 @@ export interface ChaosConfig {
 
   /** cosmic-ray (Python)-specific overrides (precedence over global defaults). */
   cosmicray?: CosmicRayConfig;
-
-  /** go-mutesting-specific overrides (precedence over global defaults). */
-  go?: GoMutestingConfig;
 
   /** cargo-mutants-specific overrides (precedence over global defaults). */
   rust?: CargoMutantsConfig;
@@ -269,7 +254,7 @@ function parseCosmicRayConfig(raw: unknown): CosmicRayConfig | undefined {
 
 /**
  * Parse a config section that supports only a positive `timeoutMs` field.
- * Shared by the structurally-identical go-mutesting and cargo-mutants sections.
+ * Used by the cargo-mutants (Rust) section.
  * Returns `undefined` when the section is absent, malformed, or has no valid field.
  */
 function parseTimeoutOnlyConfig(raw: unknown): { timeoutMs?: number } | undefined {
@@ -293,13 +278,12 @@ function parseTimeoutOnlyConfig(raw: unknown): { timeoutMs?: number } | undefine
  * language adds one entry here.
  */
 const ENGINE_CONFIG_SECTIONS: {
-  key: 'stryker' | 'cosmicray' | 'go' | 'rust';
+  key: 'stryker' | 'cosmicray' | 'rust';
   knownKeys: Set<string>;
   parse: (raw: unknown) => object | undefined;
 }[] = [
   { key: 'stryker', knownKeys: KNOWN_STRYKER_KEYS, parse: parseStrykerConfig },
   { key: 'cosmicray', knownKeys: KNOWN_COSMICRAY_KEYS, parse: parseCosmicRayConfig },
-  { key: 'go', knownKeys: KNOWN_GO_KEYS, parse: parseTimeoutOnlyConfig },
   { key: 'rust', knownKeys: KNOWN_RUST_KEYS, parse: parseTimeoutOnlyConfig },
 ];
 

@@ -55,10 +55,9 @@ describe('canonicalizeMutator', () => {
   });
 
   it('does not apply the Rust rules to non-Rust engines even with change text', () => {
-    // Go/Python descriptions can contain operator chars, but only Rust packs a
+    // Python descriptions can contain operator chars, but only Rust packs a
     // reliable per-mutant operator into changeText. The `projectType === 'rust'`
     // guard must hold even when changeText would match a rule.
-    expect(canonicalizeMutator('Go Mutation Operator', 'go', 'replace > with >=')).toBe('unknown');
     expect(canonicalizeMutator('Some Python Mutation', 'python', 'replace && with ||')).toBe(
       'unknown',
     );
@@ -70,15 +69,13 @@ describe('canonicalizeMutator', () => {
     expect(canonicalizeMutator('replace foo', 'rust', undefined)).toBe('unknown');
   });
 
-  it('returns unknown for Go and Python (coarse engines)', () => {
-    expect(canonicalizeMutator('Go Mutation Operator', 'go')).toBe('unknown');
+  it('returns unknown for Python (coarse engines)', () => {
     expect(canonicalizeMutator('Arithmetic/Logical Mutation', 'python')).toBe('unknown');
   });
 
   it('only ever returns a table key or unknown', () => {
     const keys = new Set([...Object.keys(MUTATOR_SEMANTICS), 'unknown']);
     expect(keys.has(canonicalizeMutator('ConditionalExpression', 'typescript'))).toBe(true);
-    expect(keys.has(canonicalizeMutator('whatever', 'go'))).toBe(true);
   });
 });
 
@@ -121,22 +118,5 @@ describe('canonicalizeMutator (python — cosmic-ray operator names)', () => {
   });
   it('returns unknown for an unrecognized cosmic-ray operator', () => {
     expect(canonicalizeMutator('core/ZeroIterationForLoop', 'python')).toBe('unknown');
-  });
-});
-
-describe('canonicalizeMutator (go)', () => {
-  it('maps go-mutesting branch mutators to ConditionalExpression', () => {
-    expect(canonicalizeMutator('branch/if', 'go')).toBe('ConditionalExpression');
-    expect(canonicalizeMutator('branch/else', 'go')).toBe('ConditionalExpression');
-    expect(canonicalizeMutator('branch/case', 'go')).toBe('ConditionalExpression');
-  });
-  it('maps comparison/remove mutators', () => {
-    expect(canonicalizeMutator('expression/comparison', 'go')).toBe('EqualityOperator');
-    expect(canonicalizeMutator('expression/remove', 'go')).toBe('MethodExpression');
-    expect(canonicalizeMutator('statement/remove', 'go')).toBe('BlockStatement');
-  });
-  it('falls back to unknown for unmapped go mutators', () => {
-    expect(canonicalizeMutator('something/weird', 'go')).toBe('unknown');
-    expect(canonicalizeMutator('Go Mutation Operator', 'go')).toBe('unknown');
   });
 });

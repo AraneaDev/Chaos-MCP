@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { suggestTestFile } from '../test-file.js';
+import { suggestTestFile, findPythonTestSelection } from '../test-file.js';
 
 let root: string;
 beforeEach(() => {
@@ -28,15 +28,6 @@ describe('suggestTestFile', () => {
     writeFileSync(join(root, 'src', 'math.ts'), '');
     expect(suggestTestFile('src/math.ts', 'typescript', root)).toEqual({
       path: 'src/math.test.ts',
-      exists: false,
-    });
-  });
-
-  it('uses Go co-located convention', () => {
-    mkdirSync(join(root, 'pkg'), { recursive: true });
-    writeFileSync(join(root, 'pkg', 'calc.go'), '');
-    expect(suggestTestFile('pkg/calc.go', 'go', root)).toEqual({
-      path: 'pkg/calc_test.go',
       exists: false,
     });
   });
@@ -144,5 +135,47 @@ describe('suggestTestFile', () => {
   //    emptied catch block on line 47). ──
   it('returns undefined when candidate computation throws', () => {
     expect(suggestTestFile(null as never, 'typescript', root)).toBeUndefined();
+  });
+});
+
+describe('findPythonTestSelection', () => {
+  it('finds the conventional module under a nested tests/ layout', () => {
+    mkdirSync(join(root, 'core', 'auth'), { recursive: true });
+    mkdirSync(join(root, 'tests', 'unit', 'core'), { recursive: true });
+    writeFileSync(join(root, 'core', 'auth', 'secret_box.py'), '');
+    writeFileSync(join(root, 'tests', 'unit', 'core', 'test_secret_box.py'), '');
+    expect(findPythonTestSelection('core/auth/secret_box.py', root)).toEqual([
+      'tests/unit/core/test_secret_box.py',
+    ]);
+  });
+
+  it('includes a co-located test module and dedupes', () => {
+    mkdirSync(join(root, 'pkg'), { recursive: true });
+    writeFileSync(join(root, 'pkg', 'calc.py'), '');
+    writeFileSync(join(root, 'pkg', 'test_calc.py'), '');
+    expect(findPythonTestSelection('pkg/calc.py', root)).toEqual(['pkg/test_calc.py']);
+  });
+
+  it('returns [] when no matching test module exists (whole-suite fallback)', () => {
+    mkdirSync(join(root, 'app'), { recursive: true });
+    mkdirSync(join(root, 'tests'), { recursive: true });
+    writeFileSync(join(root, 'app', 'widget.py'), '');
+    expect(findPythonTestSelection('app/widget.py', root)).toEqual([]);
+  });
+
+  it('skips venv/node_modules when searching tests/', () => {
+    mkdirSync(join(root, 'tests', 'venv'), { recursive: true });
+    mkdirSync(join(root, 'tests', 'unit'), { recursive: true });
+    writeFileSync(join(root, 'mod.py'), '');
+    // A decoy inside venv must be ignored; the real one under unit/ is found.
+    writeFileSync(join(root, 'tests', 'venv', 'test_mod.py'), '');
+    writeFileSync(join(root, 'tests', 'unit', 'test_mod.py'), '');
+    expect(findPythonTestSelection('mod.py', root)).toEqual(['tests/unit/test_mod.py']);
+  });
+
+  it('does not recurse from a test_ source file name', () => {
+    mkdirSync(join(root, 'tests'), { recursive: true });
+    writeFileSync(join(root, 'tests', 'test_thing.py'), '');
+    expect(findPythonTestSelection('tests/test_thing.py', root)).toEqual([]);
   });
 });

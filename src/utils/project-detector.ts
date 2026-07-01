@@ -4,7 +4,7 @@ import { resolve, dirname, join } from 'path';
 /**
  * Supported project types for mutation testing.
  */
-export type ProjectType = 'typescript' | 'python' | 'go' | 'rust' | 'unsupported';
+export type ProjectType = 'typescript' | 'python' | 'rust' | 'unsupported';
 
 /**
  * Structured environment information resolved from workspace signals.
@@ -77,9 +77,6 @@ const JS_ROOT_MARKERS = ['package.json'] as const;
 
 /** Marker files that indicate a Rust project root. */
 const RUST_ROOT_MARKERS = ['Cargo.toml'] as const;
-
-/** Marker files that indicate a Go project root. */
-const GO_ROOT_MARKERS = ['go.mod'] as const;
 
 /** Marker files that indicate a Python project root. */
 const PY_ROOT_MARKERS = [
@@ -406,39 +403,6 @@ export function detectPythonPackageManager(workspaceRoot: string): string {
   return 'pip';
 }
 
-// ─── Go test runner detection ────────────────────────────────────────────────
-
-/**
- * Detect the Go test runner / framework from workspace signals.
- *
- * Go projects use `go test` as the base runner. Frameworks like testify
- * and Ginkgo are libraries used within tests — they don't change the
- * invocation of `go test`, but detecting them improves diagnostics.
- *
- * Priority order:
- * 1. go.mod contains testify or ginkgo (for diagnostics only)
- * 2. Fallback: 'go test'
- *
- * @internal Exported for testing only.
- */
-export function detectGoTestRunner(workspaceRoot: string): string {
-  const goModContent = readTextSafe(join(workspaceRoot, 'go.mod'));
-  if (goModContent) {
-    if (goModContent.includes('github.com/onsi/ginkgo')) return 'ginkgo';
-    if (goModContent.includes('github.com/stretchr/testify')) return 'testify';
-  }
-  return 'go test';
-}
-
-/**
- * Detect the raw Go test runner / framework without mapping.
- *
- * @internal Exported for testing only.
- */
-export function detectRawGoRunner(workspaceRoot: string): string {
-  return detectGoTestRunner(workspaceRoot);
-}
-
 // ─── Rust test runner detection ──────────────────────────────────────────────
 
 /**
@@ -520,12 +484,6 @@ const LANGUAGE_DETECTORS: Record<Exclude<ProjectType, 'unsupported'>, LanguageDe
     rawRunner: detectRawPythonRunner,
     packageManager: detectPythonPackageManager,
   },
-  go: {
-    matches: (p) => p.endsWith('.go'),
-    markers: GO_ROOT_MARKERS,
-    testRunner: detectGoTestRunner,
-    rawRunner: detectRawGoRunner,
-  },
   rust: {
     matches: (p) => p.endsWith('.rs'),
     markers: RUST_ROOT_MARKERS,
@@ -534,7 +492,7 @@ const LANGUAGE_DETECTORS: Record<Exclude<ProjectType, 'unsupported'>, LanguageDe
   },
 };
 
-/** Detection order — preserves the original typescript→python→go→rust sequence. */
+/** Detection order — preserves the original typescript→python→rust sequence. */
 const LANGUAGE_DETECTOR_TYPES = Object.keys(LANGUAGE_DETECTORS) as Exclude<
   ProjectType,
   'unsupported'

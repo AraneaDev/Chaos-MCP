@@ -39,6 +39,13 @@ export interface MutationResult {
    * whole file mutated"). Surfaced in the formatted output when present.
    */
   scopeNote?: string;
+  /**
+   * Mutants the tool could not score because the mutated code failed before a
+   * real pass/fail (cosmic-ray `incompetent`, Stryker compile errors). Excluded
+   * from the denominator. A non-zero value with `totalMutants === 0` means the
+   * test command never actually ran — see PythonEngine's degenerate-run guard.
+   */
+  incompetent?: number;
 }
 
 /**
@@ -69,7 +76,7 @@ export interface RunOptions {
    * Concurrency hint for mutation engines that support parallel execution.
    *
    * **Supported by:** StrykerJS (via `--concurrency`).
-   * **Ignored by:** cosmic-ray, go-mutesting, cargo-mutants (which manage their
+   * **Ignored by:** cosmic-ray, cargo-mutants (which manage their
    * own parallelism or run serially).
    *
    * When omitted, the engine uses its own default (StrykerJS auto-detects
@@ -89,7 +96,7 @@ export interface RunOptions {
    * Multiple 1-based inclusive line ranges to constrain mutation to (the
    * diff-aware superset of {@link lineScope}). When set, takes precedence over
    * `lineScope`. **StrykerJS only** — emitted as comma-separated `--mutate`
-   * patterns. Ignored by cosmic-ray, go-mutesting, cargo-mutants.
+   * patterns. Ignored by cosmic-ray, cargo-mutants.
    */
   lineRanges?: { start: number; end: number }[];
 
@@ -149,7 +156,7 @@ export interface RunOptions {
    * test run is allowed before being considered a timeout (and killed).
    *
    * **Supported by:** StrykerJS (via `--timeoutMs`).
-   * **Ignored by:** cosmic-ray, go-mutesting, cargo-mutants.
+   * **Ignored by:** cosmic-ray, cargo-mutants.
    *
    * Distinct from {@link timeoutMs} (total run cap). Use this to prevent
    * a single slow mutant from hanging the entire mutation run.
@@ -222,7 +229,7 @@ export abstract class BaseEngine {
    * {@link ExecFailureError}, or throw for non-recoverable cases.
    *
    * Shared by engines whose non-ExecFailure handling differs only by the tool
-   * name in the wrapped message (go-mutesting, cargo-mutants):
+   * name in the wrapped message (cargo-mutants):
    *  - {@link MutationToolStartupError} → rethrown as a plain Error (verbatim).
    *  - any other non-{@link ExecFailureError} → wrapped as `<toolName> execution failed: …`.
    *  - an {@link ExecFailureError} → returned for engine-specific exit-code handling.

@@ -38,7 +38,6 @@ export function listResources(): ResourceListing[] {
 const ENGINE_NAMES: Record<SupportedProjectType, string> = {
   typescript: 'StrykerJS',
   python: 'cosmic-ray',
-  go: 'go-mutesting',
   rust: 'cargo-mutants',
 };
 
@@ -76,7 +75,6 @@ function configSchemaJson(): string {
     allowPrebuild: 'boolean — allow caller-supplied prebuildCommand (default false).',
     stryker: 'object — StrykerJS-specific overrides.',
     cosmicray: 'object — cosmic-ray (Python)-specific overrides.',
-    go: 'object — go-mutesting-specific overrides.',
     rust: 'object — cargo-mutants-specific overrides.',
   };
   return JSON.stringify(keys, null, 2);

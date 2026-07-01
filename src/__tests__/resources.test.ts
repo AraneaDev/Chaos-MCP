@@ -25,7 +25,6 @@ describe('resources', () => {
     expect(Object.keys(data).sort()).toEqual(Object.keys(ENGINE_REGISTRY).sort());
     expect(data.typescript.supportsLineScope).toBe(true);
     expect(data.python.supportsLineScope).toBe(false);
-    expect(data.go.supportsLineScope).toBe(false);
     expect(data.rust.supportsLineScope).toBe(false);
     expect(data.rust.estimateFidelity).toBe('exact');
     expect(data.typescript.estimateFidelity).toBe('approx');
@@ -40,15 +39,13 @@ describe('resources', () => {
     >;
     expect(data.typescript.engine).toBe('StrykerJS');
     expect(data.python.engine).toBe('cosmic-ray');
-    expect(data.go.engine).toBe('go-mutesting');
     expect(data.rust.engine).toBe('cargo-mutants');
     // Structural fields sourced from ENGINE_REGISTRY (configKey + autoPrebuild).
     for (const [key, entry] of Object.entries(ENGINE_REGISTRY)) {
       expect(data[key].configKey).toBe(entry.configKey);
       expect(data[key].autoPrebuild).toBe(Boolean(entry.prebuild));
     }
-    // Go and Rust declare auto-prebuilds; TS and Python do not.
-    expect(data.go.autoPrebuild).toBe(true);
+    // Rust declares an auto-prebuild; TS and Python do not.
     expect(data.rust.autoPrebuild).toBe(true);
     expect(data.typescript.autoPrebuild).toBe(false);
   });
