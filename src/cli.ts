@@ -44,7 +44,7 @@ Description:
   source file to identify weaknesses in the local test suite.
 
   It supports TypeScript/JavaScript (via StrykerJS), Python (via cosmic-ray),
-  Go (via go-mutesting), and Rust (via cargo-mutants). All mutation runs execute inside temporary sandbox
+  and Rust (via cargo-mutants). All mutation runs execute inside temporary sandbox
   directories — your real working tree is never touched.
 
 Configuration (chaos-mcp.config.json):
@@ -54,7 +54,7 @@ Configuration (chaos-mcp.config.json):
     "rust": { "timeoutMs": 600000 }
   }
 
-  Engine-specific sections ("stryker", "cosmicray", "go", "rust") override the
+  Engine-specific sections ("stryker", "cosmicray", "rust") override the
   corresponding global defaults. Stryker sections support: timeoutMs, concurrency,
   mutatorDenylist, perMutantTimeoutMs, dryRun, incremental.
   All other engine sections support: timeoutMs. cosmicray also supports:
@@ -62,7 +62,7 @@ Configuration (chaos-mcp.config.json):
 
 Tool: audit_code_resilience
   Parameters:
-    filePath (required)  — Workspace-relative path to the file to audit (.ts/.js/.py/.go/.rs).
+    filePath (required)  — Workspace-relative path to the file to audit (.ts/.js/.py/.rs).
     timeoutMs            — Max run time in ms (default: 300000 / 5 min).
     lineScope            — { start, end } 1-based line range (StrykerJS only).
     mutatorAllowlist     — (unsupported in StrykerJS v9 — ignored; use mutatorDenylist).
@@ -72,21 +72,19 @@ Tool: audit_code_resilience
     outputFormat         — 'json' (default) or 'text' for human-readable output.
     incremental          — boolean, reuse previous run results (StrykerJS only).
     ignorePatterns       — string[] of substring patterns to exclude from sandbox copy.
-    prebuildCommand      — shell command to run before mutation (e.g. "npm run build", "go build ./...").
+    prebuildCommand      — shell command to run before mutation (e.g. "npm run build", "cargo build").
                            Disabled by default; enable with "allowPrebuild": true or CHAOS_MCP_ALLOW_PREBUILD=1.
     perMutantTimeoutMs   — max ms per individual mutant test (StrykerJS only).
 
   Example via MCP client:
     { "filePath": "src/utils/math.ts", "timeoutMs": 60000 }
     { "filePath": "src/billing.py", "mutatorDenylist": ["StringLiteral"] }
-    { "filePath": "src/logic.go" }
     { "filePath": "src/main.rs" }
 
 Links:
   https://codebuff.com/docs
   https://stryker-mutator.io
   https://github.com/sixty-north/cosmic-ray
-  https://github.com/zimmski/go-mutesting
   https://github.com/sourcefrog/cargo-mutants
 `;
 }

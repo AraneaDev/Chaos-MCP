@@ -9,7 +9,7 @@ export const TOOL_DEFINITION = {
   description:
     'Runs on-demand, sandbox-isolated mutation testing against a single source file to identify gaps in unit test coverage. ' +
     'Chaos-MCP generates mutants (logical faults like changing `>` to `>=`) and checks whether the local test suite catches them. ' +
-    'Surviving mutants indicate test coverage holes. Supports TypeScript/JavaScript (StrykerJS), Python (cosmic-ray), Go (go-mutesting), and Rust (cargo-mutants).',
+    'Surviving mutants indicate test coverage holes. Supports TypeScript/JavaScript (StrykerJS), Python (cosmic-ray), and Rust (cargo-mutants).',
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -17,7 +17,7 @@ export const TOOL_DEFINITION = {
         type: 'string',
         description:
           'Workspace-relative path to the file to audit. ' +
-          'Must end in .ts, .js, .tsx, .jsx, .py, .go, or .rs. ' +
+          'Must end in .ts, .js, .tsx, .jsx, .py, or .rs. ' +
           'Example: "src/utils/math.ts"',
       },
       timeoutMs: {
@@ -249,7 +249,7 @@ export const TRIAGE_TOOL_DEFINITION = {
   description:
     'Batch triage: audit a set of files and/or directories and return a weakest-first ranked ' +
     'leaderboard of mutation scores, so you can see where the test suite is most fragile in one call. ' +
-    'Directories are recursively expanded to supported source files (.ts/.js/.py/.go/.rs), skipping ' +
+    'Directories are recursively expanded to supported source files (.ts/.js/.py/.rs), skipping ' +
     'test files. Files are audited serially. Drill into a weak file with audit_code_resilience for ' +
     'per-mutant survivor detail.',
   inputSchema: {

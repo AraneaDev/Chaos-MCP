@@ -32,15 +32,6 @@ describe('suggestTestFile', () => {
     });
   });
 
-  it('uses Go co-located convention', () => {
-    mkdirSync(join(root, 'pkg'), { recursive: true });
-    writeFileSync(join(root, 'pkg', 'calc.go'), '');
-    expect(suggestTestFile('pkg/calc.go', 'go', root)).toEqual({
-      path: 'pkg/calc_test.go',
-      exists: false,
-    });
-  });
-
   it('uses Python test_ convention and finds it under tests/', () => {
     mkdirSync(join(root, 'app'), { recursive: true });
     mkdirSync(join(root, 'tests'), { recursive: true });

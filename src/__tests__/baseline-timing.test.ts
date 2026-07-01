@@ -26,11 +26,7 @@ describe('projectEstimatedMs', () => {
 });
 
 describe('resolveBaselineTestCommand', () => {
-  it('resolves go and rust', () => {
-    expect(resolveBaselineTestCommand(env(), 'go')).toEqual({
-      command: 'go',
-      args: ['test', './...'],
-    });
+  it('resolves rust', () => {
     expect(resolveBaselineTestCommand(env(), 'rust')).toEqual({ command: 'cargo', args: ['test'] });
   });
   it('resolves python to pytest with empty args', () => {

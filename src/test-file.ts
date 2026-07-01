@@ -25,8 +25,6 @@ function candidates(targetFile: string, projectType: SupportedProjectType): stri
     }
     case 'python':
       return [j(dir, `test_${base}.py`), j('tests', `test_${base}.py`)];
-    case 'go':
-      return [j(dir, `${base}_test.go`)];
     case 'rust':
       // Rust convention is in-file #[cfg(test)]; suggest the source file itself,
       // then an integration-test fallback under tests/.
