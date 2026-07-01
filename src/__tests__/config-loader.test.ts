@@ -736,6 +736,47 @@ describe('phase3 config keys', () => {
   });
 });
 
+describe('infection config section', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockExistsSync.mockReturnValue(true);
+  });
+
+  it('parses a valid infection section (timeoutMs, threads, testFrameworkOptions)', () => {
+    mockReadFileSync.mockReturnValue(
+      JSON.stringify({
+        infection: { timeoutMs: 120000, threads: 4, testFrameworkOptions: '--testsuite=unit' },
+      }),
+    );
+    const config = loadConfig('/tmp/config.json');
+    expect(config.infection).toEqual({
+      timeoutMs: 120000,
+      threads: 4,
+      testFrameworkOptions: '--testsuite=unit',
+    });
+  });
+
+  it('accepts threads: "max"', () => {
+    mockReadFileSync.mockReturnValue(JSON.stringify({ infection: { threads: 'max' } }));
+    expect(loadConfig('/tmp/config.json').infection).toEqual({ threads: 'max' });
+  });
+
+  it('drops an all-invalid infection section and warns', () => {
+    mockReadFileSync.mockReturnValue(JSON.stringify({ infection: { timeoutMs: -1 } }));
+    const { config, warnings } = validateConfig('/tmp/config.json');
+    expect(config.infection).toBeUndefined();
+    expect(warnings.some((w) => w.includes('infection'))).toBe(true);
+  });
+
+  it('warns on an unknown key inside the infection section', () => {
+    mockReadFileSync.mockReturnValue(
+      JSON.stringify({ infection: { timeoutMs: 1000, bogus: true } }),
+    );
+    const { warnings } = validateConfig('/tmp/config.json');
+    expect(warnings.some((w) => w.includes('"bogus"') && w.includes('infection'))).toBe(true);
+  });
+});
+
 /**
  * Mutation-driven coverage. Chaos-MCP flagged surviving mutants in the
  * KNOWN_*_KEYS sets, the boundary comparisons (`> 0`, `>= 1`, `<= 64`,
@@ -769,6 +810,7 @@ describe('config-loader mutation hardening', () => {
       stryker: { timeoutMs: 1 },
       cosmicray: { timeoutMs: 1 },
       rust: { timeoutMs: 1 },
+      infection: { timeoutMs: 1 },
     });
     const { warnings } = validateConfig('/tmp/config.json');
     expect(warnings.some((w) => w.includes('Unknown config key'))).toBe(false);

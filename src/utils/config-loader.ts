@@ -22,6 +22,7 @@ const KNOWN_KEYS = new Set([
   'stryker',
   'cosmicray',
   'rust',
+  'infection',
 ]);
 
 /** Valid keys within a StrykerConfig section. */
@@ -46,6 +47,9 @@ const KNOWN_COSMICRAY_KEYS = new Set([
 
 /** Valid keys within a CargoMutantsConfig section. */
 const KNOWN_RUST_KEYS = new Set(['timeoutMs']);
+
+/** Valid keys within an InfectionConfig section. */
+const KNOWN_INFECTION_KEYS = new Set(['timeoutMs', 'threads', 'testFrameworkOptions']);
 
 /**
  * StrykerJS-specific config overrides.
@@ -101,13 +105,25 @@ export interface CargoMutantsConfig {
 }
 
 /**
+ * Infection (PHP)-specific config overrides.
+ */
+export interface InfectionConfig {
+  /** Timeout override for the whole Infection run (ms). */
+  timeoutMs?: number;
+  /** Worker count passed to Infection's `--threads` (positive integer, or "max"). */
+  threads?: number | 'max';
+  /** Extra options forwarded to the PHP test framework (e.g. "--testsuite=unit"). */
+  testFrameworkOptions?: string;
+}
+
+/**
  * User-configurable defaults for mutation testing runs.
  * Loaded from a JSON config file at startup and merged with per-call arguments.
  * Tool call arguments always take precedence over config defaults.
  *
- * Engine-specific sections (`stryker`, `cosmicray`, `rust`) override their
- * corresponding global defaults. This lets you set a short global timeout while
- * giving Rust builds more time, or tune Stryker concurrency independently.
+ * Engine-specific sections (`stryker`, `cosmicray`, `rust`, `infection`) override
+ * their corresponding global defaults. This lets you set a short global timeout
+ * while giving Rust builds more time, or tune Stryker concurrency independently.
  */
 export interface ChaosConfig {
   /** Default timeout in milliseconds for all mutation runs. */
@@ -166,6 +182,9 @@ export interface ChaosConfig {
 
   /** cargo-mutants-specific overrides (precedence over global defaults). */
   rust?: CargoMutantsConfig;
+
+  /** Infection (PHP)-specific overrides (precedence over global defaults). */
+  infection?: InfectionConfig;
 }
 
 /** Default config file name looked up from the working directory. */
@@ -271,6 +290,31 @@ function parseTimeoutOnlyConfig(raw: unknown): { timeoutMs?: number } | undefine
   return hasAny ? result : undefined;
 }
 
+function parseInfectionConfig(raw: unknown): InfectionConfig | undefined {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return undefined;
+  const s = raw as Record<string, unknown>;
+  const result: InfectionConfig = {};
+  let hasAny = false;
+
+  if (typeof s.timeoutMs === 'number' && s.timeoutMs > 0) {
+    result.timeoutMs = s.timeoutMs;
+    hasAny = true;
+  }
+  if (s.threads === 'max') {
+    result.threads = 'max';
+    hasAny = true;
+  } else if (typeof s.threads === 'number' && Number.isInteger(s.threads) && s.threads >= 1) {
+    result.threads = s.threads;
+    hasAny = true;
+  }
+  if (typeof s.testFrameworkOptions === 'string' && s.testFrameworkOptions.length > 0) {
+    result.testFrameworkOptions = s.testFrameworkOptions;
+    hasAny = true;
+  }
+
+  return hasAny ? result : undefined;
+}
+
 /**
  * Per-engine config sections, in one place. Replaces the parallel per-section
  * dispatch previously repeated in {@link buildConfig} and {@link validateConfig}.
@@ -278,13 +322,14 @@ function parseTimeoutOnlyConfig(raw: unknown): { timeoutMs?: number } | undefine
  * language adds one entry here.
  */
 const ENGINE_CONFIG_SECTIONS: {
-  key: 'stryker' | 'cosmicray' | 'rust';
+  key: 'stryker' | 'cosmicray' | 'rust' | 'infection';
   knownKeys: Set<string>;
   parse: (raw: unknown) => object | undefined;
 }[] = [
   { key: 'stryker', knownKeys: KNOWN_STRYKER_KEYS, parse: parseStrykerConfig },
   { key: 'cosmicray', knownKeys: KNOWN_COSMICRAY_KEYS, parse: parseCosmicRayConfig },
   { key: 'rust', knownKeys: KNOWN_RUST_KEYS, parse: parseTimeoutOnlyConfig },
+  { key: 'infection', knownKeys: KNOWN_INFECTION_KEYS, parse: parseInfectionConfig },
 ];
 
 /**
