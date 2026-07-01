@@ -37,7 +37,7 @@ vi.mock('../utils/logger.js', () => ({
 }));
 
 import { runShell, ExecFailureError } from '../utils/exec.js';
-import { RustEngine } from '../engines/rust.js';
+import { RustEngine, resolveCargoJobs } from '../engines/rust.js';
 
 const mockRunShell = vi.mocked(runShell);
 
@@ -536,9 +536,12 @@ describe('RustEngine', () => {
     );
   });
 
-  it('passes exactly ["mutants", "--file", <relative path>] to cargo', async () => {
+  it('passes exactly ["mutants", "--file", <relative path>] to cargo when serial', async () => {
     mockRunShell.mockResolvedValue(makeExecResult(''));
-    await engine.run('src/deeply/nested/module.rs', { workDir: '/tmp/x' });
+    // Pin concurrency:1 so this assertion is deterministic regardless of the
+    // host's CPU count (resolveCargoJobs would otherwise default to -j 2 on
+    // machines with >=3 cores).
+    await engine.run('src/deeply/nested/module.rs', { workDir: '/tmp/x', concurrency: 1 });
     expect(mockRunShell).toHaveBeenCalledWith(
       'cargo',
       ['mutants', '--file', 'src/deeply/nested/module.rs'],
@@ -669,5 +672,33 @@ describe('RustEngine', () => {
     expect(stderrLog).toContain('W'.repeat(500));
     expect(stderrLog).not.toContain('W'.repeat(501));
     mockVerbose.mockReturnValue(false);
+  });
+
+  // ─── -j concurrency wiring ──────────────────────────────────────────────
+
+  it('passes -j to cargo-mutants when concurrency > 1, omits it when serial', async () => {
+    mockRunShell.mockResolvedValue(makeExecResult('MISSED src/x.rs:1:1: x', ''));
+
+    await engine.run('src/x.rs', { concurrency: 4, workDir: '/tmp' });
+    expect(mockRunShell.mock.calls[0][1]).toEqual(['mutants', '--file', 'src/x.rs', '-j', '4']);
+
+    mockRunShell.mockClear();
+    await engine.run('src/x.rs', { concurrency: 1, workDir: '/tmp' });
+    expect(mockRunShell.mock.calls[0][1]).toEqual(['mutants', '--file', 'src/x.rs']);
+  });
+});
+
+describe('resolveCargoJobs', () => {
+  it('honors an explicit concurrency as-is', () => {
+    expect(resolveCargoJobs(4, 8)).toBe(4);
+    expect(resolveCargoJobs(1, 8)).toBe(1);
+  });
+  it('defaults to 2 jobs when the machine has spare cores (cpus >= 3)', () => {
+    expect(resolveCargoJobs(undefined, 8)).toBe(2);
+    expect(resolveCargoJobs(undefined, 3)).toBe(2);
+  });
+  it('defaults to serial (1) on low-core machines (cpus < 3)', () => {
+    expect(resolveCargoJobs(undefined, 2)).toBe(1);
+    expect(resolveCargoJobs(undefined, 1)).toBe(1);
   });
 });

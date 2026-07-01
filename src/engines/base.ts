@@ -75,12 +75,13 @@ export interface RunOptions {
   /**
    * Concurrency hint for mutation engines that support parallel execution.
    *
-   * **Supported by:** StrykerJS (via `--concurrency`).
-   * **Ignored by:** cosmic-ray, cargo-mutants (which manage their
-   * own parallelism or run serially).
+   * **Supported by:** StrykerJS (via `--concurrency`), cargo-mutants (via `-j`,
+   * see `resolveCargoJobs` in `engines/rust.ts` for the conservative default).
+   * **Ignored by:** cosmic-ray (manages its own parallelism).
    *
    * When omitted, the engine uses its own default (StrykerJS auto-detects
-   * CPU core count).
+   * CPU core count; cargo-mutants defaults to a low, non-core-scaling job
+   * count since its own build/test tooling is already parallel).
    */
   concurrency?: number;
 
