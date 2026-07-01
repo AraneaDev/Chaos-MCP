@@ -1156,26 +1156,29 @@ describe('config-loader mutation hardening', () => {
   });
 });
 
-describe('back-compat: legacy go section', () => {
+describe('back-compat: legacy engine section', () => {
   beforeEach(() => {
     // Reset mocks for this test block
     vi.clearAllMocks();
     mockExistsSync.mockReturnValue(true);
   });
 
-  it('treats a legacy "go" config section as an ignorable unknown key', () => {
-    // Set up the mock to return a config with a go section
+  it('treats a legacy engine config section as an ignorable unknown key', () => {
+    // A removed engine's config section (e.g. from an older Chaos-MCP) is now an
+    // unknown top-level key: it must be dropped, warned about, and must not
+    // prevent the rest of the config from loading.
+    const legacyKey = 'legacyEngine';
     mockReadFileSync.mockReturnValue(
-      JSON.stringify({ go: { timeoutMs: 1000 }, defaultTimeoutMs: 5000 }),
+      JSON.stringify({ [legacyKey]: { timeoutMs: 1000 }, defaultTimeoutMs: 5000 }),
     );
 
     const { config, warnings } = validateConfig('/tmp/config.json');
 
-    // After go is removed from KNOWN_KEYS, it should not be in config
-    expect(config).not.toHaveProperty('go');
+    // The legacy section is not carried into the validated config.
+    expect(config).not.toHaveProperty(legacyKey);
     // But the defaultTimeoutMs should still be there
     expect(config.defaultTimeoutMs).toBe(5000);
-    // And there should be a warning about the unknown "go" key
-    expect(warnings.some((w) => w.includes('"go"'))).toBe(true);
+    // And there should be a warning about the unknown key.
+    expect(warnings.some((w) => w.includes(`"${legacyKey}"`))).toBe(true);
   });
 });

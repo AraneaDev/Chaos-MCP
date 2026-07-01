@@ -8,9 +8,6 @@ vi.mock('../engines/typescript.js', () => ({
 vi.mock('../engines/python.js', () => ({
   PythonEngine: vi.fn(),
 }));
-vi.mock('../engines/go.js', () => ({
-  GoEngine: vi.fn(),
-}));
 vi.mock('../engines/rust.js', () => ({
   RustEngine: vi.fn(),
 }));
@@ -65,7 +62,7 @@ vi.mock('../utils/logger.js', () => ({
 import { handleToolCall } from '../index.js';
 import { validateToolArgs } from '../handler.js';
 import { TypeScriptEngine } from '../engines/typescript.js';
-import { GoEngine } from '../engines/go.js';
+import { RustEngine } from '../engines/rust.js';
 import { detectEnvironment } from '../utils/project-detector.js';
 import { createSandbox } from '../utils/sandbox.js';
 import { runShellCommand } from '../utils/exec.js';
@@ -74,7 +71,7 @@ import { existsSync } from 'fs';
 import { computeChangedRanges } from '../utils/git-diff.js';
 
 const MockTSEngine = vi.mocked(TypeScriptEngine);
-const MockGoEngine = vi.mocked(GoEngine);
+const MockRustEngine = vi.mocked(RustEngine);
 const mockDetectEnv = vi.mocked(detectEnvironment);
 const mockCreateSandbox = vi.mocked(createSandbox);
 const mockRunShellCommand = vi.mocked(runShellCommand);
@@ -371,35 +368,6 @@ describe('handleToolCall', () => {
       'Chaos Engine Halted: Stryker crashed',
     );
     expect(mockCleanup).toHaveBeenCalledOnce();
-  });
-
-  it('dispatches .go files to GoEngine', async () => {
-    const mockRun = vi.fn().mockResolvedValue({
-      target: 'src/main.go',
-      totalMutants: 3,
-      killed: 3,
-      survived: 0,
-      mutationScore: '100.00%',
-      vulnerabilities: [],
-    });
-
-    MockGoEngine.mockImplementation(() => ({ run: mockRun }) as unknown as GoEngine);
-
-    mockDetectEnv.mockReturnValue({
-      projectType: 'go',
-      testRunner: 'go test',
-      detectedRunner: 'go test',
-      workspaceRoot: '/workspace',
-    });
-
-    // go.mod is absent by default (mockExistsSync returns false), so no smart
-    // prebuild triggers — no need to mock runShellCommand here.
-
-    const request = makeRequest('audit_code_resilience', { filePath: 'src/main.go' });
-    const response = await handleToolCall(request);
-
-    expect(response.isError).toBeUndefined();
-    expect(mockRun).toHaveBeenCalledWith('src/main.go', expect.any(Object));
   });
 
   it('dispatches .rs files to RustEngine', async () => {
@@ -1808,45 +1776,6 @@ describe('handleToolCall', () => {
     );
   });
 
-  it('ignores a legacy go config section timeout for Go files (falls back to defaultTimeoutMs)', async () => {
-    const mockRun = vi.fn().mockResolvedValue({
-      target: 'src/main.go',
-      totalMutants: 0,
-      killed: 0,
-      survived: 0,
-      mutationScore: '100.00%',
-      vulnerabilities: [],
-    });
-
-    MockGoEngine.mockImplementation(() => ({ run: mockRun }) as unknown as GoEngine);
-    mockDetectEnv.mockReturnValue({
-      projectType: 'go',
-      testRunner: 'go test',
-      detectedRunner: 'go test',
-      workspaceRoot: '/workspace',
-    });
-
-    mockRunShellCommand.mockResolvedValue({
-      stdout: '',
-      stderr: '',
-      exit: 0,
-      signal: null,
-    });
-
-    const config = {
-      defaultTimeoutMs: 300000,
-      go: { timeoutMs: 180000 },
-    };
-
-    const request = makeRequest('audit_code_resilience', { filePath: 'src/main.go' });
-    await handleToolCall(request, config);
-
-    expect(mockRun).toHaveBeenCalledWith(
-      'src/main.go',
-      expect.objectContaining({ timeoutMs: 300000 }),
-    );
-  });
-
   it('stryker engine config dryRun flows through to RunOptions', async () => {
     const mockRun = vi.fn().mockResolvedValue({
       target: 'src/app.ts',
@@ -2343,45 +2272,7 @@ describe('handleToolCall', () => {
     expect(mockRun).toHaveBeenCalled();
   });
 
-  // ─── Go/Rust smart prebuild tests ──────────────────────────────────────
-
-  it('uses go mod download as default prebuild for Go projects', async () => {
-    const mockRun = vi.fn().mockResolvedValue({
-      target: 'src/main.go',
-      totalMutants: 0,
-      killed: 0,
-      survived: 0,
-      mutationScore: '100.00%',
-      vulnerabilities: [],
-    });
-
-    MockGoEngine.mockImplementation(() => ({ run: mockRun }) as unknown as GoEngine);
-    mockDetectEnv.mockReturnValue({
-      projectType: 'go',
-      testRunner: 'go test',
-      detectedRunner: 'go test',
-      workspaceRoot: '/workspace',
-    });
-
-    // go.mod must exist for smart prebuild to trigger
-    mockExistsSync.mockImplementation((p) => String(p).endsWith('go.mod'));
-
-    mockRunShellCommand.mockResolvedValue({
-      stdout: '',
-      stderr: '',
-      exit: 0,
-      signal: null,
-    });
-
-    const request = makeRequest('audit_code_resilience', { filePath: 'src/main.go' });
-    await handleToolCall(request);
-
-    expect(mockRunShellCommand).toHaveBeenCalledWith('go mod download', {
-      cwd: '/tmp/chaos-mcp-sandbox',
-      timeoutMs: undefined,
-    });
-    expect(mockRun).toHaveBeenCalled();
-  });
+  // ─── Rust smart prebuild tests ─────────────────────────────────────────
 
   it('uses cargo check as default prebuild for Rust projects', async () => {
     const { RustEngine } = await import('../engines/rust.js');
@@ -2423,77 +2314,6 @@ describe('handleToolCall', () => {
       cwd: '/tmp/chaos-mcp-sandbox',
       timeoutMs: undefined,
     });
-    expect(mockRun).toHaveBeenCalled();
-  });
-
-  it('explicit prebuildCommand overrides smart default for Go projects', async () => {
-    const mockRun = vi.fn().mockResolvedValue({
-      target: 'src/main.go',
-      totalMutants: 0,
-      killed: 0,
-      survived: 0,
-      mutationScore: '100.00%',
-      vulnerabilities: [],
-    });
-
-    MockGoEngine.mockImplementation(() => ({ run: mockRun }) as unknown as GoEngine);
-    mockDetectEnv.mockReturnValue({
-      projectType: 'go',
-      testRunner: 'go test',
-      detectedRunner: 'go test',
-      workspaceRoot: '/workspace',
-    });
-
-    // go.mod exists but explicit prebuild overrides
-    mockExistsSync.mockImplementation((p) => String(p).endsWith('go.mod'));
-
-    mockRunShellCommand.mockResolvedValue({
-      stdout: '',
-      stderr: '',
-      exit: 0,
-      signal: null,
-    });
-
-    const request = makeRequest('audit_code_resilience', {
-      filePath: 'src/main.go',
-      prebuildCommand: 'go build ./...',
-    });
-    await handleToolCall(request, { allowPrebuild: true });
-
-    // Explicit command wins over auto-default
-    expect(mockRunShellCommand).toHaveBeenCalledWith('go build ./...', {
-      cwd: '/tmp/chaos-mcp-sandbox',
-      timeoutMs: undefined,
-    });
-    expect(mockRun).toHaveBeenCalled();
-  });
-
-  it('skips smart prebuild for Go when go.mod is absent', async () => {
-    const mockRun = vi.fn().mockResolvedValue({
-      target: 'src/main.go',
-      totalMutants: 0,
-      killed: 0,
-      survived: 0,
-      mutationScore: '100.00%',
-      vulnerabilities: [],
-    });
-
-    MockGoEngine.mockImplementation(() => ({ run: mockRun }) as unknown as GoEngine);
-    mockDetectEnv.mockReturnValue({
-      projectType: 'go',
-      testRunner: 'go test',
-      detectedRunner: 'go test',
-      workspaceRoot: '/workspace',
-    });
-
-    // go.mod does NOT exist — smart prebuild skipped
-    mockExistsSync.mockReturnValue(false);
-
-    const request = makeRequest('audit_code_resilience', { filePath: 'src/main.go' });
-    await handleToolCall(request);
-
-    // No prebuild should be called
-    expect(mockRunShellCommand).not.toHaveBeenCalled();
     expect(mockRun).toHaveBeenCalled();
   });
 
@@ -2823,11 +2643,11 @@ describe('handleToolCall', () => {
 
   // ─── Go/Rust auto prebuild verbose logging ──────────────────────────────
 
-  it('logs [auto (go)] when smart prebuild kicks in for Go projects with verbose', async () => {
+  it('logs [auto (rust)] when smart prebuild kicks in for Rust projects with verbose', async () => {
     mockIsVerbose.mockReturnValue(true);
 
     const mockRun = vi.fn().mockResolvedValue({
-      target: 'src/main.go',
+      target: 'src/main.rs',
       totalMutants: 0,
       killed: 0,
       survived: 0,
@@ -2835,15 +2655,15 @@ describe('handleToolCall', () => {
       vulnerabilities: [],
     });
 
-    MockGoEngine.mockImplementation(() => ({ run: mockRun }) as unknown as GoEngine);
+    MockRustEngine.mockImplementation(() => ({ run: mockRun }) as unknown as RustEngine);
     mockDetectEnv.mockReturnValue({
-      projectType: 'go',
-      testRunner: 'go test',
-      detectedRunner: 'go test',
+      projectType: 'rust',
+      testRunner: 'cargo test',
+      detectedRunner: 'cargo test',
       workspaceRoot: '/workspace',
     });
 
-    mockExistsSync.mockImplementation((p) => String(p).endsWith('go.mod'));
+    mockExistsSync.mockImplementation((p) => String(p).endsWith('Cargo.toml'));
     mockRunShellCommand.mockResolvedValue({
       stdout: '',
       stderr: '',
@@ -2851,12 +2671,12 @@ describe('handleToolCall', () => {
       signal: null,
     });
 
-    const request = makeRequest('audit_code_resilience', { filePath: 'src/main.go' });
+    const request = makeRequest('audit_code_resilience', { filePath: 'src/main.rs' });
     await handleToolCall(request);
 
-    // Go has no packageManager so autoLabel falls back to projectType 'go'
-    expect(mockLog).toHaveBeenCalledWith(expect.stringContaining('[auto (go)]'));
-    expect(mockLog).toHaveBeenCalledWith(expect.stringContaining('go mod download'));
+    // Rust has no packageManager so autoLabel falls back to projectType 'rust'
+    expect(mockLog).toHaveBeenCalledWith(expect.stringContaining('[auto (rust)]'));
+    expect(mockLog).toHaveBeenCalledWith(expect.stringContaining('cargo check'));
   });
 
   // ─── handleToolCall verbose logging branches ──────────────────────────
@@ -3212,18 +3032,18 @@ describe('handleToolCall', () => {
 
     it('ranges → non-TypeScript: runs whole file and attaches a scopeNote', async () => {
       const mockRun = vi.fn().mockResolvedValue({
-        target: 'src/x.go',
+        target: 'src/x.rs',
         totalMutants: 1,
         killed: 1,
         survived: 0,
         mutationScore: '100.00%',
         vulnerabilities: [],
       });
-      MockGoEngine.mockImplementation(() => ({ run: mockRun }) as unknown as GoEngine);
+      MockRustEngine.mockImplementation(() => ({ run: mockRun }) as unknown as RustEngine);
       mockDetectEnv.mockReturnValue({
-        projectType: 'go',
-        testRunner: 'go test',
-        detectedRunner: 'go test',
+        projectType: 'rust',
+        testRunner: 'cargo test',
+        detectedRunner: 'cargo test',
         workspaceRoot: '/workspace',
       });
       mockComputeChangedRanges.mockResolvedValue({
@@ -3232,13 +3052,13 @@ describe('handleToolCall', () => {
       });
 
       const res = await handleToolCall(
-        makeRequest('audit_code_resilience', { filePath: 'src/x.go', diffBase: 'HEAD' }),
+        makeRequest('audit_code_resilience', { filePath: 'src/x.rs', diffBase: 'HEAD' }),
       );
 
       expect(mockRun).toHaveBeenCalled();
       const json = JSON.parse((res.content[0] as { text: string }).text);
-      expect(json.scopeNote).toMatch(/not supported for go/i);
-      // The Go engine receives NO line scoping (whole-file run).
+      expect(json.scopeNote).toMatch(/not supported for rust/i);
+      // The Rust engine receives NO line scoping (whole-file run).
       const runOpts = mockRun.mock.calls[0][1] as { lineRanges?: unknown };
       expect(runOpts.lineRanges).toBeUndefined();
     });
@@ -3313,25 +3133,25 @@ describe('handleToolCall', () => {
 
     it('non-TS verify runs whole-file (no lineRanges) and still computes the delta', async () => {
       const mockRun = vi.fn().mockResolvedValue({
-        target: 'src/x.go',
+        target: 'src/x.rs',
         totalMutants: 2,
         killed: 2,
         survived: 0,
         mutationScore: '100.00%',
         vulnerabilities: [],
       });
-      MockGoEngine.mockImplementation(() => ({ run: mockRun }) as unknown as GoEngine);
+      MockRustEngine.mockImplementation(() => ({ run: mockRun }) as unknown as RustEngine);
       mockDetectEnv.mockReturnValue({
-        projectType: 'go',
-        testRunner: 'go test',
-        detectedRunner: 'go test',
+        projectType: 'rust',
+        testRunner: 'cargo test',
+        detectedRunner: 'cargo test',
         workspaceRoot: '/workspace',
       });
 
       const res = await handleToolCall(
         makeRequest('audit_code_resilience', {
-          filePath: 'src/x.go',
-          baseline: { survivors: [{ line: 7, mutators: { GoMut: 1 } }] },
+          filePath: 'src/x.rs',
+          baseline: { survivors: [{ line: 7, mutators: { RustMut: 1 } }] },
         }),
       );
 
@@ -3340,7 +3160,7 @@ describe('handleToolCall', () => {
       const json = JSON.parse((res.content[0] as { text: string }).text);
       expect(json.mode).toBe('verify');
       expect(json.killedCount).toBe(1);
-      expect(json.nowKilled).toEqual([{ line: 7, mutator: 'GoMut' }]);
+      expect(json.nowKilled).toEqual([{ line: 7, mutator: 'RustMut' }]);
     });
   });
 });

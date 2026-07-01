@@ -364,13 +364,6 @@ describe('buildRunOptions', () => {
         'python',
       ).timeoutMs,
     ).toBe(7);
-    // Legacy `go` config section is no longer wired up (go-mutesting config
-    // section removed); a go-shaped section is ignored and timeoutMs falls
-    // back to cfg.defaultTimeoutMs (undefined here since none was set).
-    expect(
-      buildRunOptions({}, { go: { timeoutMs: 8 } }, env({ projectType: 'go' }), '/sb', 'go')
-        .timeoutMs,
-    ).toBeUndefined();
     expect(
       buildRunOptions({}, { rust: { timeoutMs: 9 } }, env({ projectType: 'rust' }), '/sb', 'rust')
         .timeoutMs,
@@ -406,19 +399,9 @@ describe('resolvePrebuildCommand', () => {
     ).toBeNull();
   });
 
-  it('returns "go mod download" for Go when go.mod exists', () => {
-    mockExistsSync.mockImplementation((p) => String(p).endsWith('go.mod'));
-    expect(resolvePrebuildCommand({}, env({ projectType: 'go' }), 'go')).toBe('go mod download');
-  });
-
   it('returns "cargo check" for Rust when Cargo.toml exists', () => {
     mockExistsSync.mockImplementation((p) => String(p).endsWith('Cargo.toml'));
     expect(resolvePrebuildCommand({}, env({ projectType: 'rust' }), 'rust')).toBe('cargo check');
-  });
-
-  it('returns null for Go when go.mod is absent', () => {
-    mockExistsSync.mockReturnValue(false);
-    expect(resolvePrebuildCommand({}, env({ projectType: 'go' }), 'go')).toBeNull();
   });
 
   it('returns null for a plain TypeScript or pip Python project', () => {
@@ -481,16 +464,16 @@ describe('validateToolArgs — baseline arms', () => {
 
 describe('buildRunOptions — mutation hardening', () => {
   it('never sources a testRunner from the cosmicray section for a non-cosmicray engine', () => {
-    // `configKey === 'cosmicray' → true` would leak cosmicray's runner into a Go run.
+    // `configKey === 'cosmicray' → true` would leak cosmicray's runner into a Rust run.
     expect(
       buildRunOptions(
         {},
         { cosmicray: { testRunner: 'leaked' } },
-        env({ projectType: 'go', testRunner: 'gotest' }),
+        env({ projectType: 'rust', testRunner: 'cargotest' }),
         '/sb',
-        'go',
+        'rust',
       ).testRunner,
-    ).toBe('gotest');
+    ).toBe('cargotest');
   });
 
   it('ignores a non-number args.timeoutMs and falls back to config', () => {

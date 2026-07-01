@@ -397,13 +397,13 @@ export function buildRunOptions(
   // Extract engine-specific config for the current project type.
   // Precedence: args > engine-specific config section > global config defaults.
   const configKey = ENGINE_REGISTRY[projectType as SupportedProjectType]?.configKey;
-  const engCfg = configKey && configKey !== 'go' ? cfg[configKey] : undefined;
+  const engCfg = configKey ? cfg[configKey] : undefined;
 
   // testRunner must come from the section that matches the engine being run.
   // Previously stryker.testRunner was consulted first for ALL project types,
   // so a Python audit could receive Stryker's runner (e.g. "vitest") and pass
   // it to mutmut (audit Med#2). Only the Stryker/cosmic-ray sections carry a
-  // testRunner; the timeout-only Go/Rust sections don't (→ undefined, as before).
+  // testRunner; the timeout-only Rust section doesn't (→ undefined, as before).
   const engineTestRunner =
     configKey === 'stryker'
       ? cfg.stryker?.testRunner
@@ -971,8 +971,7 @@ export async function handleToolCall(
       const cfg = config ?? {};
 
       if (isVerbose()) {
-        const ck = ENGINE_REGISTRY[projectType].configKey;
-        const engCfg = ck !== 'go' ? cfg[ck] : undefined;
+        const engCfg = cfg[ENGINE_REGISTRY[projectType].configKey];
         log('Tool call: audit_code_resilience');
         log(`  filePath: ${filePath}`);
         log(`  projectType: ${projectType}`);

@@ -68,11 +68,13 @@ describe('formatResultAsJson with enrich', () => {
   });
 
   it('adds enrichNote when a survivor is unclassified (coarse engine)', () => {
-    const goResult: MutationResult = {
+    const coarseResult: MutationResult = {
       ...RESULT,
-      vulnerabilities: [{ line: 5, mutator: 'Go Mutation Operator', description: 'survived' }],
+      vulnerabilities: [{ line: 5, mutator: 'Rust Mutation Operator', description: 'survived' }],
     };
-    const out = JSON.parse(formatResultAsJson(goResult, { projectType: 'go', sourceLines: SRC }));
+    const out = JSON.parse(
+      formatResultAsJson(coarseResult, { projectType: 'rust', sourceLines: SRC }),
+    );
     expect(out.survivors[0].severity).toBe('unknown');
     expect(out.enrichNote).toBeDefined();
   });
