@@ -46,7 +46,7 @@ const KNOWN_COSMICRAY_KEYS = new Set([
 ]);
 
 /** Valid keys within a CargoMutantsConfig section. */
-const KNOWN_RUST_KEYS = new Set(['timeoutMs']);
+const KNOWN_RUST_KEYS = new Set(['timeoutMs', 'concurrency']);
 
 /** Valid keys within an InfectionConfig section. */
 const KNOWN_INFECTION_KEYS = new Set(['timeoutMs', 'threads', 'testFrameworkOptions']);
@@ -102,6 +102,8 @@ export interface CosmicRayConfig {
 export interface CargoMutantsConfig {
   /** Timeout override for cargo-mutants runs (ms). */
   timeoutMs?: number;
+  /** Parallel job count forwarded to cargo-mutants `-j` (integer 1–64). */
+  concurrency?: number;
 }
 
 /**
@@ -272,18 +274,27 @@ function parseCosmicRayConfig(raw: unknown): CosmicRayConfig | undefined {
 }
 
 /**
- * Parse a config section that supports only a positive `timeoutMs` field.
- * Used by the cargo-mutants (Rust) section.
+ * Parse the cargo-mutants (Rust) config section: a positive `timeoutMs` and an
+ * optional `concurrency` (integer 1–64, forwarded to cargo-mutants `-j`).
  * Returns `undefined` when the section is absent, malformed, or has no valid field.
  */
-function parseTimeoutOnlyConfig(raw: unknown): { timeoutMs?: number } | undefined {
+function parseCargoMutantsConfig(raw: unknown): CargoMutantsConfig | undefined {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return undefined;
   const s = raw as Record<string, unknown>;
-  const result: { timeoutMs?: number } = {};
+  const result: CargoMutantsConfig = {};
   let hasAny = false;
 
   if (typeof s.timeoutMs === 'number' && s.timeoutMs > 0) {
     result.timeoutMs = s.timeoutMs;
+    hasAny = true;
+  }
+  if (
+    typeof s.concurrency === 'number' &&
+    Number.isInteger(s.concurrency) &&
+    s.concurrency >= 1 &&
+    s.concurrency <= 64
+  ) {
+    result.concurrency = s.concurrency;
     hasAny = true;
   }
 
@@ -328,7 +339,7 @@ const ENGINE_CONFIG_SECTIONS: {
 }[] = [
   { key: 'stryker', knownKeys: KNOWN_STRYKER_KEYS, parse: parseStrykerConfig },
   { key: 'cosmicray', knownKeys: KNOWN_COSMICRAY_KEYS, parse: parseCosmicRayConfig },
-  { key: 'rust', knownKeys: KNOWN_RUST_KEYS, parse: parseTimeoutOnlyConfig },
+  { key: 'rust', knownKeys: KNOWN_RUST_KEYS, parse: parseCargoMutantsConfig },
   { key: 'infection', knownKeys: KNOWN_INFECTION_KEYS, parse: parseInfectionConfig },
 ];
 

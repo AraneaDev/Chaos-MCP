@@ -205,4 +205,25 @@ describe('PhpEngine.run', () => {
       /composer require --dev infection\/infection/,
     );
   });
+
+  it('builds --threads: phpThreads wins, then concurrency, else max', async () => {
+    mockExists.mockImplementation((p) => String(p).endsWith('chaos-infection-log.json'));
+    mockRead.mockReturnValue(SAMPLE_LOG);
+    mockInvoke.mockResolvedValue({ stdout: '', stderr: '', exit: 0, signal: null });
+
+    const engine = new PhpEngine();
+    const argsOf = () => mockInvoke.mock.calls[0][2] as string[];
+
+    // phpThreads wins even when concurrency is also set.
+    await engine.run('src/Calculator.php', { workDir: '/sb', phpThreads: '3', concurrency: 4 });
+    expect(argsOf()).toContain('--threads=3');
+
+    mockInvoke.mockClear();
+    await engine.run('src/Calculator.php', { workDir: '/sb', concurrency: 4 });
+    expect(argsOf()).toContain('--threads=4');
+
+    mockInvoke.mockClear();
+    await engine.run('src/Calculator.php', { workDir: '/sb' });
+    expect(argsOf()).toContain('--threads=max');
+  });
 });

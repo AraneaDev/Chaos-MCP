@@ -1,9 +1,26 @@
+import { cpus } from 'node:os';
 import { BaseEngine, RunOptions, MutationResult, Vulnerability } from './base.js';
 import { invokeMutationTool } from '../utils/exec-classify.js';
 import { log, isVerbose } from '../utils/logger.js';
 
 /** Default timeout for cargo-mutants runs (5 minutes). */
 const DEFAULT_TIMEOUT_MS = 300_000;
+
+/**
+ * Resolve the cargo-mutants `-j` job count. Explicit `concurrency` (from a tool
+ * arg or `rust.concurrency` config, already validated to 1–64) is honored as-is.
+ * Otherwise a deliberately LOW default: `2` when the machine has spare cores
+ * (`cpuCount >= 3`), else `1` (serial). cargo-mutants' own docs warn against
+ * core-scaling `-j` for Rust — its build/test tooling is already parallel, and
+ * each job needs its own multi-GB `target/` copy — so the default stays small.
+ * A result of `1` means "serial"; the engine omits `-j` entirely in that case.
+ */
+export function resolveCargoJobs(concurrency: number | undefined, cpuCount: number): number {
+  if (typeof concurrency === 'number' && Number.isInteger(concurrency) && concurrency >= 1) {
+    return concurrency;
+  }
+  return cpuCount >= 3 ? 2 : 1;
+}
 
 /**
  * Structured JSON output from `cargo mutants --output`.
@@ -151,20 +168,23 @@ export class RustEngine extends BaseEngine {
     // cargo-mutants `--file` is a glob matched against the source path. Pass the
     // full workspace-relative path (Med#9) so the run is scoped to exactly this
     // file — a bare basename would also match same-named files in other dirs.
+    const jobs = resolveCargoJobs(options?.concurrency, cpus().length);
+    const args = ['mutants', '--file', filePath];
+    if (jobs > 1) args.push('-j', String(jobs));
+
     if (isVerbose()) {
-      log(`RustEngine: cargo mutants --file "${filePath}"`);
+      log(`RustEngine: cargo mutants --file "${filePath}"${jobs > 1 ? ` -j ${jobs}` : ''}`);
     }
 
     let stdout: string;
     let stderr: string;
 
     try {
-      const result = await invokeMutationTool(
-        'cargo-mutants',
-        'cargo',
-        ['mutants', '--file', filePath],
-        { cwd, timeoutMs, signal: options?.signal },
-      );
+      const result = await invokeMutationTool('cargo-mutants', 'cargo', args, {
+        cwd,
+        timeoutMs,
+        signal: options?.signal,
+      });
       stdout = result.stdout;
       stderr = result.stderr;
     } catch (error: unknown) {

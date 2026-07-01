@@ -326,6 +326,35 @@ describe('buildRunOptions', () => {
     ).toBeUndefined();
   });
 
+  it('resolves concurrency from the engine section matching the project type', () => {
+    // Rust audit reads rust.concurrency, NOT stryker.concurrency
+    expect(
+      buildRunOptions(
+        {},
+        { stryker: { concurrency: 9 }, rust: { concurrency: 3 } },
+        env(),
+        '/w',
+        'rust',
+      ).concurrency,
+    ).toBe(3);
+    // TS audit still reads stryker.concurrency
+    expect(
+      buildRunOptions(
+        {},
+        { stryker: { concurrency: 9 }, rust: { concurrency: 3 } },
+        env(),
+        '/w',
+        'typescript',
+      ).concurrency,
+    ).toBe(9);
+    // arg overrides the section; section overrides global
+    expect(
+      buildRunOptions({ concurrency: 5 }, { rust: { concurrency: 3 } }, env(), '/w', 'rust')
+        .concurrency,
+    ).toBe(5);
+    expect(buildRunOptions({}, { concurrency: 7 }, env(), '/w', 'rust').concurrency).toBe(7);
+  });
+
   it('maps dryRun / incremental / outputFormat from args then config', () => {
     expect(buildRunOptions({ dryRun: true }, {}, env(), '/sb', 'typescript').dryRun).toBe(true);
     expect(

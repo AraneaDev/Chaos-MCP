@@ -777,6 +777,27 @@ describe('infection config section', () => {
   });
 });
 
+describe('rust (cargo-mutants) config section', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockExistsSync.mockReturnValue(true);
+  });
+
+  it('parses rust.concurrency and rejects out-of-range values', () => {
+    mockReadFileSync.mockReturnValue(
+      JSON.stringify({ rust: { timeoutMs: 60000, concurrency: 2 } }),
+    );
+    const good = validateConfig('/tmp/config.json');
+    expect(good.config.rust).toEqual({ timeoutMs: 60000, concurrency: 2 });
+    expect(good.warnings.filter((w) => w.includes('concurrency'))).toHaveLength(0);
+
+    mockReadFileSync.mockReturnValue(JSON.stringify({ rust: { concurrency: 65 } }));
+    const bad = validateConfig('/tmp/config.json');
+    expect(bad.config.rust?.concurrency).toBeUndefined();
+    expect(bad.warnings.some((w) => w.includes('rust.concurrency'))).toBe(true);
+  });
+});
+
 /**
  * Mutation-driven coverage. Chaos-MCP flagged surviving mutants in the
  * KNOWN_*_KEYS sets, the boundary comparisons (`> 0`, `>= 1`, `<= 64`,

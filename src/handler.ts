@@ -369,6 +369,13 @@ function isPositiveMs(v: unknown): v is number {
   return typeof v === 'number' && v > 0;
 }
 
+/** Concurrency declared on an engine config section, when that section has one. */
+function sectionConcurrency(section: unknown): number | undefined {
+  return typeof section === 'object' && section !== null && 'concurrency' in section
+    ? ((section as { concurrency?: unknown }).concurrency as number | undefined)
+    : undefined;
+}
+
 /** First valid concurrency among arg then config fallback, else `undefined`. */
 function resolveConcurrency(arg: unknown, fallback: unknown): number | undefined {
   if (isValidConcurrency(arg)) return arg;
@@ -427,7 +434,12 @@ export function buildRunOptions(
     mutatorDenylist: Array.isArray(args.mutatorDenylist)
       ? (args.mutatorDenylist as string[]).filter((v) => typeof v === 'string')
       : (cfg.stryker?.mutatorDenylist ?? cfg.mutatorDenylist),
-    concurrency: resolveConcurrency(args.concurrency, cfg.stryker?.concurrency ?? cfg.concurrency),
+    // Resolve from the section matching THIS engine (not always stryker): a Rust
+    // audit must read rust.concurrency, a PHP audit must not inherit stryker's.
+    concurrency: resolveConcurrency(
+      args.concurrency,
+      sectionConcurrency(engCfg) ?? cfg.concurrency,
+    ),
     dryRun: typeof args.dryRun === 'boolean' ? args.dryRun : cfg.stryker?.dryRun,
     outputFormat:
       args.outputFormat === 'text' || args.outputFormat === 'json' ? args.outputFormat : undefined,
