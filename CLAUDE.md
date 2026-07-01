@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Chaos-MCP is an MCP (Model Context Protocol) **stdio server** that runs isolated mutation testing against a target codebase to find holes in its test suite. It exposes three tools: `audit_code_resilience` (one file), `triage_test_coverage` (rank a tree weakest-first), and `estimate_audit` (cheap pre-flight mutant count / timing estimate, no test cycle). It wraps three language-specific mutation tools — StrykerJS (TS/JS), cosmic-ray (Python), cargo-mutants (Rust). Pre-release: not on npm; install from source. ESM throughout (`"type": "module"`, `.js` import specifiers that resolve to `.ts`).
+Chaos-MCP is an MCP (Model Context Protocol) **stdio server** that runs isolated mutation testing against a target codebase to find holes in its test suite. It exposes three tools: `audit_code_resilience` (one file), `triage_test_coverage` (rank a tree weakest-first), and `estimate_audit` (cheap pre-flight mutant count / timing estimate, no test cycle). It wraps four language-specific mutation tools — StrykerJS (TS/JS), cosmic-ray (Python), cargo-mutants (Rust), Infection (PHP). Pre-release: not on npm; install from source. ESM throughout (`"type": "module"`, `.js` import specifiers that resolve to `.ts`).
 
 ## Commands
 

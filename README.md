@@ -13,7 +13,7 @@ Chaos-MCP is an [MCP (Model Context Protocol)](https://modelcontextprotocol.io/)
 
 ## Features
 
-- **4 Languages Supported** — TypeScript/JavaScript (StrykerJS), Python (cosmic-ray), Rust (cargo-mutants)
+- **4 Languages Supported** — TypeScript/JavaScript (StrykerJS), Python (cosmic-ray), Rust (cargo-mutants), PHP (Infection)
 - **Sandbox Isolation** — all mutation runs execute in temporary directories; your real workspace is never touched
 - **Auto-Detection** — automatically detects project type, test runner, and workspace root
 - **Async Subprocesses** — all mutation-tool execution uses async `execFile`/`exec` (subprocess runs never block the event loop; the one-time sandbox copy is synchronous)
@@ -50,9 +50,10 @@ Chaos-MCP does **not** bundle the per-language mutation engines or install them 
 | TypeScript / JavaScript | [StrykerJS](https://stryker-mutator.io/) | `npm install --save-dev @stryker-mutator/core` (in the target project) |
 | Python | [cosmic-ray](https://github.com/sixty-north/cosmic-ray) | `pipx install cosmic-ray` — or `pip install cosmic-ray` inside a virtualenv |
 | Rust | [cargo-mutants](https://github.com/sourcefrog/cargo-mutants) | `cargo install cargo-mutants` |
+| PHP | [Infection](https://infection.github.io/) | `composer require --dev infection/infection` — also enable a coverage driver (Xdebug or PCOV) |
 
 Notes:
-- The tool itself must be on `PATH` (or, for StrykerJS, resolvable from the target project's `node_modules`), and the **language toolchain** it builds on must already be present — Node.js for StrykerJS, a Python interpreter for cosmic-ray, and a Rust/Cargo toolchain for cargo-mutants.
+- The tool itself must be on `PATH` (or, for StrykerJS, resolvable from the target project's `node_modules`), and the **language toolchain** it builds on must already be present — Node.js for StrykerJS, a Python interpreter for cosmic-ray, a Rust/Cargo toolchain for cargo-mutants, and PHP + Composer with a coverage driver (Xdebug or PCOV) for Infection.
 - **Python / cosmic-ray:** on modern distros a bare `pip install cosmic-ray` is blocked by [PEP 668](https://peps.python.org/pep-0668/) ("externally-managed-environment"); use `pipx install cosmic-ray` (isolated) or install inside an activated virtualenv. Chaos-MCP generates cosmic-ray's `config.toml` for you (scoped to the target file) and runs `baseline → init → exec → dump` in the sandbox — no per-project config needed. cosmic-ray runs its **full operator set** (no per-file line-scoping), so auditing a large file is slow. Two `cosmicray` config knobs keep big audits tractable: `testSelection` scopes the per-mutant test run (e.g. `["tests/unit/test_x.py"]` or `["-m","unit"]`), and `excludeOperators` (regexes, applied via `cr-filter-operators`) bounds the **mutant count** by skipping whole operator families — e.g. `["core/NumberReplacer", "core/ReplaceBinaryOperator.*"]` drops ~half the mutants on an arithmetic-heavy file. Excluded mutants are omitted from the score (a scoped audit).
 - These engines run **inside the sandbox** against a copy of your workspace; Chaos-MCP never installs or modifies anything in your real project.
 
@@ -470,6 +471,7 @@ The `prebuildCommand` tool argument runs an arbitrary shell command inside the s
 | TypeScript/JS | StrykerJS | vitest, jest, mocha, jasmine, bun, node:test |
 | Python | cosmic-ray | pytest, unittest |
 | Rust | cargo-mutants | cargo test, cargo-nextest |
+| PHP | Infection | phpunit |
 
 ## CLI Flags
 
@@ -558,4 +560,5 @@ MIT — See [LICENSE](LICENSE) for details.
 - [StrykerJS](https://stryker-mutator.io/)
 - [cosmic-ray](https://github.com/sixty-north/cosmic-ray)
 - [cargo-mutants](https://github.com/sourcefrog/cargo-mutants)
+- [Infection](https://infection.github.io/)
 - [Changelog](CHANGELOG.md)
