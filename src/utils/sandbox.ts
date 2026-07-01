@@ -128,7 +128,7 @@ const ALWAYS_EXCLUDE = new Set([
  * bulk-excluded layout directories and add specific directories here only
  * when they are safe to share across sandboxes.
  */
-const SYMLINK_DIRS = ['node_modules', '.venv', 'venv'];
+const SYMLINK_DIRS = ['node_modules', '.venv', 'venv', 'vendor'];
 
 /**
  * Maximum workspace size (in bytes) to copy without warning.

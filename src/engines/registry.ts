@@ -2,6 +2,7 @@ import type { BaseEngine } from './base.js';
 import { TypeScriptEngine } from './typescript.js';
 import { PythonEngine } from './python.js';
 import { RustEngine } from './rust.js';
+import { PhpEngine } from './php.js';
 import type { ProjectType } from '../utils/project-detector.js';
 
 /** The project types that map to a real mutation engine (everything but 'unsupported'). */
@@ -24,7 +25,7 @@ export interface EngineDescriptor {
    * The {@link ChaosConfig} section key holding this engine's overrides
    * (`cfg[configKey]`). Mirrors the section keys parsed in config-loader.ts.
    */
-  configKey: 'stryker' | 'cosmicray' | 'rust';
+  configKey: 'stryker' | 'cosmicray' | 'rust' | 'infection';
 
   /**
    * Whether the engine supports line-level scoping — `lineScope`, diff-aware
@@ -60,5 +61,10 @@ export const ENGINE_REGISTRY: Record<SupportedProjectType, EngineDescriptor> = {
     configKey: 'rust',
     supportsLineScope: false,
     prebuild: { marker: 'Cargo.toml', command: 'cargo check' },
+  },
+  php: {
+    make: () => new PhpEngine(),
+    configKey: 'infection',
+    supportsLineScope: false,
   },
 };

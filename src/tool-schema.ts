@@ -9,7 +9,7 @@ export const TOOL_DEFINITION = {
   description:
     'Runs on-demand, sandbox-isolated mutation testing against a single source file to identify gaps in unit test coverage. ' +
     'Chaos-MCP generates mutants (logical faults like changing `>` to `>=`) and checks whether the local test suite catches them. ' +
-    'Surviving mutants indicate test coverage holes. Supports TypeScript/JavaScript (StrykerJS), Python (cosmic-ray), and Rust (cargo-mutants).',
+    'Surviving mutants indicate test coverage holes. Supports TypeScript/JavaScript (StrykerJS), Python (cosmic-ray), Rust (cargo-mutants), and PHP (Infection).',
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -17,7 +17,7 @@ export const TOOL_DEFINITION = {
         type: 'string',
         description:
           'Workspace-relative path to the file to audit. ' +
-          'Must end in .ts, .js, .tsx, .jsx, .py, or .rs. ' +
+          'Must end in .ts, .js, .tsx, .jsx, .py, .rs, or .php. ' +
           'Example: "src/utils/math.ts"',
       },
       timeoutMs: {
@@ -30,7 +30,7 @@ export const TOOL_DEFINITION = {
       lineScope: {
         type: 'object',
         description:
-          'Constrain mutations to a 1-based line range (inclusive). Only supported by StrykerJS; ignored for Python, Go, and Rust targets. ' +
+          'Constrain mutations to a 1-based line range (inclusive). Only supported by StrykerJS; ignored for Python, Rust, and PHP targets. ' +
           'Useful for surgically auditing a specific function or block. ' +
           'Example: { "start": 10, "end": 45 }',
         properties: {
@@ -101,8 +101,7 @@ export const TOOL_DEFINITION = {
         description:
           'Shell command to run in the sandbox BEFORE mutation testing begins. ' +
           'Use this to compile/build the target — the sandbox has a full workspace copy. ' +
-          'Essential for TypeScript projects ("npm run build"), Go projects ("go build ./..."), ' +
-          'and Rust projects ("cargo build"). ' +
+          'Essential for TypeScript projects ("npm run build") and Rust projects ("cargo build"). ' +
           'DISABLED BY DEFAULT: because it runs an arbitrary shell command that can reach outside ' +
           'the sandbox, the server must opt in via "allowPrebuild": true in its config file or the ' +
           'CHAOS_MCP_ALLOW_PREBUILD=1 environment variable. Counts against the overall timeoutMs budget. ' +
@@ -122,7 +121,7 @@ export const TOOL_DEFINITION = {
           'Auto-scope mutation to only the lines changed in git. The value selects the base to diff against: ' +
           '"HEAD" (all uncommitted changes), "staged" (staged changes only), or any git ref/branch/SHA ' +
           '(e.g. "main", resolved via merge-base with HEAD). Mutually exclusive with lineScope. ' +
-          'Line-level scoping is StrykerJS-only; Go/Python/Rust targets run whole-file with a note. ' +
+          'Line-level scoping is StrykerJS-only; Python/Rust/PHP targets run whole-file with a note. ' +
           'If the file has no changes vs the base, the run is skipped. Example: "HEAD"',
       },
       baseline: {
@@ -182,7 +181,7 @@ export const TOOL_DEFINITION = {
           'Augment each surviving / no-coverage line with deterministic guidance: severity (high/medium/low), ' +
           'a "why it matters" explanation, a test-writing hint, and a source-context snippet — and rank survivors severity-first. ' +
           'Defaults to TRUE; pass false to disable and return the plain (unranked, unclassified) output. ' +
-          'Richest for TypeScript and Go; Python reports severity "unknown".',
+          'Richest for TypeScript; Python and PHP report severity "unknown".',
       },
       maxSurvivors: {
         type: 'integer',
@@ -249,7 +248,7 @@ export const TRIAGE_TOOL_DEFINITION = {
   description:
     'Batch triage: audit a set of files and/or directories and return a weakest-first ranked ' +
     'leaderboard of mutation scores, so you can see where the test suite is most fragile in one call. ' +
-    'Directories are recursively expanded to supported source files (.ts/.js/.py/.rs), skipping ' +
+    'Directories are recursively expanded to supported source files (.ts/.js/.py/.rs/.php), skipping ' +
     'test files. Files are audited serially. Drill into a weak file with audit_code_resilience for ' +
     'per-mutant survivor detail.',
   inputSchema: {
@@ -363,7 +362,7 @@ export const ESTIMATE_TOOL_DEFINITION = {
   description:
     'Cheap pre-flight estimate of how big/long auditing a file will be, WITHOUT running the full ' +
     'mutation test cycle. Returns an approximate mutant count (exact for Rust via cargo-mutants --list; ' +
-    'a source heuristic for TS/JS/Python/Go, labeled fidelity:"approx"). Set withTiming:true to also ' +
+    'a source heuristic for TS/JS/Python/PHP, labeled fidelity:"approx"). Set withTiming:true to also ' +
     'run the test suite once and estimate wall-clock time. Use this before audit_code_resilience to ' +
     'decide whether to audit now, scope down, or skip.',
   inputSchema: {

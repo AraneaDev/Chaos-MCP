@@ -79,6 +79,17 @@ describe('invokeMutationTool', () => {
     );
   });
 
+  it('throws MutationToolStartupError with install hint for Infection ENOENT', async () => {
+    const enoentError = new ExecFailureError(
+      { stdout: '', stderr: '', exit: null, signal: null, code: 'ENOENT' },
+      'Command not found',
+    );
+    mockRunShell.mockRejectedValue(enoentError);
+    await expect(invokeMutationTool('Infection', 'infection', [])).rejects.toThrow(
+      /composer require --dev infection\/infection/,
+    );
+  });
+
   it('throws MutationToolStartupError on TIMEOUT', async () => {
     const timeoutError = new ExecFailureError(
       { stdout: '', stderr: '', exit: null, signal: 'SIGTERM', code: 'TIMEOUT' },

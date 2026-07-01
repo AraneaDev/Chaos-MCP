@@ -48,6 +48,14 @@ describe('detectProjectType', () => {
     expect(env.testRunner).toBe('unknown');
   });
 
+  it('detects .php files as php with the phpunit runner', () => {
+    expect(detectProjectType('src/Calculator.php')).toBe('php');
+    mockExistsSync.mockImplementation((p) => String(p).endsWith('composer.json'));
+    const env = detectEnvironment('src/Calculator.php');
+    expect(env.projectType).toBe('php');
+    expect(env.testRunner).toBe('phpunit');
+  });
+
   describe('Rust files', () => {
     it('detects .rs files as rust', () => {
       expect(detectProjectType('src/main.rs')).toBe('rust');
@@ -1187,6 +1195,7 @@ describe('project-detector mutation hardening (mutmut + dispatch)', () => {
     ['/repo/src/a.ts', 'package.json'],
     ['/repo/src/a.py', 'pyproject.toml'],
     ['/repo/src/a.rs', 'Cargo.toml'],
+    ['/repo/src/a.php', 'composer.json'],
   ])('resolves the workspace root of %s via its %s marker', (file, marker) => {
     mockExistsSync.mockImplementation((p) => String(p) === join(resolve('/repo'), marker));
     const env = detectEnvironment(file);

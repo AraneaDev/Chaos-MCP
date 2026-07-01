@@ -445,6 +445,10 @@ export function buildRunOptions(
     // ignored by the other engines.
     pythonTestSelection: cfg.cosmicray?.testSelection,
     pythonExcludeOperators: cfg.cosmicray?.excludeOperators,
+    // PHP (Infection) only: worker count + test-framework passthrough, sourced
+    // from the infection config section; ignored by the other engines.
+    phpThreads: cfg.infection?.threads !== undefined ? String(cfg.infection.threads) : undefined,
+    phpTestFrameworkOptions: cfg.infection?.testFrameworkOptions,
   };
 }
 
@@ -493,8 +497,8 @@ export function resolvePrebuildCommand(
   // NOT auto-run: `.venv` is symlinked into the sandbox from the host, so an
   // install would mutate the user's real virtual environment (High#2). The
   // symlinked environment is already populated; callers who genuinely need a
-  // rebuild can pass an explicit prebuildCommand. Go (`go mod download`) and
-  // Rust (`cargo check`) declare their auto-prebuild in the engine registry.
+  // rebuild can pass an explicit prebuildCommand. Rust (`cargo check`) declares
+  // its auto-prebuild in the engine registry. (PHP has none — Infection needs no build.)
   const prebuild = ENGINE_REGISTRY[projectType as SupportedProjectType]?.prebuild;
   if (prebuild && existsSync(join(env.workspaceRoot, prebuild.marker))) {
     return prebuild.command;

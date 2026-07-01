@@ -44,7 +44,7 @@ Description:
   source file to identify weaknesses in the local test suite.
 
   It supports TypeScript/JavaScript (via StrykerJS), Python (via cosmic-ray),
-  and Rust (via cargo-mutants). All mutation runs execute inside temporary sandbox
+  Rust (via cargo-mutants), and PHP (via Infection). All mutation runs execute inside temporary sandbox
   directories — your real working tree is never touched.
 
 Configuration (chaos-mcp.config.json):
@@ -54,7 +54,7 @@ Configuration (chaos-mcp.config.json):
     "rust": { "timeoutMs": 600000 }
   }
 
-  Engine-specific sections ("stryker", "cosmicray", "rust") override the
+  Engine-specific sections ("stryker", "cosmicray", "rust", "infection") override the
   corresponding global defaults. Stryker sections support: timeoutMs, concurrency,
   mutatorDenylist, perMutantTimeoutMs, dryRun, incremental.
   All other engine sections support: timeoutMs. cosmicray also supports:
@@ -62,7 +62,7 @@ Configuration (chaos-mcp.config.json):
 
 Tool: audit_code_resilience
   Parameters:
-    filePath (required)  — Workspace-relative path to the file to audit (.ts/.js/.py/.rs).
+    filePath (required)  — Workspace-relative path to the file to audit (.ts/.js/.py/.rs/.php).
     timeoutMs            — Max run time in ms (default: 300000 / 5 min).
     lineScope            — { start, end } 1-based line range (StrykerJS only).
     mutatorAllowlist     — (unsupported in StrykerJS v9 — ignored; use mutatorDenylist).
@@ -86,6 +86,7 @@ Links:
   https://stryker-mutator.io
   https://github.com/sixty-north/cosmic-ray
   https://github.com/sourcefrog/cargo-mutants
+  https://infection.github.io
 `;
 }
 

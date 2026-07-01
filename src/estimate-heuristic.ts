@@ -22,6 +22,9 @@ function stripNoise(source: string, projectType: SupportedProjectType): string {
     s = s.replace(/#[^\n]*/g, ' ');
   } else {
     s = s.replace(/\/\/[^\n]*/g, ' ');
+    // PHP also supports `#` line comments (and `#[Attr]` attributes, dropped as
+    // comments — acceptable for an approximate estimate).
+    if (projectType === 'php') s = s.replace(/#[^\n]*/g, ' ');
   }
   // Template literals (JS/TS) then ordinary single/double-quoted strings.
   // Using String.fromCharCode to avoid esbuild backtick parsing issues

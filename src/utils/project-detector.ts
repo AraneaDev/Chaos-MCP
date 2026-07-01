@@ -4,7 +4,7 @@ import { resolve, dirname, join } from 'path';
 /**
  * Supported project types for mutation testing.
  */
-export type ProjectType = 'typescript' | 'python' | 'rust' | 'unsupported';
+export type ProjectType = 'typescript' | 'python' | 'rust' | 'php' | 'unsupported';
 
 /**
  * Structured environment information resolved from workspace signals.
@@ -77,6 +77,9 @@ const JS_ROOT_MARKERS = ['package.json'] as const;
 
 /** Marker files that indicate a Rust project root. */
 const RUST_ROOT_MARKERS = ['Cargo.toml'] as const;
+
+/** Marker files that indicate a PHP project root. */
+const PHP_ROOT_MARKERS = ['composer.json'] as const;
 
 /** Marker files that indicate a Python project root. */
 const PY_ROOT_MARKERS = [
@@ -448,6 +451,28 @@ export function detectRawRustRunner(workspaceRoot: string): string {
   return detectRustTestRunner(workspaceRoot);
 }
 
+// ─── PHP test runner detection ───────────────────────────────────────────────
+
+/**
+ * Detect the PHP test runner. v1 targets PHPUnit only: presence of
+ * phpunit.xml / phpunit.xml.dist (or a project-supplied infection.json which
+ * carries its own framework) resolves to 'phpunit'. Returns 'phpunit' as the
+ * default since Infection defaults to PHPUnit.
+ *
+ * @internal Exported for testing only.
+ */
+export function detectPhpTestRunner(_workspaceRoot: string): string {
+  return 'phpunit';
+}
+
+/**
+ * Detect the raw PHP test runner without mapping.
+ * @internal Exported for testing only.
+ */
+export function detectRawPhpRunner(workspaceRoot: string): string {
+  return detectPhpTestRunner(workspaceRoot);
+}
+
 // ─── Per-language detection registry ─────────────────────────────────────────
 
 /**
@@ -489,6 +514,12 @@ const LANGUAGE_DETECTORS: Record<Exclude<ProjectType, 'unsupported'>, LanguageDe
     markers: RUST_ROOT_MARKERS,
     testRunner: detectRustTestRunner,
     rawRunner: detectRawRustRunner,
+  },
+  php: {
+    matches: (p) => p.endsWith('.php'),
+    markers: PHP_ROOT_MARKERS,
+    testRunner: detectPhpTestRunner,
+    rawRunner: detectRawPhpRunner,
   },
 };
 

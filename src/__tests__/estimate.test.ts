@@ -31,6 +31,7 @@ describe('estimateNeedsSandbox', () => {
     expect(estimateNeedsSandbox('typescript', true)).toBe(true);
     expect(estimateNeedsSandbox('typescript', false)).toBe(false);
     expect(estimateNeedsSandbox('python', false)).toBe(false);
+    expect(estimateNeedsSandbox('php', false)).toBe(false);
   });
 });
 

@@ -29,6 +29,15 @@ function candidates(targetFile: string, projectType: SupportedProjectType): stri
       // Rust convention is in-file #[cfg(test)]; suggest the source file itself,
       // then an integration-test fallback under tests/.
       return [targetFile, j('tests', `${base}.rs`)];
+    case 'php': {
+      // PHPUnit convention: <ClassName>Test.php, conventionally under tests/.
+      const cap = base.charAt(0).toUpperCase() + base.slice(1);
+      return [
+        j(dir, `${base}Test.php`),
+        j('tests', `${cap}Test.php`),
+        j('tests', `${base}Test.php`),
+      ];
+    }
     default:
       return [];
   }

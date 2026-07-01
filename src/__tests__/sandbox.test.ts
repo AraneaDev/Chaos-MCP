@@ -41,6 +41,7 @@ const TEST_PROJECT = resolve(process.cwd(), 'sandbox-test-project');
 const TEST_PROJECT_NODE_MODULES = `${TEST_PROJECT}/node_modules`;
 const TEST_PROJECT_VENV = `${TEST_PROJECT}/.venv`;
 const TEST_PROJECT_TARGET = `${TEST_PROJECT}/target`;
+const TEST_PROJECT_VENDOR = `${TEST_PROJECT}/vendor`;
 
 const mockMkdtempSync = vi.mocked(mkdtempSync);
 const mockCpSync = vi.mocked(cpSync);
@@ -127,6 +128,22 @@ describe('createSandbox', () => {
     sandbox = createSandbox('src/main.py', TEST_PROJECT);
 
     expect(mockSymlinkSync).toHaveBeenCalledWith(TEST_PROJECT_VENV, `${SANDBOX_DIR}/.venv`, 'dir');
+  });
+
+  it('symlinks vendor into sandbox when present', () => {
+    mockExistsSync.mockImplementation((path: string) => {
+      if (path === `${SANDBOX_DIR}/src/Calculator.php`) return true;
+      if (path === TEST_PROJECT_VENDOR) return true;
+      return false;
+    });
+
+    sandbox = createSandbox('src/Calculator.php', TEST_PROJECT);
+
+    expect(mockSymlinkSync).toHaveBeenCalledWith(
+      TEST_PROJECT_VENDOR,
+      `${SANDBOX_DIR}/vendor`,
+      'dir',
+    );
   });
 
   it('refuses to sandbox when workspace resolves outside process cwd (C2)', () => {

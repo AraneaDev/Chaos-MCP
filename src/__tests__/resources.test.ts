@@ -26,6 +26,7 @@ describe('resources', () => {
     expect(data.typescript.supportsLineScope).toBe(true);
     expect(data.python.supportsLineScope).toBe(false);
     expect(data.rust.supportsLineScope).toBe(false);
+    expect(data.php.supportsLineScope).toBe(false);
     expect(data.rust.estimateFidelity).toBe('exact');
     expect(data.typescript.estimateFidelity).toBe('approx');
   });
@@ -40,6 +41,7 @@ describe('resources', () => {
     expect(data.typescript.engine).toBe('StrykerJS');
     expect(data.python.engine).toBe('cosmic-ray');
     expect(data.rust.engine).toBe('cargo-mutants');
+    expect(data.php.engine).toBe('Infection');
     // Structural fields sourced from ENGINE_REGISTRY (configKey + autoPrebuild).
     for (const [key, entry] of Object.entries(ENGINE_REGISTRY)) {
       expect(data[key].configKey).toBe(entry.configKey);

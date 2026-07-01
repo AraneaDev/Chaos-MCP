@@ -18,6 +18,8 @@ export function resolveBaselineTestCommand(
   switch (projectType) {
     case 'rust':
       return { command: 'cargo', args: ['test'] };
+    case 'php':
+      return { command: 'vendor/bin/phpunit', args: [] };
     case 'python': {
       const runner = env.detectedRunner || 'pytest';
       return { command: runner.includes('pytest') ? 'pytest' : runner, args: [] };

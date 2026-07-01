@@ -39,6 +39,7 @@ const ENGINE_NAMES: Record<SupportedProjectType, string> = {
   typescript: 'StrykerJS',
   python: 'cosmic-ray',
   rust: 'cargo-mutants',
+  php: 'Infection',
 };
 
 function languagesJson(): string {
@@ -76,6 +77,8 @@ function configSchemaJson(): string {
     stryker: 'object — StrykerJS-specific overrides.',
     cosmicray: 'object — cosmic-ray (Python)-specific overrides.',
     rust: 'object — cargo-mutants-specific overrides.',
+    infection:
+      'object — Infection (PHP)-specific overrides (timeoutMs, threads, testFrameworkOptions).',
   };
   return JSON.stringify(keys, null, 2);
 }
