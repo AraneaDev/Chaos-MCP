@@ -397,7 +397,9 @@ export function buildRunOptions(
   // Extract engine-specific config for the current project type.
   // Precedence: args > engine-specific config section > global config defaults.
   const configKey = ENGINE_REGISTRY[projectType as SupportedProjectType]?.configKey;
-  const engCfg = configKey ? cfg[configKey] : undefined;
+  const engCfg = configKey
+    ? ((cfg as Record<string, unknown>)[configKey] as Record<string, unknown> | undefined)
+    : undefined;
 
   // testRunner must come from the section that matches the engine being run.
   // Previously stryker.testRunner was consulted first for ALL project types,
@@ -417,7 +419,7 @@ export function buildRunOptions(
     timeoutMs:
       typeof args.timeoutMs === 'number' && args.timeoutMs > 0
         ? args.timeoutMs
-        : (engCfg?.timeoutMs ?? cfg.defaultTimeoutMs),
+        : ((engCfg?.timeoutMs as number | undefined) ?? cfg.defaultTimeoutMs),
     lineScope: normalizeLineScope(args.lineScope),
     // mutatorAllowlist is intentionally NOT propagated. StrykerJS v9 cannot
     // express an allowlist, so the TS engine rejects it; sourcing it here (from
@@ -971,7 +973,7 @@ export async function handleToolCall(
       const cfg = config ?? {};
 
       if (isVerbose()) {
-        const engCfg = cfg[ENGINE_REGISTRY[projectType].configKey];
+        const engCfg = (cfg as Record<string, unknown>)[ENGINE_REGISTRY[projectType].configKey];
         log('Tool call: audit_code_resilience');
         log(`  filePath: ${filePath}`);
         log(`  projectType: ${projectType}`);

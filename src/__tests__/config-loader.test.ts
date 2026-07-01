@@ -1,10 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// Mock fs
-vi.mock('fs', () => ({
-  existsSync: vi.fn(),
-  readFileSync: vi.fn(),
-}));
+// Mock fs (but keep real writeFileSync for back-compat test)
+vi.mock('fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('fs')>();
+  return {
+    existsSync: vi.fn(),
+    readFileSync: vi.fn(),
+    writeFileSync: actual.writeFileSync,
+  };
+});
+
+// Don't mock os and path - we need them for the back-compat test
+// (they're not affected by the fs mock)
 
 import { existsSync, readFileSync } from 'fs';
 import { loadConfig, validateConfig } from '../utils/config-loader.js';
@@ -247,14 +254,6 @@ describe('loadConfig', () => {
     const config = loadConfig('/tmp/config.json');
     expect(config.cosmicray?.testSelection).toEqual(['tests/unit/test_x.py']);
     expect(config.cosmicray?.excludeOperators).toEqual(['core/NumberReplacer', 'core/.*String.*']);
-  });
-
-  it('loads go engine-specific config', () => {
-    mockExistsSync.mockReturnValue(true);
-    mockReadFileSync.mockReturnValue(JSON.stringify({ go: { timeoutMs: 180000 } }));
-
-    const config = loadConfig('/tmp/config.json');
-    expect(config.go).toEqual({ timeoutMs: 180000 });
   });
 
   it('loads rust engine-specific config', () => {
@@ -550,14 +549,6 @@ describe('validateConfig', () => {
     ).toBe(true);
   });
 
-  it('warns about unknown keys in go engine section', () => {
-    mockExistsSync.mockReturnValue(true);
-    mockReadFileSync.mockReturnValue(JSON.stringify({ go: { timeoutMs: 60000, bogus: true } }));
-
-    const { warnings } = validateConfig('/tmp/config.json');
-    expect(warnings.some((w) => w.includes('bogus') && w.includes('go'))).toBe(true);
-  });
-
   it('warns about unknown keys in rust engine section', () => {
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue(
@@ -597,16 +588,6 @@ describe('validateConfig', () => {
 
     const { warnings } = validateConfig('/tmp/config.json');
     expect(warnings.some((w) => w.includes('bogusMutmutKey') && w.includes('cosmicray'))).toBe(
-      true,
-    );
-  });
-
-  it('warns about wrong type for go timeoutMs', () => {
-    mockExistsSync.mockReturnValue(true);
-    mockReadFileSync.mockReturnValue(JSON.stringify({ go: { timeoutMs: 'not-a-number' } }));
-
-    const { warnings } = validateConfig('/tmp/config.json');
-    expect(warnings.some((w) => w.includes('go.timeoutMs') && w.includes('must be a number'))).toBe(
       true,
     );
   });
@@ -655,16 +636,6 @@ describe('validateConfig', () => {
 
     const { warnings } = validateConfig('/tmp/config.json');
     expect(warnings.some((w) => w.includes('cosmicray') && w.includes('must be an object'))).toBe(
-      true,
-    );
-  });
-
-  it('warns about go timeoutMs <= 0 in validateEngineSection', () => {
-    mockExistsSync.mockReturnValue(true);
-    mockReadFileSync.mockReturnValue(JSON.stringify({ go: { timeoutMs: -1 } }));
-
-    const { warnings } = validateConfig('/tmp/config.json');
-    expect(warnings.some((w) => w.includes('go.timeoutMs') && w.includes('must be positive'))).toBe(
       true,
     );
   });
@@ -805,7 +776,6 @@ describe('config-loader mutation hardening', () => {
       runCacheMax: 10,
       stryker: { timeoutMs: 1 },
       cosmicray: { timeoutMs: 1 },
-      go: { timeoutMs: 1 },
       rust: { timeoutMs: 1 },
     });
     const { warnings } = validateConfig('/tmp/config.json');
@@ -906,7 +876,6 @@ describe('config-loader mutation hardening', () => {
       perMutantTimeoutMs: 1,
       stryker: { timeoutMs: 1 },
       cosmicray: { timeoutMs: 1 },
-      go: { timeoutMs: 1 },
       rust: { timeoutMs: 1 },
     });
     const cfg = loadConfig('/tmp/config.json');
@@ -914,7 +883,6 @@ describe('config-loader mutation hardening', () => {
     expect(cfg.perMutantTimeoutMs).toBe(1);
     expect(cfg.stryker?.timeoutMs).toBe(1);
     expect(cfg.cosmicray?.timeoutMs).toBe(1);
-    expect(cfg.go?.timeoutMs).toBe(1);
     expect(cfg.rust?.timeoutMs).toBe(1);
   });
 
@@ -924,7 +892,6 @@ describe('config-loader mutation hardening', () => {
       perMutantTimeoutMs: 0,
       stryker: { timeoutMs: 0 },
       cosmicray: { timeoutMs: 0 },
-      go: { timeoutMs: 0 },
       rust: { timeoutMs: 0 },
     });
     const cfg = loadConfig('/tmp/config.json');
@@ -932,7 +899,6 @@ describe('config-loader mutation hardening', () => {
     expect(cfg.perMutantTimeoutMs).toBeUndefined();
     expect(cfg.stryker).toBeUndefined();
     expect(cfg.cosmicray).toBeUndefined();
-    expect(cfg.go).toBeUndefined();
     expect(cfg.rust).toBeUndefined();
   });
 
@@ -1032,7 +998,6 @@ describe('config-loader mutation hardening', () => {
       perMutantTimeoutMs: '5',
       stryker: { timeoutMs: '5', perMutantTimeoutMs: '5' },
       cosmicray: { timeoutMs: '5' },
-      go: { timeoutMs: '5' },
       rust: { timeoutMs: '5' },
     });
     const cfg = loadConfig('/tmp/config.json');
@@ -1040,7 +1005,6 @@ describe('config-loader mutation hardening', () => {
     expect(cfg.perMutantTimeoutMs).toBeUndefined();
     expect(cfg.stryker).toBeUndefined();
     expect(cfg.cosmicray).toBeUndefined();
-    expect(cfg.go).toBeUndefined();
     expect(cfg.rust).toBeUndefined();
   });
 
@@ -1061,11 +1025,10 @@ describe('config-loader mutation hardening', () => {
   // ── A null engine section must yield `undefined`, not a null-deref crash.
   //    Kills `raw === null → false` in each parser. ──
   it('treats a null engine section as absent without crashing', () => {
-    setConfig({ stryker: null, cosmicray: null, go: null, rust: null });
+    setConfig({ stryker: null, cosmicray: null, rust: null });
     const cfg = loadConfig('/tmp/config.json');
     expect(cfg.stryker).toBeUndefined();
     expect(cfg.cosmicray).toBeUndefined();
-    expect(cfg.go).toBeUndefined();
     expect(cfg.rust).toBeUndefined();
   });
 
@@ -1198,5 +1161,29 @@ describe('config-loader mutation hardening', () => {
     expect(warnings.some((w) => w.includes('must be an array'))).toBe(false);
     expect(warnings.some((w) => w.includes('must be a boolean'))).toBe(false);
     expect(warnings.some((w) => w.includes('must be a string'))).toBe(false);
+  });
+});
+
+describe('back-compat: legacy go section', () => {
+  beforeEach(() => {
+    // Reset mocks for this test block
+    vi.clearAllMocks();
+    mockExistsSync.mockReturnValue(true);
+  });
+
+  it('treats a legacy "go" config section as an ignorable unknown key', () => {
+    // Set up the mock to return a config with a go section
+    mockReadFileSync.mockReturnValue(
+      JSON.stringify({ go: { timeoutMs: 1000 }, defaultTimeoutMs: 5000 }),
+    );
+
+    const { config, warnings } = validateConfig('/tmp/config.json');
+
+    // After go is removed from KNOWN_KEYS, it should not be in config
+    expect(config).not.toHaveProperty('go');
+    // But the defaultTimeoutMs should still be there
+    expect(config.defaultTimeoutMs).toBe(5000);
+    // And there should be a warning about the unknown "go" key
+    expect(warnings.some((w) => w.includes('"go"'))).toBe(true);
   });
 });
