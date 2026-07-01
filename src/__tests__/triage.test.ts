@@ -37,9 +37,9 @@ describe('isSupportedSourceFile', () => {
   });
 
   it('anchors the `_test.<lang>` / `test_*.py` rules to the file extension end', () => {
-    // `_test.go` / `.py` only mark a test when they are the actual extension.
+    // `_test.rs` / `test_*.py` only mark a test when they are the actual extension.
     // Removing the trailing `$` would wrongly flag these as tests.
-    expect(isSupportedSourceFile('a_test.go.ts')).toBe(true);
+    expect(isSupportedSourceFile('a_test.rs.ts')).toBe(true);
     expect(isSupportedSourceFile('test_x.py.ts')).toBe(true);
   });
 

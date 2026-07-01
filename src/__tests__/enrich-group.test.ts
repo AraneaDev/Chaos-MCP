@@ -81,7 +81,7 @@ describe('enrichGroup', () => {
     ]);
   });
 
-  it('falls back to unknown severity + generic copy for coarse engines', () => {
+  it('falls back to unknown severity + generic copy when no operator rule matches', () => {
     const e = enrichGroup({
       line: 3,
       mutators: { 'Unrecognized Python Mutation': 1 },

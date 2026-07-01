@@ -2641,7 +2641,7 @@ describe('handleToolCall', () => {
     );
   });
 
-  // ─── Go/Rust auto prebuild verbose logging ──────────────────────────────
+  // ─── Rust auto prebuild verbose logging ──────────────────────────────
 
   it('logs [auto (rust)] when smart prebuild kicks in for Rust projects with verbose', async () => {
     mockIsVerbose.mockReturnValue(true);
