@@ -74,7 +74,10 @@ export function parseInfectionJsonLog(logText: string, filePath: string): Mutati
   try {
     parsed = JSON.parse(logText) as InfectionJsonLog;
   } catch {
-    return blankResult(filePath);
+    throw new Error(
+      `Infection produced an unparseable JSON log for ${filePath}. The mutation run likely did not complete ` +
+        `(check that the PHPUnit suite runs and a coverage driver — Xdebug or PCOV — is enabled).`,
+    );
   }
 
   const escaped = Array.isArray(parsed.escaped) ? parsed.escaped : [];
@@ -111,17 +114,6 @@ export function parseInfectionJsonLog(logText: string, filePath: string): Mutati
     survived,
     mutationScore: `${score}%`,
     vulnerabilities,
-  };
-}
-
-function blankResult(filePath: string): MutationResult {
-  return {
-    target: filePath,
-    totalMutants: 0,
-    killed: 0,
-    survived: 0,
-    mutationScore: '100.00%',
-    vulnerabilities: [],
   };
 }
 

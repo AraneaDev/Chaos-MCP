@@ -101,6 +101,12 @@ describe('parseInfectionJsonLog', () => {
     expect(r.mutationScore).toBe('100.00%');
     expect(r.vulnerabilities).toEqual([]);
   });
+
+  it('throws on an unparseable (corrupt) JSON log rather than reporting a false 100%', () => {
+    expect(() => parseInfectionJsonLog('not json {{{', 'src/X.php')).toThrow(
+      /unparseable JSON log/,
+    );
+  });
 });
 
 describe('PhpEngine.run', () => {

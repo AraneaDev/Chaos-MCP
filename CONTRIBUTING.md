@@ -148,7 +148,7 @@ Both trigger paths run the full E2E suite (MCP pipeline + Stryker mutations) on 
 
 - New engine implementation touching subprocess flow
 - Sandbox, config-loader, or handler changes
-- Stryker / Mutmut / cargo-mutants / Infection major version bumps
+- Stryker / cosmic-ray / cargo-mutants / Infection major version bumps
 - Any change that could affect the full happy-path sandboxing + mutation-test cycle
 
 ### What gets exercised
