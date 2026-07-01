@@ -13,7 +13,7 @@ Chaos-MCP is an [MCP (Model Context Protocol)](https://modelcontextprotocol.io/)
 
 ## Features
 
-- **4 Languages Supported** — TypeScript/JavaScript (StrykerJS), Python (cosmic-ray), Go (go-mutesting), Rust (cargo-mutants)
+- **4 Languages Supported** — TypeScript/JavaScript (StrykerJS), Python (cosmic-ray), Rust (cargo-mutants)
 - **Sandbox Isolation** — all mutation runs execute in temporary directories; your real workspace is never touched
 - **Auto-Detection** — automatically detects project type, test runner, and workspace root
 - **Async Subprocesses** — all mutation-tool execution uses async `execFile`/`exec` (subprocess runs never block the event loop; the one-time sandbox copy is synchronous)
@@ -49,11 +49,10 @@ Chaos-MCP does **not** bundle the per-language mutation engines or install them 
 | --- | --- | --- |
 | TypeScript / JavaScript | [StrykerJS](https://stryker-mutator.io/) | `npm install --save-dev @stryker-mutator/core` (in the target project) |
 | Python | [cosmic-ray](https://github.com/sixty-north/cosmic-ray) | `pipx install cosmic-ray` — or `pip install cosmic-ray` inside a virtualenv |
-| Go | [go-mutesting](https://github.com/zimmski/go-mutesting) | `go install github.com/zimmski/go-mutesting/cmd/go-mutesting@latest` |
 | Rust | [cargo-mutants](https://github.com/sourcefrog/cargo-mutants) | `cargo install cargo-mutants` |
 
 Notes:
-- The tool itself must be on `PATH` (or, for StrykerJS, resolvable from the target project's `node_modules`), and the **language toolchain** it builds on must already be present — Node.js for StrykerJS, a Python interpreter for cosmic-ray, the Go toolchain for go-mutesting, and a Rust/Cargo toolchain for cargo-mutants.
+- The tool itself must be on `PATH` (or, for StrykerJS, resolvable from the target project's `node_modules`), and the **language toolchain** it builds on must already be present — Node.js for StrykerJS, a Python interpreter for cosmic-ray, and a Rust/Cargo toolchain for cargo-mutants.
 - **Python / cosmic-ray:** on modern distros a bare `pip install cosmic-ray` is blocked by [PEP 668](https://peps.python.org/pep-0668/) ("externally-managed-environment"); use `pipx install cosmic-ray` (isolated) or install inside an activated virtualenv. Chaos-MCP generates cosmic-ray's `config.toml` for you (scoped to the target file) and runs `baseline → init → exec → dump` in the sandbox — no per-project config needed. cosmic-ray runs its **full operator set** (no per-file line-scoping), so auditing a large file is slow. Two `cosmicray` config knobs keep big audits tractable: `testSelection` scopes the per-mutant test run (e.g. `["tests/unit/test_x.py"]` or `["-m","unit"]`), and `excludeOperators` (regexes, applied via `cr-filter-operators`) bounds the **mutant count** by skipping whole operator families — e.g. `["core/NumberReplacer", "core/ReplaceBinaryOperator.*"]` drops ~half the mutants on an arithmetic-heavy file. Excluded mutants are omitted from the score (a scoped audit).
 - These engines run **inside the sandbox** against a copy of your workspace; Chaos-MCP never installs or modifies anything in your real project.
 
@@ -102,7 +101,7 @@ The primary tool is `audit_code_resilience` (the batch tool `triage_test_coverag
 
 Enrichment is enabled by default. Each surviving / no-coverage line is augmented with four fields: a `severity` rating (`high`, `medium`, or `low`) based on the mutator's semantics (e.g. boundary operators and logical operators rank high), a `why` explanation of why the gap is dangerous, a `hint` describing the kind of test that would kill it, and a `context` snippet of the surrounding source lines. Survivors are re-ranked severity-first so the most critical gaps appear first. To disable enrichment and return the plain unranked output, pass `"enrich": false`.
 
-TypeScript targets produce the richest output because StrykerJS exposes per-mutant operator detail; Python (cosmic-ray) and Go targets also produce severity-ranked output, mapping each tool's authoritative operator name to a canonical category; targets whose tool can't expose a per-mutant operator fall back to `severity: "unknown"` with a generic why/hint.
+TypeScript targets produce the richest output because StrykerJS exposes per-mutant operator detail; Python (cosmic-ray) targets also produce severity-ranked output, mapping the tool's authoritative operator name to a canonical category; targets whose tool can't expose a per-mutant operator fall back to `severity: "unknown"` with a generic why/hint.
 
 **Cap and filter the survivor list:**
 ```json
@@ -139,7 +138,7 @@ Re-runs only the baseline lines and reports which previously-uncaught mutants ar
 
 ### 3. Interpret the Results
 
-The output is **bundled and deduplicated** to stay token-efficient: mutants are grouped by line (with a per-line count of each mutator type), `survivors` (tests ran but didn't catch) and `noCoverage` (no test reached the mutant) are reported separately at line+mutator granularity, and the explanatory note appears once instead of being repeated for every mutant. Because the split is per-mutator, the same line can appear in both lists (e.g. a live expression that survived next to an unreachable fallback that no test reached). Survivors and no-coverage entries also include a `changes` sample — a capped, deduped list of `original → mutated` edits — for TypeScript and Rust targets (best-effort; absent for Go/Python, which don't expose per-mutant detail). When `diffBase` is used, the output may include a `scopeNote` (a top-level JSON field / a `Scope:` text line) reporting scoping decisions — e.g. a skipped run when nothing changed, or a whole-file fallback for Go/Python/Rust targets.
+The output is **bundled and deduplicated** to stay token-efficient: mutants are grouped by line (with a per-line count of each mutator type), `survivors` (tests ran but didn't catch) and `noCoverage` (no test reached the mutant) are reported separately at line+mutator granularity, and the explanatory note appears once instead of being repeated for every mutant. Because the split is per-mutator, the same line can appear in both lists (e.g. a live expression that survived next to an unreachable fallback that no test reached). Survivors and no-coverage entries also include a `changes` sample — a capped, deduped list of `original → mutated` edits — for TypeScript and Rust targets (best-effort; absent for Python, which doesn't expose per-mutant detail). When `diffBase` is used, the output may include a `scopeNote` (a top-level JSON field / a `Scope:` text line) reporting scoping decisions — e.g. a skipped run when nothing changed, or a whole-file fallback for Python/Rust targets.
 
 **JSON output (default — emitted as a single compact line):**
 ```json
@@ -191,7 +190,7 @@ Add or strengthen tests targeting these lines to kill the survivors.
 | `outputFormat` | `"json"` \| `"text"` | No | Output format (default: `"json"`) |
 | `incremental` | `boolean` | No | Reuse previous run results (StrykerJS only) |
 | `ignorePatterns` | `string[]` | No | Substring patterns to exclude from sandbox copy |
-| `enrich` | `boolean` | No | Annotate each survivor with severity, why-it-matters, a test hint, and source context — and rank severity-first. **Default: `true`** (pass `false` to disable and return plain unranked output). Richest for TypeScript; Go can produce severity-ranked output when structured mutator data is available; Python degrades to `severity: "unknown"`. |
+| `enrich` | `boolean` | No | Annotate each survivor with severity, why-it-matters, a test hint, and source context — and rank severity-first. **Default: `true`** (pass `false` to disable and return plain unranked output). Richest for TypeScript; Python degrades to `severity: "unknown"`. |
 | `maxSurvivors` | `integer ≥ 1` | No | Cap on how many survivor (and no-coverage) line groups are returned after severity ranking. Hidden groups counted in `survivorsTruncated`/`noCoverageTruncated`. Precedence: arg > `defaultMaxSurvivors` config > 10. |
 | `severityFloor` | `"high"` \| `"medium"` \| `"low"` | No | Drop survivor groups below this severity (requires enrichment, on by default). Dropped groups counted in `survivorsFiltered`/`noCoverageFiltered`. `"unknown"`-severity groups are below `"low"` and are dropped by any floor. |
 | `runId` | `string` | No | Verify mode by cached id: re-run against the survivor baseline saved from a prior audit (the `runId` it returned). Mutually exclusive with `baseline`, `diffBase`, and `lineScope`. Unknown or expired ids (cache TTL: ~24 h) return an error. |
@@ -290,7 +289,7 @@ Pass `diffBase` to limit the triage to files changed in a PR or branch. `paths` 
 { "diffBase": "main", "paths": ["src/utils"] }
 ```
 
-TypeScript files are mutated only on the changed lines; Python, Go, and Rust files run whole-file (a per-file `scopeNote` is included in the ranking row).
+TypeScript files are mutated only on the changed lines; Python and Rust files run whole-file (a per-file `scopeNote` is included in the ranking row).
 
 **Inline survivor detail — `survivorsPerFile`:**
 
@@ -364,7 +363,6 @@ Additional output fields when `withTiming: true`:
 | Rust | `exact` | `cargo-mutants --list` (no tests run) |
 | TypeScript / JavaScript | `approx` | source-parse heuristic |
 | Python | `approx` | source-parse heuristic |
-| Go | `approx` | source-parse heuristic |
 
 For Rust, the estimate is exact because `cargo mutants --list` enumerates every planned mutant without running tests. For all other languages the count is approximate — a lightweight heuristic over the source AST; the actual audit may differ. Run `audit_code_resilience` for exact results.
 
@@ -463,7 +461,7 @@ Tool call arguments override config defaults.
 
 ### Enabling `prebuildCommand`
 
-The `prebuildCommand` tool argument runs an arbitrary shell command inside the sandbox, which can reach outside it. It is **disabled by default**. Enable it explicitly with `"allowPrebuild": true` in `chaos-mcp.config.json`, or by setting the `CHAOS_MCP_ALLOW_PREBUILD=1` environment variable. Auto-detected prebuilds for Go (`go mod download`) and Rust (`cargo check`) run without this flag.
+The `prebuildCommand` tool argument runs an arbitrary shell command inside the sandbox, which can reach outside it. It is **disabled by default**. Enable it explicitly with `"allowPrebuild": true` in `chaos-mcp.config.json`, or by setting the `CHAOS_MCP_ALLOW_PREBUILD=1` environment variable. The auto-detected prebuild for Rust (`cargo check`) runs without this flag.
 
 ## Supported Test Runners (Auto-Detected)
 
@@ -471,7 +469,6 @@ The `prebuildCommand` tool argument runs an arbitrary shell command inside the s
 |----------|--------------|------------------|
 | TypeScript/JS | StrykerJS | vitest, jest, mocha, jasmine, bun, node:test |
 | Python | cosmic-ray | pytest, unittest |
-| Go | go-mutesting | go test, testify, ginkgo |
 | Rust | cargo-mutants | cargo test, cargo-nextest |
 
 ## CLI Flags
@@ -560,6 +557,5 @@ MIT — See [LICENSE](LICENSE) for details.
 - [MCP Documentation](https://modelcontextprotocol.io/)
 - [StrykerJS](https://stryker-mutator.io/)
 - [cosmic-ray](https://github.com/sixty-north/cosmic-ray)
-- [go-mutesting](https://github.com/zimmski/go-mutesting)
 - [cargo-mutants](https://github.com/sourcefrog/cargo-mutants)
 - [Changelog](CHANGELOG.md)
