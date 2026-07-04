@@ -9,6 +9,8 @@ coverage/
 .mutmut-cache/
 reports/
 docs/superpowers/
+docs/specs/
+docs/plans/
 .superpowers/
 .claude/
 CLAUDE.md
