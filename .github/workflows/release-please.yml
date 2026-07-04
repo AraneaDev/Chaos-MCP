@@ -1,0 +1,91 @@
+name: Release Please
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+  id-token: write
+
+jobs:
+  release-please:
+    name: Release PR + tag/release on merge
+    runs-on: ubuntu-latest
+    steps:
+      # Opens/updates the Release PR from Conventional Commits. On merge of that
+      # PR, creates the vX.Y.Z tag + GitHub Release and sets release_created=true.
+      - name: Run release-please
+        id: release
+        uses: googleapis/release-please-action@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Everything below runs ONLY on the merge that cut a release. Because the
+      # tag/release are made with GITHUB_TOKEN, no separate tag-triggered
+      # workflow would fire — so build/verify/publish live here instead.
+      - name: Checkout
+        if: ${{ steps.release.outputs.release_created }}
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        if: ${{ steps.release.outputs.release_created }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: 'npm'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install dependencies
+        if: ${{ steps.release.outputs.release_created }}
+        run: npm ci
+
+      - name: Build
+        if: ${{ steps.release.outputs.release_created }}
+        run: npm run build
+
+      - name: Preserve shebang on built entry point
+        if: ${{ steps.release.outputs.release_created }}
+        run: |
+          node -e "
+            const fs = require('fs');
+            const path = './build/index.js';
+            let content = fs.readFileSync(path, 'utf-8');
+            if (!content.startsWith('#!/usr/bin/env node')) {
+              fs.writeFileSync(path, '#!/usr/bin/env node\n' + content);
+              console.log('Shebang restored in build/index.js');
+            } else {
+              console.log('Shebang already present');
+            }
+          "
+
+      - name: Verify build
+        if: ${{ steps.release.outputs.release_created }}
+        run: |
+          node ./build/index.js --version
+          chmod +x ./build/index.js
+
+      - name: Typecheck
+        if: ${{ steps.release.outputs.release_created }}
+        run: npx tsc --noEmit
+
+      - name: Lint
+        if: ${{ steps.release.outputs.release_created }}
+        run: npm run lint
+
+      - name: Format check
+        if: ${{ steps.release.outputs.release_created }}
+        run: npm run format:check
+
+      - name: Test
+        if: ${{ steps.release.outputs.release_created }}
+        run: npm test
+
+      # Pre-release: not on npm yet. Intentionally dormant. To go public:
+      # remove `if: false` and set up auth (Trusted Publishing / OIDC, or NPM_TOKEN).
+      - name: Publish to npm (provenance)
+        if: false
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

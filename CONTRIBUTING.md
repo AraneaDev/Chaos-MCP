@@ -107,20 +107,27 @@ Example: `feat: add Ruby engine via mutmut-ruby`
 
 ## Release Process
 
-Releases are automated via the GitHub release workflow (`.github/workflows/release.yml`):
+Releases are automated by [release-please](https://github.com/googleapis/release-please) via
+`.github/workflows/release-please.yml`:
 
-1. Update version in `package.json`
-2. Update `APP_VERSION` in `src/index.ts`
-3. Add entry to `CHANGELOG.md`
-4. Run `npm run check`
-5. Commit and tag: `git tag v1.x.x`
-6. Push the tag — the release workflow will build, test, and publish to npm automatically
+1. Write commits on `main` following the [Conventional Commits](https://www.conventionalcommits.org/)
+   convention described above. release-please reads them to determine the next version.
+2. release-please keeps an open **Release PR** up to date, bumping `package.json`,
+   bumping `APP_VERSION` in `src/index.ts` (via the `x-release-please-version` annotation),
+   and updating `CHANGELOG.md` — all automatically, from those commits.
+3. Merging the Release PR creates the `vX.Y.Z` tag and GitHub Release, and the same
+   workflow then builds and verifies the release.
 
-Alternatively, for manual releases: `npm publish` (runs `prepublishOnly` which executes `npm run build && npm run check`)
+npm publish is currently dormant (the project is pre-release and not yet published to npm),
+so merging a Release PR does not publish a package — don't expect one.
+
+Maintainers should not hand-edit versions or `CHANGELOG.md`, and should not hand-create tags;
+these are all managed by release-please. If a release needs additional narrative notes, edit
+the Release PR description before merging it.
 
 ## CI
 
-The CI pipeline (`.github/workflows/ci.yml`) runs `npm run check` on Node.js 18.x, 20.x, and 22.x for all pushes and pull requests to `main`. All three Node versions must pass.
+The CI pipeline (`.github/workflows/ci.yml`) runs `npm run check` on Node.js 22.x and 24.x for all pushes and pull requests to `main`. Both Node versions must pass.
 
 ## End-to-End Testing
 

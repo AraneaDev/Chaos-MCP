@@ -34,11 +34,15 @@ export { TOOL_DEFINITION } from './tool-schema.js';
 /**
  * Application version, synced with package.json.
  *
- * MUST remain `export const APP_VERSION = '<semver>';` in THIS file — the npm
- * `version` lifecycle hook (scripts/sync-app-version.js) rewrites this literal
- * by regex, and version-sync.test.ts imports it from here.
+ * MUST remain `export const APP_VERSION = '<semver>';` in THIS file — release-please's
+ * generic updater bumps this literal on release via the `x-release-please-version`
+ * annotation below (configured in `release-please-config.json`'s `extra-files`), and
+ * version-sync.test.ts imports it from here and asserts it matches package.json's
+ * version. That check runs in CI on `main` (post-merge) — not on the release-please
+ * Release PR, which is authored by GITHUB_TOKEN and so does not trigger pull_request
+ * workflows — catching any drift if the two files ever fall out of lockstep.
  */
-export const APP_VERSION = '1.2.0';
+export const APP_VERSION = '1.2.0'; // x-release-please-version
 
 /**
  * Create and start the MCP server.

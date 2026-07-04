@@ -4,6 +4,8 @@ All notable changes to Chaos-MCP are documented in this file.
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-07-04
+
 ### Fixed — `mutatorDenylist` had no effect on StrykerJS
 
 - **The denylist config shape was invalid** — `writeStrykerMutatorConfig` wrote a top-level `mutators: { Name: false }` map, which is not a StrykerJS option; Stryker silently ignored it and denylisted mutators kept running. The config now writes the schema-valid `mutator.excludedMutations: [...]` array, merging (deduped) with any exclusions already present in the project's own `stryker.config.json`. A legacy `mutators` map found in an existing config is migrated into `excludedMutations` and the invalid key is dropped.
@@ -16,8 +18,6 @@ All notable changes to Chaos-MCP are documented in this file.
 ### Added — recursive test-file discovery for `suggestedTestFile`
 
 - `suggestTestFile` only probed a fixed candidate list (co-located, `__tests__` sibling, top-level `test/`/`tests/`), so nested layouts like `tests/unit/<pkg>/<base>.test.ts` reported `exists: false` with a wrong suggested path even when a test file existed. When no fixed candidate exists, the common test roots (`tests/`, `test/`, `spec/`, `__tests__/`, the target's top-level segment and directory) are now searched recursively (bounded depth/breadth) for a candidate basename. Matches are ranked by shared directory segments with the source file, then by path length, then lexicographically. Rust targets keep the fixed-candidate behaviour (in-file test convention). The recursive walk also skips `dist`, `build`, `coverage`, `target`, `vendor`, `.stryker-tmp`, and `.chaos-mcp`.
-
-## [Unreleased] — Phase 2: Triage Scanner
 
 ### Added — `diffBase` on `triage_test_coverage`
 
@@ -46,8 +46,6 @@ All notable changes to Chaos-MCP are documented in this file.
 ### Refactored — triage sort-comparator DRY
 
 - Extracted shared `compareTriageRows(a, b)` comparator from the duplicated `scoreNum`/inline-comparator in `triage-handler.ts`. The comparator is now exported from `triage.ts` and reused by both `rankResults` and the handler's final sort. Sort order is byte-identical: score asc, survived desc, file asc.
-
-## [Unreleased] — Phase 1: Output Enrichment
 
 ### Changed — Enrichment on by default
 
