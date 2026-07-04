@@ -65,7 +65,11 @@ jobs:
       - name: Test
         run: npm test
 
+      # Pre-release: not on npm yet (see CLAUDE.md). This step is intentionally
+      # dormant so tags cut a GitHub Release only. To go public: remove the
+      # `if: false` guard and set up auth (Trusted Publishing / OIDC, or NPM_TOKEN).
       - name: Publish to npm (provenance)
+        if: false
         run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
