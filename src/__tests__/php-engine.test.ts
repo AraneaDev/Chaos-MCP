@@ -107,6 +107,33 @@ describe('parseInfectionJsonLog', () => {
       /unparseable JSON log/,
     );
   });
+
+  it('L5: derives survived/totalMutants from escaped.length, not a mismatched stats.escapedCount', () => {
+    // stats.escapedCount (5) disagrees with the actual escaped array (1 entry).
+    // Before the fix, `survived` would be 5 while `vulnerabilities` only had 1
+    // entry — a self-contradictory result (score/survived count not matching
+    // the emitted survivor list).
+    const log = JSON.stringify({
+      stats: { killedCount: 3, escapedCount: 5 },
+      escaped: [{ mutator: { mutatorName: 'GreaterThan', originalStartLine: 12 } }],
+      killed: [{}, {}, {}],
+    });
+    const r = parseInfectionJsonLog(log, 'src/Calculator.php');
+    expect(r.vulnerabilities).toHaveLength(1);
+    expect(r.survived).toBe(r.vulnerabilities.length);
+    expect(r.survived).toBe(1);
+    expect(r.totalMutants).toBe(4); // 3 killed + 1 survived (consistent with vulnerabilities)
+    expect(r.mutationScore).toBe('75.00%');
+  });
+
+  it('L5: stays identical to the stats-driven count when stats and escaped agree (normal case)', () => {
+    const r = parseInfectionJsonLog(SAMPLE_LOG, 'src/Calculator.php');
+    // Unchanged behavior versus the pre-fix path: escapedCount (1) already
+    // equals escaped.length (1), so survived/totalMutants/score are identical.
+    expect(r.survived).toBe(1);
+    expect(r.totalMutants).toBe(5);
+    expect(r.mutationScore).toBe('80.00%');
+  });
 });
 
 describe('PhpEngine.run', () => {

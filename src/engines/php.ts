@@ -88,8 +88,13 @@ export function parseInfectionJsonLog(logText: string, filePath: string): Mutati
       ? parsed.timedOut
       : [];
 
+  // L5: `survived`/`totalMutants` must stay consistent with `vulnerabilities`,
+  // which is built only from `escaped`. `escaped.length` is therefore the
+  // source of truth — reading `stats.escapedCount` independently could
+  // (on a stats/array mismatch from an Infection version skew) report a
+  // survivor count and score that contradict the emitted `vulnerabilities`.
   const stats = parsed.stats ?? {};
-  const survived = stats.escapedCount ?? escaped.length;
+  const survived = escaped.length;
   const timeouts = stats.timeOutCount ?? stats.timedOutCount ?? timedOutArr.length;
   const killed = (stats.killedCount ?? killedArr.length) + timeouts;
   const totalMutants = killed + survived;

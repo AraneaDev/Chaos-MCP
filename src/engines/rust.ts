@@ -88,7 +88,11 @@ function parseCargoMutantsText(stdout: string, filePath: string): MutationResult
 
     const vuln: Vulnerability = {
       line: mutantLine,
-      mutator: 'Rust Mutation Operator',
+      // Derive a per-mutant label from the description, mirroring the JSON
+      // branch below (H2/I4): two different mutations on the same line must
+      // get distinct `mutator` values, or suppression/verify keys (which are
+      // `keyOf(line, mutator)`) collapse them into one entry.
+      mutator: desc ? desc.split(' ').slice(0, 3).join(' ') : 'Rust Mutation Operator',
       description: `Mutation survived at line ${mutantLine}. The Rust test suite did not catch this change.`,
     };
     if (desc) vuln.mutated = desc;
