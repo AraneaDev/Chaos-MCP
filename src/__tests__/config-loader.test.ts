@@ -652,6 +652,60 @@ describe('validateConfig', () => {
     ).toBe(true);
   });
 
+  it('warns about a malformed infection.threads value (M2)', () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue(JSON.stringify({ infection: { threads: 'quick' } }));
+
+    const { warnings } = validateConfig('/tmp/config.json');
+    expect(
+      warnings.some(
+        (w) => w.includes('infection.threads') && w.includes('must be "max" or a positive integer'),
+      ),
+    ).toBe(true);
+  });
+
+  it('warns about a non-string infection.testFrameworkOptions value (M2)', () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue(JSON.stringify({ infection: { testFrameworkOptions: 123 } }));
+
+    const { warnings } = validateConfig('/tmp/config.json');
+    expect(
+      warnings.some(
+        (w) => w.includes('infection.testFrameworkOptions') && w.includes('must be a string'),
+      ),
+    ).toBe(true);
+  });
+
+  it('warns about a malformed cosmicray.testSelection value (M2)', () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue(JSON.stringify({ cosmicray: { testSelection: ['ok', ''] } }));
+
+    const { warnings } = validateConfig('/tmp/config.json');
+    expect(
+      warnings.some(
+        (w) =>
+          w.includes('cosmicray.testSelection') &&
+          w.includes('must be an array of non-empty strings'),
+      ),
+    ).toBe(true);
+  });
+
+  it('warns about a malformed cosmicray.excludeOperators value (M2)', () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue(
+      JSON.stringify({ cosmicray: { excludeOperators: 'not-an-array' } }),
+    );
+
+    const { warnings } = validateConfig('/tmp/config.json');
+    expect(
+      warnings.some(
+        (w) =>
+          w.includes('cosmicray.excludeOperators') &&
+          w.includes('must be an array of non-empty strings'),
+      ),
+    ).toBe(true);
+  });
+
   it('reports parse failure via warnings', () => {
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue('not valid json {{{');

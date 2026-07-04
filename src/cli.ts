@@ -97,6 +97,25 @@ interface CliDeps {
 }
 
 /**
+ * Extract the value following a flag (e.g. `--config <path>`) from argv, guarding
+ * against the flag being the last token or its "value" itself being another flag
+ * (e.g. `--config --strict`, where `--strict` would otherwise be mistaken for the
+ * config path). Prints a warning to stderr and returns `undefined` in that case,
+ * mirroring the `diffBase`-must-not-start-with-"-" guard on the MCP side
+ * (src/handler.ts).
+ */
+function getFlagValue(args: string[], flag: string): string | undefined {
+  const index = args.indexOf(flag);
+  if (index === -1 || index + 1 >= args.length) return undefined;
+  const value = args[index + 1];
+  if (value.startsWith('-')) {
+    console.error(`Warning: ${flag} expects a path but got "${value}"; ignoring.`);
+    return undefined;
+  }
+  return value;
+}
+
+/**
  * Parse argv and run the appropriate CLI action: print version/help, validate a
  * config and exit, or load config and start the MCP server.
  *
@@ -122,9 +141,7 @@ export function runCli({ appVersion, startServer }: CliDeps): void {
 
   // --validate-config flag
   if (args.includes('--validate-config')) {
-    const configIndex = args.indexOf('--config');
-    const configPath =
-      configIndex !== -1 && configIndex + 1 < args.length ? args[configIndex + 1] : undefined;
+    const configPath = getFlagValue(args, '--config');
     const strict = args.includes('--strict');
 
     const { warnings } = validateConfig(configPath);
@@ -146,9 +163,7 @@ export function runCli({ appVersion, startServer }: CliDeps): void {
   }
 
   // --config <path> flag
-  const configIndex = args.indexOf('--config');
-  const configPath =
-    configIndex !== -1 && configIndex + 1 < args.length ? args[configIndex + 1] : undefined;
+  const configPath = getFlagValue(args, '--config');
 
   let loadedConfig: ChaosConfig | undefined;
   try {
