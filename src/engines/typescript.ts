@@ -35,7 +35,14 @@ interface StrykerMutantRecord {
     start: { line: number; column: number };
     end: { line: number; column: number };
   };
-  status: 'Killed' | 'Survived' | 'NoCoverage' | 'CompileError' | 'RuntimeError' | 'Timeout';
+  status:
+    | 'Killed'
+    | 'Survived'
+    | 'NoCoverage'
+    | 'CompileError'
+    | 'RuntimeError'
+    | 'Timeout'
+    | 'Ignored';
   statusReason?: string;
 }
 
@@ -100,16 +107,17 @@ function buildMutateArg(filePath: string, ranges?: { start: number; end: number 
  * mutator configuration (denylist) is specified.
  *
  * StrykerJS v9 removed the `--mutators` CLI flag from v8. Mutator
- * configuration is now done exclusively via `stryker.config.json`.
- * We write a minimal config with only the `mutators` key so the project's
- * existing config (if any) is not clobbered — Stryker merges CLI args with
- * the config file, and the config file is the authoritative source for
- * mutator settings.
+ * configuration is now done exclusively via `stryker.config.json`, whose
+ * schema exposes exclusions as `mutator.excludedMutations` (an array of
+ * mutator names). There is NO top-level `mutators` option — earlier
+ * Chaos-MCP versions wrote a `mutators: { Name: false }` map that Stryker
+ * silently ignored, so the denylist had no effect; any such legacy map found
+ * in an existing config is migrated into `excludedMutations` and dropped.
  *
- * **allowlist is not supported:** v9's config model requires toggling
- * individual mutators off; there is no way to express "only these N mutators"
- * without knowing the complete list of all mutator names. Users who need an
- * allowlist should create their own `stryker.config.json`.
+ * **allowlist is not supported:** the config model can only exclude mutators;
+ * there is no way to express "only these N mutators" without knowing the
+ * complete list of all mutator names. Users who need an allowlist should
+ * create their own `stryker.config.json`.
  *
  * Mutator names remain PascalCase as in v8 (e.g. "ConditionalExpression",
  * "ArithmeticOperator"). Stryker validates them at runtime.
@@ -133,17 +141,27 @@ function writeStrykerMutatorConfig(cwd: string, denylist: string[]): void {
     }
   }
 
-  const existingMutators =
-    config.mutators !== null &&
-    typeof config.mutators === 'object' &&
-    !Array.isArray(config.mutators)
-      ? (config.mutators as Record<string, boolean>)
+  const mutatorSection =
+    config.mutator !== null && typeof config.mutator === 'object' && !Array.isArray(config.mutator)
+      ? (config.mutator as Record<string, unknown>)
       : {};
-  const mutators: Record<string, boolean> = { ...existingMutators };
-  for (const name of denylist) {
-    mutators[name] = false;
+  const excluded = Array.isArray(mutatorSection.excludedMutations)
+    ? (mutatorSection.excludedMutations as unknown[]).filter(
+        (v): v is string => typeof v === 'string',
+      )
+    : [];
+
+  // Migrate the legacy `mutators: { Name: false }` map (never a valid Stryker
+  // option) into excludedMutations, then drop the invalid key.
+  if (config.mutators !== null && typeof config.mutators === 'object') {
+    for (const [name, enabled] of Object.entries(config.mutators as Record<string, unknown>)) {
+      if (enabled === false) excluded.push(name);
+    }
   }
-  config.mutators = mutators;
+  delete config.mutators;
+
+  mutatorSection.excludedMutations = [...new Set([...excluded, ...denylist])];
+  config.mutator = mutatorSection;
 
   writeFileSync(configPath, JSON.stringify(config), 'utf-8');
 }
@@ -165,8 +183,8 @@ export class TypeScriptEngine extends BaseEngine {
     const mutateArg = buildMutateArg(filePath, effectiveRanges);
 
     // StrykerJS v9 removed the `--mutators` CLI flag. We express denylists by
-    // writing a minimal stryker.config.json in the sandbox with the
-    // `mutators` key. Allowlists are not supported without a full config.
+    // writing mutator.excludedMutations into the sandbox stryker.config.json.
+    // Allowlists are not supported without a full config.
     if (options?.mutatorAllowlist && options.mutatorAllowlist.length > 0) {
       throw new Error(
         'mutatorAllowlist is not supported in StrykerJS v9. ' +
@@ -250,6 +268,15 @@ export class TypeScriptEngine extends BaseEngine {
       //   1 = configuration error or internal exception (real failure)
       //   2 = mutation score threshold not reached (expected when mutants survive)
       if (error.exit === 1) {
+        // A dry run that executes zero tests is almost always "nothing covers
+        // this file", not a broken config — say so instead of dumping the raw
+        // Stryker stack trace.
+        if (error.stderr?.includes('No tests were executed')) {
+          throw new Error(
+            `StrykerJS ran zero tests in its dry run — no tests in this project appear to cover ${filePath}. ` +
+              'Add a test file exercising it, or check the test runner configuration if tests exist.',
+          );
+        }
         throw new Error(
           `StrykerJS configuration or internal error (exit 1): ${error.stderr?.slice(0, 500) || error.message}`,
         );
@@ -306,11 +333,11 @@ export class TypeScriptEngine extends BaseEngine {
     }
 
     // Filter out invalid mutants (CompileError / RuntimeError) — they are
-    // not testable and shouldn't penalise the mutation score.
-    // (Stryker's `Ignored` status is normally absent from a finished report,
-    // but defensively skip it just in case a future version emits it.)
+    // not testable and shouldn't penalise the mutation score. `Ignored`
+    // mutants (e.g. excluded via mutator.excludedMutations) are reported by
+    // Stryker but never run, so they leave the denominator too.
     const validMutants = mutants.filter(
-      (m) => m.status !== 'CompileError' && m.status !== 'RuntimeError',
+      (m) => m.status !== 'CompileError' && m.status !== 'RuntimeError' && m.status !== 'Ignored',
     );
     const totalMutants = validMutants.length;
     // Timeouts count as killed — the mutant was detected by causing the test suite to hang.

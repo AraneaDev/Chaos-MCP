@@ -44,7 +44,20 @@ function candidates(targetFile: string, projectType: SupportedProjectType): stri
 }
 
 /** Directory names never worth descending into when hunting for test files. */
-const TEST_SEARCH_SKIP = new Set(['node_modules', '.git', '.venv', 'venv', '__pycache__']);
+const TEST_SEARCH_SKIP = new Set([
+  'node_modules',
+  '.git',
+  '.venv',
+  'venv',
+  '__pycache__',
+  'dist',
+  'build',
+  'coverage',
+  'target',
+  'vendor',
+  '.stryker-tmp',
+  '.chaos-mcp',
+]);
 
 /**
  * Recursively collect files named exactly `name` under `absDir`, returning
@@ -111,6 +124,33 @@ export function findPythonTestSelection(targetFile: string, workspaceRoot: strin
   return [...new Set(found)];
 }
 
+/**
+ * Directories worth hunting recursively for a test file, beyond the fixed
+ * candidates: the common top-level test roots plus the target's own top-level
+ * segment and directory (covers `src/__tests__/...` and deeply co-located
+ * layouts). Only existing directories are returned, deduped, workspace-relative.
+ */
+function searchRoots(targetFile: string, workspaceRoot: string): string[] {
+  const dir = dirname(targetFile);
+  const topSegment = targetFile.split('/')[0];
+  const roots: string[] = [];
+  for (const rel of ['tests', 'test', 'spec', '__tests__', topSegment, dir]) {
+    if (!rel || rel === '.' || rel === targetFile || roots.includes(rel)) continue;
+    try {
+      if (existsSync(join(workspaceRoot, rel))) roots.push(rel);
+    } catch {
+      // ignore and keep probing
+    }
+  }
+  return roots;
+}
+
+/** How many of `sourceDir`'s path segments also appear in `candidateDir`. */
+function segmentOverlap(sourceDir: string, candidateDir: string): number {
+  const candidateSegments = new Set(candidateDir.split('/').filter((s) => s && s !== '.'));
+  return sourceDir.split('/').filter((s) => s && s !== '.' && candidateSegments.has(s)).length;
+}
+
 export function suggestTestFile(
   targetFile: string,
   projectType: SupportedProjectType,
@@ -130,5 +170,32 @@ export function suggestTestFile(
       // ignore and keep probing
     }
   }
+
+  // No fixed candidate exists — hunt the common test roots recursively for a
+  // file matching a candidate basename, covering nested layouts the fixed list
+  // can't express (e.g. tests/unit/<pkg>/<base>.test.ts). Rust is excluded:
+  // its first candidate is the source file itself, so a workspace-wide name
+  // hunt would surface unrelated same-named sources.
+  if (projectType !== 'rust') {
+    const dir = dirname(targetFile);
+    // Candidate order encodes priority (.test before .spec) — probe name-major.
+    for (const name of [...new Set(cands.map((c) => basename(c)))]) {
+      const found: string[] = [];
+      for (const rootRel of searchRoots(targetFile, workspaceRoot)) {
+        collectByName(join(workspaceRoot, rootRel), name, workspaceRoot, found, 0);
+      }
+      const unique = [...new Set(found)];
+      if (unique.length > 0) {
+        unique.sort(
+          (a, b) =>
+            segmentOverlap(dir, dirname(b)) - segmentOverlap(dir, dirname(a)) ||
+            a.length - b.length ||
+            a.localeCompare(b),
+        );
+        return { path: unique[0], exists: true };
+      }
+    }
+  }
+
   return { path: cands[0], exists: false };
 }

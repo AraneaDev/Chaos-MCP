@@ -2,6 +2,21 @@
 
 All notable changes to Chaos-MCP are documented in this file.
 
+## [Unreleased]
+
+### Fixed — `mutatorDenylist` had no effect on StrykerJS
+
+- **The denylist config shape was invalid** — `writeStrykerMutatorConfig` wrote a top-level `mutators: { Name: false }` map, which is not a StrykerJS option; Stryker silently ignored it and denylisted mutators kept running. The config now writes the schema-valid `mutator.excludedMutations: [...]` array, merging (deduped) with any exclusions already present in the project's own `stryker.config.json`. A legacy `mutators` map found in an existing config is migrated into `excludedMutations` and the invalid key is dropped.
+- **`Ignored` mutants are excluded from the score** — Stryker reports excluded mutants with status `Ignored`; `parseReport` previously counted them in the denominator (deflating the score once the denylist actually worked). They now leave the total, matching the existing CompileError/RuntimeError handling.
+
+### Fixed — actionable error when no tests cover the target
+
+- A StrykerJS dry run that executes zero tests (`ConfigError: No tests were executed`) previously surfaced as a raw exit-1 stack dump. It now reports: the file appears to be covered by no tests, with a pointer to add a test file or check the runner configuration.
+
+### Added — recursive test-file discovery for `suggestedTestFile`
+
+- `suggestTestFile` only probed a fixed candidate list (co-located, `__tests__` sibling, top-level `test/`/`tests/`), so nested layouts like `tests/unit/<pkg>/<base>.test.ts` reported `exists: false` with a wrong suggested path even when a test file existed. When no fixed candidate exists, the common test roots (`tests/`, `test/`, `spec/`, `__tests__/`, the target's top-level segment and directory) are now searched recursively (bounded depth/breadth) for a candidate basename. Matches are ranked by shared directory segments with the source file, then by path length, then lexicographically. Rust targets keep the fixed-candidate behaviour (in-file test convention). The recursive walk also skips `dist`, `build`, `coverage`, `target`, `vendor`, `.stryker-tmp`, and `.chaos-mcp`.
+
 ## [Unreleased] — Phase 2: Triage Scanner
 
 ### Added — `diffBase` on `triage_test_coverage`

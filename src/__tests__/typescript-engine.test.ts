@@ -126,6 +126,27 @@ describe('TypeScriptEngine', () => {
     expect(result.mutationScore).toBe('100.00%');
   });
 
+  it('excludes Ignored mutants (e.g. denylisted) from the score denominator', async () => {
+    mockRunShell.mockResolvedValue(makeExecResult());
+    mockReadFileSync.mockReturnValue(
+      makeJsonReport([
+        { status: 'Killed', mutatorName: 'BooleanLiteral', line: 1 },
+        { status: 'Ignored', mutatorName: 'StringLiteral', line: 2 },
+        { status: 'Ignored', mutatorName: 'StringLiteral', line: 3 },
+        { status: 'Survived', mutatorName: 'ConditionalExpression', line: 4 },
+      ]),
+    );
+
+    const result = await engine.run('src/test.ts');
+
+    expect(result.totalMutants).toBe(2);
+    expect(result.killed).toBe(1);
+    expect(result.survived).toBe(1);
+    expect(result.mutationScore).toBe('50.00%');
+    // Ignored mutants must not surface as vulnerabilities either.
+    expect(result.vulnerabilities).toHaveLength(1);
+  });
+
   it('reports surviving mutants as vulnerabilities', async () => {
     mockRunShell.mockResolvedValue(makeExecResult());
     mockReadFileSync.mockReturnValue(
@@ -169,6 +190,21 @@ describe('TypeScriptEngine', () => {
     // The stderr tail is interpolated into the message — pin it so its
     // string-literal / slice survives mutation.
     await expect(engine.run('src/test.ts')).rejects.toThrow(/stryker\.config\.js not found/);
+  });
+
+  it('maps the "No tests were executed" ConfigError to an actionable no-tests message', async () => {
+    mockRunShell.mockRejectedValue(
+      makeExecFailure({
+        exit: 1,
+        stderr:
+          'ConfigError: No tests were executed. Stryker will exit prematurely. Please check your configuration.\n    at DryRunExecutor.execute (file:///x/3-dry-run-executor.js:47)',
+      }),
+    );
+
+    await expect(engine.run('src/orphan.ts')).rejects.toThrow(/zero tests/);
+    await expect(engine.run('src/orphan.ts')).rejects.toThrow(/src\/orphan\.ts/);
+    // The raw Stryker stack trace must not leak through.
+    await expect(engine.run('src/orphan.ts')).rejects.not.toThrow(/DryRunExecutor/);
   });
 
   it('throws on timeout (TIMEOUT code)', async () => {
@@ -326,22 +362,56 @@ describe('TypeScriptEngine', () => {
       expect.stringContaining('"StringLiteral"'),
       'utf-8',
     );
-    // Each denied mutator must map to `false` (disabled), not `true`.
+    // Stryker's schema exposes exclusions as mutator.excludedMutations — the
+    // former top-level `mutators` map is not a Stryker option and was ignored.
     const written = JSON.parse(mockWrite.mock.calls[0][1] as string);
-    expect(written).toEqual({ mutators: { StringLiteral: false, BooleanLiteral: false } });
+    expect(written).toEqual({
+      mutator: { excludedMutations: ['StringLiteral', 'BooleanLiteral'] },
+    });
     // Should NOT have --mutators CLI args
     const argList = mockRunShell.mock.calls[0]?.[1] as string[];
     expect(argList.filter((a) => a.includes('mutators'))).toHaveLength(0);
   });
 
-  it('merges mutators into an existing stryker.config.json instead of clobbering it', async () => {
+  it('merges excludedMutations into an existing stryker.config.json instead of clobbering it', async () => {
     const { writeFileSync } = await import('fs');
     const mockWrite = vi.mocked(writeFileSync);
     const configPath = '/tmp/test-sandbox/stryker.config.json';
     const existingConfig = JSON.stringify({
       testRunner: 'vitest',
       mutate: ['src/**/*.ts'],
-      mutators: { ConditionalExpression: false },
+      mutator: { plugins: null, excludedMutations: ['ConditionalExpression'] },
+    });
+
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockImplementation((p: string) =>
+      p === configPath ? existingConfig : makeJsonReport([]),
+    );
+    mockRunShell.mockResolvedValue(makeExecResult());
+
+    await engine.run('src/app.ts', {
+      workDir: '/tmp/test-sandbox',
+      mutatorDenylist: ['StringLiteral', 'ConditionalExpression'],
+    });
+
+    const writtenCall = mockWrite.mock.calls.find((c) => c[0] === configPath);
+    expect(writtenCall).toBeDefined();
+    const written = JSON.parse((writtenCall?.[1] ?? '{}') as string);
+    // The project's own settings must survive.
+    expect(written.testRunner).toBe('vitest');
+    expect(written.mutate).toEqual(['src/**/*.ts']);
+    expect(written.mutator.plugins).toBeNull();
+    // The denylist is unioned (deduped) with the existing exclusions.
+    expect(written.mutator.excludedMutations).toEqual(['ConditionalExpression', 'StringLiteral']);
+  });
+
+  it('migrates a legacy top-level `mutators` map into mutator.excludedMutations', async () => {
+    const { writeFileSync } = await import('fs');
+    const mockWrite = vi.mocked(writeFileSync);
+    const configPath = '/tmp/test-sandbox/stryker.config.json';
+    // The shape earlier Chaos-MCP versions wrote — never a valid Stryker option.
+    const existingConfig = JSON.stringify({
+      mutators: { ConditionalExpression: false, BooleanLiteral: true },
     });
 
     mockExistsSync.mockReturnValue(true);
@@ -356,13 +426,11 @@ describe('TypeScriptEngine', () => {
     });
 
     const writtenCall = mockWrite.mock.calls.find((c) => c[0] === configPath);
-    expect(writtenCall).toBeDefined();
     const written = JSON.parse((writtenCall?.[1] ?? '{}') as string);
-    // The project's own settings must survive.
-    expect(written.testRunner).toBe('vitest');
-    expect(written.mutate).toEqual(['src/**/*.ts']);
-    // The denylist is merged into the existing mutators map, not replacing it.
-    expect(written.mutators).toEqual({ ConditionalExpression: false, StringLiteral: false });
+    // Disabled legacy entries fold into excludedMutations; enabled ones don't.
+    expect(written.mutator.excludedMutations).toEqual(['ConditionalExpression', 'StringLiteral']);
+    // The invalid key must not be re-emitted.
+    expect(written.mutators).toBeUndefined();
   });
 
   it('treats an empty mutatorDenylist as a no-op (no config written)', async () => {

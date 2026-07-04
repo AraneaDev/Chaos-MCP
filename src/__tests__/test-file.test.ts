@@ -136,6 +136,129 @@ describe('suggestTestFile', () => {
   it('returns undefined when candidate computation throws', () => {
     expect(suggestTestFile(null as never, 'typescript', root)).toBeUndefined();
   });
+
+  // ── Recursive discovery: fixed candidates miss nested layouts like
+  //    tests/unit/<pkg>/<base>.test.ts; a bounded recursive hunt of the common
+  //    test roots must find them and report exists:true. ──
+  it('discovers a nested test under tests/unit/... via recursive search', () => {
+    mkdirSync(join(root, 'src', 'utils'), { recursive: true });
+    mkdirSync(join(root, 'tests', 'unit', 'utils'), { recursive: true });
+    writeFileSync(join(root, 'src', 'utils', 'error-handler.ts'), '');
+    writeFileSync(join(root, 'tests', 'unit', 'utils', 'error-handler.test.ts'), '');
+    expect(suggestTestFile('src/utils/error-handler.ts', 'typescript', root)).toEqual({
+      path: 'tests/unit/utils/error-handler.test.ts',
+      exists: true,
+    });
+  });
+
+  it('discovers a nested .spec test via recursive search', () => {
+    mkdirSync(join(root, 'src'), { recursive: true });
+    mkdirSync(join(root, 'test', 'deep'), { recursive: true });
+    writeFileSync(join(root, 'src', 'math.ts'), '');
+    writeFileSync(join(root, 'test', 'deep', 'math.spec.ts'), '');
+    expect(suggestTestFile('src/math.ts', 'typescript', root)).toEqual({
+      path: 'test/deep/math.spec.ts',
+      exists: true,
+    });
+  });
+
+  it('prefers the nested test sharing the most source directory segments', () => {
+    mkdirSync(join(root, 'src', 'utils'), { recursive: true });
+    mkdirSync(join(root, 'tests', 'unit', 'utils'), { recursive: true });
+    mkdirSync(join(root, 'tests', 'unit', 'other'), { recursive: true });
+    writeFileSync(join(root, 'src', 'utils', 'config.ts'), '');
+    writeFileSync(join(root, 'tests', 'unit', 'other', 'config.test.ts'), '');
+    writeFileSync(join(root, 'tests', 'unit', 'utils', 'config.test.ts'), '');
+    expect(suggestTestFile('src/utils/config.ts', 'typescript', root)).toEqual({
+      path: 'tests/unit/utils/config.test.ts',
+      exists: true,
+    });
+  });
+
+  it('prefers a nested .test match over a nested .spec match', () => {
+    mkdirSync(join(root, 'src'), { recursive: true });
+    mkdirSync(join(root, 'tests', 'a'), { recursive: true });
+    mkdirSync(join(root, 'tests', 'b'), { recursive: true });
+    writeFileSync(join(root, 'src', 'math.ts'), '');
+    writeFileSync(join(root, 'tests', 'a', 'math.spec.ts'), '');
+    writeFileSync(join(root, 'tests', 'b', 'math.test.ts'), '');
+    expect(suggestTestFile('src/math.ts', 'typescript', root)).toEqual({
+      path: 'tests/b/math.test.ts',
+      exists: true,
+    });
+  });
+
+  it('discovers a nested Python test module via recursive search', () => {
+    mkdirSync(join(root, 'core'), { recursive: true });
+    mkdirSync(join(root, 'tests', 'unit', 'core'), { recursive: true });
+    writeFileSync(join(root, 'core', 'calc.py'), '');
+    writeFileSync(join(root, 'tests', 'unit', 'core', 'test_calc.py'), '');
+    expect(suggestTestFile('core/calc.py', 'python', root)).toEqual({
+      path: 'tests/unit/core/test_calc.py',
+      exists: true,
+    });
+  });
+
+  it('ignores decoys inside node_modules during recursive search', () => {
+    mkdirSync(join(root, 'src'), { recursive: true });
+    mkdirSync(join(root, 'tests', 'node_modules', 'pkg'), { recursive: true });
+    writeFileSync(join(root, 'src', 'math.ts'), '');
+    writeFileSync(join(root, 'tests', 'node_modules', 'pkg', 'math.test.ts'), '');
+    expect(suggestTestFile('src/math.ts', 'typescript', root)).toEqual({
+      path: 'src/math.test.ts',
+      exists: false,
+    });
+  });
+
+  it('does not recursively hunt for Rust targets (in-file test convention)', () => {
+    mkdirSync(join(root, 'tests', 'deep'), { recursive: true });
+    writeFileSync(join(root, 'tests', 'deep', 'lib.rs'), '');
+    expect(suggestTestFile('src/lib.rs', 'rust', root)).toEqual({
+      path: 'src/lib.rs',
+      exists: false,
+    });
+  });
+
+  // ── The '.' search root must be skipped for a workspace-root target;
+  //    otherwise the hunt would scan the whole workspace and surface tests
+  //    from unrelated directories. ──
+  it('does not scan the workspace root itself for a root-level target', () => {
+    mkdirSync(join(root, 'lib'), { recursive: true });
+    writeFileSync(join(root, 'math.ts'), '');
+    writeFileSync(join(root, 'lib', 'math.test.ts'), '');
+    expect(suggestTestFile('math.ts', 'typescript', root)).toEqual({
+      path: 'math.test.ts',
+      exists: false,
+    });
+  });
+
+  // ── Tie-breaks: equal segment overlap → shorter path wins; equal length →
+  //    lexicographic order wins (deterministic suggestions). ──
+  it('prefers the shorter path when segment overlap ties', () => {
+    mkdirSync(join(root, 'src', 'utils'), { recursive: true });
+    mkdirSync(join(root, 'tests', 'aa', 'utils'), { recursive: true });
+    mkdirSync(join(root, 'tests', 'bbbb', 'utils'), { recursive: true });
+    writeFileSync(join(root, 'src', 'utils', 'config.ts'), '');
+    writeFileSync(join(root, 'tests', 'aa', 'utils', 'config.test.ts'), '');
+    writeFileSync(join(root, 'tests', 'bbbb', 'utils', 'config.test.ts'), '');
+    expect(suggestTestFile('src/utils/config.ts', 'typescript', root)).toEqual({
+      path: 'tests/aa/utils/config.test.ts',
+      exists: true,
+    });
+  });
+
+  it('prefers the lexicographically first path when overlap and length tie', () => {
+    mkdirSync(join(root, 'src'), { recursive: true });
+    mkdirSync(join(root, 'tests', 'ab'), { recursive: true });
+    mkdirSync(join(root, 'tests', 'aa'), { recursive: true });
+    writeFileSync(join(root, 'src', 'math.ts'), '');
+    writeFileSync(join(root, 'tests', 'ab', 'math.test.ts'), '');
+    writeFileSync(join(root, 'tests', 'aa', 'math.test.ts'), '');
+    expect(suggestTestFile('src/math.ts', 'typescript', root)).toEqual({
+      path: 'tests/aa/math.test.ts',
+      exists: true,
+    });
+  });
 });
 
 describe('findPythonTestSelection', () => {
@@ -177,5 +300,32 @@ describe('findPythonTestSelection', () => {
     mkdirSync(join(root, 'tests'), { recursive: true });
     writeFileSync(join(root, 'tests', 'test_thing.py'), '');
     expect(findPythonTestSelection('tests/test_thing.py', root)).toEqual([]);
+  });
+
+  // ── collectByName bounds: the walk must stop at depth 8 and cap results
+  //    at 16 so it stays cheap on pathological trees. ──
+  it('finds a module at the deepest scanned level but not below the depth cap', () => {
+    writeFileSync(join(root, 'mod.py'), '');
+    // tests/ is scanned at depth 0; d2..d9 land at depths 1..8; d10 would be
+    // entered at depth 9 and is pruned by the `depth > 8` guard.
+    const nine = join(root, 'tests', 'd2', 'd3', 'd4', 'd5', 'd6', 'd7', 'd8', 'd9');
+    mkdirSync(join(nine, 'd10'), { recursive: true });
+    writeFileSync(join(nine, 'test_mod.py'), '');
+    expect(findPythonTestSelection('mod.py', root)).toEqual([
+      'tests/d2/d3/d4/d5/d6/d7/d8/d9/test_mod.py',
+    ]);
+    rmSync(join(nine, 'test_mod.py'));
+    writeFileSync(join(nine, 'd10', 'test_mod.py'), '');
+    expect(findPythonTestSelection('mod.py', root)).toEqual([]);
+  });
+
+  it('caps recursive matches at 16 results', () => {
+    writeFileSync(join(root, 'mod.py'), '');
+    for (let i = 1; i <= 20; i++) {
+      const dir = join(root, 'tests', `d${String(i).padStart(2, '0')}`);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'test_mod.py'), '');
+    }
+    expect(findPythonTestSelection('mod.py', root)).toHaveLength(16);
   });
 });
