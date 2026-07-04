@@ -24,6 +24,15 @@ describe('evaluateGate', () => {
     expect(evaluateGate('n/a', 80)).toEqual({ minScore: 80, passed: true });
     expect(evaluateGate('', 80).passed).toBe(true);
   });
+
+  it('retains full decimal precision when grading against a fractional threshold', () => {
+    // Pins the fractional part of the regex `(?:\.\d+)?`. A "79.95" score sitting
+    // exactly on a 79.95 threshold must pass. Mutants that truncate the fraction to
+    // a single digit (`\.\d` → "79.9") or reject digits after the dot (`\.\D+` →
+    // "79") both drop below the threshold and would spuriously fail — so this kills
+    // the ×2 Regex survivors on line 13 that a whole-number score can't reach.
+    expect(evaluateGate('79.95%', 79.95)).toEqual({ minScore: 79.95, passed: true });
+  });
 });
 
 describe('validateMinScore', () => {

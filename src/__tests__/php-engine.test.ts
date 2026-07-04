@@ -206,6 +206,52 @@ describe('PhpEngine.run', () => {
     );
   });
 
+  it('forwards phpTestFrameworkOptions as --test-framework-options', async () => {
+    // The framework-options arg is only appended when the caller supplies it;
+    // without a test, the whole `if (options?.phpTestFrameworkOptions)` block and
+    // its pushed arg go unexercised (line 165-167).
+    mockExists.mockImplementation((p) => String(p).endsWith('chaos-infection-log.json'));
+    mockRead.mockReturnValue(SAMPLE_LOG);
+    mockInvoke.mockResolvedValue({ stdout: '', stderr: '', exit: 0, signal: null });
+
+    const engine = new PhpEngine();
+    await engine.run('src/Calculator.php', {
+      workDir: '/sb',
+      phpTestFrameworkOptions: '--testsuite=unit',
+    });
+    const args = mockInvoke.mock.calls[0][2] as string[];
+    expect(args).toContain('--test-framework-options=--testsuite=unit');
+  });
+
+  it('omits --test-framework-options when phpTestFrameworkOptions is absent', async () => {
+    // The negative of the above: no caller option → no arg. Kills the mutant that
+    // removes the `if` guard and always pushes the (undefined) option.
+    mockExists.mockImplementation((p) => String(p).endsWith('chaos-infection-log.json'));
+    mockRead.mockReturnValue(SAMPLE_LOG);
+    mockInvoke.mockResolvedValue({ stdout: '', stderr: '', exit: 0, signal: null });
+
+    const engine = new PhpEngine();
+    await engine.run('src/Calculator.php', { workDir: '/sb' });
+    const args = mockInvoke.mock.calls[0][2] as string[];
+    expect(args.some((a) => a.startsWith('--test-framework-options='))).toBe(false);
+  });
+
+  it('throws a coverage-driver hint when the JSON log exists but is unreadable', async () => {
+    // Infection succeeds and the log path passes existsSync, but readFileSync
+    // throws (permissions / truncation). Covers the readFileSync catch (line
+    // 201-205) — distinct from the "no log produced" path above.
+    mockExists.mockReturnValue(true);
+    mockInvoke.mockResolvedValue({ stdout: '', stderr: '', exit: 0, signal: null });
+    mockRead.mockImplementation(() => {
+      throw new Error('EACCES: permission denied');
+    });
+
+    const engine = new PhpEngine();
+    await expect(engine.run('src/Calculator.php', { workDir: '/sb' })).rejects.toThrow(
+      /no readable JSON log/,
+    );
+  });
+
   it('builds --threads: phpThreads wins, then concurrency, else max', async () => {
     mockExists.mockImplementation((p) => String(p).endsWith('chaos-infection-log.json'));
     mockRead.mockReturnValue(SAMPLE_LOG);

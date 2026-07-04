@@ -325,7 +325,13 @@ describe('RustEngine', () => {
       new MutationToolStartupError('cargo-mutants', 'not installed', ''),
     );
 
-    await expect(engine.run('src/test.rs')).rejects.toThrow('not installed');
+    // Verbatim: the message must be re-thrown unchanged, NOT wrapped in the
+    // generic "<tool> execution failed: …" prefix that non-startup errors get.
+    // Asserting exact equality (not a substring) kills the `instanceof
+    // MutationToolStartupError → false` mutant in base.ts toExecFailure, under
+    // which the message would become "cargo-mutants execution failed: not installed".
+    const err = await engine.run('src/test.rs').catch((e: unknown) => e as Error);
+    expect(err.message).toBe('not installed');
   });
 
   it('extracts filename correctly from filePath without slashes', async () => {

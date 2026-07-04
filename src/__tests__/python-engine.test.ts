@@ -198,6 +198,22 @@ describe('PythonEngine (cosmic-ray)', () => {
     expect(lastConfig()).toContain('[cosmic-ray.filters.operators-filter]');
   });
 
+  it('surfaces an actionable error when cr-filter-operators fails', async () => {
+    // baseline, init succeed; the filter step fails. Covers the onExecFailure
+    // callback (line 277-279) that maps the exec failure to a filter-specific
+    // message — the happy-path filter test never runs that branch.
+    mockRunShell
+      .mockResolvedValueOnce(ok()) // baseline
+      .mockResolvedValueOnce(ok()) // init
+      .mockRejectedValueOnce(fail({ exit: 1, stderr: 'unknown operator' })); // cr-filter-operators
+    await expect(
+      engine.run('m.py', {
+        workDir: '/tmp/sandbox',
+        pythonExcludeOperators: ['core/NumberReplacer'],
+      }),
+    ).rejects.toThrow(/operator filter failed \(exit 1\)/);
+  });
+
   it('does not run a filter step when excludeOperators is absent (4 calls)', async () => {
     queueRun('');
     await engine.run('m.py', { workDir: '/tmp/sandbox' });
