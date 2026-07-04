@@ -2,6 +2,7 @@
 
 > On-demand micro-mutation sandbox for AI test verification — maps holes in unit tests by running isolated mutation testing via the Model Context Protocol.
 
+[![MCP Observatory risk grade](https://mcpobservatory.com/servers/github:AraneaDev/Chaos-MCP/badge.svg)](https://mcpobservatory.com/servers/github:AraneaDev/Chaos-MCP/security)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![tests](https://img.shields.io/badge/tests-passing-brightgreen.svg)](./.github/workflows/ci.yml)
 [![coverage](https://img.shields.io/badge/coverage-98%25-brightgreen.svg)](#development)
