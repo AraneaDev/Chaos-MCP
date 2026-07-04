@@ -14,9 +14,11 @@
  * is structurally derived, so there is no third version literal to sync.
  */
 
-const fs = require('fs');
-const path = require('path');
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
 const pkgJsonPath = path.join(root, 'package.json');
 const indexPath = path.join(root, 'src', 'index.ts');
@@ -24,7 +26,10 @@ const indexPath = path.join(root, 'src', 'index.ts');
 const newVersion = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf8')).version;
 const indexTs = fs.readFileSync(indexPath, 'utf8');
 
-const pattern = /export const APP_VERSION = '([^']+)';?/;
+// Anchor to the start of a line (multiline) so the real declaration is
+// matched, not the `export const APP_VERSION = '<semver>';` example inside the
+// doc comment above it (which is indented under a JSDoc ` * `).
+const pattern = /^export const APP_VERSION = '([^']+)';?/m;
 const match = indexTs.match(pattern);
 
 if (!match) {
