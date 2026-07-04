@@ -235,13 +235,21 @@ describe('PythonEngine (cosmic-ray)', () => {
   });
 
   it('falls back to python3 when `python` is not on PATH', async () => {
-    // No env override → real interpreter probe. `python` is absent on this host
-    // (python3-only), so the generated command must use python3, not python.
+    // No env override → real interpreter probe. Empty PATH so the `python` probe
+    // cannot resolve on ANY host (GitHub runners ship a `python` symlink), forcing
+    // the python3 fallback deterministically rather than relying on host layout.
     delete process.env.CHAOS_MCP_PYTHON;
+    const savedPath = process.env.PATH;
+    process.env.PATH = '';
     _resetInterpreterCache();
-    queueRun('');
-    await engine.run('m.py', { workDir: '/tmp/sandbox' });
-    expect(lastConfig()).toContain('test-command = "python3 -m pytest -x -q"');
+    try {
+      queueRun('');
+      await engine.run('m.py', { workDir: '/tmp/sandbox' });
+      expect(lastConfig()).toContain('test-command = "python3 -m pytest -x -q"');
+    } finally {
+      process.env.PATH = savedPath;
+      _resetInterpreterCache();
+    }
   });
 
   it('fails loudly when every mutant is incompetent (interpreter/test-command broken)', async () => {
