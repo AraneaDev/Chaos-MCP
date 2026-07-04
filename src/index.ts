@@ -38,7 +38,9 @@ export { TOOL_DEFINITION } from './tool-schema.js';
  * generic updater bumps this literal on release via the `x-release-please-version`
  * annotation below (configured in `release-please-config.json`'s `extra-files`), and
  * version-sync.test.ts imports it from here and asserts it matches package.json's
- * version, guarding that the bump stays in lockstep.
+ * version. That check runs in CI on `main` (post-merge) — not on the release-please
+ * Release PR, which is authored by GITHUB_TOKEN and so does not trigger pull_request
+ * workflows — catching any drift if the two files ever fall out of lockstep.
  */
 export const APP_VERSION = '1.2.0'; // x-release-please-version
 
