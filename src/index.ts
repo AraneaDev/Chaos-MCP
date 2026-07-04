@@ -38,7 +38,7 @@ export { TOOL_DEFINITION } from './tool-schema.js';
  * `version` lifecycle hook (scripts/sync-app-version.js) rewrites this literal
  * by regex, and version-sync.test.ts imports it from here.
  */
-export const APP_VERSION = '1.2.0';
+export const APP_VERSION = '1.2.0'; // x-release-please-version
 
 /**
  * Create and start the MCP server.
