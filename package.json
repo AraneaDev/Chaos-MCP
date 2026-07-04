@@ -40,7 +40,6 @@
     "start": "node ./build/index.js",
     "prepare": "npm run build",
     "prepublishOnly": "npm run build && npm run check",
-    "version": "node scripts/sync-app-version.js && git add src/index.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
