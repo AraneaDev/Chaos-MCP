@@ -10,8 +10,8 @@
 ### Setup
 
 ```bash
-git clone https://forgejo.aranea.dev/AraneaDevelopment/ChaosMCP.git
-cd ChaosMCP
+git clone https://github.com/AraneaDev/Chaos-MCP.git
+cd Chaos-MCP
 npm install
 npm run build
 ```

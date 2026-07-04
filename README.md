@@ -7,7 +7,7 @@
 [![coverage](https://img.shields.io/badge/coverage-98%25-brightgreen.svg)](#development)
 [![status: in development](https://img.shields.io/badge/status-in%20development-orange.svg)](#)
 
-> **Pre-release / in active development.** Chaos-MCP is **not yet published to npm** and is **not on a public host** — it currently lives in a private [Forgejo](https://forgejo.org/) repository. Install from source (see [Installation](#installation)). Any `npm install -g` / `npx` commands in this README describe the planned published experience and do not work yet.
+> **Pre-release / in active development.** Chaos-MCP is **not yet published to npm**. The source is public on [GitHub](https://github.com/AraneaDev/Chaos-MCP) — install from source (see [Installation](#installation)). Any `npm install -g` / `npx` commands in this README describe the planned published experience and do not work yet.
 
 Chaos-MCP is an [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server that exposes three tools — `audit_code_resilience` (audit a single file), `triage_test_coverage` (rank a whole tree weakest-first), and `estimate_audit` (cheap pre-flight mutant count / timing estimate) — which run isolated mutation testing against your source to find weaknesses in the local test suite. It intentionally injects logical faults (like changing `>` to `>=`) and checks whether your tests catch them. Surviving mutants indicate test coverage holes.
 
@@ -24,11 +24,11 @@ Chaos-MCP is an [MCP (Model Context Protocol)](https://modelcontextprotocol.io/)
 
 ## Installation
 
-While in development, the only supported install path is **from source** — clone the private repo, build, and register the built entrypoint with your MCP client.
+While in development, the only supported install path is **from source** — clone the repo, build, and register the built entrypoint with your MCP client.
 
 ```bash
-git clone https://forgejo.aranea.dev/AraneaDevelopment/ChaosMCP.git
-cd ChaosMCP
+git clone https://github.com/AraneaDev/Chaos-MCP.git
+cd Chaos-MCP
 npm install
 npm run build      # compiles to build/index.js
 ```
