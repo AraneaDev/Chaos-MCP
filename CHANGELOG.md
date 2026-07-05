@@ -2,6 +2,20 @@
 
 All notable changes to Chaos-MCP are documented in this file.
 
+## [1.2.1](https://github.com/AraneaDev/Chaos-MCP/compare/v1.2.0...v1.2.1) (2026-07-05)
+
+
+### Bug Fixes
+
+* apply CodeRabbit auto-fixes ([9bd58a4](https://github.com/AraneaDev/Chaos-MCP/commit/9bd58a4a5e7bead093d4f4c129f5ef774829c533))
+* **config,cli:** validate infection/cosmicray keys; guard --config flag-value (M2/L2) ([5fbbc39](https://github.com/AraneaDev/Chaos-MCP/commit/5fbbc399a5d70282f63999f6d62c721290fb362c))
+* **engines:** derive rust mutator from description; keep php counts consistent (H2/I4/L5) ([6f49f0e](https://github.com/AraneaDev/Chaos-MCP/commit/6f49f0e2192dcc5a5e0dae3a9534c3e55b72bf43))
+* **handler,exec:** per-engine ignored-options, abort classification, outputFormat/unknown-tool as toolError (M1/M5/L4/I1) ([7954f88](https://github.com/AraneaDev/Chaos-MCP/commit/7954f8871f9d4bd469af8cefe177d7b9d69929f7))
+* resolve 20 logic-audit findings (H/M/L/I) ([8e5cb70](https://github.com/AraneaDev/Chaos-MCP/commit/8e5cb70dfd2b13344da9cedad36e80a9c1de28da))
+* **triage,format,schema:** n/a honesty + shared helper, richer schemas, shared timeout, surface incompetent, line-sentinel warning (M3/M6/L6/L7/I2/I3) ([9062a5f](https://github.com/AraneaDev/Chaos-MCP/commit/9062a5f75cca869e85f2da3ab8744bc283ee7a87))
+* **utils:** sandbox leak on cwd-guard, run-cache tmp cleanup, addSuppressions array guard (M4/L3/L1) ([7a2b9fb](https://github.com/AraneaDev/Chaos-MCP/commit/7a2b9fb2d45d5a71e105bf67e3cb9b0d7daec72c))
+* **verify:** count out-of-baseline regressions for whole-file engines; emit verify structuredContent (H1/H3) ([7665f03](https://github.com/AraneaDev/Chaos-MCP/commit/7665f030dea6e597445ae950b397a7e7c73fdd79))
+
 ## [Unreleased]
 
 ## [1.2.0] - 2026-07-04
