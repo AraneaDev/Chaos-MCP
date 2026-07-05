@@ -90,7 +90,7 @@ function parseCargoMutantsText(stdout: string, filePath: string): MutationResult
       // branch below (H2/I4): two different mutations on the same line must
       // get distinct `mutator` values, or suppression/verify keys (which are
       // `keyOf(line, mutator)`) collapse them into one entry.
-      mutator: desc ? desc.split(' ').slice(0, 3).join(' ') : 'Rust Mutation Operator',
+      mutator: desc || 'Rust Mutation Operator',
       description: `Mutation survived at line ${mutantLine}. The Rust test suite did not catch this change.`,
     };
     if (desc) vuln.mutated = desc;
@@ -137,7 +137,7 @@ function parseCargoMutantsOutput(stdout: string, filePath: string): MutationResu
             const vuln: Vulnerability = {
               line: m.line ?? 0,
               // `||` (not `??`) so empty-string descriptions fall back to the default label.
-              mutator: m.description?.split(' ').slice(0, 3).join(' ') || 'Rust Mutation Operator',
+              mutator: m.description || 'Rust Mutation Operator',
               description: `Mutation survived at line ${m.line ?? 'unknown'}. The Rust test suite did not catch this change.`,
             };
             if (m.description) vuln.mutated = m.description;

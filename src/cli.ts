@@ -106,7 +106,11 @@ interface CliDeps {
  */
 function getFlagValue(args: string[], flag: string): string | undefined {
   const index = args.indexOf(flag);
-  if (index === -1 || index + 1 >= args.length) return undefined;
+  if (index === -1) return undefined;
+  if (index + 1 >= args.length) {
+    console.error(`Warning: ${flag} expects a path but got no value; ignoring.`);
+    return undefined;
+  }
   const value = args[index + 1];
   if (value.startsWith('-')) {
     console.error(`Warning: ${flag} expects a path but got "${value}"; ignoring.`);

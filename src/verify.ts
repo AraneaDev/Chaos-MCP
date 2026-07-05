@@ -95,6 +95,16 @@ export function computeVerifyDelta(
   };
 }
 
+/** Build the verify delta note string used in both JSON and structured responses. */
+export function buildVerifyNote(delta: VerifyDelta): string {
+  return (
+    `${delta.nowKilled.length} of ${delta.baselineTotal} previously-uncaught mutants are now killed; ` +
+    `${delta.stillSurviving.length} still surviving; ${delta.newSurvivors.length} new. ` +
+    'stillSurviving: add or strengthen tests for these. ' +
+    'newSurvivors: your change introduced these uncaught mutants on the same lines.'
+  );
+}
+
 /** Render the verify delta as compact JSON. */
 export function formatVerifyResultAsJson(target: string, delta: VerifyDelta): string {
   return JSON.stringify({
@@ -105,11 +115,7 @@ export function formatVerifyResultAsJson(target: string, delta: VerifyDelta): st
     nowKilled: delta.nowKilled,
     stillSurviving: delta.stillSurviving,
     newSurvivors: delta.newSurvivors,
-    note:
-      `${delta.nowKilled.length} of ${delta.baselineTotal} previously-uncaught mutants are now killed; ` +
-      `${delta.stillSurviving.length} still surviving; ${delta.newSurvivors.length} new. ` +
-      'stillSurviving: add or strengthen tests for these. ' +
-      'newSurvivors: your change introduced these uncaught mutants on the same lines.',
+    note: buildVerifyNote(delta),
   });
 }
 

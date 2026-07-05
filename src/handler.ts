@@ -27,6 +27,7 @@ import {
   computeVerifyDelta,
   formatVerifyResultAsJson,
   formatVerifyResultAsText,
+  buildVerifyNote,
   type BaselineInput,
   type MutantKey,
 } from './verify.js';
@@ -843,9 +844,7 @@ function formatAuditOutput(
       nowKilled: delta.nowKilled,
       stillSurviving: delta.stillSurviving,
       newSurvivors: delta.newSurvivors,
-      note:
-        `${delta.nowKilled.length} of ${delta.baselineTotal} previously-uncaught mutants are now killed; ` +
-        `${delta.stillSurviving.length} still surviving; ${delta.newSurvivors.length} new.`,
+      note: buildVerifyNote(delta),
     };
     return {
       content: [{ type: 'text', text: verifyText }],
