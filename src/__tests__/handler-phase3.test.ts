@@ -206,8 +206,9 @@ describe('handleToolCall phase3 wiring', () => {
     const run = stubEngine(resultWithSurvivor());
     const res = await handleToolCall(makeRequest({ filePath: FILE, runId }));
     expect(res.isError).toBeUndefined();
-    // Verify mode keeps its own formatter: no structuredContent payload.
-    expect(res.structuredContent).toBeUndefined();
+    // Verify mode now carries structuredContent matching the outputSchema's
+    // verify-delta variant (audit H3).
+    expect(res.structuredContent).toMatchObject({ mode: 'verify', target: FILE });
     // Scope was derived from the baseline lines (TS supports line scope).
     expect(run).toHaveBeenCalledWith(
       FILE,
@@ -286,8 +287,8 @@ describe('handleToolCall phase3 wiring', () => {
       suppressionsPath: supPath,
     });
     expect(res.isError).toBeUndefined();
-    // Verify mode keeps its own formatter (no structuredContent).
-    expect(res.structuredContent).toBeUndefined();
+    // Verify mode now emits structuredContent alongside its text formatter (H3).
+    expect(res.structuredContent).toMatchObject({ mode: 'verify' });
     const delta = JSON.parse(res.content[0].text as string) as {
       killedCount: number;
       stillSurviving: { line: number; mutator: string }[];

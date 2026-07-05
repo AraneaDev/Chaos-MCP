@@ -4,6 +4,14 @@
  * Extracted from index.ts so the schema (a large static literal) lives apart
  * from request handling, formatting, and server bootstrap.
  */
+
+/** A single (line, mutator) mutant identity — shared by verify-mode delta arrays. */
+const MUTANT_KEY_SCHEMA = {
+  type: 'object',
+  properties: { line: { type: 'integer' }, mutator: { type: 'string' } },
+  required: ['line', 'mutator'],
+} as const;
+
 export const TOOL_DEFINITION = {
   name: 'audit_code_resilience',
   description:
@@ -238,8 +246,34 @@ export const TOOL_DEFINITION = {
         properties: { minScore: { type: 'number' }, passed: { type: 'boolean' } },
       },
       note: { type: 'string' },
+      // ── Verify-mode fields (present only when a baseline/runId was supplied).
+      // Verify responses carry a delta shape instead of the audit report; the
+      // `oneOf` below discriminates the two required-sets so a strict MCP client
+      // validates both a standard audit and a verify delta against this schema. ──
+      mode: { type: 'string', enum: ['verify'] },
+      baselineTotal: { type: 'integer' },
+      killedCount: { type: 'integer' },
+      nowKilled: { type: 'array', items: MUTANT_KEY_SCHEMA },
+      stillSurviving: { type: 'array', items: MUTANT_KEY_SCHEMA },
+      newSurvivors: { type: 'array', items: MUTANT_KEY_SCHEMA },
     },
-    required: ['target', 'mutationScore', 'summary', 'survivors', 'noCoverage', 'note'],
+    oneOf: [
+      // Standard audit report.
+      { required: ['target', 'mutationScore', 'summary', 'survivors', 'noCoverage', 'note'] },
+      // Verify-mode delta.
+      {
+        required: [
+          'target',
+          'mode',
+          'baselineTotal',
+          'killedCount',
+          'nowKilled',
+          'stillSurviving',
+          'newSurvivors',
+          'note',
+        ],
+      },
+    ],
   },
 };
 

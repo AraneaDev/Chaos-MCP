@@ -50,8 +50,22 @@ export function baselineLines(keys: MutantKey[]): number[] {
   return [...new Set(keys.map((k) => k.line))].sort((a, b) => a - b);
 }
 
-/** Compare baseline keys against a fresh run's vulnerabilities (Survived ∪ NoCoverage). */
-export function computeVerifyDelta(baseline: MutantKey[], result: MutationResult): VerifyDelta {
+/**
+ * Compare baseline keys against a fresh run's vulnerabilities (Survived ∪ NoCoverage).
+ *
+ * `engineSupportsLineScope` mirrors `ENGINE_REGISTRY[type].supportsLineScope`.
+ * When true (StrykerJS/TS) the rerun is scoped to exactly the baseline lines, so
+ * every fresh survivor is guaranteed to land on a baseline line and we restrict
+ * `newSurvivors` accordingly. When false (cosmic-ray/cargo-mutants/Infection) the
+ * rerun is whole-file: a regression the fix introduces on a *different* line is a
+ * real new survivor and MUST be counted, so we drop the baseline-line restriction.
+ * Defaults to false so an omitted flag never silently hides regressions.
+ */
+export function computeVerifyDelta(
+  baseline: MutantKey[],
+  result: MutationResult,
+  engineSupportsLineScope = false,
+): VerifyDelta {
   const baselineKeySet = new Set(baseline.map((k) => keyOf(k.line, k.mutator)));
   const baselineLineSet = new Set(baseline.map((k) => k.line));
 
@@ -68,7 +82,9 @@ export function computeVerifyDelta(baseline: MutantKey[], result: MutationResult
   const nowKilled = baseline.filter((k) => !rerunKeySet.has(keyOf(k.line, k.mutator)));
   const stillSurviving = baseline.filter((k) => rerunKeySet.has(keyOf(k.line, k.mutator)));
   const newSurvivors = rerun.filter(
-    (k) => !baselineKeySet.has(keyOf(k.line, k.mutator)) && baselineLineSet.has(k.line),
+    (k) =>
+      !baselineKeySet.has(keyOf(k.line, k.mutator)) &&
+      (!engineSupportsLineScope || baselineLineSet.has(k.line)),
   );
 
   return {

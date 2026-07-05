@@ -797,12 +797,33 @@ function formatAuditOutput(
     const keptBaseline = suppressed
       ? baselineKeys.filter((k) => !suppressed.has(`${k.line} ${k.mutator}`))
       : baselineKeys;
-    const delta = computeVerifyDelta(keptBaseline, rerun);
+    // Whole-file engines (cosmic-ray/cargo-mutants/Infection) re-run the entire
+    // file in verify mode, so regressions can land on lines outside the baseline;
+    // pass the engine's line-scope capability so those are counted (audit H1).
+    const supportsLineScope = ENGINE_REGISTRY[projectType].supportsLineScope;
+    const delta = computeVerifyDelta(keptBaseline, rerun, supportsLineScope);
     const verifyText =
       args.outputFormat === 'text'
         ? formatVerifyResultAsText(targetFile, delta)
         : formatVerifyResultAsJson(targetFile, delta);
-    return { content: [{ type: 'text', text: verifyText }] };
+    // Verify responses must carry `structuredContent` too — the tool declares an
+    // `outputSchema` whose `oneOf` includes this verify-delta shape (audit H3).
+    const verifyStructured: Record<string, unknown> = {
+      target: targetFile,
+      mode: 'verify',
+      baselineTotal: delta.baselineTotal,
+      killedCount: delta.nowKilled.length,
+      nowKilled: delta.nowKilled,
+      stillSurviving: delta.stillSurviving,
+      newSurvivors: delta.newSurvivors,
+      note:
+        `${delta.nowKilled.length} of ${delta.baselineTotal} previously-uncaught mutants are now killed; ` +
+        `${delta.stillSurviving.length} still surviving; ${delta.newSurvivors.length} new.`,
+    };
+    return {
+      content: [{ type: 'text', text: verifyText }],
+      structuredContent: verifyStructured,
+    };
   }
 
   const enrichOpts = {
