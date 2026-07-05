@@ -122,6 +122,15 @@ export async function handleTriageCall(
     }
   }
 
+  // Reject non-enum outputFormat rather than silently coercing to json, matching
+  // the other enum validators (audit L4).
+  if (
+    args.outputFormat !== undefined &&
+    args.outputFormat !== 'text' &&
+    args.outputFormat !== 'json'
+  ) {
+    return triageError('outputFormat must be one of "text" or "json". Example: "json".');
+  }
   const outputFormat = args.outputFormat === 'text' ? 'text' : 'json';
 
   const cpuCount = cpus().length;

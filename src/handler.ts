@@ -6,7 +6,7 @@ import { BaseEngine, RunOptions, MutationResult } from './engines/base.js';
 import { ENGINE_REGISTRY, type SupportedProjectType } from './engines/registry.js';
 import { detectProjectType, detectEnvironment, EnvironmentInfo } from './utils/project-detector.js';
 import { createSandbox } from './utils/sandbox.js';
-import { runShellCommand } from './utils/exec.js';
+import { runShellCommand, ExecFailureError } from './utils/exec.js';
 import { ChaosConfig } from './utils/config-loader.js';
 import { log, isVerbose } from './utils/logger.js';
 import { formatResultAsText, buildResultPayload, type EnrichContext } from './format.js';
@@ -80,7 +80,13 @@ type ProjectType = ReturnType<typeof detectProjectType>;
 /** Tool-call arguments object (untyped MCP payload). */
 type ToolArgs = Record<string, unknown>;
 
-/** StrykerJS-only tool options that the other engines silently ignore. */
+/**
+ * StrykerJS-only tool options that the other engines silently ignore.
+ *
+ * `concurrency` is the exception: it lives here because cosmic-ray (Python)
+ * discards it, but cargo-mutants and Infection DO honour it — so it is filtered
+ * per-engine in {@link ignoredOptionsFor} rather than reported unconditionally.
+ */
 const STRYKER_ONLY_OPTIONS = [
   'lineScope',
   'mutatorAllowlist',
@@ -92,14 +98,22 @@ const STRYKER_ONLY_OPTIONS = [
 ] as const;
 
 /**
- * Return the StrykerJS-only options the caller supplied that the resolved engine
- * will ignore. Empty for TypeScript targets (the engine that supports them).
+ * Return the supplied options the resolved engine will ignore. Empty for
+ * TypeScript targets (StrykerJS honours all of them). For other engines every
+ * option is ignored EXCEPT `concurrency`, which is only reported as ignored for
+ * engines whose registry entry sets `honorsConcurrency: false` (cosmic-ray).
+ * This prevents falsely telling Rust/PHP callers their concurrency had no effect
+ * when the engine actually applied it (audit M1).
  */
 function ignoredOptionsFor(projectType: ProjectType, args: ToolArgs): string[] {
-  // StrykerJS (the TypeScript engine, configKey 'stryker') is the only engine
-  // that honours these options; every other engine silently ignores them.
-  if (ENGINE_REGISTRY[projectType as SupportedProjectType]?.configKey === 'stryker') return [];
-  return STRYKER_ONLY_OPTIONS.filter((opt) => args[opt] !== undefined);
+  const descriptor = ENGINE_REGISTRY[projectType as SupportedProjectType];
+  // StrykerJS (configKey 'stryker') honours every option in the list.
+  if (descriptor?.configKey === 'stryker') return [];
+  return STRYKER_ONLY_OPTIONS.filter((opt) => {
+    if (args[opt] === undefined) return false;
+    if (opt === 'concurrency') return descriptor?.honorsConcurrency === false;
+    return true;
+  });
 }
 
 /**
@@ -272,6 +286,18 @@ function validateSeverityFloorArg(args: ToolArgs): string | null {
   return null;
 }
 
+/** outputFormat: must be "text" or "json" when present (audit L4). */
+function validateOutputFormatArg(args: ToolArgs): string | null {
+  if (
+    args.outputFormat !== undefined &&
+    args.outputFormat !== 'text' &&
+    args.outputFormat !== 'json'
+  ) {
+    return 'outputFormat must be one of "text" or "json". Example: "json".';
+  }
+  return null;
+}
+
 /** runId (verify-from-cache): non-empty string, mutually exclusive with baseline/diffBase/lineScope. */
 function validateRunIdArg(args: ToolArgs): string | null {
   if (args.runId === undefined) return null;
@@ -339,6 +365,7 @@ const TOOL_ARG_VALIDATORS: ((args: ToolArgs) => string | null)[] = [
   validateEnrichArg,
   validateMaxSurvivorsArg,
   validateSeverityFloorArg,
+  validateOutputFormatArg,
   validateSuppressArg,
   validateUnsuppressArg,
   validateMinScoreArg,
@@ -864,7 +891,7 @@ function formatAuditOutput(
   if (ignored.length > 0) {
     content.push({
       type: 'text',
-      text: `Note: the following option(s) are StrykerJS-only and were ignored for this ${projectType} target: ${ignored.join(', ')}.`,
+      text: `Note: the following option(s) are not supported by the ${projectType} engine and were ignored: ${ignored.join(', ')}.`,
     });
   }
 
@@ -889,7 +916,10 @@ export async function handleToolCall(
   ctx?: ToolContext,
 ): Promise<CallToolResult> {
   if (request.params.name !== 'audit_code_resilience') {
-    throw new Error(`Method unrecognized: ${request.params.name}`);
+    // Return the standard isError tool-result shape (not a raw throw / JSON-RPC
+    // protocol error) so an unknown tool name is reported consistently with every
+    // other failure (audit I1).
+    return toolError(`Unknown tool: ${request.params.name}`);
   }
 
   // Abort short-circuit #1 — before any validation work.
@@ -1059,9 +1089,16 @@ export async function handleToolCall(
         });
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error);
+        // A cancel firing DURING the engine run reaches here as a tool-specific
+        // failure (each engine misreads the aborted child's null exit as a
+        // baseline/report failure). Detect the abort and return the same
+        // "Operation cancelled." shape as the phase-boundary checks, so a
+        // deliberate cancel never masquerades as a phantom tool bug (audit M5).
+        if (ctx?.signal?.aborted || (error instanceof ExecFailureError && error.code === 'ABORTED')) {
+          return toolError('Operation cancelled.');
+        }
         // Prebuild failures keep their specific tool error; engine errors
         // propagate to the outer catch (unchanged behavior).
-        // Note: abort firing during engine run surfaces as "Chaos Engine Halted" (not the phase-boundary "Operation cancelled." shape) — this is intentional.
         if (message.startsWith('Prebuild command failed in sandbox:')) {
           return toolError(message);
         }
