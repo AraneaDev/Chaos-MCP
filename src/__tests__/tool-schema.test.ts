@@ -72,16 +72,25 @@ describe('TOOL_DEFINITION contract', () => {
     expect(outputFormat.enum).toEqual(['json', 'text']);
   });
 
-  it('describes the nested lineScope object with numeric start and end', () => {
+  it('describes the nested lineScope object with integer start and end >= 1 (audit L6)', () => {
     const lineScope = (
       TOOL_DEFINITION.inputSchema.properties as Record<
         string,
-        { type: string; properties?: Record<string, { type: string }> }
+        {
+          type: string;
+          required?: string[];
+          properties?: Record<string, { type: string; minimum?: number }>;
+        }
       >
     ).lineScope;
     expect(lineScope.type).toBe('object');
-    expect(lineScope.properties?.start?.type).toBe('number');
-    expect(lineScope.properties?.end?.type).toBe('number');
+    // Tightened from bare `number` to `integer` with a `minimum` so a
+    // schema-driven client can predict the handler's int>=1 rejection (L6).
+    expect(lineScope.properties?.start?.type).toBe('integer');
+    expect(lineScope.properties?.start?.minimum).toBe(1);
+    expect(lineScope.properties?.end?.type).toBe('integer');
+    expect(lineScope.properties?.end?.minimum).toBe(1);
+    expect(lineScope.required).toEqual(['start', 'end']);
   });
 
   it('requires only filePath and forbids additional properties', () => {

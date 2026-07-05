@@ -204,6 +204,19 @@ describe('suppression', () => {
     expect(result.mutationScore).toBe('60.00%');
   });
 
+  // ── addSuppressions Array.isArray guard (L1): a corrupted per-file entry
+  //    (non-array) must be treated as empty rather than crashing `.map`. ──
+  it('addSuppressions tolerates a corrupted non-array per-file entry', () => {
+    mkdirSync(join(root, '.chaos-mcp'), { recursive: true });
+    writeFileSync(
+      join(root, '.chaos-mcp', 'suppressions.json'),
+      JSON.stringify({ version: 1, entries: { 'src/a.ts': 42 } }),
+    );
+    expect(() => addSuppressions(root, 'src/a.ts', [{ line: 1, mutator: 'A' }])).not.toThrow();
+    // The corrupted value is replaced by a fresh list containing just the new entry.
+    expect([...(loadSuppressions(root).get('src/a.ts') ?? [])]).toEqual(['1 A']);
+  });
+
   it('all mutants suppressed → 100.00% (no measurable mutants)', () => {
     const r: MutationResult = {
       ...makeResult(),

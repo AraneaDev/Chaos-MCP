@@ -1,4 +1,5 @@
 import { ExecResult, ExecFailureError, runShell } from './exec.js';
+import { DEFAULT_TIMEOUT_MS } from './constants.js';
 
 /**
  * The mutation tools Chaos-MCP can invoke. Each tool name maps to a CLI
@@ -74,7 +75,7 @@ export async function invokeMutationTool(
     }
 
     if (error.code === 'TIMEOUT') {
-      const ms = options.timeoutMs ?? 300_000;
+      const ms = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
       throw new MutationToolStartupError(
         tool,
         `${tool} timed out after ${ms}ms. Increase timeoutMs or narrow the target file.`,

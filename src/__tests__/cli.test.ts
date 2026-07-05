@@ -182,6 +182,15 @@ describe('cli', () => {
       expect(mockValidateConfig).toHaveBeenCalledWith('/tmp/cfg.json');
     });
 
+    it('--validate-config --config --strict does not treat --strict as the path, and warns (L2)', () => {
+      mockValidateConfig.mockReturnValue({ config: {}, warnings: [] });
+      run(['--validate-config', '--config', '--strict']);
+      expect(mockValidateConfig).toHaveBeenCalledWith(undefined);
+      expect(errSpy).toHaveBeenCalledWith(
+        expect.stringContaining('--config expects a path but got "--strict"; ignoring.'),
+      );
+    });
+
     it('--verbose enables verbose logging, logs the banner, then starts the server', () => {
       const { startServer } = run(['--verbose']);
       expect(mockEnableVerbose).toHaveBeenCalled();
@@ -210,6 +219,15 @@ describe('cli', () => {
     it('passes the --config path to loadConfig', () => {
       run(['--config', '/tmp/my.json']);
       expect(mockLoadConfig).toHaveBeenCalledWith('/tmp/my.json');
+    });
+
+    it('--config --strict does not treat --strict as the path, warns, and still starts the server (L2)', () => {
+      const { startServer } = run(['--config', '--strict']);
+      expect(mockLoadConfig).toHaveBeenCalledWith(undefined);
+      expect(errSpy).toHaveBeenCalledWith(
+        expect.stringContaining('--config expects a path but got "--strict"; ignoring.'),
+      );
+      expect(startServer).toHaveBeenCalledTimes(1);
     });
 
     it('logs the loaded config in verbose mode when it is non-empty', () => {

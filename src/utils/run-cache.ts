@@ -98,8 +98,17 @@ export function saveRun(
   const full: RunCacheEntry = { ...entry, runId, createdAt: now };
   const dest = join(dir, `${runId}.json`);
   const tmp = `${dest}.${process.pid}.tmp`;
-  writeFileSync(tmp, JSON.stringify(full), 'utf8');
-  renameSync(tmp, dest);
+  try {
+    writeFileSync(tmp, JSON.stringify(full), 'utf8');
+    renameSync(tmp, dest);
+  } catch (e) {
+    try {
+      rmSync(tmp, { force: true });
+    } catch {
+      /* best-effort */
+    }
+    throw e;
+  }
   return runId;
 }
 

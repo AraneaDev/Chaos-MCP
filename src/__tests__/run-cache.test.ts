@@ -1,5 +1,18 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, readdirSync, existsSync } from 'node:fs';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+
+// Partial mock: everything passes through to the real implementation except
+// `renameSync`, which is wrapped in a `vi.fn` so a single test can force it
+// to throw (simulating ENOSPC/permission failures) without disturbing every
+// other real filesystem interaction in this suite.
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return {
+    ...actual,
+    renameSync: vi.fn(actual.renameSync),
+  };
+});
+
+import { mkdtempSync, rmSync, writeFileSync, readdirSync, existsSync, renameSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { saveRun, loadRun } from '../utils/run-cache.js';
@@ -217,6 +230,23 @@ describe('run-cache', () => {
     // typeof parsed.createdAt !== 'number' guard (line 114).
     writeFileSync(join(dir, 'bbbbbbbb.json'), JSON.stringify({ file: 'x', createdAt: 'soon' }));
     expect(loadRun('bbbbbbbb', { dir, now: 1000 })).toBeUndefined();
+  });
+
+  it('removes the orphaned .tmp file when renameSync fails (L3)', () => {
+    // Audit L3: writeFileSync + renameSync had no cleanup on rename failure,
+    // orphaning a `${dest}.${pid}.tmp` file that evict()/listEntries() never
+    // touch (they only glob *.json). saveRun must remove the tmp file itself
+    // before rethrowing.
+    vi.mocked(renameSync).mockImplementationOnce(() => {
+      throw new Error('simulated ENOSPC on rename');
+    });
+
+    expect(() =>
+      saveRun({ file: 'a', projectType: 't', survivors: [], noCoverage: [] }, { dir, now: 1 }),
+    ).toThrow('simulated ENOSPC on rename');
+
+    const leftoverTmp = readdirSync(dir).filter((f) => f.endsWith('.tmp'));
+    expect(leftoverTmp).toHaveLength(0);
   });
 });
 

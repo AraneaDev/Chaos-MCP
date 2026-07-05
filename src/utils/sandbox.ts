@@ -239,15 +239,18 @@ export function createSandbox(
   ignorePatterns?: string[],
 ): SandboxContext {
   const id = randomUUID();
-  // Use os.tmpdir() for cross-platform temp directory support (TMPDIR on
-  // macOS/Linux, TEMP/TMP on Windows). Previously hard-coded to '/tmp'.
-  const sandboxDir = mkdtempSync(join(tmpdir(), `chaos-mcp-${id}`));
   const absoluteWorkspace = resolve(workspaceRoot);
 
   // ── Defense in depth (audit finding C2): refuse workspaces outside cwd ──
   // The handler in src/index.ts already validates filePath, but a malicious
   // caller could still pass a `workspaceRoot` directly. This makes the
   // sandbox self-protecting.
+  //
+  // (Audit M4 fix: this check — and the exit-handler registration /
+  // workspace-size estimate below, neither of which depends on the sandbox
+  // dir — now runs BEFORE `mkdtempSync` creates anything on disk. Previously
+  // the temp dir was created first, so a boundary-guard trip left an empty,
+  // untracked directory behind permanently.)
   const absoluteCwd = resolve(process.cwd());
   if (!isPathInside(absoluteWorkspace, absoluteCwd)) {
     throw new Error(
@@ -272,6 +275,10 @@ export function createSandbox(
         'Consider using ignorePatterns to exclude large directories.',
     );
   }
+
+  // Use os.tmpdir() for cross-platform temp directory support (TMPDIR on
+  // macOS/Linux, TEMP/TMP on Windows). Previously hard-coded to '/tmp'.
+  const sandboxDir = mkdtempSync(join(tmpdir(), `chaos-mcp-${id}`));
 
   let success = false;
   try {

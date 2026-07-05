@@ -11,6 +11,7 @@ import type { MutationResult } from './engines/base.js';
 import type { SupportedProjectType } from './engines/registry.js';
 import { enrichGroup, SEVERITY_RANK, type Severity, type Enrichment } from './enrich.js';
 import type { GateResult } from './gate.js';
+import { warn } from './utils/logger.js';
 
 export interface EnrichContext {
   projectType: SupportedProjectType;
@@ -19,6 +20,23 @@ export interface EnrichContext {
 
 /** Matches the NoCoverage marker engines embed in a vulnerability description. */
 export const NO_COVERAGE_RE = /no test reached|nocoverage/i;
+
+/**
+ * A result with zero enumerated mutants and no scope note has no mutable logic:
+ * its "100%" score would misread as proven coverage. Both `audit_code_resilience`
+ * and `triage_test_coverage` must substitute "n/a" and flag the row so a file with
+ * no testable logic is not ranked as "safest" indistinguishably from a genuinely
+ * perfect kill rate (audit M3). A scopeNote-carrying zero (e.g. a diff no-change)
+ * is a real scoped run and is left as-is.
+ */
+export function hasNoMutableLogic(result: MutationResult): boolean {
+  return result.totalMutants === 0 && !result.scopeNote;
+}
+
+/** Display score for a result: "n/a" when it has no mutable logic, else the raw score. */
+export function displayMutationScore(result: MutationResult): string {
+  return hasNoMutableLogic(result) ? 'n/a' : result.mutationScore;
+}
 
 /** Max distinct change-strings shown per line group before truncation. */
 const CHANGES_CAP = 3;
@@ -74,7 +92,13 @@ function compactSurvivors(result: MutationResult): {
   const survivorsByLine = new Map<number, LineAcc>();
   const noCoverageByLine = new Map<number, LineAcc>();
 
+  let sentinelSeen = false;
   for (const v of result.vulnerabilities) {
+    // A line < 1 is the parsers' "location unknown" sentinel (python.ts/rust.ts
+    // fall back to 0 when location parsing fails). enrich.ts guards it, but the
+    // compact/verify/suppression paths key on the raw line. Surface the anomaly
+    // once so a "0: …" group isn't silently mistaken for a real line (audit L7).
+    if (v.line < 1) sentinelSeen = true;
     // NoCoverage mutants are grouped separately AND at the same (line, mutator)
     // granularity as survivors — a NoCoverage mutant on a line can coexist with
     // covered survivors on that same line (e.g. an unreachable `|| []` fallback
@@ -86,6 +110,13 @@ function compactSurvivors(result: MutationResult): {
     const change = buildChange(v.original, v.mutated);
     if (change) acc.changes.add(change);
     target.set(v.line, acc);
+  }
+
+  if (sentinelSeen) {
+    warn(
+      `${result.target}: one or more mutants have an unknown source line (sentinel < 1); ` +
+        'the mutation tool did not report a parseable location for them.',
+    );
   }
 
   return { survivors: groupByLine(survivorsByLine), noCoverage: groupByLine(noCoverageByLine) };
@@ -258,6 +289,8 @@ export interface ResultPayload {
   runId?: string;
   suppressedCount?: number;
   gate?: GateResult;
+  /** Mutants excluded from the score because the mutated code never scored (audit I3). */
+  incompetent?: number;
 }
 
 export interface ResultPayloadOpts {
@@ -335,7 +368,7 @@ export function buildResultPayload(
   // misread as proven coverage. Surface "n/a" + an honest note instead
   // (evaluateGate treats a non-numeric score as passing, so gates are
   // unaffected). A scopeNote-carrying zero (e.g. diff no-change) is left as-is.
-  const noMutants = result.totalMutants === 0 && !result.scopeNote;
+  const noMutants = hasNoMutableLogic(result);
   const payload: ResultPayload = {
     target: result.target,
     mutationScore: noMutants ? 'n/a' : result.mutationScore,
@@ -365,6 +398,13 @@ export function buildResultPayload(
     payload.note += ` ${opts.suppressedCount} equivalent mutant(s) suppressed and excluded from the score.`;
   }
   if (opts.gate) payload.gate = opts.gate;
+  // Surface mutants the tool could not score (e.g. cosmic-ray 'incompetent' or
+  // compile failures). Previously produced but never exposed — a caller could
+  // reasonably want to see why total < generated (audit I3).
+  if (result.incompetent && result.incompetent > 0) {
+    payload.incompetent = result.incompetent;
+    payload.note += ` ${result.incompetent} mutant(s) were excluded as incompetent (the mutated code failed before a real pass/fail, so they don't count toward the score).`;
+  }
   return payload;
 }
 

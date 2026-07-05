@@ -80,7 +80,7 @@ export function addSuppressions(
 ): void {
   if (entries.length === 0) return;
   const data = readFile(workspaceRoot, configPath);
-  const list = data.entries[relFile] ?? [];
+  const list = Array.isArray(data.entries[relFile]) ? data.entries[relFile] : [];
   const seen = new Set(list.map((e) => keyOf(e.line, e.mutator)));
   const now = Date.now();
   for (const e of entries) {

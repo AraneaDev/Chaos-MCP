@@ -18,7 +18,7 @@ import { detectProjectType, detectEnvironment } from './utils/project-detector.j
 import { createSandbox } from './utils/sandbox.js';
 import { ENGINE_REGISTRY } from './engines/registry.js';
 import { mapPool } from './utils/pool.js';
-import { buildResultPayload } from './format.js';
+import { buildResultPayload, displayMutationScore, hasNoMutableLogic } from './format.js';
 import type { ChaosConfig } from './utils/config-loader.js';
 import type { MutationResult } from './engines/base.js';
 import type { ToolContext } from './tool-context.js';
@@ -122,6 +122,15 @@ export async function handleTriageCall(
     }
   }
 
+  // Reject non-enum outputFormat rather than silently coercing to json, matching
+  // the other enum validators (audit L4).
+  if (
+    args.outputFormat !== undefined &&
+    args.outputFormat !== 'text' &&
+    args.outputFormat !== 'json'
+  ) {
+    return triageError('outputFormat must be one of "text" or "json". Example: "json".');
+  }
   const outputFormat = args.outputFormat === 'text' ? 'text' : 'json';
 
   const cpuCount = cpus().length;
@@ -278,12 +287,15 @@ export async function handleTriageCall(
 
       const row: TriageRow = {
         file,
-        mutationScore: cleanResult.mutationScore,
+        // Substitute "n/a" for a no-mutable-logic file so it is not ranked as a
+        // genuine 100% (audit M3) — shared with audit_code_resilience via format.ts.
+        mutationScore: displayMutationScore(cleanResult),
         total: cleanResult.totalMutants,
         killed: cleanResult.killed,
         survived: cleanResult.survived,
         noCoverage: Math.max(0, cleanResult.vulnerabilities.length - cleanResult.survived),
       };
+      if (hasNoMutableLogic(cleanResult)) row.noMutableLogic = true;
       if (rowScopeNote) row.scopeNote = rowScopeNote;
       if (sup.suppressedCount > 0) row.suppressedCount = sup.suppressedCount;
 

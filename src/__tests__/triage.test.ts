@@ -60,6 +60,31 @@ describe('rankResults', () => {
     expect(rows.map((r) => r.file)).toEqual(['a.ts', 'c.ts', 'b.ts']);
   });
 
+  it('substitutes "n/a" and flags noMutableLogic for a zero-mutant file (audit M3)', () => {
+    const [row] = rankResults([
+      {
+        file: 'a.ts',
+        // No mutable logic: zero mutants, no scope note. A raw "100.00%" would
+        // rank it as "safest" indistinguishably from a genuine perfect score.
+        result: mr({ totalMutants: 0, killed: 0, survived: 0, mutationScore: '100.00%' }),
+      },
+    ]);
+    expect(row.mutationScore).toBe('n/a');
+    expect(row.noMutableLogic).toBe(true);
+  });
+
+  it('does NOT substitute "n/a" when a zero-mutant result carries a scopeNote', () => {
+    const [row] = rankResults([
+      {
+        file: 'a.ts',
+        result: mr({ totalMutants: 0, mutationScore: '100.00%', scopeNote: 'no changed lines' }),
+      },
+    ]);
+    // A scoped zero (e.g. diff no-change) is a real run, left as-is.
+    expect(row.mutationScore).toBe('100.00%');
+    expect(row.noMutableLogic).toBeUndefined();
+  });
+
   it('derives noCoverage = vulnerabilities.length - survived (clamped >= 0)', () => {
     const [row] = rankResults([
       {

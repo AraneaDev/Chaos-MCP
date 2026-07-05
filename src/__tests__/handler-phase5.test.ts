@@ -234,6 +234,35 @@ describe('handleToolCall — Phase 5: progress milestones + cancellation', () =>
     expect(response.content[0]).toMatchObject({ type: 'text', text: 'Operation cancelled.' });
   });
 
+  // ── (b') Abort DURING the engine run (audit M5) ──────────────────────────
+
+  it('reports "Operation cancelled." when the engine run is aborted mid-flight (audit M5)', async () => {
+    stubWorkspaceEnv();
+
+    // Simulate a cancel landing while the engine is running: the controller
+    // aborts and the engine rejects (as an aborted child would surface). The
+    // handler must map this to the cancellation shape, not a phantom tool bug.
+    const controller = new AbortController();
+    MockTSEngine.mockImplementation(
+      () =>
+        ({
+          run: vi.fn().mockImplementation(async () => {
+            controller.abort();
+            throw new Error(
+              'cargo-mutants failed (exit null): the baseline test suite itself failed',
+            );
+          }),
+        }) as unknown as TypeScriptEngine,
+    );
+
+    const ctx: ToolContext = { signal: controller.signal };
+    const request = makeRequest({ filePath: 'src/math.ts' });
+    const response = await handleToolCall(request, undefined, ctx);
+
+    expect(response.isError).toBe(true);
+    expect((response.content[0] as { text: string }).text).toBe('Operation cancelled.');
+  });
+
   // ── (c) Milestone 4 on no-changes short-circuit path ─────────────────────
 
   it('emits (4,4,complete) on the no-changes short-circuit terminal path', async () => {

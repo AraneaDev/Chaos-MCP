@@ -477,9 +477,11 @@ describe('handleToolCall', () => {
     );
   });
 
-  it('throws for unrecognized tool names', async () => {
+  it('returns a toolError for unrecognized tool names (audit I1)', async () => {
     const request = makeRequest('unknown_tool', { filePath: 'test.ts' });
-    await expect(handleToolCall(request)).rejects.toThrow('Method unrecognized: unknown_tool');
+    const res = await handleToolCall(request);
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain('Unknown tool: unknown_tool');
   });
 
   // ─── dryRun / incremental / concurrency / ignorePatterns wiring tests ─────
@@ -1428,6 +1430,63 @@ describe('handleToolCall', () => {
     expect(note).not.toContain('concurrency');
     expect(note).not.toContain('dryRun');
     expect(note).not.toContain('perMutantTimeoutMs');
+  });
+
+  it('does NOT flag concurrency as ignored for Rust (cargo-mutants honours -j) (audit M1)', async () => {
+    const { RustEngine } = await import('../engines/rust.js');
+    const MockRustEngine = vi.mocked(RustEngine);
+    const mockRun = vi.fn().mockResolvedValue({
+      target: 'src/lib.rs',
+      totalMutants: 1,
+      killed: 1,
+      survived: 0,
+      mutationScore: '100.00%',
+      vulnerabilities: [],
+    });
+    MockRustEngine.mockImplementation(
+      () => ({ run: mockRun }) as unknown as typeof RustEngine.prototype,
+    );
+    mockDetectEnv.mockReturnValue({
+      projectType: 'rust',
+      testRunner: 'cargo',
+      detectedRunner: 'cargo',
+      workspaceRoot: '/workspace',
+    });
+
+    const response = await handleToolCall(
+      makeRequest('audit_code_resilience', { filePath: 'src/lib.rs', concurrency: 4 }),
+    );
+    // concurrency IS honoured by cargo-mutants, so there is no ignored-options note.
+    expect(response.content[1]).toBeUndefined();
+  });
+
+  it('DOES flag concurrency as ignored for Python (cosmic-ray discards it) (audit M1)', async () => {
+    const { PythonEngine } = await import('../engines/python.js');
+    const MockPyEngine = vi.mocked(PythonEngine);
+    const mockRun = vi.fn().mockResolvedValue({
+      target: 'src/calc.py',
+      totalMutants: 1,
+      killed: 1,
+      survived: 0,
+      mutationScore: '100.00%',
+      vulnerabilities: [],
+    });
+    MockPyEngine.mockImplementation(
+      () => ({ run: mockRun }) as unknown as typeof PythonEngine.prototype,
+    );
+    mockDetectEnv.mockReturnValue({
+      projectType: 'python',
+      testRunner: 'pytest',
+      detectedRunner: 'pytest',
+      workspaceRoot: '/workspace',
+      packageManager: 'pip',
+    });
+
+    const response = await handleToolCall(
+      makeRequest('audit_code_resilience', { filePath: 'src/calc.py', concurrency: 4 }),
+    );
+    const note = (response.content[1] as { text: string }).text;
+    expect(note).toContain('concurrency');
   });
 
   // ─── perMutantTimeoutMs tests ──────────────────────────────────────────────
@@ -2608,18 +2667,10 @@ describe('handleToolCall', () => {
     expect(mockRun).not.toHaveBeenCalled();
   });
 
-  // ─── outputFormat invalid value falls to undefined ────────────────────
+  // ─── outputFormat invalid value is rejected (audit L4) ────────────────
 
-  it('outputFormat with invalid value falls to JSON default (undefined)', async () => {
-    const mockRun = vi.fn().mockResolvedValue({
-      target: 'src/math.ts',
-      totalMutants: 0,
-      killed: 0,
-      survived: 0,
-      mutationScore: '100.00%',
-      vulnerabilities: [],
-    });
-
+  it('outputFormat with an invalid value returns a toolError instead of coercing', async () => {
+    const mockRun = vi.fn();
     MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
@@ -2632,13 +2683,12 @@ describe('handleToolCall', () => {
       filePath: 'src/math.ts',
       outputFormat: 'xml',
     });
-    await handleToolCall(request);
+    const res = await handleToolCall(request);
 
-    // outputFormat should be undefined in RunOptions (invalid val rejected)
-    expect(mockRun).toHaveBeenCalledWith(
-      'src/math.ts',
-      expect.objectContaining({ outputFormat: undefined }),
-    );
+    // A non-enum outputFormat is rejected before the engine runs (L4).
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain('outputFormat must be one of "text" or "json"');
+    expect(mockRun).not.toHaveBeenCalled();
   });
 
   // ─── Rust auto prebuild verbose logging ──────────────────────────────

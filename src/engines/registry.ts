@@ -36,6 +36,14 @@ export interface EngineDescriptor {
   supportsLineScope: boolean;
 
   /**
+   * Whether the engine honours the `concurrency` option (worker/thread count).
+   * StrykerJS (`--concurrency`), cargo-mutants (`-j`), and Infection (`--threads`)
+   * all do; cosmic-ray has no worker-count flag and silently discards it. Gates
+   * whether `concurrency` is reported to the caller as an ignored option (M1).
+   */
+  honorsConcurrency: boolean;
+
+  /**
    * Auto-prebuild default: when `marker` exists at the workspace root, run
    * `command` inside the sandbox before mutation. Absent when the language has
    * no default prebuild (TypeScript/Python). These run without the
@@ -50,21 +58,25 @@ export const ENGINE_REGISTRY: Record<SupportedProjectType, EngineDescriptor> = {
     make: () => new TypeScriptEngine(),
     configKey: 'stryker',
     supportsLineScope: true,
+    honorsConcurrency: true,
   },
   python: {
     make: () => new PythonEngine(),
     configKey: 'cosmicray',
     supportsLineScope: false,
+    honorsConcurrency: false,
   },
   rust: {
     make: () => new RustEngine(),
     configKey: 'rust',
     supportsLineScope: false,
+    honorsConcurrency: true,
     prebuild: { marker: 'Cargo.toml', command: 'cargo check' },
   },
   php: {
     make: () => new PhpEngine(),
     configKey: 'infection',
     supportsLineScope: false,
+    honorsConcurrency: true,
   },
 };

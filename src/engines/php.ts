@@ -3,9 +3,8 @@ import { join } from 'node:path';
 import { BaseEngine, RunOptions, MutationResult, Vulnerability } from './base.js';
 import { invokeMutationTool } from '../utils/exec-classify.js';
 import { log, isVerbose } from '../utils/logger.js';
+import { DEFAULT_TIMEOUT_MS } from '../utils/constants.js';
 
-/** Default timeout for the whole Infection run (5 minutes). */
-const DEFAULT_TIMEOUT_MS = 300_000;
 /** Name of the config we generate when the project ships none. */
 const GENERATED_CONFIG_NAME = 'infection.json';
 /** Config files Infection already recognises — if present, we do NOT overwrite. */
@@ -88,8 +87,13 @@ export function parseInfectionJsonLog(logText: string, filePath: string): Mutati
       ? parsed.timedOut
       : [];
 
+  // L5: `survived`/`totalMutants` must stay consistent with `vulnerabilities`,
+  // which is built only from `escaped`. `escaped.length` is therefore the
+  // source of truth — reading `stats.escapedCount` independently could
+  // (on a stats/array mismatch from an Infection version skew) report a
+  // survivor count and score that contradict the emitted `vulnerabilities`.
   const stats = parsed.stats ?? {};
-  const survived = stats.escapedCount ?? escaped.length;
+  const survived = escaped.length;
   const timeouts = stats.timeOutCount ?? stats.timedOutCount ?? timedOutArr.length;
   const killed = (stats.killedCount ?? killedArr.length) + timeouts;
   const totalMutants = killed + survived;

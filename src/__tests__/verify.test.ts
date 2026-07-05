@@ -77,9 +77,23 @@ describe('computeVerifyDelta', () => {
     expect(delta.newSurvivors).toEqual([{ line: 42, mutator: 'BooleanLiteral' }]);
   });
 
-  it('excludes re-run survivors on non-baseline lines from newSurvivors', () => {
-    const delta = computeVerifyDelta(baseline, result([{ line: 999, mutator: 'X' }]));
+  it('excludes re-run survivors on non-baseline lines from newSurvivors for line-scoped engines', () => {
+    // engineSupportsLineScope=true (StrykerJS): the re-run is scoped to baseline
+    // lines, so an out-of-baseline survivor cannot occur and is not counted.
+    const delta = computeVerifyDelta(baseline, result([{ line: 999, mutator: 'X' }]), true);
     expect(delta.newSurvivors).toEqual([]);
+    expect(delta.nowKilled).toEqual([
+      { line: 42, mutator: 'ConditionalExpression' },
+      { line: 88, mutator: 'ArithmeticOperator' },
+    ]);
+  });
+
+  it('counts re-run survivors on non-baseline lines as newSurvivors for whole-file engines (H1)', () => {
+    // engineSupportsLineScope=false (cosmic-ray/cargo-mutants/Infection, and the
+    // default): the whole file is re-run, so a regression the fix introduces on a
+    // line outside the baseline is a real new survivor and MUST be reported.
+    const delta = computeVerifyDelta(baseline, result([{ line: 999, mutator: 'X' }]));
+    expect(delta.newSurvivors).toEqual([{ line: 999, mutator: 'X' }]);
     expect(delta.nowKilled).toEqual([
       { line: 42, mutator: 'ConditionalExpression' },
       { line: 88, mutator: 'ArithmeticOperator' },

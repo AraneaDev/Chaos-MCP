@@ -1,5 +1,6 @@
 import { execFile, exec } from 'child_process';
 import { log, isVerbose } from './logger.js';
+import { DEFAULT_TIMEOUT_MS } from './constants.js';
 
 /**
  * Normalized result of a child process execution.
@@ -44,9 +45,6 @@ export class ExecFailureError extends Error {
     this.code = result.code;
   }
 }
-
-/** Default per-command timeout (5 minutes), matching engine defaults. */
-const DEFAULT_TIMEOUT_MS = 300_000;
 
 /**
  * Run a shell command string (e.g. "npm run build", "go build ./...") inside
@@ -108,6 +106,21 @@ export function runShellCommand(
             exit: exitCode,
             signal: procSignal,
           };
+
+          // Cancellation: an aborted child surfaces as an AbortError
+          // (`code: 'ABORT_ERR'`), often with killed/signal unset. Classify it
+          // explicitly and BEFORE the timeout/signal branches so a deliberate
+          // cancel is never mislabelled a tool failure — callers key on
+          // `code === 'ABORTED'` to report "Operation cancelled." (audit M5).
+          if (execErr.code === 'ABORT_ERR' || execErr.name === 'AbortError' || signal?.aborted) {
+            reject(
+              new ExecFailureError(
+                { ...result, code: 'ABORTED' },
+                `Shell command was cancelled: ${command}`,
+              ),
+            );
+            return;
+          }
 
           // Timeout detection: Node sets killed=true + signal when the timeout
           // elapses. Gating on `killed === true` (not just `signal`) distinguishes
@@ -217,6 +230,25 @@ export function runShell(
             exit: exitCode,
             signal: procSignal,
           };
+
+          // Cancellation: an aborted child surfaces as an AbortError
+          // (`code: 'ABORT_ERR'`), often with killed/signal unset. Classify it
+          // explicitly and BEFORE the ENOENT/timeout/signal branches so a
+          // deliberate cancel is never mislabelled a tool failure — callers key
+          // on `code === 'ABORTED'` to report "Operation cancelled." (audit M5).
+          if (
+            errnoError.code === 'ABORT_ERR' ||
+            errnoError.name === 'AbortError' ||
+            signal?.aborted
+          ) {
+            reject(
+              new ExecFailureError(
+                { ...result, code: 'ABORTED' },
+                `Command was cancelled: ${command}`,
+              ),
+            );
+            return;
+          }
 
           // ENOENT: binary not found — propagate with a clear code.
           if (errnoError.code === 'ENOENT') {

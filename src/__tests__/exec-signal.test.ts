@@ -93,3 +93,40 @@ describe('runShellCommand signal forwarding', () => {
     });
   });
 });
+
+describe('abort classification (audit M5)', () => {
+  it('runShell classifies an aborted child (code ABORT_ERR) as code "ABORTED"', async () => {
+    vi.mocked(execFile).mockImplementationOnce(((
+      _f: string,
+      _a: string[],
+      _opts: Record<string, unknown>,
+      cb: (e: unknown, o: string, er: string) => void,
+    ) => {
+      const abortErr = Object.assign(new Error('aborted'), {
+        code: 'ABORT_ERR',
+        name: 'AbortError',
+      });
+      cb(abortErr, '', '');
+      return {} as cpType.ChildProcess;
+    }) as never);
+
+    await expect(runShell('cargo', ['mutants'])).rejects.toMatchObject({ code: 'ABORTED' });
+  });
+
+  it('runShellCommand classifies an aborted child (code ABORT_ERR) as code "ABORTED"', async () => {
+    vi.mocked(exec).mockImplementationOnce(((
+      _c: string,
+      _opts: Record<string, unknown>,
+      cb: (e: unknown, o: string, er: string) => void,
+    ) => {
+      const abortErr = Object.assign(new Error('aborted'), {
+        code: 'ABORT_ERR',
+        name: 'AbortError',
+      });
+      cb(abortErr, '', '');
+      return {} as cpType.ChildProcess;
+    }) as never);
+
+    await expect(runShellCommand('cargo mutants')).rejects.toMatchObject({ code: 'ABORTED' });
+  });
+});

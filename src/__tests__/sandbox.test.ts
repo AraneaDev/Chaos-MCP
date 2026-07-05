@@ -155,6 +155,21 @@ describe('createSandbox', () => {
     expect(() => createSandbox('src/utils/math.ts', '/etc')).toThrow(/is not inside/);
   });
 
+  it('does not create a temp dir when the cwd-boundary guard trips (M4)', () => {
+    // Audit M4: previously mkdtempSync ran before the isPathInside check, so
+    // a boundary-guard trip left an empty, untracked temp dir on disk. The
+    // check must now run first, so mkdtempSync is never even called.
+    mockMkdtempSync.mockClear();
+
+    expect(() => createSandbox('src/utils/math.ts', '/etc')).toThrow(
+      /Refusing to sandbox workspace outside process cwd/,
+    );
+
+    expect(mockMkdtempSync).not.toHaveBeenCalled();
+    // Nothing was created, so there is nothing to clean up either.
+    expect(mockRmSync).not.toHaveBeenCalled();
+  });
+
   it('accepts sandbox when workspace equals process cwd (Live-audit L1)', () => {
     // Previously `isPathInside(absoluteWorkspace, absoluteCwd)` returned false
     // when the two paths were equal (rel === ''). This blocked the legitimate

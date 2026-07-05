@@ -669,6 +669,30 @@ function validateEngineSection(
         continue;
       }
     }
+    if (key === 'threads') {
+      if (val !== 'max' && !(typeof val === 'number' && Number.isInteger(val) && val >= 1)) {
+        warnings.push(
+          `"${sectionName}.${key}" must be "max" or a positive integer, got ${typeof val === 'number' || typeof val === 'string' ? JSON.stringify(val) : typeof val} — will be ignored.`,
+        );
+        continue;
+      }
+    }
+    if (key === 'testFrameworkOptions') {
+      if (typeof val !== 'string') {
+        warnings.push(
+          `"${sectionName}.${key}" must be a string, got ${typeof val} — will be ignored.`,
+        );
+        continue;
+      }
+    }
+    if (key === 'testSelection' || key === 'excludeOperators') {
+      if (!Array.isArray(val) || !val.every((e) => typeof e === 'string' && e.length > 0)) {
+        warnings.push(
+          `"${sectionName}.${key}" must be an array of non-empty strings, got ${Array.isArray(val) ? 'array with invalid entries' : typeof val} — will be ignored.`,
+        );
+        continue;
+      }
+    }
     validFieldCount++;
   }
 

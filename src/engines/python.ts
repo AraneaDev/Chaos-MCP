@@ -5,9 +5,8 @@ import { BaseEngine, RunOptions, MutationResult, Vulnerability } from './base.js
 import { ExecFailureError } from '../utils/exec.js';
 import { invokeMutationTool, MutationToolStartupError } from '../utils/exec-classify.js';
 import { log, isVerbose } from '../utils/logger.js';
+import { DEFAULT_TIMEOUT_MS } from '../utils/constants.js';
 
-/** Default timeout for the whole cosmic-ray run (5 minutes). */
-const DEFAULT_TIMEOUT_MS = 300_000;
 /** Per-mutant test timeout written into the cosmic-ray config (seconds). */
 const DEFAULT_PER_MUTANT_TIMEOUT_S = 30;
 /** Sandbox-relative names for the generated config + session DB. */

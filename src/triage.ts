@@ -2,7 +2,7 @@ import { readdirSync } from 'fs';
 import { join, relative, resolve } from 'path';
 import type { MutationResult } from './engines/base.js';
 import type { Severity } from './enrich.js';
-import type { LineGroup } from './format.js';
+import { displayMutationScore, hasNoMutableLogic, type LineGroup } from './format.js';
 import { evaluateGate } from './gate.js';
 
 export interface TriageRow {
@@ -22,6 +22,8 @@ export interface TriageRow {
   suppressedCount?: number;
   /** Whether this file met the minScore gate threshold (only present when minScore is set). */
   passed?: boolean;
+  /** True when the file has no mutable logic (zero mutants, no scope note); score is "n/a" (audit M3). */
+  noMutableLogic?: boolean;
 }
 
 export interface TriageError {
@@ -145,14 +147,18 @@ export function compareTriageRows(a: TriageRow, b: TriageRow): number {
 
 /** Rank audited results weakest-first: score asc, survived desc, file asc. */
 export function rankResults(results: { file: string; result: MutationResult }[]): TriageRow[] {
-  const rows: TriageRow[] = results.map(({ file, result }) => ({
-    file,
-    mutationScore: result.mutationScore,
-    total: result.totalMutants,
-    killed: result.killed,
-    survived: result.survived,
-    noCoverage: Math.max(0, result.vulnerabilities.length - result.survived),
-  }));
+  const rows: TriageRow[] = results.map(({ file, result }) => {
+    const row: TriageRow = {
+      file,
+      mutationScore: displayMutationScore(result),
+      total: result.totalMutants,
+      killed: result.killed,
+      survived: result.survived,
+      noCoverage: Math.max(0, result.vulnerabilities.length - result.survived),
+    };
+    if (hasNoMutableLogic(result)) row.noMutableLogic = true;
+    return row;
+  });
   return rows.sort(compareTriageRows);
 }
 

@@ -256,7 +256,9 @@ describe('RustEngine', () => {
     expect(result.survived).toBe(1);
     expect(result.mutationScore).toBe('50.00%');
     expect(result.vulnerabilities[0].line).toBe(42);
-    expect(result.vulnerabilities[0].mutator).toBe('replace == with');
+    // Mutator is the full parsed description (H2/I4) — the most distinct key for
+    // suppression/verify; truncating risks re-collapsing two same-line mutants.
+    expect(result.vulnerabilities[0].mutator).toBe('replace == with !=');
   });
 
   it('handles JSON with missing summary properties and missing mutant descriptions', async () => {
@@ -531,15 +533,43 @@ describe('RustEngine', () => {
     expect(mockLog).not.toHaveBeenCalled();
   });
 
-  it('labels a text-parsed survivor with the operator and full description', async () => {
+  it('labels a text-parsed survivor with a mutator derived from its description', async () => {
+    // H2/I4: the text branch now derives `mutator` from the full parsed
+    // description, matching the JSON branch, instead of a constant label.
     mockRunShell.mockResolvedValue(
       makeExecResult('MISSED   src/billing.rs:42:5  replaced >= with >'),
     );
     const result = await engine.run('src/billing.rs');
-    expect(result.vulnerabilities[0].mutator).toBe('Rust Mutation Operator');
+    expect(result.vulnerabilities[0].mutator).toBe('replaced >= with >');
     expect(result.vulnerabilities[0].description).toBe(
       'Mutation survived at line 42. The Rust test suite did not catch this change.',
     );
+  });
+
+  it('gives two different same-line survivors distinct mutator keys (H2/I4)', async () => {
+    // Before the fix both of these shared the constant 'Rust Mutation
+    // Operator' label, so `keyOf(line, mutator)` collapsed them into one
+    // suppression/verify key — suppressing one silently hid the other.
+    const stdout = [
+      'MISSED   src/billing.rs:50:5  replaced >= with >',
+      'MISSED   src/billing.rs:50:9  replaced + with -',
+    ].join('\n');
+    mockRunShell.mockResolvedValue(makeExecResult(stdout));
+
+    const result = await engine.run('src/billing.rs');
+    expect(result.vulnerabilities).toHaveLength(2);
+    expect(result.vulnerabilities[0].line).toBe(50);
+    expect(result.vulnerabilities[1].line).toBe(50);
+    expect(result.vulnerabilities[0].mutator).toBe('replaced >= with >');
+    expect(result.vulnerabilities[1].mutator).toBe('replaced + with -');
+    expect(result.vulnerabilities[0].mutator).not.toBe(result.vulnerabilities[1].mutator);
+  });
+
+  it('falls back to the default mutator label when no description is parsed', async () => {
+    const stdout = 'MISSED   src/file  replaced something';
+    mockRunShell.mockResolvedValue(makeExecResult(stdout));
+    const result = await engine.run('src/file');
+    expect(result.vulnerabilities[0].mutator).toBe('Rust Mutation Operator');
   });
 
   it('passes exactly ["mutants", "--file", <relative path>] to cargo when serial', async () => {
