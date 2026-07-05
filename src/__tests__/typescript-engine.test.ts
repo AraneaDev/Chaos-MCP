@@ -484,6 +484,21 @@ describe('TypeScriptEngine', () => {
     expect(argList).not.toContain('--dryRun');
   });
 
+  it('returns a dry-run result without parsing a report (no report is written for --dryRunOnly)', async () => {
+    // Reproduces the real dry-run condition: StrykerJS with --dryRunOnly runs
+    // only the initial test pass and never writes reports/mutation/mutation.json.
+    // The engine must NOT throw "report not found" — it should report success.
+    mockRunShell.mockResolvedValue(makeExecResult());
+    mockExistsSync.mockReturnValue(false); // report genuinely absent
+
+    const result = await engine.run('src/app.ts', { dryRun: true });
+
+    expect(result.totalMutants).toBe(0);
+    expect(result.survived).toBe(0);
+    expect(result.vulnerabilities).toEqual([]);
+    expect(result.scopeNote).toMatch(/dry run/i);
+  });
+
   // ─── Timeout-status mutant tests ────────────────────────────────────────
 
   it('counts Timeout-status mutants as killed in the score', async () => {

@@ -288,6 +288,25 @@ export class TypeScriptEngine extends BaseEngine {
       // fall through to parseReport
     }
 
+    // ── Dry run: nothing to parse ──
+    // With `--dryRunOnly`, StrykerJS performs only the initial test run and
+    // never generates mutants or writes reports/mutation/mutation.json.
+    // Reaching this point without a startup error means the suite ran clean,
+    // so report that instead of trying (and failing) to parse a report.
+    if (options?.dryRun) {
+      return {
+        target: filePath,
+        totalMutants: 0,
+        killed: 0,
+        survived: 0,
+        mutationScore: 'n/a (dry run)',
+        vulnerabilities: [],
+        scopeNote:
+          'Dry run only: the test suite executed successfully against the sandboxed file. ' +
+          'No mutants were generated — re-run without dryRun to score coverage.',
+      };
+    }
+
     // ── Parse the JSON report ──
     return this.parseReport(cwd, filePath);
   }
