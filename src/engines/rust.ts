@@ -2,9 +2,7 @@ import { cpus } from 'node:os';
 import { BaseEngine, RunOptions, MutationResult, Vulnerability } from './base.js';
 import { invokeMutationTool } from '../utils/exec-classify.js';
 import { log, isVerbose } from '../utils/logger.js';
-
-/** Default timeout for cargo-mutants runs (5 minutes). */
-const DEFAULT_TIMEOUT_MS = 300_000;
+import { DEFAULT_TIMEOUT_MS } from '../utils/constants.js';
 
 /**
  * Resolve the cargo-mutants `-j` job count. Explicit `concurrency` (from a tool

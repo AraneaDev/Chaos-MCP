@@ -102,7 +102,10 @@ describe('abort classification (audit M5)', () => {
       _opts: Record<string, unknown>,
       cb: (e: unknown, o: string, er: string) => void,
     ) => {
-      const abortErr = Object.assign(new Error('aborted'), { code: 'ABORT_ERR', name: 'AbortError' });
+      const abortErr = Object.assign(new Error('aborted'), {
+        code: 'ABORT_ERR',
+        name: 'AbortError',
+      });
       cb(abortErr, '', '');
       return {} as cpType.ChildProcess;
     }) as never);
@@ -116,7 +119,10 @@ describe('abort classification (audit M5)', () => {
       _opts: Record<string, unknown>,
       cb: (e: unknown, o: string, er: string) => void,
     ) => {
-      const abortErr = Object.assign(new Error('aborted'), { code: 'ABORT_ERR', name: 'AbortError' });
+      const abortErr = Object.assign(new Error('aborted'), {
+        code: 'ABORT_ERR',
+        name: 'AbortError',
+      });
       cb(abortErr, '', '');
       return {} as cpType.ChildProcess;
     }) as never);

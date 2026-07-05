@@ -248,7 +248,9 @@ describe('handleToolCall — Phase 5: progress milestones + cancellation', () =>
         ({
           run: vi.fn().mockImplementation(async () => {
             controller.abort();
-            throw new Error('cargo-mutants failed (exit null): the baseline test suite itself failed');
+            throw new Error(
+              'cargo-mutants failed (exit null): the baseline test suite itself failed',
+            );
           }),
         }) as unknown as TypeScriptEngine,
     );

@@ -3,9 +3,8 @@ import { join } from 'node:path';
 import { BaseEngine, RunOptions, MutationResult, Vulnerability } from './base.js';
 import { invokeMutationTool } from '../utils/exec-classify.js';
 import { log, isVerbose } from '../utils/logger.js';
+import { DEFAULT_TIMEOUT_MS } from '../utils/constants.js';
 
-/** Default timeout for the whole Infection run (5 minutes). */
-const DEFAULT_TIMEOUT_MS = 300_000;
 /** Name of the config we generate when the project ships none. */
 const GENERATED_CONFIG_NAME = 'infection.json';
 /** Config files Infection already recognises — if present, we do NOT overwrite. */

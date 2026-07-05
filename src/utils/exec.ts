@@ -1,5 +1,6 @@
 import { execFile, exec } from 'child_process';
 import { log, isVerbose } from './logger.js';
+import { DEFAULT_TIMEOUT_MS } from './constants.js';
 
 /**
  * Normalized result of a child process execution.
@@ -44,9 +45,6 @@ export class ExecFailureError extends Error {
     this.code = result.code;
   }
 }
-
-/** Default per-command timeout (5 minutes), matching engine defaults. */
-const DEFAULT_TIMEOUT_MS = 300_000;
 
 /**
  * Run a shell command string (e.g. "npm run build", "go build ./...") inside
@@ -238,9 +236,16 @@ export function runShell(
           // explicitly and BEFORE the ENOENT/timeout/signal branches so a
           // deliberate cancel is never mislabelled a tool failure — callers key
           // on `code === 'ABORTED'` to report "Operation cancelled." (audit M5).
-          if (errnoError.code === 'ABORT_ERR' || errnoError.name === 'AbortError' || signal?.aborted) {
+          if (
+            errnoError.code === 'ABORT_ERR' ||
+            errnoError.name === 'AbortError' ||
+            signal?.aborted
+          ) {
             reject(
-              new ExecFailureError({ ...result, code: 'ABORTED' }, `Command was cancelled: ${command}`),
+              new ExecFailureError(
+                { ...result, code: 'ABORTED' },
+                `Command was cancelled: ${command}`,
+              ),
             );
             return;
           }

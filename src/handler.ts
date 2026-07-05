@@ -1094,7 +1094,10 @@ export async function handleToolCall(
         // baseline/report failure). Detect the abort and return the same
         // "Operation cancelled." shape as the phase-boundary checks, so a
         // deliberate cancel never masquerades as a phantom tool bug (audit M5).
-        if (ctx?.signal?.aborted || (error instanceof ExecFailureError && error.code === 'ABORTED')) {
+        if (
+          ctx?.signal?.aborted ||
+          (error instanceof ExecFailureError && error.code === 'ABORTED')
+        ) {
           return toolError('Operation cancelled.');
         }
         // Prebuild failures keep their specific tool error; engine errors

@@ -41,6 +41,17 @@ describe('buildResultPayload', () => {
     });
   });
 
+  it('surfaces incompetent mutants in the payload and note (audit I3)', () => {
+    const payload = buildResultPayload(result({ incompetent: 3 }));
+    expect(payload.incompetent).toBe(3);
+    expect(payload.note).toContain('3 mutant(s) were excluded as incompetent');
+  });
+
+  it('omits incompetent when zero or absent', () => {
+    expect(buildResultPayload(result({ incompetent: 0 })).incompetent).toBeUndefined();
+    expect(buildResultPayload(result()).incompetent).toBeUndefined();
+  });
+
   it('groups survivors by line with mutator counts', () => {
     const payload = buildResultPayload(
       result({

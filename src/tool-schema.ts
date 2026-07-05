@@ -12,6 +12,20 @@ const MUTANT_KEY_SCHEMA = {
   required: ['line', 'mutator'],
 } as const;
 
+/**
+ * A baseline survivor/noCoverage group: `{ line: int≥1, mutators: { name: count } }`.
+ * Mirrors the shape the handler actually validates so a schema-driven client can
+ * predict the rejection instead of hitting a bare `items: { type: 'object' }` (L6).
+ */
+const BASELINE_GROUP_SCHEMA = {
+  type: 'object',
+  properties: {
+    line: { type: 'integer', minimum: 1 },
+    mutators: { type: 'object', additionalProperties: { type: 'integer' } },
+  },
+  required: ['line', 'mutators'],
+} as const;
+
 export const TOOL_DEFINITION = {
   name: 'audit_code_resilience',
   description:
@@ -43,14 +57,17 @@ export const TOOL_DEFINITION = {
           'Example: { "start": 10, "end": 45 }',
         properties: {
           start: {
-            type: 'number',
+            type: 'integer',
+            minimum: 1,
             description: 'Start line (1-based, inclusive).',
           },
           end: {
-            type: 'number',
+            type: 'integer',
+            minimum: 1,
             description: 'End line (1-based, inclusive). Must be >= start.',
           },
         },
+        required: ['start', 'end'],
       },
       mutatorAllowlist: {
         type: 'array',
@@ -141,8 +158,8 @@ export const TOOL_DEFINITION = {
           'languages). Mutually exclusive with diffBase and lineScope. ' +
           'Example: { "survivors": [{ "line": 42, "mutators": { "ConditionalExpression": 1 } }] }',
         properties: {
-          survivors: { type: 'array', items: { type: 'object' } },
-          noCoverage: { type: 'array', items: { type: 'object' } },
+          survivors: { type: 'array', items: BASELINE_GROUP_SCHEMA },
+          noCoverage: { type: 'array', items: BASELINE_GROUP_SCHEMA },
         },
       },
       runId: {
@@ -245,6 +262,7 @@ export const TOOL_DEFINITION = {
         type: 'object',
         properties: { minScore: { type: 'number' }, passed: { type: 'boolean' } },
       },
+      incompetent: { type: 'integer' },
       note: { type: 'string' },
       // ── Verify-mode fields (present only when a baseline/runId was supplied).
       // Verify responses carry a delta shape instead of the audit report; the
@@ -369,10 +387,24 @@ export const TRIAGE_TOOL_DEFINITION = {
         items: {
           type: 'object',
           properties: {
+            // Always emitted for every row — the load-bearing leaderboard fields.
+            file: { type: 'string' },
+            mutationScore: { type: 'string' },
+            total: { type: 'integer' },
+            killed: { type: 'integer' },
+            survived: { type: 'integer' },
+            noCoverage: { type: 'integer' },
+            // Optional per-row fields.
+            scopeNote: { type: 'string' },
+            worstSeverity: { type: 'string', enum: ['high', 'medium', 'low', 'unknown'] },
+            survivors: { type: 'array', items: { type: 'object' } },
+            noCoverageGroups: { type: 'array', items: { type: 'object' } },
+            noMutableLogic: { type: 'boolean' },
             runId: { type: 'string' },
             suppressedCount: { type: 'integer' },
             passed: { type: 'boolean' },
           },
+          required: ['file', 'mutationScore', 'total', 'killed', 'survived', 'noCoverage'],
         },
       },
       errors: { type: 'array', items: { type: 'object' } },
