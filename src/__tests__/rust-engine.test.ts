@@ -256,7 +256,9 @@ describe('RustEngine', () => {
     expect(result.survived).toBe(1);
     expect(result.mutationScore).toBe('50.00%');
     expect(result.vulnerabilities[0].line).toBe(42);
-    expect(result.vulnerabilities[0].mutator).toBe('replace == with');
+    // Mutator is the full parsed description (H2/I4) — the most distinct key for
+    // suppression/verify; truncating risks re-collapsing two same-line mutants.
+    expect(result.vulnerabilities[0].mutator).toBe('replace == with !=');
   });
 
   it('handles JSON with missing summary properties and missing mutant descriptions', async () => {
@@ -532,13 +534,13 @@ describe('RustEngine', () => {
   });
 
   it('labels a text-parsed survivor with a mutator derived from its description', async () => {
-    // H2/I4: the text branch now derives `mutator` from the parsed description
-    // (first 3 words), matching the JSON branch, instead of a constant label.
+    // H2/I4: the text branch now derives `mutator` from the full parsed
+    // description, matching the JSON branch, instead of a constant label.
     mockRunShell.mockResolvedValue(
       makeExecResult('MISSED   src/billing.rs:42:5  replaced >= with >'),
     );
     const result = await engine.run('src/billing.rs');
-    expect(result.vulnerabilities[0].mutator).toBe('replaced >= with');
+    expect(result.vulnerabilities[0].mutator).toBe('replaced >= with >');
     expect(result.vulnerabilities[0].description).toBe(
       'Mutation survived at line 42. The Rust test suite did not catch this change.',
     );
@@ -558,8 +560,8 @@ describe('RustEngine', () => {
     expect(result.vulnerabilities).toHaveLength(2);
     expect(result.vulnerabilities[0].line).toBe(50);
     expect(result.vulnerabilities[1].line).toBe(50);
-    expect(result.vulnerabilities[0].mutator).toBe('replaced >= with');
-    expect(result.vulnerabilities[1].mutator).toBe('replaced + with');
+    expect(result.vulnerabilities[0].mutator).toBe('replaced >= with >');
+    expect(result.vulnerabilities[1].mutator).toBe('replaced + with -');
     expect(result.vulnerabilities[0].mutator).not.toBe(result.vulnerabilities[1].mutator);
   });
 
