@@ -15,8 +15,18 @@
 //   C. Custom vitest3->stryker9 bridge shim (~150 LOC). Deferred.
 
 // Why { mutate: [] }:
-//   Any stray `stryker run --configFile stryker.config.mjs` invocation now
-//   exits 0 instantly (0 mutants) instead of implicitly mutating everything.
+//   Since @stryker-mutator/* devDeps are uninstalled at HEAD (see the chore()
+//   commit that parked this bootstrap), `npx stryker run --configFile
+//   stryker.config.mjs` is unreachable from the project's normal usage paths:
+//   the binary is not in node_modules. This file is effectively documentation-
+//   only at HEAD.
+//
+//   If a future resurrection attempt re-installs StrykerJS, this file WILL
+//   load, BUT Stryker 9.6's dry-run phase will still fail with the same
+//   `ConfigError: No tests were executed` wall that prompted the park. The
+//   empty mutate-scope does NOT bypass the dry-run enumeration step; it only
+//   prevents the mutation-side-effects (zero mutants processed) if someone
+//   wires up Stryker without first fixing the dry-run wall.
 export default {
   mutate: [],
   testRunner: 'vitest',
