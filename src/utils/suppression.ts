@@ -3,6 +3,54 @@ import { dirname, isAbsolute, join } from 'node:path';
 import type { MutationResult } from '../engines/base.js';
 import { NO_COVERAGE_RE } from '../format.js';
 
+/**
+ * Per-file mutex for suppression writes (audit H3).
+ *
+ * Two `addSuppressions` / `removeSuppressions` calls for the same
+ * `workspaceRoot` arriving on the same event-loop turn both `readFile` and
+ * `writeFile` the suppression JSON, racing a read-modify-write cycle: the
+ * later writer wins and silently overwrites the earlier entry. We serialise
+ * writes through a Promise chain keyed by `workspaceRoot + configPath` so
+ * concurrent callers in a single Node process cannot lose entries.
+ *
+ * Cross-process: if two chaos-mcp processes edit the same workspace, the
+ * chain in either process is unaware of the other. fs.flock would close that
+ * gap but is not portable to Windows; the in-process queue is the safe
+ * minimum that works on every platform.
+ */
+const WRITE_QUEUE = new Map<string, Promise<unknown>>();
+export function _resetWriteQueue(): void {
+  WRITE_QUEUE.clear();
+}
+/** Test-only introspection hook so the cleanup invariant can be asserted. */
+export function _writeQueueSize(): number {
+  return WRITE_QUEUE.size;
+}
+function withWorkspaceLock<T>(workspaceRoot: string, configPath: string | undefined, fn: () => T): Promise<T> {
+  const key = `${workspaceRoot}\u0000${configPath ?? ''}`;
+  const prev = WRITE_QUEUE.get(key) ?? Promise.resolve();
+  const next = prev.then(fn, fn) as Promise<T>;
+  // Live-audit finding: previously the queue stored `next.catch(() => undefined)`
+  // (a fresh Promise with a different identity) and the cleanup compared
+  // against the un-caught `next`, so the identity match ALWAYS failed and the
+  // map entry was never deleted. Fix: store and clean the SAME chained Promise,
+  // so the identity check actually compares equal. (BEFORE this fix the queue
+  // grew by one dead Promise per workspace per write.)
+  const tracked = next.catch(() => undefined) as Promise<unknown>;
+  WRITE_QUEUE.set(key, tracked);
+  // Live-audit finding #2: even with the identity fix, returning `next` and
+  // letting the caller `await` it resumes BEFORE the cleanup `.finally` runs.
+  // The awaiter resumes on a separate microtask path that bypasses the
+  // cleanup callback, so any code that immediately reads WRITE_QUEUE.size
+  // after `await addSuppressions` / `await removeSuppressions` sees a stale
+  // entry. Fix: return `cleaned` (the post-cleanup Promise) so the caller's
+  // await resolves AFTER the cleanup `.finally` callback has run.
+  const cleaned = tracked.finally(() => {
+    if (WRITE_QUEUE.get(key) === tracked) WRITE_QUEUE.delete(key);
+  });
+  return cleaned as Promise<T>;
+}
+
 export interface SuppressionInput {
   line: number;
   mutator: string;
@@ -72,25 +120,32 @@ export function loadSuppressions(
   return map;
 }
 
+/** Quiesces callers that prefer a Promise return even on the no-op path. */
+function noopPromise(): Promise<void> {
+  return Promise.resolve();
+}
+
 export function addSuppressions(
   workspaceRoot: string,
   relFile: string,
   entries: SuppressionInput[],
   configPath?: string,
-): void {
-  if (entries.length === 0) return;
-  const data = readFile(workspaceRoot, configPath);
-  const list = Array.isArray(data.entries[relFile]) ? data.entries[relFile] : [];
-  const seen = new Set(list.map((e) => keyOf(e.line, e.mutator)));
-  const now = Date.now();
-  for (const e of entries) {
-    const k = keyOf(e.line, e.mutator);
-    if (seen.has(k)) continue;
-    seen.add(k);
-    list.push({ line: e.line, mutator: e.mutator, reason: e.reason, addedAt: now });
-  }
-  data.entries[relFile] = list;
-  writeFile(workspaceRoot, data, configPath);
+): Promise<void> {
+  if (entries.length === 0) return noopPromise();
+  return withWorkspaceLock(workspaceRoot, configPath, () => {
+    const data = readFile(workspaceRoot, configPath);
+    const list = Array.isArray(data.entries[relFile]) ? data.entries[relFile] : [] as StoredEntry[];
+    const seen = new Set(list.map((e) => keyOf(e.line, e.mutator)));
+    const now = Date.now();
+    for (const e of entries) {
+      const k = keyOf(e.line, e.mutator);
+      if (seen.has(k)) continue;
+      seen.add(k);
+      list.push({ line: e.line, mutator: e.mutator, reason: e.reason, addedAt: now });
+    }
+    data.entries[relFile] = list;
+    writeFile(workspaceRoot, data, configPath);
+  });
 }
 
 export function removeSuppressions(
@@ -98,21 +153,23 @@ export function removeSuppressions(
   relFile: string,
   keys: { line: number; mutator: string }[],
   configPath?: string,
-): void {
-  if (keys.length === 0) return;
-  const data = readFile(workspaceRoot, configPath);
-  const list = data.entries[relFile];
-  if (!Array.isArray(list)) return;
-  const drop = new Set(keys.map((k) => keyOf(k.line, k.mutator)));
-  const kept = list.filter((e) => !drop.has(keyOf(e.line, e.mutator)));
-  if (kept.length > 0) {
-    data.entries[relFile] = kept;
-  } else {
-    data.entries = Object.fromEntries(
-      Object.entries(data.entries).filter(([file]) => file !== relFile),
-    );
-  }
-  writeFile(workspaceRoot, data, configPath);
+): Promise<void> {
+  if (keys.length === 0) return noopPromise();
+  return withWorkspaceLock(workspaceRoot, configPath, () => {
+    const data = readFile(workspaceRoot, configPath);
+    const list = data.entries[relFile];
+    if (!Array.isArray(list)) return;
+    const drop = new Set(keys.map((k) => keyOf(k.line, k.mutator)));
+    const kept = list.filter((e) => !drop.has(keyOf(e.line, e.mutator)));
+    if (kept.length > 0) {
+      data.entries[relFile] = kept;
+    } else {
+      data.entries = Object.fromEntries(
+        Object.entries(data.entries).filter(([file]) => file !== relFile),
+      ) as Record<string, StoredEntry[]>;
+    }
+    writeFile(workspaceRoot, data, configPath);
+  });
 }
 
 /**

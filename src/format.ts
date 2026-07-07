@@ -198,7 +198,12 @@ function floorGroups(
 export function formatResultAsText(
   result: MutationResult,
   enrich?: EnrichContext,
-  opts: { maxSurvivors?: number; severityFloor?: Severity } = {},
+  opts: {
+    maxSurvivors?: number;
+    severityFloor?: Severity;
+    /** When the caller asked for severityFloor without enrichment (M6). */
+    floorIgnoredNote?: string;
+  } = {},
 ): string {
   const compact = compactSurvivors(result);
   let survivors = compact.survivors;
@@ -214,6 +219,19 @@ export function formatResultAsText(
     `Mutation score: ${noMutants ? 'n/a' : result.mutationScore} (${result.killed}/${result.totalMutants} killed, ${result.survived} survived)`,
   ];
   if (result.scopeNote) lines.push(`Scope: ${result.scopeNote}`);
+  // Surface unscoreable mutants in text format too (audit L6) so a caller
+  // asking for human-readable output can see why total < generated.
+  if (result.incompetent && result.incompetent > 0) {
+    lines.push(
+      `Note: ${result.incompetent} mutant(s) excluded as incompetent (mutated code never produced a real pass/fail).`,
+    );
+  }
+  // If the caller asked for severityFloor but enrichment data is missing,
+  // surface the floor-ignored note here as well — the JSON path already
+  // attaches it via enrichNote, but text users got nothing (audit M6).
+  if (opts.floorIgnoredNote) {
+    lines.push(opts.floorIgnoredNote);
+  }
 
   if (survivors.length === 0 && noCoverage.length === 0) {
     lines.push(

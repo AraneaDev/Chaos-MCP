@@ -1,14 +1,18 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// Mock fs module
+// Mock fs module (sync exports only — async fs.cp lives in fs/promises).
 vi.mock('fs', () => ({
   mkdtempSync: vi.fn(),
-  cpSync: vi.fn(),
   symlinkSync: vi.fn(),
   rmSync: vi.fn(),
   existsSync: vi.fn(),
   statSync: vi.fn(),
   readdirSync: vi.fn(),
+}));
+
+// Mock fs/promises — cp is the audit C1 async copy primitive.
+vi.mock('fs/promises', () => ({
+  cp: vi.fn(),
 }));
 
 // Mock crypto
@@ -28,7 +32,15 @@ vi.mock('../utils/logger.js', () => ({
   warn: vi.fn(),
 }));
 
-import { mkdtempSync, cpSync, symlinkSync, rmSync, existsSync, statSync, readdirSync } from 'fs';
+import {
+  mkdtempSync,
+  symlinkSync,
+  rmSync,
+  existsSync,
+  statSync,
+  readdirSync,
+} from 'fs';
+import { cp } from 'fs/promises';
 import { tmpdir } from 'os';
 import { resolve } from 'path';
 import { createSandbox, SandboxContext } from '../utils/sandbox.js';
@@ -44,7 +56,7 @@ const TEST_PROJECT_TARGET = `${TEST_PROJECT}/target`;
 const TEST_PROJECT_VENDOR = `${TEST_PROJECT}/vendor`;
 
 const mockMkdtempSync = vi.mocked(mkdtempSync);
-const mockCpSync = vi.mocked(cpSync);
+const mockCp = vi.mocked(cp);
 const mockSymlinkSync = vi.mocked(symlinkSync);
 const mockRmSync = vi.mocked(rmSync);
 const mockExistsSync = vi.mocked(existsSync);
@@ -59,6 +71,8 @@ describe('createSandbox', () => {
     vi.clearAllMocks();
     mockTmpdir.mockReturnValue('/tmp');
     mockMkdtempSync.mockReturnValue(SANDBOX_DIR);
+    // Default: cp resolves to undefined (mimics successful copy).
+    mockCp.mockResolvedValue(undefined as never);
 
     // Default: target file exists, node_modules exists
     mockExistsSync.mockImplementation((path: string) => {
@@ -68,7 +82,7 @@ describe('createSandbox', () => {
     });
   });
 
-  it('creates a sandbox directory using os.tmpdir()', () => {
+  it('creates a sandbox directory using os.tmpdir()', async () => {
     mockTmpdir.mockReturnValue('/custom/tmp');
     mockMkdtempSync.mockReturnValue('/custom/tmp/chaos-mcp-00000000-0000-0000-0000-000000000000');
     mockExistsSync.mockImplementation((path: string) => {
@@ -77,39 +91,39 @@ describe('createSandbox', () => {
       );
     });
 
-    sandbox = createSandbox('src/utils/math.ts', TEST_PROJECT);
+    sandbox = await createSandbox('src/utils/math.ts', TEST_PROJECT);
 
     expect(mockMkdtempSync).toHaveBeenCalledWith(
       '/custom/tmp/chaos-mcp-00000000-0000-0000-0000-000000000000',
     );
   });
 
-  it('returns context with workDir, targetFile, and cleanup', () => {
-    sandbox = createSandbox('src/utils/math.ts', TEST_PROJECT);
+  it('returns context with workDir, targetFile, and cleanup', async () => {
+    sandbox = await createSandbox('src/utils/math.ts', TEST_PROJECT);
 
     expect(sandbox.workDir).toBe(SANDBOX_DIR);
     expect(sandbox.targetFile).toBe('src/utils/math.ts');
     expect(typeof sandbox.cleanup).toBe('function');
   });
 
-  it('copies the workspace tree to sandbox', () => {
-    sandbox = createSandbox('src/utils/math.ts', TEST_PROJECT);
+  it('copies the workspace tree to sandbox via fs.cp', async () => {
+    sandbox = await createSandbox('src/utils/math.ts', TEST_PROJECT);
 
-    expect(mockCpSync).toHaveBeenCalledWith(TEST_PROJECT, SANDBOX_DIR, {
+    expect(mockCp).toHaveBeenCalledWith(TEST_PROJECT, SANDBOX_DIR, {
       recursive: true,
       filter: expect.any(Function),
       dereference: false,
     });
   });
 
-  it('symlinks node_modules into sandbox', () => {
+  it('symlinks node_modules into sandbox', async () => {
     mockExistsSync.mockImplementation((path: string) => {
       if (path === `${SANDBOX_DIR}/src/utils/math.ts`) return true;
       if (path === TEST_PROJECT_NODE_MODULES) return true;
       return false;
     });
 
-    sandbox = createSandbox('src/utils/math.ts', TEST_PROJECT);
+    sandbox = await createSandbox('src/utils/math.ts', TEST_PROJECT);
 
     expect(mockSymlinkSync).toHaveBeenCalledWith(
       TEST_PROJECT_NODE_MODULES,
@@ -118,26 +132,26 @@ describe('createSandbox', () => {
     );
   });
 
-  it('symlinks .venv into sandbox when present', () => {
+  it('symlinks .venv into sandbox when present', async () => {
     mockExistsSync.mockImplementation((path: string) => {
       if (path === `${SANDBOX_DIR}/src/main.py`) return true;
       if (path === TEST_PROJECT_VENV) return true;
       return false;
     });
 
-    sandbox = createSandbox('src/main.py', TEST_PROJECT);
+    sandbox = await createSandbox('src/main.py', TEST_PROJECT);
 
     expect(mockSymlinkSync).toHaveBeenCalledWith(TEST_PROJECT_VENV, `${SANDBOX_DIR}/.venv`, 'dir');
   });
 
-  it('symlinks vendor into sandbox when present', () => {
+  it('symlinks vendor into sandbox when present', async () => {
     mockExistsSync.mockImplementation((path: string) => {
       if (path === `${SANDBOX_DIR}/src/Calculator.php`) return true;
       if (path === TEST_PROJECT_VENDOR) return true;
       return false;
     });
 
-    sandbox = createSandbox('src/Calculator.php', TEST_PROJECT);
+    sandbox = await createSandbox('src/Calculator.php', TEST_PROJECT);
 
     expect(mockSymlinkSync).toHaveBeenCalledWith(
       TEST_PROJECT_VENDOR,
@@ -146,22 +160,22 @@ describe('createSandbox', () => {
     );
   });
 
-  it('refuses to sandbox when workspace resolves outside process cwd (C2)', () => {
+  it('refuses to sandbox when workspace resolves outside process cwd (C2)', async () => {
     // /etc is an absolute path that escapes the test cwd.
-    expect(() => createSandbox('src/utils/math.ts', '/etc')).toThrow(
+    await expect(createSandbox('src/utils/math.ts', '/etc')).rejects.toThrow(
       /Refusing to sandbox workspace outside process cwd/,
     );
     // Also pin the second half of the message so its string literal is covered.
-    expect(() => createSandbox('src/utils/math.ts', '/etc')).toThrow(/is not inside/);
+    await expect(createSandbox('src/utils/math.ts', '/etc')).rejects.toThrow(/is not inside/);
   });
 
-  it('does not create a temp dir when the cwd-boundary guard trips (M4)', () => {
+  it('does not create a temp dir when the cwd-boundary guard trips (M4)', async () => {
     // Audit M4: previously mkdtempSync ran before the isPathInside check, so
     // a boundary-guard trip left an empty, untracked temp dir on disk. The
     // check must now run first, so mkdtempSync is never even called.
     mockMkdtempSync.mockClear();
 
-    expect(() => createSandbox('src/utils/math.ts', '/etc')).toThrow(
+    await expect(createSandbox('src/utils/math.ts', '/etc')).rejects.toThrow(
       /Refusing to sandbox workspace outside process cwd/,
     );
 
@@ -170,7 +184,7 @@ describe('createSandbox', () => {
     expect(mockRmSync).not.toHaveBeenCalled();
   });
 
-  it('accepts sandbox when workspace equals process cwd (Live-audit L1)', () => {
+  it('accepts sandbox when workspace equals process cwd (Live-audit L1)', async () => {
     // Previously `isPathInside(absoluteWorkspace, absoluteCwd)` returned false
     // when the two paths were equal (rel === ''). This blocked the legitimate
     // case where the user's workspace IS the cwd (the most common case).
@@ -179,10 +193,10 @@ describe('createSandbox', () => {
       return path === `${SANDBOX_DIR}/src/utils/math.ts` || path === cwd;
     });
 
-    expect(() => createSandbox('src/utils/math.ts', cwd)).not.toThrow();
+    await expect(createSandbox('src/utils/math.ts', cwd)).resolves.toBeDefined();
   });
 
-  it('strips trailing separator from ignorePatterns (Live-audit L2)', () => {
+  it('strips trailing separator from ignorePatterns (Live-audit L2)', async () => {
     // Convention `["fixtures/"]` should exclude the `fixtures` directory
     // segment, not silently fail because the segment lacks the trailing slash.
     mockExistsSync.mockImplementation((path: string) => {
@@ -190,9 +204,9 @@ describe('createSandbox', () => {
       return false;
     });
 
-    createSandbox('src/utils/math.ts', TEST_PROJECT, ['fixtures/']);
+    await createSandbox('src/utils/math.ts', TEST_PROJECT, ['fixtures/']);
 
-    const filter = mockCpSync.mock.calls[0][2]?.filter as (src: string) => boolean;
+    const filter = mockCp.mock.calls[0][2]?.filter as (src: string) => boolean;
     expect(filter).toBeDefined();
 
     // `fixtures` segment should be excluded
@@ -201,7 +215,7 @@ describe('createSandbox', () => {
     expect(filter(`${TEST_PROJECT}/src/utils/math.ts`)).toBe(true);
   });
 
-  it('never excludes the target file or its ancestor dirs, even under an excluded name', () => {
+  it('never excludes the target file or its ancestor dirs, even under an excluded name', async () => {
     // 'build' is in ALWAYS_EXCLUDE, but here it is an ancestor of the audited
     // target. Excluding it would drop the file and fail provisioning. The
     // target and every directory on the path to it must be force-included.
@@ -209,30 +223,30 @@ describe('createSandbox', () => {
       return path === `${SANDBOX_DIR}/build/gen.ts`;
     });
 
-    createSandbox('build/gen.ts', TEST_PROJECT);
+    await createSandbox('build/gen.ts', TEST_PROJECT);
 
-    const filter = mockCpSync.mock.calls[0][2]?.filter as (src: string) => boolean;
+    const filter = mockCp.mock.calls[0][2]?.filter as (src: string) => boolean;
     expect(filter(`${TEST_PROJECT}/build`)).toBe(true);
     expect(filter(`${TEST_PROJECT}/build/gen.ts`)).toBe(true);
     // A different 'build' dir that is NOT on the path to the target stays excluded.
     expect(filter(`${TEST_PROJECT}/src/build`)).toBe(false);
   });
 
-  it('never excludes the target when an ignorePattern matches an ancestor segment', () => {
+  it('never excludes the target when an ignorePattern matches an ancestor segment', async () => {
     mockExistsSync.mockImplementation((path: string) => {
       return path === `${SANDBOX_DIR}/fixtures/keep.ts`;
     });
 
-    createSandbox('fixtures/keep.ts', TEST_PROJECT, ['fixtures']);
+    await createSandbox('fixtures/keep.ts', TEST_PROJECT, ['fixtures']);
 
-    const filter = mockCpSync.mock.calls[0][2]?.filter as (src: string) => boolean;
+    const filter = mockCp.mock.calls[0][2]?.filter as (src: string) => boolean;
     expect(filter(`${TEST_PROJECT}/fixtures`)).toBe(true);
     expect(filter(`${TEST_PROJECT}/fixtures/keep.ts`)).toBe(true);
     // An unrelated 'fixtures' dir is still excluded.
     expect(filter(`${TEST_PROJECT}/other/fixtures`)).toBe(false);
   });
 
-  it('does NOT symlink target/ for Rust builds (H1 regression)', () => {
+  it('does NOT symlink target/ for Rust builds (H1 regression)', async () => {
     // Audit finding H1: target/ contains Rust build artifacts. Symlinking
     // would let mutation runs corrupt the host workspace's build cache.
     // The sandbox must exclude target/ outright (always) instead of symlinking.
@@ -242,14 +256,14 @@ describe('createSandbox', () => {
       return false;
     });
 
-    sandbox = createSandbox('src/main.rs', TEST_PROJECT);
+    sandbox = await createSandbox('src/main.rs', TEST_PROJECT);
 
     // symlinkSync must NOT be called for `target`.
     const symlinked = mockSymlinkSync.mock.calls.map((call) => call[1]);
     expect(symlinked).not.toContain(`${SANDBOX_DIR}/target`);
   });
 
-  it('excludes by segment match, not substring match (M6 regression)', () => {
+  it('excludes by segment match, not substring match (M6 regression)', async () => {
     // Audit finding M6: substring matching over-eagerly excludes files whose
     // path contains the pattern anywhere. Segment matching only excludes when
     // a single path segment equals the pattern.
@@ -258,9 +272,9 @@ describe('createSandbox', () => {
       return false;
     });
 
-    createSandbox('src/utils/math.ts', TEST_PROJECT, ['test']);
+    await createSandbox('src/utils/math.ts', TEST_PROJECT, ['test']);
 
-    const filter = mockCpSync.mock.calls[0][2]?.filter as (src: string) => boolean;
+    const filter = mockCp.mock.calls[0][2]?.filter as (src: string) => boolean;
     expect(filter).toBeDefined();
 
     // `latest.ts` contains 'test' as a substring but has no segment named 'test'.
@@ -271,53 +285,53 @@ describe('createSandbox', () => {
     expect(filter(`${TEST_PROJECT}/test/file.ts`)).toBe(false);
   });
 
-  it('skips symlinks for directories that do not exist', () => {
+  it('skips symlinks for directories that do not exist', async () => {
     mockExistsSync.mockImplementation((path: string) => {
       return path === `${SANDBOX_DIR}/src/utils/math.ts`;
     });
 
-    sandbox = createSandbox('src/utils/math.ts', TEST_PROJECT);
+    sandbox = await createSandbox('src/utils/math.ts', TEST_PROJECT);
 
     expect(mockSymlinkSync).not.toHaveBeenCalled();
   });
 
-  it('throws when target file does not exist in sandbox', () => {
+  it('throws when target file does not exist in sandbox', async () => {
     mockExistsSync.mockReturnValue(false);
 
-    expect(() => createSandbox('src/utils/math.ts', TEST_PROJECT)).toThrow(
+    await expect(createSandbox('src/utils/math.ts', TEST_PROJECT)).rejects.toThrow(
       /Sandbox provisioning failed/,
     );
     // Pin the rest of the message (target filename + workspace root) so its
     // string literals are covered.
-    expect(() => createSandbox('src/utils/math.ts', TEST_PROJECT)).toThrow(
+    await expect(createSandbox('src/utils/math.ts', TEST_PROJECT)).rejects.toThrow(
       /target file "src\/utils\/math\.ts" was not found in the copied workspace/,
     );
     // The second line of the message (its own string literal).
-    expect(() => createSandbox('src/utils/math.ts', TEST_PROJECT)).toThrow(
+    await expect(createSandbox('src/utils/math.ts', TEST_PROJECT)).rejects.toThrow(
       new RegExp(`Workspace root: ${TEST_PROJECT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`),
     );
   });
 
-  it('cleans up temp dir on provisioning failure', () => {
+  it('cleans up temp dir on provisioning failure', async () => {
     mockExistsSync.mockReturnValue(false);
 
-    expect(() => createSandbox('src/utils/math.ts', TEST_PROJECT)).toThrow();
+    await expect(createSandbox('src/utils/math.ts', TEST_PROJECT)).rejects.toThrow();
 
     expect(mockRmSync).toHaveBeenCalledWith(SANDBOX_DIR, { recursive: true, force: true });
   });
 
-  it('cleanup() removes sandbox directory', () => {
+  it('cleanup() removes sandbox directory', async () => {
     mockExistsSync.mockImplementation((path: string) => {
       return path === `${SANDBOX_DIR}/src/utils/math.ts`;
     });
 
-    sandbox = createSandbox('src/utils/math.ts', TEST_PROJECT);
+    sandbox = await createSandbox('src/utils/math.ts', TEST_PROJECT);
     sandbox.cleanup();
 
     expect(mockRmSync).toHaveBeenCalledWith(SANDBOX_DIR, { recursive: true, force: true });
   });
 
-  it('cleanup() swallows errors gracefully', () => {
+  it('cleanup() swallows errors gracefully', async () => {
     mockExistsSync.mockImplementation((path: string) => {
       return path === `${SANDBOX_DIR}/src/utils/math.ts`;
     });
@@ -326,19 +340,19 @@ describe('createSandbox', () => {
       throw new Error('Permission denied');
     });
 
-    sandbox = createSandbox('src/utils/math.ts', TEST_PROJECT);
+    sandbox = await createSandbox('src/utils/math.ts', TEST_PROJECT);
 
     expect(() => sandbox.cleanup()).not.toThrow();
   });
 
-  it('filter excludes node_modules, .git, target, and generated dirs', () => {
+  it('filter excludes node_modules, .git, target, and generated dirs', async () => {
     mockExistsSync.mockImplementation((path: string) => {
       return path === `${SANDBOX_DIR}/src/utils/math.ts`;
     });
 
-    createSandbox('src/utils/math.ts', TEST_PROJECT);
+    await createSandbox('src/utils/math.ts', TEST_PROJECT);
 
-    const filter = mockCpSync.mock.calls[0][2]?.filter as (src: string) => boolean;
+    const filter = mockCp.mock.calls[0][2]?.filter as (src: string) => boolean;
     expect(filter).toBeDefined();
 
     expect(filter(`${TEST_PROJECT}/node_modules`)).toBe(false);
@@ -366,7 +380,7 @@ describe('createSandbox', () => {
       return path === `${SANDBOX_DIR}/src/utils/math.ts`;
     });
 
-    sandbox = createSandbox('src/utils/math.ts', TEST_PROJECT);
+    sandbox = await createSandbox('src/utils/math.ts', TEST_PROJECT);
 
     // First cleanup should succeed
     sandbox.cleanup();
@@ -385,7 +399,7 @@ describe('createSandbox', () => {
 
   // ─── safeSymlink and Windows junction fallback ──────────────────────────
 
-  it('retries with junction on Windows EPERM, surfaces error on Linux', () => {
+  it('retries with junction on Windows EPERM, surfaces error on Linux', async () => {
     mockExistsSync.mockImplementation((path: string) => {
       if (path === `${SANDBOX_DIR}/src/utils/math.ts`) return true;
       if (path === TEST_PROJECT_NODE_MODULES) return true;
@@ -396,7 +410,7 @@ describe('createSandbox', () => {
       throw Object.assign(new Error('EPERM'), { code: 'EPERM' });
     });
 
-    expect(() => createSandbox('src/utils/math.ts', TEST_PROJECT)).toThrow('EPERM');
+    await expect(createSandbox('src/utils/math.ts', TEST_PROJECT)).rejects.toThrow('EPERM');
   });
 
   it('ensureExitHandler does not double-register on subsequent sandbox creations', async () => {
@@ -410,14 +424,15 @@ describe('createSandbox', () => {
     mockExistsSync.mockImplementation((path: string) => {
       return path === `${SANDBOX_DIR}/src/utils/math.ts`;
     });
+    mockCp.mockResolvedValue(undefined as never);
 
-    freshSandbox.createSandbox('src/utils/math.ts', TEST_PROJECT);
+    await freshSandbox.createSandbox('src/utils/math.ts', TEST_PROJECT);
     const firstRegistrations = processOnSpy.mock.calls.filter((call) =>
       ['SIGTERM', 'SIGINT', 'SIGHUP', 'SIGQUIT', 'exit'].includes(call[0] as string),
     ).length;
 
     processOnSpy.mockClear();
-    freshSandbox.createSandbox('src/utils/math.ts', TEST_PROJECT);
+    await freshSandbox.createSandbox('src/utils/math.ts', TEST_PROJECT);
     const secondRegistrations = processOnSpy.mock.calls.filter((call) =>
       ['SIGTERM', 'SIGINT', 'SIGHUP', 'SIGQUIT', 'exit'].includes(call[0] as string),
     ).length;
@@ -449,7 +464,7 @@ describe('createSandbox', () => {
       return path === `${SANDBOX_DIR}/src/utils/math.ts`;
     });
 
-    createSandbox('src/utils/math.ts', TEST_PROJECT);
+    await createSandbox('src/utils/math.ts', TEST_PROJECT);
 
     expect(mockedWarn).toHaveBeenCalledWith(expect.stringContaining('MB'));
     // Second half of the warning string (its own literal).
@@ -478,7 +493,7 @@ describe('createSandbox', () => {
       return path === `${SANDBOX_DIR}/src/utils/math.ts`;
     });
 
-    createSandbox('src/utils/math.ts', TEST_PROJECT);
+    await createSandbox('src/utils/math.ts', TEST_PROJECT);
 
     const mbWarnings = mockedWarn.mock.calls.filter(
       (call) => typeof call[0] === 'string' && (call[0] as string).includes('MB'),
@@ -509,7 +524,7 @@ describe('createSandbox', () => {
       return path === `${SANDBOX_DIR}/src/utils/math.ts`;
     });
 
-    createSandbox('src/utils/math.ts', TEST_PROJECT, ['huge']);
+    await createSandbox('src/utils/math.ts', TEST_PROJECT, ['huge']);
 
     const mbWarnings = mockedWarn.mock.calls.filter(
       (call) => typeof call[0] === 'string' && (call[0] as string).includes('MB'),
@@ -537,7 +552,7 @@ describe('createSandbox', () => {
       return path === `${SANDBOX_DIR}/src/utils/math.ts`;
     });
 
-    createSandbox('src/utils/math.ts', TEST_PROJECT);
+    await createSandbox('src/utils/math.ts', TEST_PROJECT);
 
     // No MB warning should have been emitted
     const warnCalls = mockedWarn.mock.calls.filter(
@@ -556,7 +571,7 @@ describe('createSandbox', () => {
     // Re-mock fs/crypto/os for the fresh module
     const processOnSpy = vi.spyOn(process, 'on');
 
-    freshSandbox.createSandbox('src/utils/math.ts', TEST_PROJECT);
+    await freshSandbox.createSandbox('src/utils/math.ts', TEST_PROJECT);
 
     const signalRegs = processOnSpy.mock.calls.filter(
       (call) =>
@@ -570,27 +585,27 @@ describe('createSandbox', () => {
 
   // ─── ignorePatterns edge cases ──────────────────────────────────────────
 
-  it('skips empty ignorePatterns', () => {
+  it('skips empty ignorePatterns', async () => {
     mockExistsSync.mockImplementation((path: string) => {
       return path === `${SANDBOX_DIR}/src/utils/math.ts`;
     });
 
-    createSandbox('src/utils/math.ts', TEST_PROJECT, ['', 'fixtures', '']);
+    await createSandbox('src/utils/math.ts', TEST_PROJECT, ['', 'fixtures', '']);
 
-    const filter = mockCpSync.mock.calls[0][2]?.filter as (src: string) => boolean;
+    const filter = mockCp.mock.calls[0][2]?.filter as (src: string) => boolean;
     // Empty patterns are skipped, fixtures is still excluded
     expect(filter(`${TEST_PROJECT}/fixtures/data.json`)).toBe(false);
     expect(filter(`${TEST_PROJECT}/src/utils/math.ts`)).toBe(true);
   });
 
-  it('excludes by segment containing trailing separator in ignorePattern', () => {
+  it('excludes by segment containing trailing separator in ignorePattern', async () => {
     mockExistsSync.mockImplementation((path: string) => {
       return path === `${SANDBOX_DIR}/src/utils/math.ts`;
     });
 
-    createSandbox('src/utils/math.ts', TEST_PROJECT, ['dist/', 'build/']);
+    await createSandbox('src/utils/math.ts', TEST_PROJECT, ['dist/', 'build/']);
 
-    const filter = mockCpSync.mock.calls[0][2]?.filter as (src: string) => boolean;
+    const filter = mockCp.mock.calls[0][2]?.filter as (src: string) => boolean;
     expect(filter(`${TEST_PROJECT}/dist/bundle.js`)).toBe(false);
     expect(filter(`${TEST_PROJECT}/build/output.js`)).toBe(false);
     expect(filter(`${TEST_PROJECT}/src/dist-utils.js`)).toBe(true);
@@ -598,7 +613,7 @@ describe('createSandbox', () => {
 
   // ─── estimateWorkspaceSize error-catch paths ─────────────────────────────
 
-  it('estimateWorkspaceSize handles readdirSync errors gracefully', () => {
+  it('estimateWorkspaceSize handles readdirSync errors gracefully', async () => {
     mockExistsSync.mockImplementation((path: string) => {
       return path === `${SANDBOX_DIR}/src/utils/math.ts`;
     });
@@ -609,10 +624,10 @@ describe('createSandbox', () => {
     });
 
     // Should not throw — estimateWorkspaceSize catches readdirSync errors
-    expect(() => createSandbox('src/utils/math.ts', TEST_PROJECT)).not.toThrow();
+    await expect(createSandbox('src/utils/math.ts', TEST_PROJECT)).resolves.toBeDefined();
   });
 
-  it('estimateWorkspaceSize handles statSync errors gracefully', () => {
+  it('estimateWorkspaceSize handles statSync errors gracefully', async () => {
     mockExistsSync.mockImplementation((path: string) => {
       return path === `${SANDBOX_DIR}/src/utils/math.ts`;
     });
@@ -630,53 +645,48 @@ describe('createSandbox', () => {
     });
 
     // Should not throw — estimateWorkspaceSize catches statSync errors
-    expect(() => createSandbox('src/utils/math.ts', TEST_PROJECT)).not.toThrow();
+    await expect(createSandbox('src/utils/math.ts', TEST_PROJECT)).resolves.toBeDefined();
   });
 
   // ─── isPathInside edge cases ─────────────────────────────────────────────
 
-  it('rejects workspace that is parent of cwd (rel === "..")', () => {
+  it('rejects workspace that is parent of cwd (rel === "..")', async () => {
     // isPathInside should reject when the workspace resolves to the parent of cwd
     const parentCwd = resolve(process.cwd(), '..');
     mockExistsSync.mockImplementation((path: string) => {
       return path === `${SANDBOX_DIR}/src/utils/math.ts`;
     });
 
-    expect(() => createSandbox('src/utils/math.ts', parentCwd)).toThrow(
+    await expect(createSandbox('src/utils/math.ts', parentCwd)).rejects.toThrow(
       /Refusing to sandbox workspace outside process cwd/,
     );
   });
 
-  it('rejects workspace that is a sibling directory of cwd (rel starts with ..)', () => {
+  it('rejects workspace that is a sibling directory of cwd (rel starts with ..)', async () => {
     // isPathInside should reject sibling directories (rel = '../sibling')
     const siblingDir = resolve(process.cwd(), '..', 'sibling-project');
     mockExistsSync.mockImplementation((path: string) => {
       return path === `${SANDBOX_DIR}/src/utils/math.ts`;
     });
 
-    expect(() => createSandbox('src/utils/math.ts', siblingDir)).toThrow(
+    await expect(createSandbox('src/utils/math.ts', siblingDir)).rejects.toThrow(
       /Refusing to sandbox workspace outside process cwd/,
     );
   });
 
   // ─── !success finally cleanup path ────────────────────────────────────
 
-  it('cleans up sandbox when cpSync throws (success stays false)', () => {
+  it('cleans up sandbox when fs.cp throws (success stays false)', async () => {
     mockExistsSync.mockImplementation((path: string) => {
       return path === `${SANDBOX_DIR}/src/utils/math.ts`;
     });
 
-    // cpSync throws before symlinks/target-check run, so success never becomes true.
-    // Use mockImplementationOnce so the throwing impl does not leak into later
-    // tests (vi.clearAllMocks resets call history but NOT implementations).
-    mockCpSync.mockImplementationOnce(() => {
-      throw new Error('EACCES: permission denied on cpSync');
-    });
+    // fs.cp rejects before symlinks/target-check run, so success never becomes true.
+    // Use mockRejectedValueOnce so the rejection does not leak into later tests.
+    mockCp.mockRejectedValueOnce(new Error('EACCES: permission denied on fs.cp'));
 
-    // estimateWorkspaceSize's outer try/catch returns 0 cleanly even when
-    // readdirSync returns undefined (for-of undefined throws TypeError which
-    // is caught). The cpSync throw is the only error that escapes createSandbox.
-    expect(() => createSandbox('src/utils/math.ts', TEST_PROJECT)).toThrow(/EACCES/);
+    // The cp rejection is the only error that escapes createSandbox.
+    await expect(createSandbox('src/utils/math.ts', TEST_PROJECT)).rejects.toThrow(/EACCES/);
 
     // The finally block must call rmSync to clean up the partially created sandbox
     expect(mockRmSync).toHaveBeenCalledWith(
@@ -687,13 +697,13 @@ describe('createSandbox', () => {
 
   // ─── Mutation hardening ──────────────────────────────────────────────────
 
-  it('does not delete the sandbox on a successful provision (success flag)', () => {
+  it('does not delete the sandbox on a successful provision (success flag)', async () => {
     mockExistsSync.mockImplementation((path: string) => {
       if (path === `${SANDBOX_DIR}/src/utils/math.ts`) return true;
       return false;
     });
 
-    createSandbox('src/utils/math.ts', TEST_PROJECT);
+    await createSandbox('src/utils/math.ts', TEST_PROJECT);
 
     // The finally block only removes the dir when success === false; a healthy
     // run must leave it in place for the caller to use.
@@ -715,15 +725,15 @@ describe('createSandbox', () => {
     '.nyc_output',
     '.next',
     'target',
-  ])('filter excludes the always-excluded directory %s', (dir) => {
-    createSandbox('src/utils/math.ts', TEST_PROJECT);
-    const filter = mockCpSync.mock.calls[0][2]?.filter as (src: string) => boolean;
+  ])('filter excludes the always-excluded directory %s', async (dir) => {
+    await createSandbox('src/utils/math.ts', TEST_PROJECT);
+    const filter = mockCp.mock.calls[0][2]?.filter as (src: string) => boolean;
     expect(filter(`${TEST_PROJECT}/${dir}`)).toBe(false);
     // A sibling whose name merely contains the token is NOT excluded.
     expect(filter(`${TEST_PROJECT}/${dir}-keep/file.ts`)).toBe(true);
   });
 
-  it('symlinks each SYMLINK_DIRS entry that exists (node_modules, .venv, venv)', () => {
+  it('symlinks each SYMLINK_DIRS entry that exists (node_modules, .venv, venv)', async () => {
     mockExistsSync.mockImplementation((path: string) => {
       if (path === `${SANDBOX_DIR}/src/utils/math.ts`) return true;
       return (
@@ -733,7 +743,7 @@ describe('createSandbox', () => {
       );
     });
 
-    createSandbox('src/utils/math.ts', TEST_PROJECT);
+    await createSandbox('src/utils/math.ts', TEST_PROJECT);
 
     const linked = mockSymlinkSync.mock.calls.map((c) => String(c[0]));
     expect(linked).toContain(TEST_PROJECT_NODE_MODULES);
@@ -741,14 +751,14 @@ describe('createSandbox', () => {
     expect(linked).toContain(`${TEST_PROJECT}/venv`);
   });
 
-  it('does not exclude everything when an ignorePattern is only a separator', () => {
+  it('does not exclude everything when an ignorePattern is only a separator', async () => {
     mockExistsSync.mockImplementation((path: string) => {
       return path === `${SANDBOX_DIR}/src/utils/math.ts`;
     });
 
-    createSandbox('src/utils/math.ts', TEST_PROJECT, ['/']);
+    await createSandbox('src/utils/math.ts', TEST_PROJECT, ['/']);
 
-    const filter = mockCpSync.mock.calls[0][2]?.filter as (src: string) => boolean;
+    const filter = mockCp.mock.calls[0][2]?.filter as (src: string) => boolean;
     // A "/" pattern normalises to "" and must be skipped, not treated as a
     // segment that matches every path.
     expect(filter(`${TEST_PROJECT}/src/utils/math.ts`)).toBe(true);
@@ -768,7 +778,7 @@ describe('createSandbox', () => {
       { name: 'big.bin', isDirectory: () => false, isFile: () => true },
     ] as never);
     vi.mocked(statSync).mockReturnValueOnce({ size: 200 * 1024 * 1024 } as never);
-    createSandbox('src/utils/math.ts', TEST_PROJECT);
+    await createSandbox('src/utils/math.ts', TEST_PROJECT);
     expect(mockedWarn.mock.calls.filter((c) => String(c[0]).includes('MB'))).toHaveLength(0);
 
     // 300MB → warns, and the human-readable size is computed correctly.
@@ -777,8 +787,72 @@ describe('createSandbox', () => {
       { name: 'big.bin', isDirectory: () => false, isFile: () => true },
     ] as never);
     vi.mocked(statSync).mockReturnValueOnce({ size: 300 * 1024 * 1024 } as never);
-    createSandbox('src/utils/math.ts', TEST_PROJECT);
+    await createSandbox('src/utils/math.ts', TEST_PROJECT);
     expect(mockedWarn).toHaveBeenCalledWith(expect.stringContaining('~300MB'));
+  });
+
+  // ─── Audit C1: AbortSignal support ────────────────────────────────────
+
+  it('rejects with AbortError when the signal is already aborted', async () => {
+    // A pre-aborted signal must short-circuit BEFORE mkdtempSync + cp,
+    // without leaving a temp dir behind.
+    mockMkdtempSync.mockClear();
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      createSandbox('src/utils/math.ts', TEST_PROJECT, undefined, { signal: controller.signal }),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+
+    // The abort happened before any dp allocation.
+    expect(mockMkdtempSync).not.toHaveBeenCalled();
+    expect(mockRmSync).not.toHaveBeenCalled();
+  });
+
+  it('cleans up the partial sandbox when abort fires between copy and symlinks', async () => {
+    // Mock cp to block on a deferred promise so the test can resolve it
+    // deterministically BEFORE calling controller.abort(). fs.cp cannot truly
+    // abort a half-finished copy from Node, so createSandbox's post-copy
+    // `signal?.aborted` check is the canonical cancel boundary — this test
+    // drives that branch deterministically.
+    //
+    // Use a method-object pattern (resolveIt can always be called) rather
+    // than `let abortIt: () => void | undefined` followed by `abortIt!()` —
+    // the non-null assertion is forbidden by the project lint config and the
+    // method-object form lets us drop the bang entirely.
+    const cpDeferred = { resolveIt: (): void => undefined };
+    mockCp.mockImplementationOnce(async (_src, _dst, _opts) => {
+      await new Promise<void>((resolve) => {
+        cpDeferred.resolveIt = resolve;
+      });
+    });
+
+    const controller = new AbortController();
+    const inFlight = createSandbox('src/utils/math.ts', TEST_PROJECT, undefined, {
+      signal: controller.signal,
+    });
+
+    // Deterministic scheduling (reviewer feedback): setImmediate yields one
+    // macrotask, by which point cp() is guaranteed in-flight and its
+    // continuation is pending on the microtask queue. We then resolve cp()
+    // and abort the controller IN THE SAME SYNCHRONOUS STEP, before yielding
+    // again — this guarantees control returns to createSandbox's `await
+    // cp(...)` resumption microtask with `signal.aborted === true`. Using
+    // two separate `queueMicrotask` calls worked but relied on V8's
+    // microtask FIFO ordering; this explicit setImmediate+sync-pair is
+    // more robust.
+    await new Promise<void>((r) => setImmediate(r));
+    cpDeferred.resolveIt();
+    controller.abort();
+
+    await expect(inFlight).rejects.toMatchObject({ name: 'AbortError' });
+    // Symlinks did NOT run because the post-copy abort branch rejected first.
+    expect(mockSymlinkSync).not.toHaveBeenCalled();
+    // The partially-created sandbox was cleaned up by the !success finally.
+    expect(mockRmSync).toHaveBeenCalledWith(
+      SANDBOX_DIR,
+      expect.objectContaining({ recursive: true, force: true }),
+    );
   });
 
   // ─── Exit/signal handler bodies (previously NoCoverage) ───────────────────
@@ -792,7 +866,8 @@ describe('createSandbox', () => {
     mockExistsSync.mockImplementation((path: string) => {
       return path === `${SANDBOX_DIR}/src/utils/math.ts`;
     });
-    fresh.createSandbox('src/utils/math.ts', TEST_PROJECT);
+    mockCp.mockResolvedValue(undefined as never);
+    await fresh.createSandbox('src/utils/math.ts', TEST_PROJECT);
 
     const exitCall = onSpy.mock.calls.find((c) => c[0] === 'exit');
     if (!exitCall) throw new Error('exit handler was not registered');
@@ -822,7 +897,8 @@ describe('createSandbox', () => {
     mockExistsSync.mockImplementation((path: string) => {
       return path === `${SANDBOX_DIR}/src/utils/math.ts`;
     });
-    fresh.createSandbox('src/utils/math.ts', TEST_PROJECT);
+    mockCp.mockResolvedValue(undefined as never);
+    await fresh.createSandbox('src/utils/math.ts', TEST_PROJECT);
 
     const sigCall = onSpy.mock.calls.find((c) => c[0] === 'SIGTERM');
     if (!sigCall) throw new Error('SIGTERM handler was not registered');

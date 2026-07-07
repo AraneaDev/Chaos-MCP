@@ -2,7 +2,8 @@ import { resolve, relative, isAbsolute } from 'path';
 import { cpus } from 'os';
 import { readFileSync } from 'fs';
 import type { CallToolRequest, CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { auditFile, makeEngine, resolvePrebuildCommand, isRealPathInside } from './handler.js';
+import { auditFile, makeEngine, resolvePrebuildCommand } from './handler.js';
+import { isRealPathInside } from './utils/path-safety.js';
 import { validateMinScore } from './gate.js';
 import {
   discoverFiles,
@@ -24,6 +25,7 @@ import type { MutationResult } from './engines/base.js';
 import type { ToolContext } from './tool-context.js';
 import { saveRun } from './utils/run-cache.js';
 import { loadSuppressions, applySuppressions } from './utils/suppression.js';
+import { isCancel } from './utils/cancel.js';
 
 function triageError(text: string): CallToolResult {
   return { content: [{ type: 'text', text }], isError: true };
@@ -260,7 +262,32 @@ export async function handleTriageCall(
         }
       }
 
-      const sandbox = createSandbox(targetFile, env.workspaceRoot, undefined);
+      // audit C1: await the async createSandbox; forward the abort signal so
+      // a mid-copy cancel from the MCP client propagates into the file copy.
+      // Wrapped in try/catch so a sandbox-failure row can be returned to the
+      // pooling caller (instead of being thrown to the outer catch and aborting
+      // other in-flight audits via tool-promise rejection).
+      let sandbox: Awaited<ReturnType<typeof createSandbox>>;
+      try {
+        sandbox = await createSandbox(targetFile, env.workspaceRoot, undefined, {
+          signal: ctx?.signal,
+        });
+      } catch (error: unknown) {
+        // Cancellation (mid-CP reject or pre-aborted signal) must surface as a
+        // row with `error: 'Operation cancelled.'` so the caller can
+        // distinguish it from a real provisioning failure (which surfaces the
+        // file's `raw` error message).
+        if (isCancel(error, ctx)) {
+          return { error: { file, error: 'Operation cancelled.' } };
+        }
+        const message = error instanceof Error ? error.message : String(error);
+        return {
+          error: {
+            file,
+            error: `Chaos Engine Halted: Failed to provision sandbox isolation for ${file}: ${message}. Ensure the file exists and the workspace is accessible.`,
+          },
+        };
+      }
       let result: MutationResult;
       try {
         result = await auditFile({
@@ -322,7 +349,9 @@ export async function handleTriageCall(
       // Enrich with inline survivors when the caller asked for them.
       // Source-read failure is non-fatal: enrichment works without source lines
       // (severity comes from mutator type, not the code text).
-      if (survivorsPerFile > 0) {
+      // Skip the synchronous read when the call has already been cancelled:
+      // burning CPU on a cancelled triage row is wasted work (audit M5).
+      if (survivorsPerFile > 0 && !ctx?.signal?.aborted) {
         let sourceLines: string[] | undefined;
         try {
           sourceLines = readFileSync(resolve(rootCwd, file), 'utf8').split(/\r?\n/);
@@ -340,6 +369,14 @@ export async function handleTriageCall(
 
       return { row };
     } catch (error: unknown) {
+      // Audit C1 follow-up: an in-flight cancel (subprocess killed by the
+      // abort signal → ExecFailureError('ABORTED'), OR the signal flipped
+      // JUST as we entered this catch) must surface as 'Operation cancelled.'
+      // — NOT as the raw `'ABORT_ERR ...'` engine stderr text the caller
+      // can't branch on. Match the handler + estimate shapes exactly.
+      if (isCancel(error, ctx)) {
+        return { error: { file, error: 'Operation cancelled.' } };
+      }
       const message = error instanceof Error ? error.message : String(error);
       return { error: { file, error: message } };
     } finally {

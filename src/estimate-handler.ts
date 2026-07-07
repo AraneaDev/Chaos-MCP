@@ -1,12 +1,14 @@
-import { resolve, relative, isAbsolute } from 'path';
+import { relative, isAbsolute } from 'path';
 import { cpus } from 'os';
 import type { CallToolRequest, CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { detectProjectType, detectEnvironment } from './utils/project-detector.js';
 import { createSandbox } from './utils/sandbox.js';
-import { isRealPathInside, toolError } from './handler.js';
+import { toolError, mapCreateSandboxError } from './handler.js';
+import { validateFilePath } from './utils/file-path.js';
 import { estimateAudit, estimateNeedsSandbox } from './estimate.js';
 import type { ChaosConfig } from './utils/config-loader.js';
 import type { ToolContext } from './tool-context.js';
+import { isCancel } from './utils/cancel.js';
 
 /**
  * Handle `estimate_audit` tool invocations.
@@ -35,22 +37,11 @@ export async function handleEstimateCall(
 
   const args = request.params.arguments ?? {};
 
-  // ── Validate filePath before any other work (C2) ──
-  const rawFilePath = args.filePath;
-  if (typeof rawFilePath !== 'string' || rawFilePath.length === 0) {
-    return toolError(
-      'filePath is required and must be a non-empty string. Example: "src/math.ts".',
-    );
-  }
-
-  // Reject paths that resolve outside the current process cwd (C2).
-  const rootCwd = resolve(process.cwd());
-  const resolvedFile = resolve(rootCwd, rawFilePath);
-  if (!isRealPathInside(resolvedFile, rootCwd)) {
-    return toolError(
-      `Error: filePath must resolve within the workspace (${rootCwd}); received "${rawFilePath}".`,
-    );
-  }
+  // ── Validate filePath before any other work (C2 — shared via
+  //    validateFilePath; audit A3). ──
+  const filePathResult = validateFilePath(args.filePath);
+  if (!filePathResult.ok) return filePathResult.error;
+  const { resolvedFile, raw: rawFilePath } = filePathResult.value;
 
   // Validate withTiming: boolean or absent.
   if (args.withTiming !== undefined && typeof args.withTiming !== 'boolean') {
@@ -84,14 +75,14 @@ export async function handleEstimateCall(
 
     // Provision a sandbox only when required (Rust needs cargo-mutants --list;
     // withTiming needs a test run). Otherwise skip the expensive workspace copy.
-    let sandbox: ReturnType<typeof createSandbox> | undefined;
+    let sandbox: Awaited<ReturnType<typeof createSandbox>> | undefined;
     if (estimateNeedsSandbox(projectType, withTiming)) {
       try {
-        sandbox = createSandbox(relFile, env.workspaceRoot);
-      } catch {
-        return toolError(
-          `Chaos Engine Halted: Failed to provision sandbox isolation for ${rawFilePath}. Ensure the file exists and the workspace is accessible.`,
-        );
+        sandbox = await createSandbox(relFile, env.workspaceRoot, undefined, {
+          signal: ctx?.signal,
+        });
+      } catch (error: unknown) {
+        return mapCreateSandboxError(error, rawFilePath, ctx);
       }
     }
 
@@ -118,9 +109,16 @@ export async function handleEstimateCall(
     } finally {
       // Always clean up the sandbox, even if estimateAudit threw (C2).
       sandbox?.cleanup();
+    }    } catch (error: unknown) {
+      // Audit C1 follow-up: cancellation (mid-flight estimateAudit killed by
+      // the abort signal, or an AbortError from any other source) must surface
+      // as 'Operation cancelled.' — never as 'Chaos Engine Halted' — so the
+      // caller can reliably branch on the message. Otherwise a deliberate
+      // cancel from the MCP client looks identical to a real engine failure.
+      if (isCancel(error, ctx)) {
+        return toolError('Operation cancelled.');
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      return toolError(`Chaos Engine Halted: ${message}`);
     }
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
-    return toolError(`Chaos Engine Halted: ${message}`);
   }
-}

@@ -79,8 +79,10 @@ function parseCargoMutantsText(stdout: string, filePath: string): MutationResult
 
     // Extract line number and trailing description from
     // "MISSED   src/file.rs:42:9: replace add -> sub with ..." (the description
-    // separator may be a colon or spaces).
-    const locMatch = trimmed.match(/:(\d+):\d+:?\s*(.*)$/);
+    // separator may be a colon or spaces). cargo-mutants sometimes drops the
+    // column (e.g. "MISSED src/file.rs:42: replace ..."), so accept either:
+    // ":<line>:<col>:" or a bare ":<line>:" / ":<line>" at end-of-line (audit L7).
+    const locMatch = trimmed.match(/:(\d+)(?::\d+)?:?\s*(.*)$/);
     const mutantLine = locMatch ? parseInt(locMatch[1], 10) : 0;
     const desc = locMatch && locMatch[2] ? locMatch[2].trim() : '';
 
