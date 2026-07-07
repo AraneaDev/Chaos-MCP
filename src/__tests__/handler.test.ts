@@ -184,7 +184,12 @@ describe('handleToolCall', () => {
 
     expect(response.isError).toBeUndefined();
     expect(mockRun).toHaveBeenCalledWith('src/x.ts', expect.objectContaining({}));
-    expect(mockCreateSandbox).toHaveBeenCalledWith('src/x.ts', nestedRoot, undefined);
+    expect(mockCreateSandbox).toHaveBeenCalledWith(
+      'src/x.ts',
+      nestedRoot,
+      undefined,
+      expect.objectContaining({ signal: undefined }),
+    );
   });
 
   it('passes timeoutMs to RunOptions', async () => {
@@ -249,18 +254,9 @@ describe('handleToolCall', () => {
     );
   });
 
-  it('drops mutatorAllowlist from RunOptions (unsupported in StrykerJS v9)', async () => {
-    const mockRun = vi.fn().mockResolvedValue({
-      target: 'src/math.ts',
-      totalMutants: 0,
-      killed: 0,
-      survived: 0,
-      mutationScore: '100.00%',
-      vulnerabilities: [],
-    });
-
+  it('rejects a non-empty mutatorAllowlist (audit L1: StrykerJS v9 has no allowlist)', async () => {
+    const mockRun = vi.fn();
     MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
-
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',
@@ -272,10 +268,14 @@ describe('handleToolCall', () => {
       filePath: 'src/math.ts',
       mutatorAllowlist: ['ConditionalExpression', 'ArithmeticOperator'],
     });
-    await handleToolCall(request);
+    const response = await handleToolCall(request);
 
-    const opts = mockRun.mock.calls[0][1];
-    expect(opts.mutatorAllowlist).toBeUndefined();
+    // Silent drop used to mask a real config error. Now rejected up-front.
+    expect(response.isError).toBe(true);
+    expect((response.content[0] as { text: string }).text).toContain(
+      'mutatorAllowlist is not supported',
+    );
+    expect(mockRun).not.toHaveBeenCalled();
   });
 
   it('filters non-string values from mutatorDenylist', async () => {
@@ -602,14 +602,50 @@ describe('handleToolCall', () => {
     await handleToolCall(request);
 
     // createSandbox should receive ignorePatterns as 3rd arg
-    expect(mockCreateSandbox).toHaveBeenCalledWith('src/math.ts', '/workspace', [
-      '.test.ts',
-      'fixtures/',
-    ]);
+    expect(mockCreateSandbox).toHaveBeenCalledWith(
+      'src/math.ts',
+      '/workspace',
+      ['.test.ts', 'fixtures/'],
+      expect.objectContaining({ signal: undefined }),
+    );
     // RunOptions should also contain ignorePatterns
     expect(mockRun).toHaveBeenCalledWith(
       'src/math.ts',
       expect.objectContaining({ ignorePatterns: ['.test.ts', 'fixtures/'] }),
+    );
+  });
+
+  // Regression (C1 follow-up): the AbortSignal from the MCP request context must
+  // be forwarded verbatim into the createSandbox options so a mid-copy MCP
+  // cancel propagates into the sandbox. We pin the exact signal object (===),
+  // not just objectContaining, so the test fails if a future refactor
+  // accidentally closes over the wrong controller.
+  it('forwards ctx.signal into createSandbox so an MCP client cancel propagates', async () => {
+    const mockRun = vi.fn().mockResolvedValue({
+      target: 'src/math.ts',
+      totalMutants: 0,
+      killed: 0,
+      survived: 0,
+      mutationScore: '100.00%',
+      vulnerabilities: [],
+    });
+    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    mockDetectEnv.mockReturnValue({
+      projectType: 'typescript',
+      testRunner: 'vitest',
+      detectedRunner: 'vitest',
+      workspaceRoot: '/workspace',
+    });
+
+    const controller = new AbortController();
+    const request = makeRequest('audit_code_resilience', { filePath: 'src/math.ts' });
+    await handleToolCall(request, undefined, { signal: controller.signal });
+
+    expect(mockCreateSandbox).toHaveBeenCalledWith(
+      'src/math.ts',
+      '/workspace',
+      undefined,
+      expect.objectContaining({ signal: controller.signal }),
     );
   });
 
@@ -738,7 +774,10 @@ describe('handleToolCall', () => {
     const response = await handleToolCall(request);
 
     expect(response.isError).toBe(true);
-    expect((response.content[0] as { text: string }).text).toContain('lineScope must be');
+    // (H5 added start/end upper bound — message now names 'lineScope.end' specifically.)
+    expect((response.content[0] as { text: string }).text).toContain(
+      'lineScope.end must be an integer between lineScope.start and',
+    );
   });
 
   it('returns error when ignorePatterns contains non-string elements (M7 regression)', async () => {
@@ -2663,7 +2702,10 @@ describe('handleToolCall', () => {
     const response = await handleToolCall(request);
 
     expect(response.isError).toBe(true);
-    expect((response.content[0] as { text: string }).text).toContain('lineScope must be');
+    // (H5 added start upper bound; error names 'lineScope.start' specifically.)
+    expect((response.content[0] as { text: string }).text).toContain(
+      'lineScope.start must be an integer between 1 and',
+    );
     expect(mockRun).not.toHaveBeenCalled();
   });
 

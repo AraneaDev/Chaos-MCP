@@ -137,10 +137,9 @@ E2E tests are **opt-in** — they're slow and have environmental dependencies (s
 
 ```bash
 E2E=1 npx vitest run src/__tests__/e2e-mcp.test.ts        # MCP audit pipeline (spawns server, runs audit_code_resilience against a fixture)
-E2E_STRYKER=1 npx vitest run src/__tests__/e2e-stryker.test.ts  # StrykerJS programmatic mutations (fixture + real Stryker run)
 ```
 
-Both flags must be set explicitly — without them the tests compile-load but noop (the env-var gate is in the test file itself).
+The flag must be set explicitly — without it the test compile-loads but noops (the env-var gate is in the test file itself).
 
 ### CI invocation (`.github/workflows/e2e.yml`)
 
@@ -161,6 +160,3 @@ Both trigger paths run the full E2E suite (MCP pipeline + Stryker mutations) on 
 ### What gets exercised
 
 - **`e2e-mcp.test.ts`** — full-stdio JSON-RPC conversation with a real MCP server child process. Verifies tool registration, schema validation, and the `audit_code_resilience` happy path against a fixture project (uses `os.tmpdir()` + sandbox isolation). Has a leak detector that snapshots the tmpdir in `beforeAll` and only flags dirs created *by this run* (snapshot-relative, not absolute).
-- **`e2e-stryker.test.ts`** — programmatic Stryker mutation test. Builds a temp fixture with a `divide()` function (intentional untested `b === 0` branch), symlinks the host's `node_modules` to avoid `npm install`, invokes `new Stryker({ testRunner: 'vitest', ... }).runMutationTest()`, and asserts at least one mutant killed + one surviving + a mutation score strictly between 0% and 100%.
-
-If `@stryker-mutator/core` and `@stryker-mutator/vitest-runner` majors get misaligned in `package.json`, the Stryker test self-skips with a `console.error` so the misconfiguration is loud in CI.

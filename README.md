@@ -49,7 +49,7 @@ Chaos-MCP does **not** bundle the per-language mutation engines or install them 
 
 | Language | Engine | Install |
 | --- | --- | --- |
-| TypeScript / JavaScript | [StrykerJS](https://stryker-mutator.io/) | `npm install --save-dev @stryker-mutator/core` (in the target project) |
+| TypeScript / JavaScript | [StrykerJS](https://stryker-mutator.io/) | `npm install --save-dev @stryker-mutator/core` (in the target project) — note: StrykerJS 9.x's vitest-runner is not compatible with vitest 3.x's dropped `--related` API. If the target uses vitest 3.x, downgrade it to `vitest@^2.1.x` for the audit, or wait for StrykerJS 10.x. |
 | Python | [cosmic-ray](https://github.com/sixty-north/cosmic-ray) | `pipx install cosmic-ray` — or `pip install cosmic-ray` inside a virtualenv |
 | Rust | [cargo-mutants](https://github.com/sourcefrog/cargo-mutants) | `cargo install cargo-mutants` |
 | PHP | [Infection](https://infection.github.io/) | `composer require --dev infection/infection` — also enable a coverage driver (Xdebug or PCOV) |

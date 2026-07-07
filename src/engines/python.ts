@@ -148,57 +148,47 @@ export function parseCosmicRayDump(dumpText: string, filePath: string): Mutation
 }
 
 /**
- * Resolve which Python interpreter the generated test-command should invoke.
+ * Probe which Python interpreter is available on PATH. The result is cached
+ * for the lifetime of the engine instance — earlier versions of this code
+ * used a module-global cache (`let cachedInterpreter`), but module globals
+ * couple tests to one another (a test that runs once with `CHAOS_MCP_PYTHON=x`
+ * poisoned the cache for every subsequent test in the same Node process —
+ * audit A5).
  *
- * Hardcoding `python` is a silent failure on the many modern systems that ship
- * only `python3` (Debian/Ubuntu without `python-is-python3`, most CI images):
- * cosmic-ray's `baseline` returns exit 0 even when the test binary is missing,
- * and every mutant is then marked `incompetent` — which {@link parseCosmicRayDump}
- * drops from the denominator, yielding a meaningless `total:0` / `100%`.
- *
- * Precedence: the `CHAOS_MCP_PYTHON` env override (deterministic, used by tests)
- * → `python` when it is actually on PATH (back-compat) → `python3`. Cached after
- * the first probe.
+ * Precedence: the `CHAOS_MCP_PYTHON` env override (deterministic, used by
+ * tests) → `python` when it is actually on PATH (back-compat) → `python3`.
  */
-let cachedInterpreter: string | undefined;
-function resolvePythonInterpreter(): string {
-  if (cachedInterpreter) return cachedInterpreter;
+function probePythonInterpreter(): string | undefined {
   const override = process.env.CHAOS_MCP_PYTHON?.trim();
-  if (override) {
-    cachedInterpreter = override;
-    return override;
-  }
+  if (override) return override;
   try {
     const probe = spawnSync('python', ['--version'], { stdio: 'ignore' });
-    if (!probe.error && probe.status === 0) {
-      cachedInterpreter = 'python';
-      return 'python';
-    }
+    if (!probe.error && probe.status === 0) return 'python';
   } catch {
     // fall through to python3
   }
-  cachedInterpreter = 'python3';
-  return cachedInterpreter;
-}
-
-/** Reset the cached interpreter probe. Exported for tests only. */
-export function _resetInterpreterCache(): void {
-  cachedInterpreter = undefined;
+  return 'python3';
 }
 
 /** Resolve the shell test-command cosmic-ray runs per mutant. */
-function resolveTestCommand(options?: RunOptions): string {
+function resolveTestCommand(interpreter: string, options?: RunOptions): string {
   const runner = options?.testRunner;
-  const py = resolvePythonInterpreter();
   // A custom non-pytest/unittest runner string is used verbatim as the command.
   let base: string;
-  if (runner === 'unittest') base = `${py} -m unittest`;
+  if (runner === 'unittest') base = `${interpreter} -m unittest`;
   else if (runner && runner !== 'pytest' && !runner.includes('pytest')) base = runner;
-  else base = `${py} -m pytest -x -q`;
+  else base = `${interpreter} -m pytest -x -q`;
 
   const selection = options?.pythonTestSelection;
   if (selection && selection.length > 0) base += ` ${selection.join(' ')}`;
   return base;
+}
+
+/** Reset the cached interpreter probe. Exported for tests only. */
+export function _resetInterpreterCache(): void {
+  // No-op kept for source-level compatibility with existing tests; the cache
+  // now lives on the engine instance (see PythonEngine.constructor) and is
+  // reset by constructing a fresh engine. (Audit A5.)
 }
 
 /**
@@ -217,15 +207,27 @@ function resolveTestCommand(options?: RunOptions): string {
  * supported (whole-file); `operators` can restrict the mutation set via config.
  */
 export class PythonEngine extends BaseEngine {
+  /** Per-instance interpreter probe (audit A5). Empty until first {@link run}. */
+  private cachedInterpreter: string | undefined;
+
+  /** Lazy, one-time probe. Tests can construct a fresh engine to reset cache. */
+  private interpreter(): string {
+    if (this.cachedInterpreter) return this.cachedInterpreter;
+    this.cachedInterpreter = probePythonInterpreter() ?? 'python3';
+    return this.cachedInterpreter;
+  }
+
   async run(filePath: string, options?: RunOptions): Promise<MutationResult> {
     const cwd = options?.workDir ?? process.cwd();
     const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const configPath = join(cwd, CONFIG_NAME);
     const sessionPath = join(cwd, SESSION_NAME);
 
+    const interpreter = this.interpreter();
+    const testCommand = resolveTestCommand(interpreter, options);
     const config = buildCosmicRayConfig({
       modulePath: filePath,
-      testCommand: resolveTestCommand(options),
+      testCommand,
       timeoutSeconds: DEFAULT_PER_MUTANT_TIMEOUT_S,
       excludeOperators: options?.pythonExcludeOperators,
     });
@@ -237,7 +239,7 @@ export class PythonEngine extends BaseEngine {
     }
 
     if (isVerbose()) {
-      log(`PythonEngine: cosmic-ray on ${filePath} (test-command: ${resolveTestCommand(options)})`);
+      log(`PythonEngine: cosmic-ray on ${filePath} (test-command: ${testCommand})`);
     }
 
     // Step 1: baseline — run the unmutated suite once. A failure here means the
@@ -319,7 +321,7 @@ export class PythonEngine extends BaseEngine {
         `cosmic-ray ran ${completed} mutant(s) on ${filePath} but scored none of them — ` +
           `every mutation came back 'incompetent', meaning the test command never produced a ` +
           `real pass/fail. This usually means the Python interpreter or pytest is missing, or ` +
-          `the test-command is wrong. Resolved test-command: "${resolveTestCommand(options)}". ` +
+          `the test-command is wrong. Resolved test-command: "${testCommand}". ` +
           `Verify it runs the suite from the project root before re-auditing.`,
       );
     }

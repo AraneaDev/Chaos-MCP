@@ -1,4 +1,5 @@
-import { mkdtempSync, cpSync, symlinkSync, rmSync, existsSync, statSync, readdirSync } from 'fs';
+import { cp } from 'fs/promises';
+import { mkdtempSync, symlinkSync, rmSync, existsSync, statSync, readdirSync } from 'fs';
 import { join, resolve, isAbsolute, relative, sep } from 'path';
 import { tmpdir } from 'os';
 import { randomUUID } from 'crypto';
@@ -64,8 +65,8 @@ function ensureExitHandler(): void {
 }
 
 /**
- * Returns true when `candidate` is `root` itself, or a file/directory
- * strictly inside `root` (no `..` traversal, no absolute escape).
+ * Returns true when `candidate` is `root` itself, or a path strictly inside
+ * `root` (no `..` traversal, no absolute escape).
  *
  * Defense-in-depth against path traversal (audit finding C2): even if the
  * handler layer forgets to validate `filePath`, the sandbox refuses to
@@ -94,6 +95,32 @@ export interface SandboxContext {
   targetFile: string;
   /** Remove the sandbox directory and all its contents */
   cleanup: () => void;
+}
+
+/**
+ * Optional per-call options for {@link createSandbox}.
+ *
+ * `signal` lets the MCP request context (or any caller) cancel the copy in
+ * flight. The signal is checked at three short boundaries (before the async
+ * copy starts, after it returns, and after each post-copy step). Rejection
+ * throws `Error('Sandbox creation cancelled.')` with `name = 'AbortError'`
+ * so callers can branch on a standard abort marker.
+ *
+ * Mid-copy cancellation is best-effort: `fs.cp` does not expose a cancel
+ * hook, so once disk I/O has started it cannot be aborted without forcibly
+ * killing the process. The signal still avoids the post-copy symlink + verify
+ * phases; on Linux the kernel schedules both phases against an aborted
+ * promise.
+ */
+export interface CreateSandboxOptions {
+  signal?: AbortSignal;
+}
+
+/** Standard-shaped rejection for an aborted createSandbox. */
+function abortError(): Error {
+  const e = new Error('Sandbox creation cancelled.');
+  e.name = 'AbortError';
+  return e;
 }
 
 /** Directories and files that should never be copied into the sandbox. */
@@ -132,7 +159,7 @@ const SYMLINK_DIRS = ['node_modules', '.venv', 'venv', 'vendor'];
 
 /**
  * Maximum workspace size (in bytes) to copy without warning.
- * 200 MB — beyond this, cpSync can be slow on large repos.
+ * 200 MB — beyond this, an async copy can still take seconds (audit C1).
  */
 const MAX_WORKSPACE_SIZE_BYTES = 200 * 1024 * 1024;
 
@@ -175,11 +202,15 @@ function safeSymlink(target: string, path: string): void {
  * Used as a pre-copy guard to warn on very large workspaces.
  *
  * Skips ALWAYS_EXCLUDE directories AND the caller's ignorePatterns so the
- * estimate matches what cpSync will actually copy — otherwise the warning would
- * fire for bytes that are never copied (audit Low#3).
+ * estimate matches what the copy will actually walk — otherwise the warning
+ * would fire for bytes that are never copied (audit Low#3).
  */
-function estimateWorkspaceSize(workspaceRoot: string, ignorePatterns?: string[]): number {
-  // Normalise ignore patterns the same way the cpSync filter does: strip a
+function estimateWorkspaceSize(
+  workspaceRoot: string,
+  ignorePatterns?: string[],
+  signal?: AbortSignal,
+): number {
+  // Normalise ignore patterns the same way the cp filter does: strip a
   // single trailing separator and drop empties (which would match everything).
   const excludeSegments = new Set<string>();
   for (const pattern of ignorePatterns ?? []) {
@@ -193,6 +224,15 @@ function estimateWorkspaceSize(workspaceRoot: string, ignorePatterns?: string[])
     let total = 0;
 
     while (stack.length > 0) {
+      // CodeRabbit finding: this walk is synchronous, so a large workspace
+      // could block the event loop long enough that an MCP abort is not
+      // observed until the whole scan finishes. Check the signal per directory
+      // so cancellation is honoured promptly, and stop early once we already
+      // know the workspace exceeds the warning threshold — the result is only
+      // used for a boolean `size > MAX_WORKSPACE_SIZE_BYTES` warning, so there
+      // is nothing to gain by continuing to walk past the cap.
+      if (signal?.aborted) throw abortError();
+      if (total > MAX_WORKSPACE_SIZE_BYTES) break;
       const current = stack.pop();
       if (current === undefined) break;
       let entries;
@@ -220,7 +260,10 @@ function estimateWorkspaceSize(workspaceRoot: string, ignorePatterns?: string[])
     }
 
     return total;
-  } catch {
+  } catch (err) {
+    // Cancellation must escape — the enclosing best-effort catch only exists to
+    // swallow transient fs errors during the size estimate, not to mask an abort.
+    if (err instanceof Error && err.name === 'AbortError') throw err;
     return 0;
   }
 }
@@ -230,14 +273,24 @@ function estimateWorkspaceSize(workspaceRoot: string, ignorePatterns?: string[])
  * heavyweight directories (node_modules, .venv, target) rather than copying
  * them. Returns a SandboxContext the caller must clean up.
  *
+ * Asynchronous. The async `fs.cp` call releases the event loop during disk
+ * I/O, so a 200 MB workspace copy no longer holds it for tens of seconds
+ * (audit C1). An optional `AbortSignal` lets the MCP client cancel mid-flight
+ * at the phase boundaries (before the copy, after the copy, before the
+ * symlinks, before the final existence check). A cancel rejects with
+ * `Error('Sandbox creation cancelled.')` (`name = 'AbortError'`).
+ *
  * @param targetFile — workspace-relative path (e.g. "src/utils/math.ts")
  * @param workspaceRoot — absolute path to the resolved workspace root
+ * @param ignorePatterns — workspace-relative dir/file segments to exclude
+ * @param options — optional AbortSignal; absence disables cancel
  */
-export function createSandbox(
+export async function createSandbox(
   targetFile: string,
   workspaceRoot: string,
   ignorePatterns?: string[],
-): SandboxContext {
+  options?: CreateSandboxOptions,
+): Promise<SandboxContext> {
   const id = randomUUID();
   const absoluteWorkspace = resolve(workspaceRoot);
 
@@ -259,6 +312,9 @@ export function createSandbox(
     );
   }
 
+  // Honour an already-aborted signal before doing any pre-copy work.
+  if (options?.signal?.aborted) throw abortError();
+
   // ── Pre-copy: warn on very large workspaces ──
   // Always estimate and warn on large workspaces. Previously gated behind
   // isVerbose() which suppressed the warning in normal mode when it was
@@ -268,13 +324,16 @@ export function createSandbox(
   // unexpected process termination.
   ensureExitHandler();
 
-  const size = estimateWorkspaceSize(absoluteWorkspace, ignorePatterns);
+  const size = estimateWorkspaceSize(absoluteWorkspace, ignorePatterns, options?.signal);
   if (size > MAX_WORKSPACE_SIZE_BYTES) {
     warn(
       `Workspace is ~${(size / 1024 / 1024).toFixed(0)}MB — sandbox copy may be slow. ` +
         'Consider using ignorePatterns to exclude large directories.',
     );
   }
+
+  // Honour another abort checkpoint before allocating disk for the temp dir.
+  if (options?.signal?.aborted) throw abortError();
 
   // Use os.tmpdir() for cross-platform temp directory support (TMPDIR on
   // macOS/Linux, TEMP/TMP on Windows). Previously hard-coded to '/tmp'.
@@ -293,7 +352,10 @@ export function createSandbox(
     // with a confusing "target not found" (Med#7).
     const absoluteTarget = resolve(absoluteWorkspace, targetFile);
 
-    cpSync(absoluteWorkspace, sandboxDir, {
+    // ── Audit C1: async cp releases the event loop during disk I/O. ──
+    // The filter callback is synchronous — Node's async fs.cp calls the
+    // filter sync per entry and accumulates results internally.
+    await cp(absoluteWorkspace, sandboxDir, {
       recursive: true,
       filter: (src: string) => {
         // Force-include the target file itself and any ancestor directory.
@@ -321,6 +383,8 @@ export function createSandbox(
       dereference: false,
     });
 
+    if (options?.signal?.aborted) throw abortError();
+
     // ── Step 2: Symlink heavyweight directories ──
     for (const dirName of SYMLINK_DIRS) {
       const src = join(absoluteWorkspace, dirName);
@@ -329,6 +393,8 @@ export function createSandbox(
         safeSymlink(src, dst);
       }
     }
+
+    if (options?.signal?.aborted) throw abortError();
 
     // ── Step 3: Verify the target file exists in the sandbox ──
     const absoluteTargetPath = join(sandboxDir, targetFile);

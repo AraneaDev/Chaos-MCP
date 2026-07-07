@@ -18,6 +18,39 @@ All notable changes to Chaos-MCP are documented in this file.
 
 ## [Unreleased]
 
+### Changed — StrykerJS internal-mutation bootstrap parked
+
+- **`@stryker-mutator/*` devDeps uninstalled.** The chaos-mcp-internal mutation-testing bootstrap (the `mutate` script + `stryker.config.mjs`) was parked because the only currently-published Stryker runners are stuck on vitest 2.x and vitest 3.0 dropped the `--related` / `config.related` programmatic API both `@stryker-mutator/vitest-runner@9.6.1` and the (unpublished) `@stryker-mutator/command-runner@9.x` relied on. StrykerJS 10.x has not shipped yet (npm latest is still 9.6.1), so the only realistic revival path is a temporary vitest downgrade. The user-facing STRYKER-ONLY_OPTIONS, `stryker` config section, and `ExecutableTool` enum entries are preserved unchanged — users who install Stryker locally on their target workspace can still invoke `audit_code_resilience` with their own Stryker configuration.
+- **`stryker.config.mjs`** — tombstoned with `mutate: []` (explicit empty scope) and full resurrection steps A/B/C documented in the file header. Since `@stryker-mutator/*` devDeps are uninstalled at HEAD, this file is effectively documentation-only: `npx stryker run` is unreachable from the project's normal usage paths because the binary is not in `node_modules`. (If Stryker is later re-installed for resurrection work, this config WILL load — but Stryker 9.6's dry-run phase runs BEFORE mutation processing and would still fail with the same `ConfigError: No tests were executed` that prompted the park. The empty scope only guards the mutation-side-effects, not enumeration. See the in-file header + `docs/stryker-mutation-testing-retrospective.md`.)
+- **`scripts/install.sh` / `package.json` scripts** — the `mutate` npm script was removed; `npm run mutate` is no longer wired.
+- **`src/__tests__/e2e-stryker.test.ts`** — deleted. It had top-level `import { Stryker } from '@stryker-mutator/core'` and the package is no longer present in `node_modules` (Vite's module loader would fail at file-load time otherwise). The Sibling `e2e-mcp.test.ts` covers the integration regression scenarios.
+- **`CONTRIBUTING.md`** — removed the now-stale local-invocation block for `e2e-stryker.test.ts` and the "What gets exercised" Stryker bullet. The remaining `When to trigger an E2E run` entry still mentions Stryker because users commonly upgrade their own Stryker installation (the `npm install --save-dev @stryker-mutator/core` in `README.md` is unchanged for that reason).
+- **Path B (vitest@2.x downgrade) attempted and ruled out.** A side branch `feat/stryker-vitest2` pinned `vitest@^2.1.0` + `@stryker-mutator/{core,vitest-runner}@^9.6.1` and re-installed the `mutate` script + a revival `stryker.config.mjs` to attempt the F1 baseline. The dry-run STILL FAILED on vitest@2.x with `ConfigError: No tests were executed` — same wall as on vitest@3.x. StrykerJS 9.6's vitest-runner appears incompatible with this project's `vitest.config.ts` regardless of vitest major, likely due to its `tests/global-setup.ts` rebuild block + include-glob resolution interacting with Stryker's `--related` lookup. Attempt rolled back on the side branch (which is force-pushed to origin and preserved as a documentation tombstone); awaiting StrykerJS 10.x or a vitest3→runner shim (Path C) before any future revival attempt.
+
+### Fixed — `isCancel` regression coverage + cancellation surface unification
+
+- **`src/utils/cancel.ts` (new)** — single `isCancel(error, ctx?)` predicate covers all three cancellation shapes (`ctx.signal.aborted === true`, `error.name === 'AbortError'`, `ExecFailureError.code === 'ABORTED'`). Replaces ad-hoc duplicates in `handler.ts`, `estimate-handler.ts`, and `triage-handler.ts` that had drifted apart (audit C1 followup).
+- **`src/__tests__/cancel.test.ts` (new)** — 17 cases across all three branches plus negative interactions.
+- **`handler.ts`** — `mapCreateSandboxError` accepts an optional ctx, both create-sandbox and engine catch arms route via `isCancel`.
+- **`estimate-handler.ts`** — outer catch routes cancellation to `'Operation cancelled.'` instead of `'Chaos Engine Halted: …'`.
+- **`triage-handler.ts`** — per-row `createSandbox` rejection and `auditOne` outer catch both route via `isCancel`.
+
+### Fixed — `WRITE_QUEUE` leak in `suppression.ts`
+
+- Both halves of the cleanup invariant fixed: the chained **`Promise` identity** used to compare unequally in the `.finally` delete step (always leaked a dead reference per workspace per write), and the **return value** was the un-cleaned `next` so callers resumed before cleanup ran. Now the post-cleanup promise is returned and the cleanup comparator matches the actual stored identity.
+
+### Fixed — backtick-fence bypass in `prompts.ts`
+
+- `quoteUserValue` regex now escapes **every** backtick (not just literal 3-backtick sequences). A user-supplied value with 4+ backticks could previously escape the surrounding fenced code block.
+
+### Fixed — cli-* baseline rebuild race via vitest `globalSetup`
+
+- **`tests/global-setup.ts` (new)** + **`vitest.config.ts`** — `globalSetup` rebuilds `./build/index.js` only when missing or when a tracked production source is newer (mtime-gated via `git ls-files` pathspec skip). Skips rebuilds under Stryker (`STRYKER_*` env-var guard — moot now that Stryker is parked, but the guard harmlessly idle-skips). Cleared the recurring `cli-version`, `cli-help`, `cli-smoke`, `cli-validate-config` baseline failures.
+
+### Tests
+
+- **`src/__tests__/suppression.test.ts`** — concurrent stress test (H3): `Promise.all([add, add, add, remove, add, add, add])` on the same workspace key returns the expected merged state and `_writeQueueSize() === 0` after the chain settles.
+
 ## [1.2.0] - 2026-07-04
 
 ### Fixed — `mutatorDenylist` had no effect on StrykerJS

@@ -1,12 +1,15 @@
-import { resolve, isAbsolute, relative, join } from 'path';
-import { existsSync, realpathSync, readFileSync } from 'fs';
+import { isAbsolute, relative, join } from 'path';
+import { existsSync, readFileSync } from 'fs';
+import { isRealPathInside } from './utils/path-safety.js';
+import { validateFilePath } from './utils/file-path.js';
 import type { CallToolRequest, CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import type { ToolContext } from './tool-context.js';
 import { BaseEngine, RunOptions, MutationResult } from './engines/base.js';
 import { ENGINE_REGISTRY, type SupportedProjectType } from './engines/registry.js';
 import { detectProjectType, detectEnvironment, EnvironmentInfo } from './utils/project-detector.js';
 import { createSandbox } from './utils/sandbox.js';
-import { runShellCommand, ExecFailureError } from './utils/exec.js';
+import { runShellCommand } from './utils/exec.js';
+import { isCancel } from './utils/cancel.js';
 import { ChaosConfig } from './utils/config-loader.js';
 import { log, isVerbose } from './utils/logger.js';
 import { formatResultAsText, buildResultPayload, type EnrichContext } from './format.js';
@@ -32,36 +35,41 @@ import {
   type MutantKey,
 } from './verify.js';
 
-/**
- * Returns true when `candidate` is `root` itself, or a path strictly inside
- * `root` (no `..` traversal, no absolute escape).
- *
- * Used by the audit_code_resilience handler (audit finding C2) to enforce
- * the workspace-boundary rule: callers cannot audit files outside the
- * current process cwd.
- */
-function isPathInside(candidate: string, root: string): boolean {
-  const rel = relative(root, candidate);
-  return !rel.startsWith('..') && !isAbsolute(rel);
-}
-
-/** Resolve symlinks (falling back to the lexical path when the target does not
- *  exist), then test lexical containment. Defense-in-depth against a symlink
- *  whose lexical path is inside the workspace but resolves outside it. */
-export function isRealPathInside(candidate: string, root: string): boolean {
-  const real = (p: string): string => {
-    try {
-      return realpathSync(p);
-    } catch {
-      return p; // path does not exist yet — can't resolve symlinks, use lexical
-    }
-  };
-  return isPathInside(real(candidate), real(root));
-}
-
-/** Build an MCP error response from a single message. */
+// Re-export so legacy callers (estimate-handler, triage-handler, external
+// consumers) keep working. New code prefers importing from
+// `./utils/path-safety.js` directly. (Audit A3.)
+export { isRealPathInside };
 export function toolError(text: string): CallToolResult {
   return { content: [{ type: 'text', text }], isError: true };
+}
+
+/**
+ * Map a `createSandbox` rejection to a consistent `toolError` so the three
+ * callers (handler, estimate, triage) cannot drift on the cancel/error shapes
+ * (C1 follow-up).
+ *
+ * - Cancellation (audit C1 mid-call cancel OR `ctx.signal.aborted` flipped JUST
+ *   as we entered the catch) → `'Operation cancelled.'` so every cancel path
+ *   surfaces the SAME message — phase-boundary checks, sandbox rejection, and
+ *   engine-run cancellation all map to one string the caller can branch on
+ *   without parsing the source.
+ * - Any other rejection → `'Chaos Engine Halted: Failed to provision sandbox
+ *   isolation for <filePath>: <message>. Ensure the file exists and the
+ *   workspace is accessible.'` (colon-separated, not parenthesised — the
+ *   previous `(message). Ensure…` read like a citation, not a sentence).
+ */
+export function mapCreateSandboxError(
+  error: unknown,
+  filePath: string,
+  ctx?: ToolContext,
+): CallToolResult {
+  if (isCancel(error, ctx)) {
+    return toolError('Operation cancelled.');
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return toolError(
+    `Chaos Engine Halted: Failed to provision sandbox isolation for ${filePath}: ${message}. Ensure the file exists and the workspace is accessible.`,
+  );
 }
 
 /**
@@ -119,23 +127,22 @@ function ignoredOptionsFor(projectType: ProjectType, args: ToolArgs): string[] {
 
 /**
  * Validate the optional tool arguments that are not covered by the JSON schema's
- * coarse typing. Returns an error {@link CallToolResult} on the first failure, or `null`
- * when every provided argument is well-formed.
+ * coarse typing. Returns an error {@link CallToolResult} combining ALL failures
+ * (M2), or `null` when every provided argument is well-formed.
  *
  * Covers audit findings H5 (concurrency), M5 (lineScope), M7 (ignorePatterns is
- * validated earlier), plus perMutantTimeoutMs and prebuildCommand.
+ * validated earlier), plus perMutantTimeoutMs, prebuildCommand, line upper bound,
+ * mutator counts, and the mutatorAllowlist stance (L1).
  */
 export function validateToolArgs(args: ToolArgs): CallToolResult | null {
-  // Each validator returns an error message for the first malformed argument it
-  // owns, or null. Run in a fixed order so the first failure reported is stable.
-  // Note: `args.key !== undefined` already covers the "absent key" case (an
-  // absent key reads as undefined), so a separate `'key' in args` guard would
-  // be redundant.
+  const errors: string[] = [];
   for (const validate of TOOL_ARG_VALIDATORS) {
     const message = validate(args);
-    if (message !== null) return toolError(message);
+    if (message !== null) errors.push(message);
   }
-  return null;
+  if (errors.length === 0) return null;
+  if (errors.length === 1) return toolError(errors[0]);
+  return toolError(`Multiple argument errors (${errors.length}):\n  - ${errors.join('\n  - ')}`);
 }
 
 /** perMutantTimeoutMs: must be a positive number. */
@@ -186,11 +193,29 @@ function validateLineScopeArg(args: ToolArgs): string | null {
     typeof ls.start !== 'number' ||
     typeof ls.end !== 'number' ||
     !Number.isInteger(ls.start) ||
-    !Number.isInteger(ls.end) ||
-    ls.start < 1 ||
-    ls.end < ls.start
+    !Number.isInteger(ls.end)
   ) {
     return 'lineScope must be { start: integer >= 1, end: integer >= start }. Example: { start: 10, end: 45 }.';
+  }
+  if (ls.start < 1 || ls.start > MAX_LINE_NUMBER) {
+    return `lineScope.start must be an integer between 1 and ${MAX_LINE_NUMBER}.`;
+  }
+  if (ls.end < ls.start || ls.end > MAX_LINE_NUMBER) {
+    return `lineScope.end must be an integer between lineScope.start and ${MAX_LINE_NUMBER}.`;
+  }
+  return null;
+}
+
+/** Reasonable upper bound on a source-file line number. ~50k is generous; */
+const MAX_LINE_NUMBER = 100_000;
+
+/** Assert every line field is a positive integer ≤ MAX_LINE_NUMBER (H5). */
+function assertValidLine(line: unknown): string | null {
+  if (typeof line !== 'number' || !Number.isInteger(line) || line < 1) {
+    return 'line must be an integer >= 1.';
+  }
+  if (line > MAX_LINE_NUMBER) {
+    return `line must be <= ${MAX_LINE_NUMBER}.`;
   }
   return null;
 }
@@ -236,13 +261,19 @@ function validateBaselineArg(args: ToolArgs): string | null {
         entry === null ||
         typeof entry !== 'object' ||
         Array.isArray(entry) ||
-        !Number.isInteger(entry.line) ||
-        (entry.line as number) < 1 ||
         typeof entry.mutators !== 'object' ||
         entry.mutators === null ||
         Array.isArray(entry.mutators)
       ) {
         return 'each baseline entry must be { line: integer >= 1, mutators: object of mutator→count }.';
+      }
+      const lineErr = assertValidLine(entry.line);
+      if (lineErr !== null) return `baseline ${key}: ${lineErr}`;
+      // H5 / M9: counters inside mutators must be positive integers.
+      for (const cnt of Object.values(entry.mutators as Record<string, unknown>)) {
+        if (typeof cnt !== 'number' || !Number.isInteger(cnt) || cnt < 1) {
+          return 'baseline mutator counts must be positive integers.';
+        }
       }
       pairCount += Object.keys(entry.mutators as Record<string, unknown>).length;
     }
@@ -251,6 +282,23 @@ function validateBaselineArg(args: ToolArgs): string | null {
     return 'baseline must contain at least one (line, mutator) entry across survivors/noCoverage.';
   }
   return null;
+}
+
+/** mutatorAllowlist: StrykerJS v9 cannot express an allowlist. Reject up-front so
+ *  the caller gets a clear error instead of a silent no-op (L1). */
+function validateMutatorAllowlistArg(args: ToolArgs): string | null {
+  if (args.mutatorAllowlist === undefined) return null;
+  if (!Array.isArray(args.mutatorAllowlist)) {
+    return 'mutatorAllowlist must be an array of strings. (StrykerJS v9 has no allowlist — use mutatorDenylist.)';
+  }
+  if (args.mutatorAllowlist.length === 0) {
+    return 'mutatorAllowlist is not supported in StrykerJS v9 — pass mutatorDenylist instead.';
+  }
+  if (!args.mutatorAllowlist.every((v) => typeof v === 'string' && v.trim().length > 0)) {
+    return 'mutatorAllowlist entries must be non-empty strings.';
+  }
+  // A non-empty allowlist is itself a configuration error in v9.
+  return 'mutatorAllowlist is not supported in StrykerJS v9 — use mutatorDenylist instead, or supply your own stryker.config.json with explicit mutator settings.';
 }
 
 /** enrich: must be a boolean when present. */
@@ -327,14 +375,14 @@ function validateMutantKeyArray(
       entry === null ||
       typeof entry !== 'object' ||
       Array.isArray(entry) ||
-      !Number.isInteger(entry.line) ||
-      (entry.line as number) < 1 ||
       typeof entry.mutator !== 'string' ||
       entry.mutator.trim().length === 0 ||
       (allowReason && entry.reason !== undefined && typeof entry.reason !== 'string')
     ) {
       return `each ${field} entry must be { line: integer >= 1, mutator: non-empty string${allowReason ? ', reason?: string' : ''} }.`;
     }
+    const lineErr = assertValidLine(entry.line);
+    if (lineErr !== null) return `${field}: ${lineErr}`;
   }
   return null;
 }
@@ -354,11 +402,15 @@ function validateMinScoreArg(args: ToolArgs): string | null {
   return validateMinScore(args.minScore);
 }
 
-/** Ordered per-field validators run by {@link validateToolArgs}. */
+/** Ordered per-field validators run by {@link validateToolArgs}.
+ *  Each validator returns an error message OR null; {@link validateToolArgs}
+ *  accumulates ALL failures (M2) and returns a single combined message so the
+ *  caller doesn't have to fix-retry one error at a time. */
 const TOOL_ARG_VALIDATORS: ((args: ToolArgs) => string | null)[] = [
   validatePerMutantTimeoutMs,
   validatePrebuildCommand,
   validateConcurrencyArg,
+  validateMutatorAllowlistArg,
   validateRunIdArg, // before lineScope/diffBase/baseline so mutual-exclusion is reported first
   validateLineScopeArg,
   validateDiffBaseArg,
@@ -927,26 +979,11 @@ export async function handleToolCall(
   // Milestone 1: signal that argument validation is beginning.
   ctx?.reportProgress?.(1, 4, 'validating');
 
-  const rawFilePath = request.params.arguments?.filePath;
-
-  // ── Audit C2 — validate filePath before any other work ──
-  // Reject missing, non-string, or empty paths with a clear MCP error.
-  if (typeof rawFilePath !== 'string' || rawFilePath.length === 0) {
-    return toolError(
-      'filePath is required and must be a non-empty string. Example: "src/utils/math.ts".',
-    );
-  }
-
-  // Reject paths that resolve outside the current process cwd — defends
-  // against an LLM being tricked into auditing arbitrary host files.
-  const rootCwd = resolve(process.cwd());
-  const resolvedFile = resolve(rootCwd, rawFilePath);
-  if (!isRealPathInside(resolvedFile, rootCwd)) {
-    return toolError(
-      `Error: filePath must resolve within the workspace (${rootCwd}); received "${rawFilePath}".`,
-    );
-  }
-  const filePath = rawFilePath;
+  // ── Audit C2 — validate filePath before any other work (now shared via
+  //    validateFilePath; audit A3). ──
+  const filePathResult = validateFilePath(request.params.arguments?.filePath);
+  if (!filePathResult.ok) return filePathResult.error;
+  const { resolvedFile, raw: filePath } = filePathResult.value;
 
   try {
     const projectType = detectProjectType(filePath);
@@ -1023,13 +1060,15 @@ export async function handleToolCall(
     ctx?.reportProgress?.(2, 4, 'provisioning sandbox');
 
     // Provision a sandbox so mutation runs never touch the real workspace tree.
+    // audit C1: createSandbox is async (event-loop-friendly fs.cp); abort
+    // signal is forwarded so a mid-copy cancel from the MCP client cleans up.
     let sandbox;
     try {
-      sandbox = createSandbox(targetFile, env.workspaceRoot, earlyIgnorePatterns);
-    } catch {
-      return toolError(
-        `Chaos Engine Halted: Failed to provision sandbox isolation for ${filePath}. Ensure the file exists and the workspace is accessible.`,
-      );
+      sandbox = await createSandbox(targetFile, env.workspaceRoot, earlyIgnorePatterns, {
+        signal: ctx?.signal,
+      });
+    } catch (error: unknown) {
+      return mapCreateSandboxError(error, filePath, ctx);
     }
 
     try {
@@ -1090,13 +1129,11 @@ export async function handleToolCall(
         const message = error instanceof Error ? error.message : String(error);
         // A cancel firing DURING the engine run reaches here as a tool-specific
         // failure (each engine misreads the aborted child's null exit as a
-        // baseline/report failure). Detect the abort and return the same
-        // "Operation cancelled." shape as the phase-boundary checks, so a
-        // deliberate cancel never masquerades as a phantom tool bug (audit M5).
-        if (
-          ctx?.signal?.aborted ||
-          (error instanceof ExecFailureError && error.code === 'ABORTED')
-        ) {
+        // baseline/report failure). Detect the abort via the shared
+        // `isCancel` predicate so the message is identical to the phase-boundary
+        // cancel paths; a deliberate cancel never masquerades as a phantom
+        // tool bug (audit M5 / C1 follow-up).
+        if (isCancel(error, ctx)) {
           return toolError('Operation cancelled.');
         }
         // Prebuild failures keep their specific tool error; engine errors
@@ -1117,8 +1154,16 @@ export async function handleToolCall(
       const wsRoot = env.workspaceRoot;
       const supPath = cfg.suppressionsPath;
       try {
+        // CodeRabbit finding: if the request aborts after auditFile resolves
+        // but before these writes, a cancelled call could still mutate the
+        // suppressions file. Guard the write block so cancellation stays
+        // side-effect free.
+        if (ctx?.signal?.aborted) return toolError('Operation cancelled.');
+        // Audits H3: suppression write paths are now async (Promise-chain
+        // mutex). Await both so a subsequent run in the same turn cannot
+        // race the read-modify-write cycle on the suppressions file.
         if (Array.isArray(args.suppress) && args.suppress.length > 0) {
-          addSuppressions(
+          await addSuppressions(
             wsRoot,
             relFromRoot,
             args.suppress as { line: number; mutator: string; reason?: string }[],
@@ -1126,7 +1171,7 @@ export async function handleToolCall(
           );
         }
         if (Array.isArray(args.unsuppress) && args.unsuppress.length > 0) {
-          removeSuppressions(
+          await removeSuppressions(
             wsRoot,
             relFromRoot,
             args.unsuppress as { line: number; mutator: string }[],
@@ -1173,7 +1218,12 @@ export async function handleToolCall(
         }
       }
 
-      const enrichCtx = buildEnrichContext(args, resolvedFile, projectType);
+      const enrichCtx =
+        // Skip the synchronous source read for verify-mode re-runs: the
+        // formatAuditOutput verify branch never consumes the enrichment
+        // context, and verify-mode callers pay twice (here AND in
+        // buildEnrichContext) without it producing any output (audit A2).
+        baselineKeys ? undefined : buildEnrichContext(args, resolvedFile, projectType);
       // Milestone 4: every successful terminal path reports complete.
       ctx?.reportProgress?.(4, 4, 'complete');
       return formatAuditOutput(

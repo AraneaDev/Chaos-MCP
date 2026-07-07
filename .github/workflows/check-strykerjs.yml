@@ -1,0 +1,174 @@
+name: Track StrykerJS upstream
+
+# This workflow resurrects a development-time concern. The chaos-mcp
+# internal mutation-testing bootstrap is parked (see stryker.config.mjs
+# header) because:
+#   - @stryker-mutator/vitest-runner@9.x is incompatible with vitest 3.x
+#     (which dropped the `--related` / `config.related` API).
+#   - @stryker-mutator/command-runner is not published on npm.
+#   - StrykerJS 10.x has not shipped (latest is 9.6.1 as of 2026-04).
+#
+# This workflow watches each of those three blockers. When one of them
+# lifts, it opens an issue so the resurrection work can resume.
+
+on:
+  # Every Monday at 09:00 UTC — keep low frequency so we don't hammer npm.
+  schedule:
+    - cron: '0 9 * * 1'
+  # Manual trigger for ad-hoc checks.
+  workflow_dispatch:
+
+# Only need issue-write to open the resurrection issue. Restrict token
+# scope to limit blast radius if anything in the workflow goes wrong.
+# `contents: read` is needed for `gh issue list` to enumerate issue
+# titles: when permissions are explicitly narrowed, the implicit
+# GITHUB_TOKEN otherwise loses read scope and gh's list call would 403.
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  check-strykerjs-upstream:
+    name: Probe StrykerJS upstream
+    runs-on: ubuntu-latest
+    timeout-minutes: 5  # npm registry calls are fast; abort if not.
+    steps:
+      # Always probe upstream regardless of whether we expect to open
+      # an issue — the probe output is useful as a record in the run log.
+      - name: Probe StrykerJS package versions
+        id: probe
+        run: |
+          set -euo pipefail
+          # `npm view ... version` exits 1 when the package is unpublished;
+          # OR-fallback to 'NOT_FOUND' so the rest of the script keeps going.
+          probe() {
+            local pkg="$1"
+            npm view "$pkg" version 2>/dev/null || echo 'NOT_FOUND'
+          }
+          CORE_VERSION="$(probe '@stryker-mutator/core')"
+          VR_VERSION="$(probe '@stryker-mutator/vitest-runner')"
+          CR_VERSION="$(probe '@stryker-mutator/command-runner')"
+
+          # Print for the run log.
+          echo "core=$CORE_VERSION"
+          echo "vitest-runner=$VR_VERSION"
+          echo "command-runner=$CR_VERSION"
+
+          # Decide whether to open an issue. Three independent triggers:
+          SHOULD_OPEN='false'
+          REASON=''
+          # BASH_REMATCH[1] is empty when the regex doesn't match; the
+          # subsequent integer comparison will therefore abort cleanly
+          # under `set -e` instead of triggering a false-positive trigger
+          # on a malformed version string (e.g. NOT_FOUND, "beta", "0.x").
+          if [[ "$CORE_VERSION" =~ ^([0-9]+)\. ]]; then
+            if [ "${BASH_REMATCH[1]}" -ge 10 ]; then
+              SHOULD_OPEN='true'
+              REASON="@stryker-mutator/core latest is $CORE_VERSION (major ≥ 10)"
+            fi
+          fi
+          if [[ "$VR_VERSION" =~ ^([0-9]+)\. ]]; then
+            if [ "${BASH_REMATCH[1]}" -ge 10 ]; then
+              SHOULD_OPEN='true'
+              REASON="@stryker-mutator/vitest-runner latest is $VR_VERSION (major ≥ 10)"
+            fi
+          fi
+          # command-runner has historically never been published (npm 404).
+          # ANY publish counts as a resurrection signal.
+          if [[ "$CR_VERSION" != 'NOT_FOUND' ]]; then
+            SHOULD_OPEN='true'
+            REASON="@stryker-mutator/command-runner is now published at $CR_VERSION"
+          fi
+
+          # De-duplicate: only open an issue once per (version + reason) tuple.
+          # Look for an existing open issue whose title contains the reason.
+          # --limit 1000 explicitly overrides gh's default of 30 so we don't
+          # silently truncate when the repo accumulates many open issues —
+          # a missed duplicate would result in a second resurrection-tracking
+          # issue for the same upstream event.
+          # NOTE on robustness: per bash semantics, the `if` test position
+          # is exempt from `set -e` (grep's exit-1 on no-match will NOT abort
+          # the script), and `set -o pipefail` only reports the rightmost
+          # non-zero exit OR the rightmost zero exit if no non-zero occurred
+          # (so a clean `grep -F` match still propagates 0 to the `if` test).
+          if [ "$SHOULD_OPEN" = 'true' ]; then
+            DEDUP_KEY="$(echo "$REASON" | tr ' /' '__')"
+            if gh issue list --state open --limit 1000 --json title --jq '.[] | select(.title | contains("StrykerJS upstream shipped")) | .title' 2>/dev/null | grep -F "$DEDUP_KEY" >/dev/null 2>&1; then
+              echo "dedup: matching open issue already exists; skipping"
+              SHOULD_OPEN='false'
+            fi
+          fi
+
+          # Emit outputs for the next step + run log.
+          {
+            echo "should_open=$SHOULD_OPEN"
+            echo "reason=$REASON"
+            echo "dedup_key=${DEDUP_KEY:-}"
+          } >> "$GITHUB_OUTPUT"
+          echo "should_open=$SHOULD_OPEN"
+          echo "reason=$REASON"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+
+      # Open the resurrection-tracking issue if any probe fired `should_open=true`.
+      # Skip otherwise — keep the workflow quiet when nothing changed.
+      # SHA-pinned at authoring time (resolved from `refs/tags/v7` via
+      # `git ls-remote https://github.com/actions/github-script.git`). If
+      # the v7 tag is later moved by upstream, the workflow still resolves
+      # the same historical commit — defensive against silent action-fleet
+      # regressions. The pinned commit SHA itself IS the v7 tag tip, so
+      # "floating v7 ref" attacks are blocked at git-fetch time.
+      - name: Open resurrection-tracking issue
+        if: steps.probe.outputs.should_open == 'true'
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        # Pass probe outputs through `env:` and read them from `process.env`
+        # inside the script. Interpolating `${{ steps.probe.outputs.* }}`
+        # directly into the JS body splices raw text into source — which both
+        # breaks parsing (the reason string is not valid JS) and opens a
+        # template-injection hole (zizmor template-injection).
+        env:
+          PROBE_REASON: ${{ steps.probe.outputs.reason }}
+          PROBE_DEDUP_KEY: ${{ steps.probe.outputs.dedup_key }}
+        with:
+          script: |
+            const reason = process.env.PROBE_REASON ?? '';
+            const dedupKey = process.env.PROBE_DEDUP_KEY ?? '';
+            const title =
+              `🚧 StrykerJS upstream shipped — revisit the park? (${dedupKey})`;
+
+            const body = [
+              '## StrykerJS upstream update detected',
+              '',
+              'The chaos-mcp internal StrykerJS mutation-testing bootstrap was',
+              'parked (see `stryker.config.mjs` header for rationale + resurrection',
+              'paths). The upstream blockers below have now lifted, so the',
+              'resurrection work can resume.',
+              '',
+              '**Reason:** `' + reason + '`.',
+              '',
+              '### Resurrection checklist',
+              '',
+              '1. `npm i -D @stryker-mutator/core@<new> @stryker-mutator/vitest-runner@<new>`',
+              '2. Edit `stryker.config.mjs` — switch from `{ mutate: [] }` back to',
+              '   a real config (testRunner: `vitest` if vitest-runner is published,',
+              '   `command` if command-runner is the supported path now).',
+              '3. Restore the `mutate` npm script in `package.json`.',
+              '4. Re-run F1 baseline against `src/utils/cancel.ts`.',
+              '5. If green, broaden to `src/utils/**/*.ts` and audit survivors.',
+              '',
+              'See the three documented resurrection paths (A / B / C) at the',
+              'top of `stryker.config.mjs` for the exact trade-offs.',
+              '',
+              '<sub>This issue was opened automatically by the',
+              '`check-strykerjs` workflow. Closing without action = explicit',
+              '"not yet"; the next probe will not duplicate this title.</sub>',
+            ].join('\n');
+
+            await github.rest.issues.create({
+              owner:     context.repo.owner,
+              repo:      context.repo.repo,
+              title:     title,
+              body:      body,
+              labels:    ['chaos-mcp-internal', 'resurrection'],
+            });
