@@ -42,7 +42,7 @@ export { TOOL_DEFINITION } from './tool-schema.js';
  * Release PR, which is authored by GITHUB_TOKEN and so does not trigger pull_request
  * workflows — catching any drift if the two files ever fall out of lockstep.
  */
-export const APP_VERSION = '1.2.1'; // x-release-please-version
+export const APP_VERSION = '1.2.2'; // x-release-please-version
 
 /**
  * Create and start the MCP server.
