@@ -799,6 +799,8 @@ describe('createSandbox', () => {
 
     // The abort happened before any dp allocation.
     expect(mockMkdtempSync).not.toHaveBeenCalled();
+    // ...and before the copy — so this fails if cancellation is honoured late.
+    expect(mockCp).not.toHaveBeenCalled();
     expect(mockRmSync).not.toHaveBeenCalled();
   });
 

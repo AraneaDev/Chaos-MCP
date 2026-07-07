@@ -122,10 +122,18 @@ jobs:
       - name: Open resurrection-tracking issue
         if: steps.probe.outputs.should_open == 'true'
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        # Pass probe outputs through `env:` and read them from `process.env`
+        # inside the script. Interpolating `${{ steps.probe.outputs.* }}`
+        # directly into the JS body splices raw text into source — which both
+        # breaks parsing (the reason string is not valid JS) and opens a
+        # template-injection hole (zizmor template-injection).
+        env:
+          PROBE_REASON: ${{ steps.probe.outputs.reason }}
+          PROBE_DEDUP_KEY: ${{ steps.probe.outputs.dedup_key }}
         with:
           script: |
-            const reason  = ${{ steps.probe.outputs.reason }};
-            const dedupKey = ${{ steps.probe.outputs.dedup_key }};
+            const reason = process.env.PROBE_REASON ?? '';
+            const dedupKey = process.env.PROBE_DEDUP_KEY ?? '';
             const title =
               `🚧 StrykerJS upstream shipped — revisit the park? (${dedupKey})`;
 

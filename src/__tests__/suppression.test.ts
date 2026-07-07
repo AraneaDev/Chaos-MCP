@@ -268,10 +268,13 @@ describe('suppression', () => {
 
   it('WRITE_QUEUE map drops its entry even after a write rejection', async () => {
     // Force the chained fn to throw so we can assert the map is cleaned even
-    // on the rejection path (not just the .then success path).
+    // on the rejection path (not just the .then success path). Pointing the
+    // config path at `root` (a directory) makes the atomic rename target a
+    // directory, so writeFile's `renameSync(tmp, dir)` throws EISDIR and the
+    // returned promise rejects — exactly the failure path under test.
     await expect(
-      addSuppressions(root, 'src/a.ts', [{ line: 1, mutator: 'A' }]),
-    ).resolves.not.toThrow();
+      addSuppressions(root, 'src/a.ts', [{ line: 1, mutator: 'A' }], root),
+    ).rejects.toThrow();
     expect(_writeQueueSize()).toBe(0);
   });
 

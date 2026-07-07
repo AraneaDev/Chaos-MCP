@@ -1154,6 +1154,11 @@ export async function handleToolCall(
       const wsRoot = env.workspaceRoot;
       const supPath = cfg.suppressionsPath;
       try {
+        // CodeRabbit finding: if the request aborts after auditFile resolves
+        // but before these writes, a cancelled call could still mutate the
+        // suppressions file. Guard the write block so cancellation stays
+        // side-effect free.
+        if (ctx?.signal?.aborted) return toolError('Operation cancelled.');
         // Audits H3: suppression write paths are now async (Promise-chain
         // mutex). Await both so a subsequent run in the same turn cannot
         // race the read-modify-write cycle on the suppressions file.

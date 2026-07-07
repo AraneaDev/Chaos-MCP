@@ -205,7 +205,11 @@ function safeSymlink(target: string, path: string): void {
  * estimate matches what the copy will actually walk — otherwise the warning
  * would fire for bytes that are never copied (audit Low#3).
  */
-function estimateWorkspaceSize(workspaceRoot: string, ignorePatterns?: string[]): number {
+function estimateWorkspaceSize(
+  workspaceRoot: string,
+  ignorePatterns?: string[],
+  signal?: AbortSignal,
+): number {
   // Normalise ignore patterns the same way the cp filter does: strip a
   // single trailing separator and drop empties (which would match everything).
   const excludeSegments = new Set<string>();
@@ -220,6 +224,15 @@ function estimateWorkspaceSize(workspaceRoot: string, ignorePatterns?: string[])
     let total = 0;
 
     while (stack.length > 0) {
+      // CodeRabbit finding: this walk is synchronous, so a large workspace
+      // could block the event loop long enough that an MCP abort is not
+      // observed until the whole scan finishes. Check the signal per directory
+      // so cancellation is honoured promptly, and stop early once we already
+      // know the workspace exceeds the warning threshold — the result is only
+      // used for a boolean `size > MAX_WORKSPACE_SIZE_BYTES` warning, so there
+      // is nothing to gain by continuing to walk past the cap.
+      if (signal?.aborted) throw abortError();
+      if (total > MAX_WORKSPACE_SIZE_BYTES) break;
       const current = stack.pop();
       if (current === undefined) break;
       let entries;
@@ -247,7 +260,10 @@ function estimateWorkspaceSize(workspaceRoot: string, ignorePatterns?: string[])
     }
 
     return total;
-  } catch {
+  } catch (err) {
+    // Cancellation must escape — the enclosing best-effort catch only exists to
+    // swallow transient fs errors during the size estimate, not to mask an abort.
+    if (err instanceof Error && err.name === 'AbortError') throw err;
     return 0;
   }
 }
@@ -308,7 +324,7 @@ export async function createSandbox(
   // unexpected process termination.
   ensureExitHandler();
 
-  const size = estimateWorkspaceSize(absoluteWorkspace, ignorePatterns);
+  const size = estimateWorkspaceSize(absoluteWorkspace, ignorePatterns, options?.signal);
   if (size > MAX_WORKSPACE_SIZE_BYTES) {
     warn(
       `Workspace is ~${(size / 1024 / 1024).toFixed(0)}MB — sandbox copy may be slow. ` +

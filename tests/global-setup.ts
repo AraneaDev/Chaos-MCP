@@ -27,7 +27,15 @@ const OUTPUT = './build/index.js';
 const SOURCE_GLOB = ['src/**/*.ts', ':!src/__tests__/**', ':!**/*.test.ts'];
 
 function rebuild(reason: string): void {
-  execFileSync('npm', ['run', 'build'], { stdio: 'inherit' });
+  // Windows installs `npm` as a `npm.cmd` shim, which execFileSync cannot run
+  // directly (ENOENT on 'npm', EINVAL on 'npm.cmd' without a shell). Select the
+  // `.cmd` name and route through a shell on win32 so the rebuild stays
+  // cross-platform for Windows contributors.
+  const isWindows = process.platform === 'win32';
+  execFileSync(isWindows ? 'npm.cmd' : 'npm', ['run', 'build'], {
+    stdio: 'inherit',
+    shell: isWindows,
+  });
   console.log(`[vitest global-setup] ${reason} - ran npm run build.`);
 }
 

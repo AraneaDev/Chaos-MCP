@@ -40,8 +40,7 @@ function withWorkspaceLock<T>(
   // map entry was never deleted. Fix: store and clean the SAME chained Promise,
   // so the identity check actually compares equal. (BEFORE this fix the queue
   // grew by one dead Promise per workspace per write.)
-  const tracked = next.catch(() => undefined) as Promise<unknown>;
-  WRITE_QUEUE.set(key, tracked);
+  //
   // Live-audit finding #2: even with the identity fix, returning `next` and
   // letting the caller `await` it resumes BEFORE the cleanup `.finally` runs.
   // The awaiter resumes on a separate microtask path that bypasses the
@@ -49,10 +48,20 @@ function withWorkspaceLock<T>(
   // after `await addSuppressions` / `await removeSuppressions` sees a stale
   // entry. Fix: return `cleaned` (the post-cleanup Promise) so the caller's
   // await resolves AFTER the cleanup `.finally` callback has run.
-  const cleaned = tracked.finally(() => {
+  //
+  // CodeRabbit finding: `cleaned` MUST preserve the underlying rejection so a
+  // failed read/write surfaces to the caller (the handler's try/catch reports
+  // it as "Failed to update suppression list"). Build `cleaned` from `next`
+  // (which rejects on failure — `.finally` is pass-through), and separately
+  // store a rejection-swallowed copy in the queue so the NEXT chained writer's
+  // `prev.then(fn, fn)` still runs and there is no unhandled rejection.
+  const cleaned = next.finally(() => {
+    // `tracked` is assigned below and only read here, after `cleaned` settles.
     if (WRITE_QUEUE.get(key) === tracked) WRITE_QUEUE.delete(key);
   });
-  return cleaned as Promise<T>;
+  const tracked = cleaned.catch(() => undefined) as Promise<unknown>;
+  WRITE_QUEUE.set(key, tracked);
+  return cleaned;
 }
 
 export interface SuppressionInput {

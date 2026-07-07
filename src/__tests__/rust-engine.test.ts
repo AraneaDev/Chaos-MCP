@@ -115,6 +115,24 @@ describe('RustEngine', () => {
     expect(result.vulnerabilities[1].line).toBe(88);
   });
 
+  it('parses column-less locations: ":line:" and bare ":line" at EOL (audit L7)', async () => {
+    // cargo-mutants sometimes drops the column, emitting ":<line>:" or a bare
+    // ":<line>" at end-of-line instead of ":<line>:<col>". The relaxed location
+    // regex must still recover the correct line number for both variants.
+    const stdout = [
+      'MISSED   src/calc.rs:42: replace add -> sub with Default::default()',
+      'MISSED   src/calc.rs:88',
+    ].join('\n');
+
+    mockRunShell.mockResolvedValue(makeExecResult(stdout));
+
+    const result = await engine.run('src/calc.rs');
+
+    expect(result.vulnerabilities).toHaveLength(2);
+    expect(result.vulnerabilities[0].line).toBe(42);
+    expect(result.vulnerabilities[1].line).toBe(88);
+  });
+
   it('handles UNCAUGHT status', async () => {
     const stdout = ['UNCAUGHT src/main.rs:15:5  mutated'].join('\n');
 
