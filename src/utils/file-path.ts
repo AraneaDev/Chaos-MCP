@@ -41,10 +41,7 @@ export type FilePathValidation =
  *   1. Missing / non-string / empty
  *   2. Escapes the current process cwd (C2)
  */
-export function validateFilePath(
-  rawFilePath: unknown,
-  argName = 'filePath',
-): FilePathValidation {
+export function validateFilePath(rawFilePath: unknown, argName = 'filePath'): FilePathValidation {
   if (typeof rawFilePath !== 'string' || rawFilePath.length === 0) {
     return {
       ok: false,

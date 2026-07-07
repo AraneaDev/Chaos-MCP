@@ -271,11 +271,7 @@ function validateBaselineArg(args: ToolArgs): string | null {
       if (lineErr !== null) return `baseline ${key}: ${lineErr}`;
       // H5 / M9: counters inside mutators must be positive integers.
       for (const cnt of Object.values(entry.mutators as Record<string, unknown>)) {
-        if (
-          typeof cnt !== 'number' ||
-          !Number.isInteger(cnt) ||
-          cnt < 1
-        ) {
+        if (typeof cnt !== 'number' || !Number.isInteger(cnt) || cnt < 1) {
           return 'baseline mutator counts must be positive integers.';
         }
       }
@@ -1222,9 +1218,7 @@ export async function handleToolCall(
         // formatAuditOutput verify branch never consumes the enrichment
         // context, and verify-mode callers pay twice (here AND in
         // buildEnrichContext) without it producing any output (audit A2).
-        baselineKeys
-          ? undefined
-          : buildEnrichContext(args, resolvedFile, projectType);
+        baselineKeys ? undefined : buildEnrichContext(args, resolvedFile, projectType);
       // Milestone 4: every successful terminal path reports complete.
       ctx?.reportProgress?.(4, 4, 'complete');
       return formatAuditOutput(

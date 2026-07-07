@@ -109,16 +109,17 @@ export async function handleEstimateCall(
     } finally {
       // Always clean up the sandbox, even if estimateAudit threw (C2).
       sandbox?.cleanup();
-    }    } catch (error: unknown) {
-      // Audit C1 follow-up: cancellation (mid-flight estimateAudit killed by
-      // the abort signal, or an AbortError from any other source) must surface
-      // as 'Operation cancelled.' — never as 'Chaos Engine Halted' — so the
-      // caller can reliably branch on the message. Otherwise a deliberate
-      // cancel from the MCP client looks identical to a real engine failure.
-      if (isCancel(error, ctx)) {
-        return toolError('Operation cancelled.');
-      }
-      const message = error instanceof Error ? error.message : String(error);
-      return toolError(`Chaos Engine Halted: ${message}`);
     }
+  } catch (error: unknown) {
+    // Audit C1 follow-up: cancellation (mid-flight estimateAudit killed by
+    // the abort signal, or an AbortError from any other source) must surface
+    // as 'Operation cancelled.' — never as 'Chaos Engine Halted' — so the
+    // caller can reliably branch on the message. Otherwise a deliberate
+    // cancel from the MCP client looks identical to a real engine failure.
+    if (isCancel(error, ctx)) {
+      return toolError('Operation cancelled.');
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    return toolError(`Chaos Engine Halted: ${message}`);
   }
+}

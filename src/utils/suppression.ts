@@ -26,7 +26,11 @@ export function _resetWriteQueue(): void {
 export function _writeQueueSize(): number {
   return WRITE_QUEUE.size;
 }
-function withWorkspaceLock<T>(workspaceRoot: string, configPath: string | undefined, fn: () => T): Promise<T> {
+function withWorkspaceLock<T>(
+  workspaceRoot: string,
+  configPath: string | undefined,
+  fn: () => T,
+): Promise<T> {
   const key = `${workspaceRoot}\u0000${configPath ?? ''}`;
   const prev = WRITE_QUEUE.get(key) ?? Promise.resolve();
   const next = prev.then(fn, fn) as Promise<T>;
@@ -134,7 +138,9 @@ export function addSuppressions(
   if (entries.length === 0) return noopPromise();
   return withWorkspaceLock(workspaceRoot, configPath, () => {
     const data = readFile(workspaceRoot, configPath);
-    const list = Array.isArray(data.entries[relFile]) ? data.entries[relFile] : [] as StoredEntry[];
+    const list = Array.isArray(data.entries[relFile])
+      ? data.entries[relFile]
+      : ([] as StoredEntry[]);
     const seen = new Set(list.map((e) => keyOf(e.line, e.mutator)));
     const now = Date.now();
     for (const e of entries) {

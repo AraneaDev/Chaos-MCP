@@ -32,14 +32,7 @@ vi.mock('../utils/logger.js', () => ({
   warn: vi.fn(),
 }));
 
-import {
-  mkdtempSync,
-  symlinkSync,
-  rmSync,
-  existsSync,
-  statSync,
-  readdirSync,
-} from 'fs';
+import { mkdtempSync, symlinkSync, rmSync, existsSync, statSync, readdirSync } from 'fs';
 import { cp } from 'fs/promises';
 import { tmpdir } from 'os';
 import { resolve } from 'path';

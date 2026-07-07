@@ -226,7 +226,9 @@ describe('suppression', () => {
       join(root, '.chaos-mcp', 'suppressions.json'),
       JSON.stringify({ version: 1, entries: { 'src/a.ts': 42 } }),
     );
-    await expect(addSuppressions(root, 'src/a.ts', [{ line: 1, mutator: 'A' }])).resolves.not.toThrow();
+    await expect(
+      addSuppressions(root, 'src/a.ts', [{ line: 1, mutator: 'A' }]),
+    ).resolves.not.toThrow();
     // The corrupted value is replaced by a fresh list containing just the new entry.
     expect([...(loadSuppressions(root).get('src/a.ts') ?? [])]).toEqual(['1 A']);
   });

@@ -28,8 +28,7 @@ describe('isCancel', () => {
       // Even for a non-cancellation-flavoured error: the signal still wins
       // (intentional — signal-flip-during-teardown must override a noisy
       // secondary error class).
-      expect(isCancel(Object.assign(new Error('x'), { code: 'TIMEOUT' }), ctx))
-        .toBe(true);
+      expect(isCancel(Object.assign(new Error('x'), { code: 'TIMEOUT' }), ctx)).toBe(true);
     });
 
     it('returns true when ctx is supplied with no error', () => {
@@ -54,9 +53,7 @@ describe('isCancel', () => {
     it('returns true for a non-Error object with name="AbortError"', () => {
       // Existing ad-hoc code in handler.ts also matched this; the helper
       // must remain a faithful superset.
-      expect(isCancel({ name: 'AbortError', message: 'shaped like one' })).toBe(
-        true,
-      );
+      expect(isCancel({ name: 'AbortError', message: 'shaped like one' })).toBe(true);
     });
 
     it('returns true even with no ctx', () => {
@@ -105,9 +102,7 @@ describe('isCancel', () => {
     });
 
     it('returns false for a plain object with a non-cancel name and code', () => {
-      expect(isCancel({ name: 'TypeError', message: 'not cancel' })).toBe(
-        false,
-      );
+      expect(isCancel({ name: 'TypeError', message: 'not cancel' })).toBe(false);
     });
 
     it('returns false when error is null', () => {
