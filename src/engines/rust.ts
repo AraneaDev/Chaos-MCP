@@ -41,18 +41,96 @@ interface CargoMutantsJsonOutput {
 }
 
 /**
+ * Authoritative per-outcome counts extracted from cargo-mutants' final summary
+ * line, e.g. "47 mutants tested in 30s: 4 missed, 42 caught, 1 unviable".
+ */
+interface CargoSummary {
+  caught: number;
+  missed: number;
+  unviable: number;
+  timeout: number;
+}
+
+/**
+ * Extract cargo-mutants' summary counts from its final report line.
+ *
+ * WHY this is load-bearing: by default cargo-mutants (v27) prints ONLY the
+ * MISSED (and, with extra flags, TIMEOUT/UNVIABLE) result lines — CAUGHT mutants
+ * are silent. So counting printed lines alone under-reports both `total` and
+ * `killed`, yielding a bogus 0% score on a suite that actually kills most
+ * mutants. The summary line is the ground truth for the totals; the per-line
+ * MISSED entries remain the source of survivor detail.
+ *
+ * The line looks like:
+ *   "47 mutants tested in 30s: 4 missed, 42 caught, 1 unviable"
+ *   "13 mutants tested in 14s: 2 missed, 11 caught"
+ * (order/set of categories varies; zero-count categories are omitted).
+ * Returns null when no summary line is present (e.g. the synthetic fixtures
+ * that predate v27's output format), so callers fall back to line-counting.
+ */
+function parseCargoSummary(stdout: string): CargoSummary | null {
+  const lines = stdout.split('\n');
+  // Scan from the end: the summary is the last such line cargo-mutants prints.
+  for (let i = lines.length - 1; i >= 0; i--) {
+    // Match "<n> mutants tested ... : <tail>". "Found N mutants to test" says
+    // "to test", not "tested", so it is correctly excluded.
+    const head = lines[i].match(/\bmutants?\s+tested\b[^:]*:(.*)$/i);
+    if (!head) continue;
+
+    const summary: CargoSummary = { caught: 0, missed: 0, unviable: 0, timeout: 0 };
+    let matched = false;
+    const re = /(\d+)\s+([a-zA-Z]+)/g;
+    let g: RegExpExecArray | null;
+    while ((g = re.exec(head[1])) !== null) {
+      const n = parseInt(g[1], 10);
+      const label = g[2].toLowerCase();
+      if (label.startsWith('caught')) {
+        summary.caught += n;
+        matched = true;
+      } else if (label.startsWith('miss')) {
+        summary.missed += n;
+        matched = true;
+      } else if (label.startsWith('unviable')) {
+        summary.unviable += n;
+        matched = true;
+      } else if (label.startsWith('timeout')) {
+        summary.timeout += n;
+        matched = true;
+      }
+    }
+    if (matched) return summary;
+  }
+  return null;
+}
+
+/**
+ * Strip cargo-mutants' trailing " in <build> build + <test> test" timing suffix
+ * from a mutant description. WHY: the timing varies run-to-run ("in 0s build +
+ * 0s test" vs "in 8s build + 2s test"), so leaving it in the `mutator` label
+ * would give the SAME logical mutant a different suppression/verify key on every
+ * run, silently breaking baseline re-tests. Only the trailing timing clause is
+ * removed; an earlier "... in <fn_name>" in the mutation text is preserved.
+ */
+function stripCargoTiming(desc: string): string {
+  return desc.replace(/\s+in\s+\S+\s+build\s+\+\s+\S+\s+test$/, '').trim();
+}
+
+/**
  * Parse cargo-mutants text output into a MutationResult.
  *
- * cargo-mutants stdout contains lines like:
- *   "MISSED   src/main.rs:42:9  replacement details..."
- *   "CAUGHT   src/main.rs:88:5  replacement details..."
+ * cargo-mutants stdout contains survivor lines like:
+ *   "MISSED   src/main.rs:42:9: replace > with >= in fn foo in 0s build + 0s test"
+ *   "UNCAUGHT src/main.rs:88:5: ..."
+ * plus a final summary line ("N mutants tested in Xs: A missed, B caught, ...").
  *
- * Cargo-mutants uses the terms MISSED (survived) and CAUGHT (killed).
+ * Cargo-mutants uses the terms MISSED (survived) and CAUGHT (killed) — but only
+ * MISSED lines are printed by default (see parseCargoSummary), so the summary
+ * line is preferred for the totals when present.
  */
 function parseCargoMutantsText(stdout: string, filePath: string): MutationResult {
   const lines = stdout.split('\n').filter((l) => l.trim());
-  let total = 0;
-  let killed = 0;
+  let lineTotal = 0;
+  let lineKilled = 0;
   const vulnerabilities: MutationResult['vulnerabilities'] = [];
 
   for (const line of lines) {
@@ -68,12 +146,12 @@ function parseCargoMutantsText(stdout: string, filePath: string): MutationResult
 
     if (!isMissed && !isCaught && !isUncaught && !isTimeout) continue;
 
-    total++;
+    lineTotal++;
     // Audit finding H3: TIMEOUT mutants are tests that hung past the per-mutant
     // timeout. They DID detect the mutant (the test suite hung trying to assert
     // against it), so count them as caught, not skipped.
     if (isCaught || isTimeout) {
-      killed++;
+      lineKilled++;
       continue;
     }
 
@@ -84,7 +162,7 @@ function parseCargoMutantsText(stdout: string, filePath: string): MutationResult
     // ":<line>:<col>:" or a bare ":<line>:" / ":<line>" at end-of-line (audit L7).
     const locMatch = trimmed.match(/:(\d+)(?::\d+)?:?\s*(.*)$/);
     const mutantLine = locMatch ? parseInt(locMatch[1], 10) : 0;
-    const desc = locMatch && locMatch[2] ? locMatch[2].trim() : '';
+    const desc = locMatch && locMatch[2] ? stripCargoTiming(locMatch[2].trim()) : '';
 
     const vuln: Vulnerability = {
       line: mutantLine,
@@ -99,7 +177,29 @@ function parseCargoMutantsText(stdout: string, filePath: string): MutationResult
     vulnerabilities.push(vuln);
   }
 
-  const survived = total - killed;
+  // Prefer the authoritative summary line over line counts — cargo-mutants only
+  // prints MISSED lines by default, so line-counting alone reports a false 0%.
+  // Unviable mutants (did not compile) are excluded from the denominator, since
+  // they were never actually exercised by a test.
+  const summary = parseCargoSummary(stdout);
+  let total: number;
+  let killed: number;
+  let survived: number;
+  // Unviable mutants (did not compile) are excluded from the denominator above;
+  // surface them via the shared `incompetent` field so callers can see how many
+  // mutants were skipped (base.ts MutationResult contract).
+  let incompetent = 0;
+  if (summary) {
+    killed = summary.caught + summary.timeout;
+    survived = summary.missed;
+    total = killed + survived;
+    incompetent = summary.unviable;
+  } else {
+    total = lineTotal;
+    killed = lineKilled;
+    survived = total - killed;
+  }
+
   const score = total > 0 ? ((killed / total) * 100).toFixed(2) : '100.00';
 
   return {
@@ -109,6 +209,7 @@ function parseCargoMutantsText(stdout: string, filePath: string): MutationResult
     survived,
     mutationScore: `${score}%`,
     vulnerabilities,
+    ...(incompetent > 0 ? { incompetent } : {}),
   };
 }
 

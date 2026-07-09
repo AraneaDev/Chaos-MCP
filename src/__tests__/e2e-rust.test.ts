@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
+import { RustEngine } from '../engines/rust.js';
 
 /**
  * End-to-end cargo-mutants test that spawns the mutation tool against a tiny
@@ -86,7 +87,11 @@ path = "src/lib.rs"
   const srcDir = join(rootDir, 'src');
   mkdirSync(srcDir, { recursive: true });
 
-  // lib.rs: a divide() function with an intentional coverage gap
+  // lib.rs: divide() is fully pinned (all its mutants die), while add() has a
+  // deliberate blind spot — the only test uses add(2, 2), and 2 + 2 == 2 * 2,
+  // so cargo-mutants' `+`→`*` mutant SURVIVES. This guarantees a mixed score
+  // (some caught, at least one missed) on real cargo-mutants v27, which prints
+  // only the surviving MISSED line and reports totals in its summary.
   writeFileSync(
     join(srcDir, 'lib.rs'),
     `/// Divides a by b. Returns 0 when b is 0.
@@ -97,6 +102,11 @@ pub fn divide(a: i32, b: i32) -> i32 {
     a / b
 }
 
+/// Adds two numbers.
+pub fn add(a: i32, b: i32) -> i32 {
+    a + b
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -104,9 +114,15 @@ mod tests {
     #[test]
     fn test_divide_valid() {
         assert_eq!(divide(4, 2), 2);
+        assert_eq!(divide(1, 0), 0);
     }
-    // NOTE: the b == 0 branch is intentionally NOT tested, so its
-    // mutants will survive and the score will be <100%.
+
+    #[test]
+    fn test_add() {
+        // NOTE: 2 + 2 == 2 * 2, so the plus-to-times mutant is NOT
+        // distinguished here and will survive — an intentional coverage gap.
+        assert_eq!(add(2, 2), 4);
+    }
 }
 `,
   );
@@ -152,12 +168,11 @@ describe('cargo-mutants E2E', () => {
 
   // ── Heavy mutation test ────────────────────────────────────────────────────
   it_heavy(
-    'runs real mutation testing and reflects intentional coverage gaps in the score',
+    'runs real mutation testing through RustEngine and reflects intentional coverage gaps in the score',
     async () => {
       // cargo-mutants works on the workspace as a whole. We pass --file
       // to restrict mutations to lib.rs. First, build to ensure the
       // project compiles (cargo-mutants requires a compilable project).
-
       const buildResult = spawnSync('cargo', ['build'], {
         cwd: fixture.rootDir,
         stdio: 'pipe',
@@ -170,27 +185,31 @@ describe('cargo-mutants E2E', () => {
         );
       }
 
-      // Run cargo-mutants
-      const result = spawnSync('cargo', ['mutants', '--file', 'src/lib.rs'], {
-        cwd: fixture.rootDir,
-        stdio: 'pipe',
-        timeout: 120_000,
+      // Drive the REAL engine end-to-end against real cargo-mutants output. This
+      // is the regression guard for the v27 parser bug: cargo-mutants only prints
+      // MISSED lines (CAUGHT mutants are silent), so a parser that counts printed
+      // CAUGHT lines reports a bogus 0% here. The engine must instead read the
+      // authoritative summary line and produce a bounded, non-zero score.
+      const engine = new RustEngine();
+      const result = await engine.run('src/lib.rs', {
+        workDir: fixture.rootDir,
+        timeoutMs: 120_000,
+        concurrency: 1,
       });
 
-      const stdout = result.stdout.toString().trim();
+      // The divide() fixture has both a killable branch (a / b) and an untested
+      // one (b == 0), so the suite kills some mutants but not all.
+      expect(result.totalMutants).toBeGreaterThanOrEqual(2);
+      expect(result.killed).toBeGreaterThanOrEqual(1);
+      expect(result.survived).toBeGreaterThanOrEqual(1);
+      // At least one survivor is reported with real detail (line + a mutator
+      // label that is NOT the timing-suffixed raw string).
+      expect(result.vulnerabilities.length).toBeGreaterThanOrEqual(1);
+      expect(result.vulnerabilities[0].mutator).not.toMatch(/build \+/);
 
-      // cargo-mutants text output contains MISSED / CAUGHT lines
-      const missedCount = (stdout.match(/^MISSED\s+/gim) || []).length;
-      const caughtCount = (stdout.match(/^CAUGHT\s+/gim) || []).length;
-      const total = missedCount + caughtCount;
-
-      expect(total).toBeGreaterThanOrEqual(1);
-
-      // At least one mutant survived (the b == 0 branch is untested)
-      expect(missedCount).toBeGreaterThanOrEqual(1);
-
-      // Score is bounded: not 0% (some mutants killed), not 100% (b == 0 survives)
-      const score = total > 0 ? (caughtCount / total) * 100 : 100;
+      // Score is bounded: not 0% (some killed — the bug's signature), not 100%
+      // (b == 0 survives).
+      const score = parseFloat(result.mutationScore);
       expect(score).toBeGreaterThan(0);
       expect(score).toBeLessThan(100);
     },

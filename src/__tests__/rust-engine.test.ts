@@ -740,6 +740,110 @@ describe('RustEngine', () => {
     await engine.run('src/x.rs', { concurrency: 1, workDir: '/tmp' });
     expect(mockRunShell.mock.calls[0][1]).toEqual(['mutants', '--file', 'src/x.rs']);
   });
+
+  // ─── cargo-mutants v27 real-world output (summary line is ground truth) ────
+  // Reproduces the exact stdout format of cargo-mutants 27.x, where ONLY MISSED
+  // lines are printed and the totals live in the trailing summary line. Before
+  // the fix, line-counting reported total=4/killed=0/score=0.00% on a suite that
+  // actually kills 42 of 46 viable mutants (~91%).
+
+  const REAL_V27 = [
+    'Found 47 mutants to test',
+    'ok       Unmutated baseline in 8s build + 0s test',
+    ' INFO Auto-set test timeout to 20s',
+    'MISSED   src/dfs.rs:27:12: replace > with >= in compute_score in 0s build + 0s test',
+    'MISSED   src/dfs.rs:28:24: replace - with / in compute_score in 0s build + 0s test',
+    'MISSED   src/dfs.rs:65:33: replace && with || in dfs_has_word in 0s build + 0s test',
+    'MISSED   src/dfs.rs:129:33: replace && with || in dfs_best in 0s build + 0s test',
+    '47 mutants tested in 30s: 4 missed, 42 caught, 1 unviable',
+  ].join('\n');
+
+  it('trusts the v27 summary line for totals (caught mutants are never printed)', async () => {
+    mockRunShell.mockResolvedValue(makeExecResult(REAL_V27));
+
+    const result = await engine.run('src/dfs.rs');
+    // killed = 42 caught, survived = 4 missed, unviable (1) excluded from denom.
+    expect(result.totalMutants).toBe(46);
+    expect(result.killed).toBe(42);
+    expect(result.survived).toBe(4);
+    expect(result.mutationScore).toBe('91.30%');
+    // Survivor DETAIL still comes from the four MISSED lines.
+    expect(result.vulnerabilities).toHaveLength(4);
+    expect(result.vulnerabilities.map((v) => v.line)).toEqual([27, 28, 65, 129]);
+  });
+
+  it('strips the run-to-run timing suffix from the mutator key', async () => {
+    mockRunShell.mockResolvedValue(makeExecResult(REAL_V27));
+
+    const result = await engine.run('src/dfs.rs');
+    // The " in 0s build + 0s test" tail must be gone (it varies per run and
+    // would otherwise re-key the same mutant every time), but the semantic
+    // "... in compute_score" part of the mutation text must be preserved.
+    expect(result.vulnerabilities[0].mutator).toBe('replace > with >= in compute_score');
+    expect(result.vulnerabilities[0].mutated).toBe('replace > with >= in compute_score');
+    expect(result.vulnerabilities[0].mutator).not.toMatch(/build \+/);
+  });
+
+  it('counts a summary "timeout" bucket as killed, not survived', async () => {
+    const stdout = [
+      'MISSED   src/x.rs:5:1: replace a with b in 0s build + 0s test',
+      '10 mutants tested in 12s: 1 missed, 7 caught, 2 timeout',
+    ].join('\n');
+    mockRunShell.mockResolvedValue(makeExecResult(stdout));
+
+    const result = await engine.run('src/x.rs');
+    // killed = 7 caught + 2 timeout = 9, survived = 1 missed, total = 10.
+    expect(result.totalMutants).toBe(10);
+    expect(result.killed).toBe(9);
+    expect(result.survived).toBe(1);
+    expect(result.mutationScore).toBe('90.00%');
+  });
+
+  it('reports 100% when the summary shows zero missed', async () => {
+    const stdout = '20 mutants tested in 40s: 0 missed, 18 caught, 2 unviable';
+    mockRunShell.mockResolvedValue(makeExecResult(stdout));
+
+    const result = await engine.run('src/clean.rs');
+    expect(result.totalMutants).toBe(18);
+    expect(result.killed).toBe(18);
+    expect(result.survived).toBe(0);
+    expect(result.mutationScore).toBe('100.00%');
+    expect(result.vulnerabilities).toHaveLength(0);
+  });
+
+  it('does not mistake the "Found N mutants to test" header for the summary', async () => {
+    // "to test" (header) must NOT match; only "tested" (summary) does. If the
+    // header were parsed as a summary it would yield 0 caught / 0 missed → a
+    // spurious 100% with a live survivor present.
+    const stdout = [
+      'Found 3 mutants to test',
+      'MISSED   src/x.rs:9:1: replace + with - in 0s build + 0s test',
+      '3 mutants tested in 5s: 1 missed, 2 caught',
+    ].join('\n');
+    mockRunShell.mockResolvedValue(makeExecResult(stdout));
+
+    const result = await engine.run('src/x.rs');
+    expect(result.totalMutants).toBe(3);
+    expect(result.killed).toBe(2);
+    expect(result.survived).toBe(1);
+    expect(result.vulnerabilities).toHaveLength(1);
+  });
+
+  it('falls back to line-counting when no summary line is present (legacy format)', async () => {
+    // Pre-v27 / synthetic output with explicit CAUGHT lines and no summary must
+    // still be counted line-by-line so older callers keep working.
+    const stdout = [
+      'CAUGHT   src/x.rs:1:1  replaced',
+      'CAUGHT   src/x.rs:2:1  replaced',
+      'MISSED   src/x.rs:3:1  replaced',
+    ].join('\n');
+    mockRunShell.mockResolvedValue(makeExecResult(stdout));
+
+    const result = await engine.run('src/x.rs');
+    expect(result.totalMutants).toBe(3);
+    expect(result.killed).toBe(2);
+    expect(result.survived).toBe(1);
+  });
 });
 
 describe('resolveCargoJobs', () => {
