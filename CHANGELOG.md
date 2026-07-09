@@ -2,6 +2,13 @@
 
 All notable changes to Chaos-MCP are documented in this file.
 
+## [1.2.3](https://github.com/AraneaDev/Chaos-MCP/compare/v1.2.2...v1.2.3) (2026-07-09)
+
+
+### Bug Fixes
+
+* **rust:** parse cargo-mutants summary line for accurate score ([#6](https://github.com/AraneaDev/Chaos-MCP/issues/6)) ([722c5be](https://github.com/AraneaDev/Chaos-MCP/commit/722c5be557a4bbc46ff7a157123a3e551214c602))
+
 ## [1.2.2](https://github.com/AraneaDev/Chaos-MCP/compare/v1.2.1...v1.2.2) (2026-07-07)
 
 
