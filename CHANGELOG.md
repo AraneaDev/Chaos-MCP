@@ -2,6 +2,14 @@
 
 All notable changes to Chaos-MCP are documented in this file.
 
+## [1.2.2](https://github.com/AraneaDev/Chaos-MCP/compare/v1.2.1...v1.2.2) (2026-07-07)
+
+
+### Bug Fixes
+
+* **typescript-engine:** return a dry-run result instead of failing ([#3](https://github.com/AraneaDev/Chaos-MCP/issues/3)) ([901f94b](https://github.com/AraneaDev/Chaos-MCP/commit/901f94b7a222d8d536d0e206c9b51c0ef724273d))
+* unify cancellation surface, fix WRITE_QUEUE leak, harden prompts + Stryker cleanup ([#5](https://github.com/AraneaDev/Chaos-MCP/issues/5)) ([b492324](https://github.com/AraneaDev/Chaos-MCP/commit/b492324c8343c93e03266252f2b98851b51cbf83))
+
 ## [1.2.1](https://github.com/AraneaDev/Chaos-MCP/compare/v1.2.0...v1.2.1) (2026-07-05)
 
 
