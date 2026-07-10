@@ -2,6 +2,13 @@
 
 All notable changes to Chaos-MCP are documented in this file.
 
+## [1.2.4](https://github.com/AraneaDev/Chaos-MCP/compare/v1.2.3...v1.2.4) (2026-07-10)
+
+
+### Bug Fixes
+
+* **stryker:** pass runner plugin explicitly so it resolves under pnpm ([#10](https://github.com/AraneaDev/Chaos-MCP/issues/10)) ([b5f7a28](https://github.com/AraneaDev/Chaos-MCP/commit/b5f7a28ac83358707a355bad6924805eb97a40b0))
+
 ## [1.2.3](https://github.com/AraneaDev/Chaos-MCP/compare/v1.2.2...v1.2.3) (2026-07-10)
 
 

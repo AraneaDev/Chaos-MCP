@@ -1,6 +1,6 @@
 {
   "name": "chaos-mcp",
-  "version": "1.2.3",
+  "version": "1.2.4",
   "description": "On-demand micro-mutation sandbox for AI test verification — maps holes in unit tests by running isolated mutation testing via the Model Context Protocol",
   "type": "module",
   "bin": {
