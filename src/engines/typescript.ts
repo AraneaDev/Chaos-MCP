@@ -165,6 +165,32 @@ function writeStrykerMutatorConfig(cwd: string, denylist: string[]): void {
 }
 
 /**
+ * StrykerJS test-runner plugin packages, keyed by the resolved runner name.
+ *
+ * Under pnpm's non-hoisted node_modules layout, StrykerJS's default plugin
+ * glob (`["@stryker-mutator/*"]`) fails to resolve the runner plugin in the
+ * spawned *child* test-runner process — the run dies with
+ * `Could not inject [class ChildProcessTestRunnerWorker]. Cause: Cannot find
+ * TestRunner plugin "<runner>". In fact, no TestRunner plugins were loaded.`
+ * even though the plugin is installed and resolvable from the project root.
+ * Passing the plugin package explicitly on the CLI forces the child to load
+ * it. We keep the `@stryker-mutator/*` wildcard alongside it so reporter/other
+ * plugins the project relies on are still discovered.
+ *
+ * The `command` runner is built into @stryker-mutator/core (no separate
+ * plugin), so it is intentionally absent — it needs no `--plugins` entry and
+ * works under the default discovery. Unknown/custom runner names are likewise
+ * absent so we never inject a non-existent plugin package.
+ */
+const STRYKER_RUNNER_PLUGINS: Record<string, string> = {
+  vitest: '@stryker-mutator/vitest-runner',
+  jest: '@stryker-mutator/jest-runner',
+  mocha: '@stryker-mutator/mocha-runner',
+  jasmine: '@stryker-mutator/jasmine-runner',
+  karma: '@stryker-mutator/karma-runner',
+};
+
+/**
  * Mutation testing engine for TypeScript/JavaScript files.
  *
  * Invokes the StrykerJS CLI (via `npx stryker run`) inside the sandbox
@@ -214,6 +240,22 @@ export class TypeScriptEngine extends BaseEngine {
       '--tempDirName',
       '.stryker-tmp',
     ];
+
+    // ── Ensure the test-runner plugin resolves under pnpm ──
+    // StrykerJS's default `@stryker-mutator/*` plugin glob fails to load the
+    // runner plugin in the spawned child process under pnpm's symlinked layout,
+    // aborting the run with "no TestRunner plugins were loaded". Pass the plugin
+    // explicitly (keeping the wildcard so other plugins are still discovered).
+    // Own-property guard: a runner name that collides with an inherited
+    // Object.prototype member (e.g. "constructor", "toString") must NOT resolve
+    // to a function via the prototype chain — that would push a garbage
+    // stringified value as --plugins. Only real, declared runners map to a plugin.
+    const runnerPlugin = Object.hasOwn(STRYKER_RUNNER_PLUGINS, resolvedRunner)
+      ? STRYKER_RUNNER_PLUGINS[resolvedRunner]
+      : undefined;
+    if (runnerPlugin) {
+      args.push('--plugins', '@stryker-mutator/*', '--plugins', runnerPlugin);
+    }
 
     if (typeof options?.concurrency === 'number' && options.concurrency > 0) {
       args.push('--concurrency', String(options.concurrency));
