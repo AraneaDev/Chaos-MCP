@@ -235,6 +235,48 @@ describe('TypeScriptEngine', () => {
     expect(argArgsContain(argList, '--testRunner', 'jest')).toBe(true);
   });
 
+  it('passes the runner plugin explicitly so it resolves under pnpm', async () => {
+    mockRunShell.mockResolvedValue(makeExecResult());
+    mockReadFileSync.mockReturnValue(makeJsonReport([]));
+
+    await engine.run('src/test.ts', { testRunner: 'vitest' });
+
+    const argList = mockRunShell.mock.calls[0]?.[1] as string[];
+    // Explicit runner plugin AND the wildcard (so other plugins still resolve).
+    expect(argPairPresent(argList, '--plugins', '@stryker-mutator/vitest-runner')).toBe(true);
+    expect(argPairPresent(argList, '--plugins', '@stryker-mutator/*')).toBe(true);
+  });
+
+  it('maps each supported runner to its @stryker-mutator/<runner>-runner plugin', async () => {
+    for (const [runner, plugin] of [
+      ['jest', '@stryker-mutator/jest-runner'],
+      ['mocha', '@stryker-mutator/mocha-runner'],
+      ['jasmine', '@stryker-mutator/jasmine-runner'],
+      ['karma', '@stryker-mutator/karma-runner'],
+    ] as const) {
+      mockRunShell.mockClear();
+      mockRunShell.mockResolvedValue(makeExecResult());
+      mockReadFileSync.mockReturnValue(makeJsonReport([]));
+
+      await engine.run('src/test.ts', { testRunner: runner });
+
+      const argList = mockRunShell.mock.calls[0]?.[1] as string[];
+      expect(argPairPresent(argList, '--plugins', plugin)).toBe(true);
+    }
+  });
+
+  it('omits --plugins for the built-in command runner (default)', async () => {
+    mockRunShell.mockResolvedValue(makeExecResult());
+    mockReadFileSync.mockReturnValue(makeJsonReport([]));
+
+    // No testRunner override → resolves to the built-in 'command' runner,
+    // which needs no plugin and works under Stryker's default discovery.
+    await engine.run('src/test.ts');
+
+    const argList = mockRunShell.mock.calls[0]?.[1] as string[];
+    expect(argList).not.toContain('--plugins');
+  });
+
   it('uses workDir from RunOptions as cwd', async () => {
     mockRunShell.mockResolvedValue(makeExecResult());
     mockReadFileSync.mockReturnValue(makeJsonReport([]));
@@ -830,6 +872,12 @@ describe('TypeScriptEngine', () => {
         'true',
         '--tempDirName',
         '.stryker-tmp',
+        // Runner plugin passed explicitly (+ wildcard) so it resolves in
+        // Stryker's child test-runner process under pnpm's symlinked layout.
+        '--plugins',
+        '@stryker-mutator/*',
+        '--plugins',
+        '@stryker-mutator/vitest-runner',
       ],
       expect.objectContaining({ cwd: '/sb' }),
     );
@@ -1122,4 +1170,13 @@ describe('TypeScriptEngine', () => {
 function argArgsContain(args: string[], flag: string, value: string): boolean {
   const idx = args.indexOf(flag);
   return idx !== -1 && args[idx + 1] === value;
+}
+
+// Like argArgsContain but matches the (flag value) pair at ANY position, so it
+// works for flags that legitimately repeat (e.g. --plugins A --plugins B).
+function argPairPresent(args: string[], flag: string, value: string): boolean {
+  for (let i = 0; i < args.length - 1; i++) {
+    if (args[i] === flag && args[i + 1] === value) return true;
+  }
+  return false;
 }
