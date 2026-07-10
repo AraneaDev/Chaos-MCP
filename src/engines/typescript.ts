@@ -246,7 +246,13 @@ export class TypeScriptEngine extends BaseEngine {
     // runner plugin in the spawned child process under pnpm's symlinked layout,
     // aborting the run with "no TestRunner plugins were loaded". Pass the plugin
     // explicitly (keeping the wildcard so other plugins are still discovered).
-    const runnerPlugin = STRYKER_RUNNER_PLUGINS[resolvedRunner];
+    // Own-property guard: a runner name that collides with an inherited
+    // Object.prototype member (e.g. "constructor", "toString") must NOT resolve
+    // to a function via the prototype chain — that would push a garbage
+    // stringified value as --plugins. Only real, declared runners map to a plugin.
+    const runnerPlugin = Object.hasOwn(STRYKER_RUNNER_PLUGINS, resolvedRunner)
+      ? STRYKER_RUNNER_PLUGINS[resolvedRunner]
+      : undefined;
     if (runnerPlugin) {
       args.push('--plugins', '@stryker-mutator/*', '--plugins', runnerPlugin);
     }

@@ -277,6 +277,19 @@ describe('TypeScriptEngine', () => {
     expect(argList).not.toContain('--plugins');
   });
 
+  it('does not resolve inherited Object.prototype names as runner plugins', async () => {
+    for (const runner of ['constructor', 'toString', 'hasOwnProperty'] as const) {
+      mockRunShell.mockClear();
+      mockRunShell.mockResolvedValue(makeExecResult());
+      mockReadFileSync.mockReturnValue(makeJsonReport([]));
+
+      await engine.run('src/test.ts', { testRunner: runner });
+
+      const argList = mockRunShell.mock.calls[0]?.[1] as string[];
+      expect(argList).not.toContain('--plugins');
+    }
+  });
+
   it('uses workDir from RunOptions as cwd', async () => {
     mockRunShell.mockResolvedValue(makeExecResult());
     mockReadFileSync.mockReturnValue(makeJsonReport([]));
