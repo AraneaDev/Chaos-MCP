@@ -1,4 +1,4 @@
-import { writeFileSync, existsSync, readFileSync } from 'node:fs';
+import { writeFileSync, existsSync, readFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { BaseEngine, RunOptions, MutationResult, Vulnerability } from './base.js';
 import { invokeMutationTool } from '../utils/exec-classify.js';
@@ -54,7 +54,7 @@ interface InfectionJsonLog {
 }
 
 /**
- * Parse Infection's `--logger-json` output into a MutationResult.
+ * Parse Infection's `logs.json` output into a MutationResult.
  *
  * Consistent with the Python/Rust engines: the denominator is `killed + survived`
  * only. `escaped` mutants are the reported survivors (real coverage gaps).
@@ -125,9 +125,11 @@ export function parseInfectionJsonLog(logText: string, filePath: string): Mutati
  * Mutation testing engine for PHP files, backed by the Infection CLI.
  *
  * Flow (inside the sandbox `workDir`): hybrid config (use the project's
- * infection.json/.json5 if present, else write a minimal one) → run
- * `infection --filter=<file> --logger-json=<tmp> --no-progress --no-interaction
- * --threads=<n|max>` → read + parse the JSON log.
+ * infection.json/.json5 if present, else write a minimal one whose `logs.json`
+ * points at our JSON log) → run
+ * `infection --filter=<file> --no-progress --no-interaction --threads=<n|max>`
+ * → read + parse the JSON log emitted via config `logs.json`. (Infection 0.34+
+ * removed the `--logger-json` CLI flag, so the log path lives in the config.)
  *
  * Coarse: no line scoping (`supportsLineScope: false`). Requires a coverage
  * driver (Xdebug or PCOV); a missing driver surfaces as the baseline error below.
@@ -159,9 +161,14 @@ export class PhpEngine extends BaseEngine {
 
     const threads =
       options?.phpThreads ?? (options?.concurrency ? String(options.concurrency) : 'max');
+    // NOTE: the detailed JSON log is configured via the config file's `logs.json`
+    // (see buildInfectionConfig), NOT a CLI flag. Infection 0.34 removed the
+    // `--logger-json` option — passing it aborts the run with
+    // `The "--logger-json" option does not exist.` The full mutation-detail log
+    // this engine parses is only obtainable through config `logs.json`; the CLI
+    // only exposes summary/gitlab/html/text loggers.
     const args = [
       `--filter=${filePath}`,
-      `--logger-json=${JSON_LOG_NAME}`,
       '--no-progress',
       '--no-interaction',
       `--threads=${threads}`,
@@ -172,11 +179,34 @@ export class PhpEngine extends BaseEngine {
 
     if (isVerbose()) log(`PhpEngine: ${bin} ${args.join(' ')}`);
 
+    // Isolate Infection's working files per run. Infection (and the phpunit it
+    // spawns) write to `sys_get_temp_dir()/infection` — a FIXED shared path. Two
+    // concurrent runs (e.g. a parallel `triage_test_coverage` sweep, each in its
+    // own sandbox) clobber each other there: one run's phpunit ends up loading a
+    // DIFFERENT sandbox's Composer autoloader and dies with
+    // `Cannot declare class ComposerAutoloaderInit… already in use`, failing the
+    // initial test run. Pointing TMPDIR/TMP/TEMP at a per-run dir inside the
+    // sandbox gives each run its own `sys_get_temp_dir()`, so they never collide.
+    const infectionTmp = join(cwd, '.chaos-infection-tmp');
+    try {
+      mkdirSync(infectionTmp, { recursive: true });
+    } catch {
+      // Best-effort: if we can't create it, fall through and let Infection use
+      // its default temp dir (the pre-existing single-run behaviour).
+    }
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      TMPDIR: infectionTmp,
+      TMP: infectionTmp,
+      TEMP: infectionTmp,
+    };
+
     let stderr = '';
     try {
       const res = await invokeMutationTool('Infection', bin, args, {
         cwd,
         timeoutMs,
+        env,
         signal: options?.signal,
       });
       stderr = res.stderr;
@@ -202,8 +232,13 @@ export class PhpEngine extends BaseEngine {
     try {
       logText = readFileSync(jsonLogPath, 'utf8');
     } catch {
+      const configHint = hasProjectConfig
+        ? `Your project ships its own Infection config (${PROJECT_CONFIG_NAMES.join('/')}); ` +
+          `Infection 0.34+ has no --logger-json flag, so that config must define ` +
+          `logs.json = "${JSON_LOG_NAME}" for Chaos-MCP to read the detailed results. `
+        : '';
       throw new Error(
-        `Infection produced no readable JSON log at ${JSON_LOG_NAME}. Ensure a coverage driver ` +
+        `Infection produced no readable JSON log at ${JSON_LOG_NAME}. ${configHint}Ensure a coverage driver ` +
           `(Xdebug or PCOV) is enabled and the PHPUnit suite runs from the project root.`,
       );
     }

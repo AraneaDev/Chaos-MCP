@@ -158,6 +158,42 @@ const ALWAYS_EXCLUDE = new Set([
 const SYMLINK_DIRS = ['node_modules', '.venv', 'venv', 'vendor'];
 
 /**
+ * Set form of {@link SYMLINK_DIRS} for O(1) membership checks.
+ *
+ * Symlinked directories MUST be excluded from the workspace copy: Step 1 copies
+ * the tree and Step 2 symlinks these dirs into the sandbox, so if the copy also
+ * materialised them the symlink would collide with `EEXIST`. Excluding them here
+ * (rather than relying on every entry ALSO being hand-listed in ALWAYS_EXCLUDE)
+ * makes the "symlinked ⇒ never copied" invariant structural, so the two lists
+ * cannot silently drift. Regression: `vendor` was in SYMLINK_DIRS but missing
+ * from ALWAYS_EXCLUDE, so every PHP (Composer) project failed provisioning.
+ */
+const SYMLINK_DIRS_SET = new Set(SYMLINK_DIRS);
+
+/**
+ * Detect a Composer (PHP) audit that must COPY `vendor/` rather than symlink it.
+ *
+ * Composer's autoloader (vendor/composer/ClassLoader.php + autoload_*.php) derives
+ * its project base dir from `__DIR__`, and PHP resolves `__DIR__` THROUGH symlinks
+ * to the real path. So if `vendor/` is a symlink into the sandbox, the autoloader
+ * (and the phpunit/infection bin stubs, which `require __DIR__/../autoload.php`)
+ * resolve back to the ORIGINAL workspace and load the real source — not the
+ * mutated sandbox copy. Coverage then attributes execution to the real files and
+ * Infection reports "No source code … was executed", silently invalidating the
+ * whole mutation run. Copying vendor/ keeps every `__DIR__` inside the sandbox.
+ *
+ * Gated on a `.php` target AND a Composer marker (composer.json or vendor/composer)
+ * so non-PHP audits keep the cheap symlink for their heavyweight dirs.
+ */
+function isComposerPhpAudit(targetFile: string, absoluteWorkspace: string): boolean {
+  if (!targetFile.toLowerCase().endsWith('.php')) return false;
+  return (
+    existsSync(join(absoluteWorkspace, 'composer.json')) ||
+    existsSync(join(absoluteWorkspace, 'vendor', 'composer'))
+  );
+}
+
+/**
  * Maximum workspace size (in bytes) to copy without warning.
  * 200 MB — beyond this, an async copy can still take seconds (audit C1).
  */
@@ -209,6 +245,7 @@ function estimateWorkspaceSize(
   workspaceRoot: string,
   ignorePatterns?: string[],
   signal?: AbortSignal,
+  symlinkDirsSet: Set<string> = SYMLINK_DIRS_SET,
 ): number {
   // Normalise ignore patterns the same way the cp filter does: strip a
   // single trailing separator and drop empties (which would match everything).
@@ -245,6 +282,11 @@ function estimateWorkspaceSize(
       for (const entry of entries) {
         const fullPath = join(current, entry.name);
         if (ALWAYS_EXCLUDE.has(entry.name)) continue;
+        // Symlinked dirs are not copied, so they must not count toward the
+        // copy-size estimate that drives the "large workspace" warning. (A dir
+        // we COPY instead of symlink — e.g. vendor for a Composer audit — is
+        // absent from this set and so DOES count, which is correct.)
+        if (symlinkDirsSet.has(entry.name)) continue;
         if (excludeSegments.has(entry.name)) continue;
 
         if (entry.isDirectory()) {
@@ -315,6 +357,17 @@ export async function createSandbox(
   // Honour an already-aborted signal before doing any pre-copy work.
   if (options?.signal?.aborted) throw abortError();
 
+  // ── Decide which heavyweight dirs to symlink vs copy for THIS audit ──
+  // Composer PHP audits must COPY vendor/ (see isComposerPhpAudit) so the
+  // autoloader's __DIR__ stays inside the sandbox; everything else keeps the
+  // cheap symlink. The invariant "excluded-from-copy ⇔ symlinked" is preserved
+  // by deriving both the copy-filter exclusions and the symlink loop from this
+  // single per-call list.
+  const symlinkDirs = isComposerPhpAudit(targetFile, absoluteWorkspace)
+    ? SYMLINK_DIRS.filter((d) => d !== 'vendor')
+    : SYMLINK_DIRS;
+  const symlinkDirsSet = new Set(symlinkDirs);
+
   // ── Pre-copy: warn on very large workspaces ──
   // Always estimate and warn on large workspaces. Previously gated behind
   // isVerbose() which suppressed the warning in normal mode when it was
@@ -324,7 +377,12 @@ export async function createSandbox(
   // unexpected process termination.
   ensureExitHandler();
 
-  const size = estimateWorkspaceSize(absoluteWorkspace, ignorePatterns, options?.signal);
+  const size = estimateWorkspaceSize(
+    absoluteWorkspace,
+    ignorePatterns,
+    options?.signal,
+    symlinkDirsSet,
+  );
   if (size > MAX_WORKSPACE_SIZE_BYTES) {
     warn(
       `Workspace is ~${(size / 1024 / 1024).toFixed(0)}MB — sandbox copy may be slow. ` +
@@ -364,6 +422,12 @@ export async function createSandbox(
         const segments = src.split(sep);
         const basename = segments[segments.length - 1] ?? '';
         if (ALWAYS_EXCLUDE.has(basename)) return false;
+        // Symlinked heavyweight dirs (node_modules, .venv, venv, and — except
+        // for Composer PHP audits — vendor) are materialised as symlinks in
+        // Step 2, so they must never be copied here: a copied dir would make the
+        // later symlinkSync fail with EEXIST. Dirs we deliberately COPY (vendor
+        // for PHP) are absent from this set and fall through to be copied.
+        if (symlinkDirsSet.has(basename)) return false;
         // Audit finding M6: segment-based matching prevents over-eager substring
         // exclusion. Excludes only when a path segment exactly equals the
         // pattern, not when the pattern is a substring of any path component.
@@ -386,7 +450,9 @@ export async function createSandbox(
     if (options?.signal?.aborted) throw abortError();
 
     // ── Step 2: Symlink heavyweight directories ──
-    for (const dirName of SYMLINK_DIRS) {
+    // (`symlinkDirs` excludes vendor for Composer PHP audits — that dir was
+    // copied in Step 1 instead, so it is intentionally not symlinked here.)
+    for (const dirName of symlinkDirs) {
       const src = join(absoluteWorkspace, dirName);
       const dst = join(sandboxDir, dirName);
       if (existsSync(src)) {
