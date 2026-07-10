@@ -153,6 +153,53 @@ describe('createSandbox', () => {
     );
   });
 
+  it('COPIES vendor (does not symlink) for a Composer PHP audit — isolation + EEXIST regression', async () => {
+    // Composer's autoloader derives its base dir from __DIR__, which PHP
+    // resolves THROUGH symlinks back to the real project. A symlinked vendor/
+    // would make PHPUnit/Infection load the ORIGINAL source instead of the
+    // sandbox copy, silently invalidating mutation testing. So for a Composer
+    // PHP audit vendor/ must be COPIED, not symlinked — which also means the
+    // copy+symlink collision (EEXIST) that failed every PHP project cannot
+    // occur, because vendor is never symlinked.
+    mockExistsSync.mockImplementation((path: string) => {
+      if (path === `${SANDBOX_DIR}/src/Calculator.php`) return true;
+      if (path === TEST_PROJECT_VENDOR) return true;
+      if (path === `${TEST_PROJECT}/composer.json`) return true; // marks a Composer project
+      return false;
+    });
+
+    await createSandbox('src/Calculator.php', TEST_PROJECT);
+
+    // vendor is COPIED (filter includes it), not excluded.
+    const filter = mockCp.mock.calls[0][2]?.filter as (src: string) => boolean;
+    expect(filter).toBeDefined();
+    expect(filter(`${TEST_PROJECT}/vendor`)).toBe(true);
+    // ...and vendor is NOT symlinked, so no EEXIST collision is possible.
+    const symlinkedDsts = mockSymlinkSync.mock.calls.map((c) => c[1]);
+    expect(symlinkedDsts).not.toContain(`${SANDBOX_DIR}/vendor`);
+  });
+
+  it('symlinks vendor for a NON-Composer .php audit (no composer.json marker)', async () => {
+    // Without a Composer marker (composer.json / vendor/composer) there is no
+    // autoloader-through-symlink hazard, so vendor keeps the cheap symlink path
+    // and is excluded from the copy (symlinked ⇔ not copied).
+    mockExistsSync.mockImplementation((path: string) => {
+      if (path === `${SANDBOX_DIR}/src/Calculator.php`) return true;
+      if (path === TEST_PROJECT_VENDOR) return true;
+      return false;
+    });
+
+    await createSandbox('src/Calculator.php', TEST_PROJECT);
+
+    expect(mockSymlinkSync).toHaveBeenCalledWith(
+      TEST_PROJECT_VENDOR,
+      `${SANDBOX_DIR}/vendor`,
+      'dir',
+    );
+    const filter = mockCp.mock.calls[0][2]?.filter as (src: string) => boolean;
+    expect(filter(`${TEST_PROJECT}/vendor`)).toBe(false);
+  });
+
   it('refuses to sandbox when workspace resolves outside process cwd (C2)', async () => {
     // /etc is an absolute path that escapes the test cwd.
     await expect(createSandbox('src/utils/math.ts', '/etc')).rejects.toThrow(

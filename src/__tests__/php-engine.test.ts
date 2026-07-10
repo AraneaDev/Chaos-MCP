@@ -8,10 +8,16 @@ vi.mock('../utils/exec-classify.js', async () => {
 });
 vi.mock('fs', async () => {
   const actual = await vi.importActual<typeof import('fs')>('fs');
-  return { ...actual, existsSync: vi.fn(), writeFileSync: vi.fn(), readFileSync: vi.fn() };
+  return {
+    ...actual,
+    existsSync: vi.fn(),
+    writeFileSync: vi.fn(),
+    readFileSync: vi.fn(),
+    mkdirSync: vi.fn(),
+  };
 });
 
-import { existsSync, writeFileSync, readFileSync } from 'fs';
+import { existsSync, writeFileSync, readFileSync, mkdirSync } from 'fs';
 import { invokeMutationTool, MutationToolStartupError } from '../utils/exec-classify.js';
 import { ExecFailureError } from '../utils/exec.js';
 import {
@@ -25,6 +31,7 @@ const mockInvoke = vi.mocked(invokeMutationTool);
 const mockExists = vi.mocked(existsSync);
 const mockWrite = vi.mocked(writeFileSync);
 const mockRead = vi.mocked(readFileSync);
+const mockMkdir = vi.mocked(mkdirSync);
 
 // A minimal Infection JSON log: 3 killed, 1 timed-out, 1 escaped → killed 4, survived 1.
 const SAMPLE_LOG = JSON.stringify({
@@ -152,11 +159,13 @@ describe('PhpEngine.run', () => {
       expect.stringContaining('"testFramework"'),
       'utf8',
     );
-    // Invoked with --filter scoped to the file and the json logger.
+    // Invoked with --filter scoped to the file. The detailed JSON log is
+    // configured via the generated config's `logs.json`, NOT a CLI flag —
+    // Infection 0.34+ removed `--logger-json`, so it must never be passed.
     const [, bin, args] = mockInvoke.mock.calls[0];
     expect(bin).toBe('infection'); // no vendor/bin/infection → global fallback
     expect(args).toContain('--filter=src/Calculator.php');
-    expect(args).toContain('--logger-json=chaos-infection-log.json');
+    expect(args.some((a: string) => a.startsWith('--logger-json'))).toBe(false);
     expect(args).toContain('--no-progress');
     expect(args).toContain('--no-interaction');
     expect(result.survived).toBe(1);
@@ -180,6 +189,29 @@ describe('PhpEngine.run', () => {
     expect(mockWrite).not.toHaveBeenCalled(); // project config respected
     const [, bin] = mockInvoke.mock.calls[0];
     expect(String(bin)).toContain('vendor/bin/infection');
+  });
+
+  it('isolates Infection temp files per run via TMPDIR inside the workDir (parallel-collision regression)', async () => {
+    // Infection writes to sys_get_temp_dir()/infection — a FIXED shared path.
+    // Concurrent runs (parallel triage) collided there and failed with
+    // "Cannot declare class ComposerAutoloaderInit… already in use". Each run
+    // must get a per-workDir TMPDIR so sys_get_temp_dir() is unique.
+    mockExists.mockImplementation((p) => String(p).endsWith('chaos-infection-log.json'));
+    mockRead.mockReturnValue(SAMPLE_LOG);
+    mockInvoke.mockResolvedValue({ stdout: '', stderr: '', exit: 0, signal: null });
+
+    const engine = new PhpEngine();
+    await engine.run('src/Calculator.php', { workDir: '/sb' });
+
+    // A per-run temp dir under the sandbox workDir is created…
+    expect(mockMkdir).toHaveBeenCalledWith('/sb/.chaos-infection-tmp', { recursive: true });
+    // …and pointed at via TMPDIR/TMP/TEMP in the Infection invocation's env.
+    const invokeEnv = mockInvoke.mock.calls[0][3]?.env as NodeJS.ProcessEnv;
+    expect(invokeEnv.TMPDIR).toBe('/sb/.chaos-infection-tmp');
+    expect(invokeEnv.TMP).toBe('/sb/.chaos-infection-tmp');
+    expect(invokeEnv.TEMP).toBe('/sb/.chaos-infection-tmp');
+    // PATH (and the rest of the environment) is preserved so `infection` still resolves.
+    expect(invokeEnv.PATH).toBe(process.env.PATH);
   });
 
   it('parses the log even when Infection exits non-zero (mutants escaped)', async () => {
