@@ -2,6 +2,14 @@
 
 All notable changes to Chaos-MCP are documented in this file.
 
+## [1.2.3](https://github.com/AraneaDev/Chaos-MCP/compare/v1.2.2...v1.2.3) (2026-07-10)
+
+
+### Bug Fixes
+
+* **php:** make Infection mutation testing work end-to-end ([#8](https://github.com/AraneaDev/Chaos-MCP/issues/8)) ([b80983d](https://github.com/AraneaDev/Chaos-MCP/commit/b80983debf4dc4e9bb2f1b10c859445a3e90b72b))
+* **rust:** parse cargo-mutants summary line for accurate score ([#6](https://github.com/AraneaDev/Chaos-MCP/issues/6)) ([722c5be](https://github.com/AraneaDev/Chaos-MCP/commit/722c5be557a4bbc46ff7a157123a3e551214c602))
+
 ## [1.2.2](https://github.com/AraneaDev/Chaos-MCP/compare/v1.2.1...v1.2.2) (2026-07-07)
 
 
