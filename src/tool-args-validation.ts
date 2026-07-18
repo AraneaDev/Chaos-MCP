@@ -127,8 +127,11 @@ function validateBaselineArg(args: ToolArgs): string | null {
       }
       const lineErr = assertValidLine(entry.line);
       if (lineErr !== null) return `baseline ${key}: ${lineErr}`;
-      // H5 / M9: counters inside mutators must be positive integers.
-      for (const cnt of Object.values(entry.mutators as Record<string, unknown>)) {
+      // H5 / M9: mutator names must be non-empty and counters positive integers.
+      for (const [mutator, cnt] of Object.entries(entry.mutators as Record<string, unknown>)) {
+        if (mutator.trim().length === 0) {
+          return 'baseline mutator names must be non-empty strings.';
+        }
         if (typeof cnt !== 'number' || !Number.isInteger(cnt) || cnt < 1) {
           return 'baseline mutator counts must be positive integers.';
         }

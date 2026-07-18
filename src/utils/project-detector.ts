@@ -240,11 +240,21 @@ function detectJsRunnerRaw(workspaceRoot: string): string {
  * which may be a caret/range that doesn't pin a single major.
  */
 function installedVitestMajor(workspaceRoot: string): number | null {
-  const pkg = readJsonSafe(join(workspaceRoot, 'node_modules', 'vitest', 'package.json'));
-  const version = pkg && typeof pkg.version === 'string' ? pkg.version : null;
-  if (version === null) return null;
-  const major = Number.parseInt(version.split('.')[0], 10);
-  return Number.isInteger(major) ? major : null;
+  // Walk up ancestor node_modules (Node's own resolution order) so a vitest
+  // hoisted to a monorepo/workspace root is still found — not just one installed
+  // directly under workspaceRoot.
+  let dir = workspaceRoot;
+  for (;;) {
+    const pkg = readJsonSafe(join(dir, 'node_modules', 'vitest', 'package.json'));
+    const version = pkg && typeof pkg.version === 'string' ? pkg.version : null;
+    if (version !== null) {
+      const major = Number.parseInt(version.split('.')[0], 10);
+      return Number.isInteger(major) ? major : null;
+    }
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
 }
 
 /**

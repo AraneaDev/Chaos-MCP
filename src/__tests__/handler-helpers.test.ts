@@ -152,6 +152,13 @@ describe('validateToolArgs', () => {
       ).toBe(true);
     });
 
+    it('rejects a baseline entry with an empty mutator name', () => {
+      // Otherwise parseBaseline builds a bogus empty-mutator key from it.
+      expect(
+        validateToolArgs({ baseline: { survivors: [{ line: 1, mutators: { '': 1 } }] } })?.isError,
+      ).toBe(true);
+    });
+
     it('validates the noCoverage array the same way as survivors', () => {
       expect(
         validateToolArgs({ baseline: { noCoverage: [{ line: 0, mutators: { A: 1 } }] } })?.isError,

@@ -337,6 +337,23 @@ describe('detectJsTestRunner', () => {
 
         expect(detectJsTestRunner('/workspace')).toBe('vitest');
       });
+
+      it('finds a vitest hoisted to a monorepo root (ancestor node_modules)', () => {
+        // vitest 3 is installed at the repo root, not under the package dir —
+        // installedVitestMajor must walk up ancestor node_modules to find it.
+        mockReadFileSync.mockImplementation((p) => {
+          const s = String(p);
+          if (s === join('/repo', 'node_modules', 'vitest', 'package.json')) {
+            return JSON.stringify({ version: '3.1.0' });
+          }
+          if (s === join('/repo/packages/app', 'package.json')) {
+            return JSON.stringify({ devDependencies: { vitest: '^3.0.0' } });
+          }
+          throw new Error('ENOENT');
+        });
+
+        expect(detectJsTestRunner('/repo/packages/app')).toBe('command');
+      });
     });
 
     it('detects jest from dependencies', () => {

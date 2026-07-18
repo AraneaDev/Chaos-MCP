@@ -87,9 +87,16 @@ const testCommand =
 console.error(`mutate: mutating ${sources.length} file(s); per-mutant tests: ${testCommand}`);
 
 // ── Run Stryker with the scope wired into both --mutate and the command ──
+// Windows installs npx as npx.cmd, which spawnSync cannot exec directly without
+// a shell (same handling as tests/global-setup.ts).
+const isWindows = process.platform === 'win32';
 const result = spawnSync(
-  'npx',
+  isWindows ? 'npx.cmd' : 'npx',
   ['stryker', 'run', '--mutate', sources.join(','), '--concurrency', concurrency, ...passthrough],
-  { stdio: 'inherit', env: { ...process.env, STRYKER_TEST_COMMAND: testCommand } },
+  {
+    stdio: 'inherit',
+    shell: isWindows,
+    env: { ...process.env, STRYKER_TEST_COMMAND: testCommand },
+  },
 );
 process.exit(result.status ?? 1);
