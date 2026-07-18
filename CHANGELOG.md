@@ -2,6 +2,20 @@
 
 All notable changes to Chaos-MCP are documented in this file.
 
+## [1.3.0](https://github.com/AraneaDev/Chaos-MCP/compare/v1.2.4...v1.3.0) (2026-07-18)
+
+
+### Features
+
+* **detector:** fall back to the command runner for vitest 3 projects ([dcc7a52](https://github.com/AraneaDev/Chaos-MCP/commit/dcc7a52b8bde2d004a6cb7a160b7fbb78a491e35))
+
+
+### Bug Fixes
+
+* address PR review (Windows npx, empty mutator name, hoisted vitest) ([543cd2f](https://github.com/AraneaDev/Chaos-MCP/commit/543cd2f890c71fbbfae33a017a138a1c375f7b98))
+* **php:** report missing PHPUnit config as an unsupported-runner error ([43f7679](https://github.com/AraneaDev/Chaos-MCP/commit/43f7679fcf5a706a3ef2cc300ab593b0da2b9a13))
+* **verify:** place Stryker-disable directive on its own line above the loop ([819e4fc](https://github.com/AraneaDev/Chaos-MCP/commit/819e4fce87498591ada9539153a60f6d544061b4))
+
 ## [1.2.4](https://github.com/AraneaDev/Chaos-MCP/compare/v1.2.3...v1.2.4) (2026-07-10)
 
 
