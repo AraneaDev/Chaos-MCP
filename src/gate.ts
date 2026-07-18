@@ -10,11 +10,13 @@ export interface GateResult {
  * gradable mutants must never spuriously fail the gate.
  */
 export function evaluateGate(scoreText: string, minScore: number): GateResult {
-  const match = /-?\d+(?:\.\d+)?/.exec(scoreText ?? '');
+  // The regex only matches a well-formed decimal, so a match always parses to a
+  // real number (no NaN guard needed), and a non-match — empty or unparseable
+  // input — is treated as passing so a file with no gradable mutants never
+  // spuriously fails the gate.
+  const match = /-?\d+(?:\.\d+)?/.exec(scoreText);
   if (match === null) return { minScore, passed: true };
-  const score = parseFloat(match[0]);
-  if (Number.isNaN(score)) return { minScore, passed: true };
-  return { minScore, passed: score >= minScore };
+  return { minScore, passed: parseFloat(match[0]) >= minScore };
 }
 
 /**

@@ -230,7 +230,9 @@ describe('PhpEngine.run', () => {
   });
 
   it('throws a coverage-driver hint when no JSON log is produced', async () => {
-    mockExists.mockReturnValue(false); // no log file ever appears
+    // A PHPUnit config IS present (so it is not the "unsupported runner" case),
+    // but no log file ever appears → the coverage-driver hint.
+    mockExists.mockImplementation((p) => String(p).endsWith('phpunit.xml.dist'));
     mockInvoke.mockRejectedValue(
       new ExecFailureError(
         {
@@ -248,6 +250,30 @@ describe('PhpEngine.run', () => {
     await expect(engine.run('src/Calculator.php', { workDir: '/sb' })).rejects.toThrow(
       /Xdebug or PCOV/,
     );
+  });
+
+  it('reports a missing PHPUnit config (unsupported/custom test runner) rather than the coverage hint', async () => {
+    // No project Infection config, no PHPUnit config, and no JSON log: the
+    // project uses a different or custom test runner, so Infection can never run.
+    // The error must name the real cause, not the generic coverage-driver hint.
+    mockExists.mockReturnValue(false);
+    mockInvoke.mockRejectedValue(
+      new ExecFailureError(
+        {
+          stdout: '',
+          stderr: 'The path does not contain any of the requested files: "phpunit.xml", ...',
+          exit: 1,
+          signal: null,
+          code: undefined,
+        },
+        'nonzero',
+      ),
+    );
+
+    const engine = new PhpEngine();
+    const run = engine.run('src/Calculator.php', { workDir: '/sb' });
+    await expect(run).rejects.toThrow(/no PHPUnit configuration found/);
+    await expect(run).rejects.not.toThrow(/Xdebug or PCOV/);
   });
 
   it('rethrows the install hint when the binary is missing', async () => {

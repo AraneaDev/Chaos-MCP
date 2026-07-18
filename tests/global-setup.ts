@@ -11,11 +11,13 @@
 // only test files (no src rebuild) sees the tests fail against a stale
 // binary.
 //
-// StrykerJS skip: when Stryker runs the vitest-runner once per mutant, this
-// globalSetup fires for EVERY mutant (~12 × ~10 s = ~2 min of pure overhead,
-// and `build/index.js` is irrelevant under Stryker since vitest tests inherit
-// mutated source via vitest's transformer). StrykerJS sets `STRYKER_MUTANT_*`
-// environment variables during mutant runs; we short-circuit on `STRYKER_*`.
+// StrykerJS skip: when Stryker runs tests once per mutant, this globalSetup
+// fires for EVERY mutant (~12 × ~10 s = ~2 min of pure overhead, and
+// `build/index.js` is irrelevant under Stryker since vitest tests inherit
+// mutated source via vitest's transformer). StrykerJS exposes its presence via
+// env vars — `STRYKER_MUTANT_*` under the vitest-runner and
+// `__STRYKER_ACTIVE_MUTANT__` under the command runner — so we short-circuit on
+// any env key containing `STRYKER` to cover both runners.
 
 import { statSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -43,7 +45,7 @@ async function globalSetup(): Promise<void> {
   // Stryker skip: process.env is populated BEFORE vitest forks workers, so
   // this guard fires once per Stryker mutant-test invocation and avoids
   // hundreds of wasted rebuild cycles during a mutation run.
-  if (Object.keys(process.env).some((k) => k.startsWith('STRYKER_'))) {
+  if (Object.keys(process.env).some((k) => k.includes('STRYKER'))) {
     return;
   }
 

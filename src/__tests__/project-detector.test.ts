@@ -292,6 +292,70 @@ describe('detectJsTestRunner', () => {
       expect(detectJsTestRunner('/workspace')).toBe('vitest');
     });
 
+    describe('vitest 3.x → command runner fallback', () => {
+      it('maps vitest to the command runner when the installed vitest major is >= 3', () => {
+        // StrykerJS 9's vitest-runner cannot drive vitest 3; the built-in
+        // command runner (npm test) is the compatible fallback.
+        mockReadFileSync.mockImplementation((p) => {
+          const s = String(p);
+          if (s === join('/workspace', 'node_modules', 'vitest', 'package.json')) {
+            return JSON.stringify({ version: '3.0.5' });
+          }
+          if (s === join('/workspace', 'package.json')) {
+            return JSON.stringify({ devDependencies: { vitest: '^3.0.0' } });
+          }
+          throw new Error('ENOENT');
+        });
+
+        expect(detectJsTestRunner('/workspace')).toBe('command');
+      });
+
+      it('keeps the native vitest runner when the installed vitest major is 2', () => {
+        mockReadFileSync.mockImplementation((p) => {
+          const s = String(p);
+          if (s === join('/workspace', 'node_modules', 'vitest', 'package.json')) {
+            return JSON.stringify({ version: '2.1.9' });
+          }
+          if (s === join('/workspace', 'package.json')) {
+            return JSON.stringify({ devDependencies: { vitest: '^2.1.0' } });
+          }
+          throw new Error('ENOENT');
+        });
+
+        expect(detectJsTestRunner('/workspace')).toBe('vitest');
+      });
+
+      it('keeps vitest when the installed version cannot be determined (not installed)', () => {
+        // vitest is declared but node_modules/vitest is absent → we cannot
+        // confirm major >= 3, so preserve current (native-runner) behavior.
+        mockReadFileSync.mockImplementation((p) => {
+          if (String(p) === join('/workspace', 'package.json')) {
+            return JSON.stringify({ devDependencies: { vitest: '^3.0.0' } });
+          }
+          throw new Error('ENOENT');
+        });
+
+        expect(detectJsTestRunner('/workspace')).toBe('vitest');
+      });
+
+      it('finds a vitest hoisted to a monorepo root (ancestor node_modules)', () => {
+        // vitest 3 is installed at the repo root, not under the package dir —
+        // installedVitestMajor must walk up ancestor node_modules to find it.
+        mockReadFileSync.mockImplementation((p) => {
+          const s = String(p);
+          if (s === join('/repo', 'node_modules', 'vitest', 'package.json')) {
+            return JSON.stringify({ version: '3.1.0' });
+          }
+          if (s === join('/repo/packages/app', 'package.json')) {
+            return JSON.stringify({ devDependencies: { vitest: '^3.0.0' } });
+          }
+          throw new Error('ENOENT');
+        });
+
+        expect(detectJsTestRunner('/repo/packages/app')).toBe('command');
+      });
+    });
+
     it('detects jest from dependencies', () => {
       mockReadFileSync.mockReturnValue(
         JSON.stringify({
