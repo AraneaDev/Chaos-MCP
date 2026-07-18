@@ -9,6 +9,20 @@ import { DEFAULT_TIMEOUT_MS } from '../utils/constants.js';
 const GENERATED_CONFIG_NAME = 'infection.json';
 /** Config files Infection already recognises — if present, we do NOT overwrite. */
 const PROJECT_CONFIG_NAMES = ['infection.json', 'infection.json5'];
+/**
+ * PHPUnit configuration files Infection looks for at the project root. Our
+ * generated config targets PHPUnit, so when none of these exist Infection has
+ * no test runner to drive — a project using a different or custom runner.
+ */
+const PHPUNIT_CONFIG_NAMES = [
+  'phpunit.xml',
+  'phpunit.xml.dist',
+  'phpunit.dist.xml',
+  'phpunit.yml',
+  'phpunit.yml.dist',
+  'phpunit.dist.yml',
+  'phpunit.php',
+];
 /** Sandbox-relative JSON log path we always read results from. */
 const JSON_LOG_NAME = 'chaos-infection-log.json';
 
@@ -218,6 +232,22 @@ export class PhpEngine extends BaseEngine {
       // is the normal survivors case AS LONG AS the JSON log was produced. If no
       // log exists, the initial (coverage) run failed — surface the likely cause.
       if (!existsSync(jsonLogPath)) {
+        // When we generated the config (no project Infection config), it targets
+        // PHPUnit. If the project ships no PHPUnit configuration at all, Infection
+        // can never run — report that specific, actionable cause instead of the
+        // generic coverage-driver hint. (A project with its own Infection config
+        // may deliberately target a different framework, so this only applies to
+        // the generated-config path.)
+        const hasPhpUnitConfig = PHPUNIT_CONFIG_NAMES.some((n) => existsSync(join(cwd, n)));
+        if (!hasProjectConfig && !hasPhpUnitConfig) {
+          throw new Error(
+            `Infection could not run: no PHPUnit configuration found (looked for ` +
+              `${PHPUNIT_CONFIG_NAMES.join(', ')}). Chaos-MCP's PHP engine drives Infection, which ` +
+              `requires PHPUnit; this project appears to use a different or custom test runner. Add a ` +
+              `phpunit.xml, or ship an Infection config (${PROJECT_CONFIG_NAMES.join('/')}) that ` +
+              `targets your framework. stderr: ${execErr.stderr?.slice(0, 300) ?? ''}`,
+          );
+        }
         throw new Error(
           `Infection failed (exit ${execErr.exit}) without producing a JSON log. This usually means ` +
             `the initial test run failed — ensure the PHPUnit suite passes (vendor/bin/phpunit) and a ` +
