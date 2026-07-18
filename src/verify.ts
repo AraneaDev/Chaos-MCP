@@ -33,9 +33,12 @@ function sortKeys(keys: MutantKey[]): MutantKey[] {
 export function parseBaseline(b: BaselineInput): MutantKey[] {
   const seen = new Set<string>();
   const out: MutantKey[] = [];
-  // Stryker disable next-line ArrayDeclaration: the `?? []` fallbacks only guard a
-  // spread of `undefined`; their contents are never observed (a non-object element
-  // has no `.mutators` and is skipped), so any array literal here is equivalent.
+  // The `?? []` fallbacks only guard a spread of `undefined`: a non-object element
+  // has no `.mutators` and is skipped, so any array literal here is an equivalent
+  // mutant. The Stryker directive must sit on its OWN line immediately above the
+  // loop — `next-line` targets the very next line, so an intervening comment line
+  // would misdirect it off the loop.
+  // Stryker disable next-line ArrayDeclaration: equivalent mutant (see above)
   for (const group of [...(b.survivors ?? []), ...(b.noCoverage ?? [])]) {
     for (const mutator of Object.keys(group.mutators ?? {})) {
       const k = keyOf(group.line, mutator);
