@@ -88,6 +88,20 @@ describe('computeVerifyDelta', () => {
     ]);
   });
 
+  it('includes a new survivor ON a baseline line under line-scoped engines', () => {
+    // engineSupportsLineScope=true: a fresh survivor whose (line, mutator) key is
+    // NEW but whose LINE is in the baseline is a real regression on a re-tested
+    // line and MUST be counted. This exercises baselineLineSet.has(<baseline line>)
+    // returning true — the non-baseline (line 999) case above cannot, since it is
+    // excluded whether or not baselineLineSet actually holds the baseline lines.
+    const delta = computeVerifyDelta(
+      baseline,
+      result([{ line: 42, mutator: 'BooleanLiteral' }]),
+      true,
+    );
+    expect(delta.newSurvivors).toEqual([{ line: 42, mutator: 'BooleanLiteral' }]);
+  });
+
   it('counts re-run survivors on non-baseline lines as newSurvivors for whole-file engines (H1)', () => {
     // engineSupportsLineScope=false (cosmic-ray/cargo-mutants/Infection, and the
     // default): the whole file is re-run, so a regression the fix introduces on a
