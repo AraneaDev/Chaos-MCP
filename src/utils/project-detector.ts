@@ -234,11 +234,38 @@ function detectJsRunnerRaw(workspaceRoot: string): string {
 }
 
 /**
+ * Read the MAJOR version of the vitest actually installed in the workspace,
+ * or null when it can't be determined. Reads node_modules/vitest/package.json
+ * — the version that will actually run — rather than the declared semver range,
+ * which may be a caret/range that doesn't pin a single major.
+ */
+function installedVitestMajor(workspaceRoot: string): number | null {
+  const pkg = readJsonSafe(join(workspaceRoot, 'node_modules', 'vitest', 'package.json'));
+  const version = pkg && typeof pkg.version === 'string' ? pkg.version : null;
+  if (version === null) return null;
+  const major = Number.parseInt(version.split('.')[0], 10);
+  return Number.isInteger(major) ? major : null;
+}
+
+/**
  * Map a raw runner name to a Stryker-compatible value.
  * Runners without native Stryker plugins (bun, node:test) map to 'command'.
+ *
+ * vitest 3.x fallback: StrykerJS 9's `@stryker-mutator/vitest-runner` is
+ * incompatible with vitest 3 (it relies on vitest 2's removed `--related`
+ * API), so the native runner aborts the run. When the installed vitest is
+ * major >= 3 we fall back to Stryker's built-in command runner (`npm test`),
+ * which drives any framework as a black box — mutation testing still works,
+ * at the cost of no per-mutant coverage optimization (the full suite runs per
+ * mutant). vitest <= 2 (or an undeterminable version) keeps the faster native
+ * vitest-runner, so behavior is unchanged for those projects.
  */
-function toStrykerRunner(raw: string): string {
+function toStrykerRunner(raw: string, workspaceRoot: string): string {
   if (raw === 'bun' || raw === 'node:test') return 'command';
+  if (raw === 'vitest') {
+    const major = installedVitestMajor(workspaceRoot);
+    if (major !== null && major >= 3) return 'command';
+  }
   return raw;
 }
 
@@ -259,7 +286,7 @@ function toStrykerRunner(raw: string): string {
  * @internal Exported for testing only.
  */
 export function detectJsTestRunner(workspaceRoot: string): string {
-  return toStrykerRunner(detectJsRunnerRaw(workspaceRoot));
+  return toStrykerRunner(detectJsRunnerRaw(workspaceRoot), workspaceRoot);
 }
 
 /**
