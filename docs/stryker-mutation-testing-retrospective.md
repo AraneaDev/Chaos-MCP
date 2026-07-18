@@ -6,6 +6,34 @@
 
 ---
 
+## UPDATE (2026-07-18): RESOLVED — internal mutation testing is active again
+
+The park was based on a misdiagnosis in **Attempt 2**: the command runner is
+**not** a separate `@stryker-mutator/command-runner` package (that 404 is
+expected — it doesn't exist). Stryker's command runner is **built into
+`@stryker-mutator/core`** and selected with `testRunner: 'command'`. It runs a
+plain test command as a black box per mutant and never loads the vitest-runner
+plugin, so the vitest-3 `--related` incompatibility is irrelevant.
+
+Setup now on `main`:
+
+- `stryker.config.mjs` uses `testRunner: 'command'`; the command comes from
+  `STRYKER_TEST_COMMAND` (default `npm test`). `mutate` is an empty no-op by
+  default so a bare `stryker run` can't run the full suite over every file.
+- `scripts/mutate.mjs` (`npm run mutation -- <target>`) scopes **both** the
+  mutated files and the test command. It sets the command to
+  `vitest related <targets> --run` — only the tests whose module graph includes
+  the mutated files — keeping each run bounded (e.g. `src/gate.ts`: 45 mutants,
+  ~72s at concurrency 2). Running the *whole* suite per mutant (the naive
+  config) is the footgun that must be avoided; the wrapper exists to prevent it.
+- `tests/global-setup.ts` skips its rebuild when any `STRYKER` env var is set
+  (now matches the command runner's `__STRYKER_ACTIVE_MUTANT__` too).
+
+Paths A–D below are superseded: the fix was neither waiting for Stryker 10.x nor
+downgrading vitest — it was using the runner that shipped in core all along.
+
+---
+
 ## TL;DR
 
 We attempted to land a chaos-mcp-**internal** StrykerJS mutation-testing bootstrap (so the project runs mutation testing on its own source) four times over the past session. **All four attempts failed**, each on a different wall:

@@ -48,6 +48,7 @@
     "format": "prettier --write src/",
     "format:check": "prettier --check src/",
     "check": "npm run build && npm run lint && npm run format:check && npm run test",
+    "mutation": "npm run build && node scripts/mutate.mjs",
     "postinstall": "node scripts/postinstall.js"
   },
   "dependencies": {
@@ -55,6 +56,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",
+    "@stryker-mutator/core": "^9.6.1",
     "@types/node": "^20.11.0",
     "@vitest/coverage-v8": "^3.2.6",
     "eslint": "^9.0.0",
