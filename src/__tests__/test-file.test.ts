@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { suggestTestFile, findPythonTestSelection } from '../test-file.js';
+import { suggestTestFile, findPythonTestSelection, workspaceHasPythonTests } from '../test-file.js';
 
 let root: string;
 beforeEach(() => {
@@ -327,5 +327,59 @@ describe('findPythonTestSelection', () => {
       writeFileSync(join(dir, 'test_mod.py'), '');
     }
     expect(findPythonTestSelection('mod.py', root)).toHaveLength(16);
+  });
+});
+
+describe('workspaceHasPythonTests', () => {
+  it('returns false for a workspace with Python sources but no tests', () => {
+    mkdirSync(join(root, 'workers', 'python', 'bin'), { recursive: true });
+    writeFileSync(
+      join(root, 'workers', 'python', 'bin', 'worker.py'),
+      'def run():\n    return 1\n',
+    );
+    expect(workspaceHasPythonTests(root)).toEqual({ found: false, depthLimited: false });
+  });
+
+  it('finds test_*.py under a tests directory', () => {
+    mkdirSync(join(root, 'tests'), { recursive: true });
+    writeFileSync(join(root, 'tests', 'test_worker.py'), 'def test_x():\n    assert True\n');
+    expect(workspaceHasPythonTests(root)).toEqual({ found: true, depthLimited: false });
+  });
+
+  it('finds a co-located *_test.py', () => {
+    mkdirSync(join(root, 'pkg'), { recursive: true });
+    writeFileSync(join(root, 'pkg', 'worker_test.py'), 'def test_x():\n    assert True\n');
+    expect(workspaceHasPythonTests(root)).toEqual({ found: true, depthLimited: false });
+  });
+
+  it('finds a test file deeper than the old 6-level bound', () => {
+    // 10 levels down: a realistic deep monorepo layout that the previous cap
+    // reported as "no tests at all".
+    const deep = join(root, ...Array.from({ length: 10 }, (_, i) => `lvl${i}`));
+    mkdirSync(deep, { recursive: true });
+    writeFileSync(join(deep, 'test_deep.py'), 'def test_x():\n    assert True\n');
+    expect(workspaceHasPythonTests(root)).toEqual({ found: true, depthLimited: false });
+  });
+
+  it('reports depthLimited when the walk is cut off before exhausting the tree', () => {
+    const deep = join(root, 'a', 'b', 'c');
+    mkdirSync(deep, { recursive: true });
+    writeFileSync(join(deep, 'test_deep.py'), 'def test_x():\n    assert True\n');
+    // Tree is deeper than the bound and holds no shallower test: inconclusive.
+    expect(workspaceHasPythonTests(root, 1)).toEqual({ found: false, depthLimited: true });
+    // Tree fully walked and still nothing: conclusive.
+    rmSync(join(deep, 'test_deep.py'));
+    expect(workspaceHasPythonTests(root)).toEqual({ found: false, depthLimited: false });
+  });
+
+  it('ignores test files inside ignored directories', () => {
+    mkdirSync(join(root, 'node_modules', 'x'), { recursive: true });
+    writeFileSync(
+      join(root, 'node_modules', 'x', 'test_thing.py'),
+      'def test_x():\n    assert True\n',
+    );
+    mkdirSync(join(root, '.venv', 'lib'), { recursive: true });
+    writeFileSync(join(root, '.venv', 'lib', 'test_dep.py'), 'def test_x():\n    assert True\n');
+    expect(workspaceHasPythonTests(root)).toEqual({ found: false, depthLimited: false });
   });
 });

@@ -243,10 +243,10 @@ describe('PythonEngine (cosmic-ray)', () => {
     );
   });
 
-  it('surfaces a broken baseline as a test-suite failure (not a meaningless 100%)', async () => {
+  it('surfaces a broken baseline as a hedged diagnosis (not a meaningless 100%)', async () => {
     mockRunShell.mockRejectedValueOnce(fail({ exit: 1, stderr: 'E   assert 1 == 2' }));
     await expect(engine.run('m.py', { workDir: '/tmp/sandbox' })).rejects.toThrow(
-      /baseline failed.*test suite fails before mutation/i,
+      /baseline failed.*usual cause is a failing or uncollectable test suite/i,
     );
   });
 

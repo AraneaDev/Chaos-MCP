@@ -124,6 +124,84 @@ export function findPythonTestSelection(targetFile: string, workspaceRoot: strin
   return [...new Set(found)];
 }
 
+const PYTHON_TEST_IGNORE_DIRS = new Set([
+  'node_modules',
+  '.git',
+  '.venv',
+  'venv',
+  '__pycache__',
+  'build',
+  'dist',
+  '.tox',
+  'site-packages',
+]);
+
+function isPythonTestFile(name: string): boolean {
+  return name.endsWith('.py') && (name.startsWith('test_') || name.endsWith('_test.py'));
+}
+
+/**
+ * Depth bound for the Python test-file walk. pytest itself has no depth limit,
+ * so the bound exists only to keep the walk from running away on pathological
+ * trees; 24 levels clears realistic monorepo layouts (e.g.
+ * `packages/<svc>/src/<pkg>/.../tests/unit/...`) with room to spare, and the
+ * walk short-circuits on the first hit while skipping heavyweight directories.
+ */
+const PYTHON_TEST_MAX_DEPTH = 24;
+
+/** Outcome of the Python test-file walk. */
+export interface PythonTestScan {
+  /** At least one pytest-discoverable test file was seen. */
+  found: boolean;
+  /**
+   * The walk stopped at `maxDepth` somewhere without exhausting the tree, so a
+   * `found: false` result is inconclusive and must NOT be treated as proof that
+   * the project has no tests.
+   */
+  depthLimited: boolean;
+}
+
+/**
+ * Scans the workspace for at least one Python test file.
+ *
+ * Distinguishes "this project has no Python tests" from "the test suite is
+ * failing" — pytest exits 5 for the former, which must not be reported as a
+ * broken suite. Also distinguishes a tree-exhausted miss (confidently no tests)
+ * from a depth-limited miss (unknown), so callers can fail closed only when the
+ * scan is actually conclusive.
+ */
+export function workspaceHasPythonTests(
+  workspaceRoot: string,
+  maxDepth = PYTHON_TEST_MAX_DEPTH,
+): PythonTestScan {
+  let depthLimited = false;
+
+  const walk = (dir: string, depth: number): boolean => {
+    if (depth > maxDepth) {
+      depthLimited = true;
+      return false;
+    }
+    let entries: import('fs').Dirent[];
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return false;
+    }
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        if (PYTHON_TEST_IGNORE_DIRS.has(entry.name) || entry.name.startsWith('.')) continue;
+        if (walk(join(dir, entry.name), depth + 1)) return true;
+      } else if (entry.isFile() && isPythonTestFile(entry.name)) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  const found = walk(workspaceRoot, 0);
+  return { found, depthLimited: found ? false : depthLimited };
+}
+
 /**
  * Directories worth hunting recursively for a test file, beyond the fixed
  * candidates: the common top-level test roots plus the target's own top-level

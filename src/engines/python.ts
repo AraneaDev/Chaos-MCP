@@ -250,8 +250,9 @@ export class PythonEngine extends BaseEngine {
     await this.invoke(['baseline', configPath], cwd, timeoutMs, {
       onExecFailure: (e) =>
         new Error(
-          `cosmic-ray baseline failed (exit ${e.exit}). The test suite fails before mutation testing begins. ` +
-            `Fix the failing tests first. Details: ${(e.stderr || e.message).slice(0, 500)}`,
+          `cosmic-ray baseline failed (exit ${e.exit}) before mutation testing began. ` +
+            `The usual cause is a failing or uncollectable test suite; run the suite directly to confirm. ` +
+            `Details: ${(e.stderr || e.message).slice(0, 500)}`,
         ),
       signal: options?.signal,
     });

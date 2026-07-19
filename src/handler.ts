@@ -16,7 +16,7 @@ import { formatResultAsText, buildResultPayload, type EnrichContext } from './fo
 import { evaluateGate } from './gate.js';
 import { ToolArgs, TOOL_ARG_VALIDATORS } from './tool-args-validation.js';
 import type { Severity } from './enrich.js';
-import { suggestTestFile, findPythonTestSelection } from './test-file.js';
+import { suggestTestFile, findPythonTestSelection, workspaceHasPythonTests } from './test-file.js';
 import { computeChangedRanges } from './utils/git-diff.js';
 import { saveRun, loadRun } from './utils/run-cache.js';
 import {
@@ -373,6 +373,21 @@ export async function auditFile(input: AuditFileInput): Promise<MutationResult> 
     projectType === 'python' &&
     (!runOptions.pythonTestSelection || runOptions.pythonTestSelection.length === 0)
   ) {
+    // Mutation testing is meaningless without tests, and cosmic-ray's baseline
+    // failure would otherwise be reported as "the test suite fails" — pytest
+    // exits 5 for "no tests collected", which is a different problem entirely.
+    // A depth-limited scan proves nothing, so only a tree-exhausted miss blocks.
+    const scan = workspaceHasPythonTests(env.workspaceRoot);
+    if (!scan.found && !scan.depthLimited) {
+      throw new Error(
+        `No Python test files were found in ${env.workspaceRoot}. ` +
+          `Mutation testing needs a test suite to detect surviving mutants. ` +
+          `Add tests matching pytest's discovery conventions (test_*.py or *_test.py), ` +
+          `then re-run this audit. ` +
+          `If the tests live somewhere unconventional, scope the run explicitly ` +
+          `via the \`cosmicray.testSelection\` config key.`,
+      );
+    }
     const auto = findPythonTestSelection(targetFile, env.workspaceRoot);
     if (auto.length > 0) {
       runOptions.pythonTestSelection = auto;
@@ -774,6 +789,28 @@ export async function handleToolCall(
 
     // Abort short-circuit #2 — after scope resolution, before sandbox provisioning.
     if (ctx?.signal?.aborted) return toolError('Operation cancelled.');
+
+    // Python only: a project with no test suite can never produce a meaningful
+    // mutation run, so bail out BEFORE the sandbox copy — provisioning copies the
+    // whole workspace tree (100+ MB on real repos) only to throw it away. Mirrors
+    // the guard in `auditFile`, including its "no explicit test selection" gate.
+    if (projectType === 'python') {
+      const explicitSelection = config?.cosmicray?.testSelection;
+      if (!explicitSelection || explicitSelection.length === 0) {
+        // A depth-limited scan proves nothing, so only a tree-exhausted miss blocks.
+        const scan = workspaceHasPythonTests(env.workspaceRoot);
+        if (!scan.found && !scan.depthLimited) {
+          return toolError(
+            `No Python test files were found in ${env.workspaceRoot}. ` +
+              `Mutation testing needs a test suite to detect surviving mutants. ` +
+              `Add tests matching pytest's discovery conventions (test_*.py or *_test.py), ` +
+              `then re-run this audit. ` +
+              `If the tests live somewhere unconventional, scope the run explicitly ` +
+              `via the \`cosmicray.testSelection\` config key.`,
+          );
+        }
+      }
+    }
 
     // Milestone 2: sandbox copy is about to be provisioned.
     ctx?.reportProgress?.(2, 4, 'provisioning sandbox');

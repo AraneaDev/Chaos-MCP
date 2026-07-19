@@ -38,6 +38,18 @@ vi.mock('fs', async () => {
   };
 });
 
+// Python pre-flight: these tests use a synthetic '/workspace' that has no files
+// on disk, so the real workspace scan would always report "no Python tests".
+// Default it to true; the pre-flight itself is covered in test-file.test.ts and
+// by the dedicated case below.
+vi.mock('../test-file.js', async () => {
+  const actual = await vi.importActual<typeof import('../test-file.js')>('../test-file.js');
+  return {
+    ...actual,
+    workspaceHasPythonTests: vi.fn().mockReturnValue({ found: true, depthLimited: false }),
+  };
+});
+
 // Mock runShellCommand for prebuildCommand tests
 vi.mock('../utils/exec.js', async () => {
   const actual = await vi.importActual<typeof import('../utils/exec.js')>('../utils/exec.js');
@@ -69,6 +81,7 @@ import { runShellCommand } from '../utils/exec.js';
 import { isVerbose, log } from '../utils/logger.js';
 import { existsSync } from 'fs';
 import { computeChangedRanges } from '../utils/git-diff.js';
+import { workspaceHasPythonTests } from '../test-file.js';
 
 const MockTSEngine = vi.mocked(TypeScriptEngine);
 const MockRustEngine = vi.mocked(RustEngine);
@@ -1174,6 +1187,69 @@ describe('handleToolCall', () => {
     // No expensive sandbox copy should happen for invalid input.
     expect(mockCreateSandbox).not.toHaveBeenCalled();
     expect(mockRun).not.toHaveBeenCalled();
+  });
+
+  it('reports "no Python test files" instead of blaming a failing suite', async () => {
+    const { PythonEngine } = await import('../engines/python.js');
+    const MockPyEngine = vi.mocked(PythonEngine);
+    const mockRun = vi.fn();
+    MockPyEngine.mockImplementation(
+      () => ({ run: mockRun }) as unknown as typeof PythonEngine.prototype,
+    );
+    mockDetectEnv.mockReturnValue({
+      projectType: 'python',
+      testRunner: 'pytest',
+      detectedRunner: 'pytest',
+      workspaceRoot: '/workspace',
+      packageManager: 'pip',
+    });
+    vi.mocked(workspaceHasPythonTests).mockReturnValueOnce({ found: false, depthLimited: false });
+
+    const request = makeRequest('audit_code_resilience', { filePath: 'src/calc.py' });
+    const response = await handleToolCall(request);
+
+    expect(response.isError).toBe(true);
+    const text = (response.content[0] as { text: string }).text;
+    expect(text).toContain('No Python test files were found in /workspace');
+    expect(text).not.toContain('Fix the failing tests first');
+    // The escape hatch for unconventional test layouts must be named, not just implied.
+    expect(text).toContain('cosmicray.testSelection');
+    // Never reaches cosmic-ray: no sandbox copy, no baseline run.
+    expect(mockCreateSandbox).not.toHaveBeenCalled();
+    expect(mockRun).not.toHaveBeenCalled();
+  });
+
+  it('proceeds with the audit when the Python test scan is depth-limited (inconclusive)', async () => {
+    const { PythonEngine } = await import('../engines/python.js');
+    const MockPyEngine = vi.mocked(PythonEngine);
+    const mockRun = vi.fn().mockResolvedValue({
+      target: 'src/calc.py',
+      totalMutants: 1,
+      killed: 1,
+      survived: 0,
+      mutationScore: '100.00%',
+      vulnerabilities: [],
+    });
+    MockPyEngine.mockImplementation(
+      () => ({ run: mockRun }) as unknown as typeof PythonEngine.prototype,
+    );
+    mockDetectEnv.mockReturnValue({
+      projectType: 'python',
+      testRunner: 'pytest',
+      detectedRunner: 'pytest',
+      workspaceRoot: '/workspace',
+      packageManager: 'pip',
+    });
+    vi.mocked(workspaceHasPythonTests).mockReturnValueOnce({ found: false, depthLimited: true });
+
+    const request = makeRequest('audit_code_resilience', { filePath: 'src/calc.py' });
+    const response = await handleToolCall(request);
+
+    expect(response.isError).toBeUndefined();
+    const text = (response.content[0] as { text: string }).text;
+    expect(text).not.toContain('No Python test files were found');
+    // An inconclusive scan must not block: the audit proceeds to the engine.
+    expect(mockRun).toHaveBeenCalledOnce();
   });
 
   it('appends a note when StrykerJS-only options are passed to a non-TS engine', async () => {
