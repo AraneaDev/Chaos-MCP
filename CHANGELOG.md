@@ -2,6 +2,20 @@
 
 All notable changes to Chaos-MCP are documented in this file.
 
+## [1.3.1](https://github.com/AraneaDev/Chaos-MCP/compare/v1.3.0...v1.3.1) (2026-07-19)
+
+
+### Bug Fixes
+
+* **python:** bound test discovery without falsely reporting no tests ([4a183e7](https://github.com/AraneaDev/Chaos-MCP/commit/4a183e7741fce3a575cdd68bb452b64bd5e8db52))
+* **python:** fail with a clear message when a project has no tests ([9d341ba](https://github.com/AraneaDev/Chaos-MCP/commit/9d341ba902c11c9b4f461e3467af0083e171af2f))
+* **python:** report missing tests accurately instead of blaming a failing suite ([e0387ec](https://github.com/AraneaDev/Chaos-MCP/commit/e0387ec9075a134212d742039b119f1c4c96dece))
+
+
+### Performance Improvements
+
+* **python:** check for Python tests before creating the sandbox ([4321be8](https://github.com/AraneaDev/Chaos-MCP/commit/4321be8d829e063e81acd87b5f8132caf2638a41))
+
 ## [1.3.0](https://github.com/AraneaDev/Chaos-MCP/compare/v1.2.4...v1.3.0) (2026-07-18)
 
 
