@@ -1212,9 +1212,44 @@ describe('handleToolCall', () => {
     const text = (response.content[0] as { text: string }).text;
     expect(text).toContain('No Python test files were found in /workspace');
     expect(text).not.toContain('Fix the failing tests first');
+    // The escape hatch for unconventional test layouts must be named, not just implied.
+    expect(text).toContain('cosmicray.testSelection');
     // Never reaches cosmic-ray: no sandbox copy, no baseline run.
     expect(mockCreateSandbox).not.toHaveBeenCalled();
     expect(mockRun).not.toHaveBeenCalled();
+  });
+
+  it('proceeds with the audit when the Python test scan is depth-limited (inconclusive)', async () => {
+    const { PythonEngine } = await import('../engines/python.js');
+    const MockPyEngine = vi.mocked(PythonEngine);
+    const mockRun = vi.fn().mockResolvedValue({
+      target: 'src/calc.py',
+      totalMutants: 1,
+      killed: 1,
+      survived: 0,
+      mutationScore: '100.00%',
+      vulnerabilities: [],
+    });
+    MockPyEngine.mockImplementation(
+      () => ({ run: mockRun }) as unknown as typeof PythonEngine.prototype,
+    );
+    mockDetectEnv.mockReturnValue({
+      projectType: 'python',
+      testRunner: 'pytest',
+      detectedRunner: 'pytest',
+      workspaceRoot: '/workspace',
+      packageManager: 'pip',
+    });
+    vi.mocked(workspaceHasPythonTests).mockReturnValueOnce({ found: false, depthLimited: true });
+
+    const request = makeRequest('audit_code_resilience', { filePath: 'src/calc.py' });
+    const response = await handleToolCall(request);
+
+    expect(response.isError).toBeUndefined();
+    const text = (response.content[0] as { text: string }).text;
+    expect(text).not.toContain('No Python test files were found');
+    // An inconclusive scan must not block: the audit proceeds to the engine.
+    expect(mockRun).toHaveBeenCalledOnce();
   });
 
   it('appends a note when StrykerJS-only options are passed to a non-TS engine', async () => {
