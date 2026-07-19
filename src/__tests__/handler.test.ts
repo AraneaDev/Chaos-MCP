@@ -1210,6 +1210,7 @@ describe('handleToolCall', () => {
     expect(text).toContain('No Python test files were found in /workspace');
     expect(text).not.toContain('Fix the failing tests first');
     // Never reaches cosmic-ray: no sandbox copy, no baseline run.
+    expect(mockCreateSandbox).not.toHaveBeenCalled();
     expect(mockRun).not.toHaveBeenCalled();
   });
 

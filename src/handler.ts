@@ -786,6 +786,25 @@ export async function handleToolCall(
     // Abort short-circuit #2 — after scope resolution, before sandbox provisioning.
     if (ctx?.signal?.aborted) return toolError('Operation cancelled.');
 
+    // Python only: a project with no test suite can never produce a meaningful
+    // mutation run, so bail out BEFORE the sandbox copy — provisioning copies the
+    // whole workspace tree (100+ MB on real repos) only to throw it away. Mirrors
+    // the guard in `auditFile`, including its "no explicit test selection" gate.
+    if (projectType === 'python') {
+      const explicitSelection = config?.cosmicray?.testSelection;
+      if (
+        (!explicitSelection || explicitSelection.length === 0) &&
+        !workspaceHasPythonTests(env.workspaceRoot)
+      ) {
+        return toolError(
+          `No Python test files were found in ${env.workspaceRoot}. ` +
+            `Mutation testing needs a test suite to detect surviving mutants. ` +
+            `Add tests matching pytest's discovery conventions (test_*.py or *_test.py), ` +
+            `then re-run this audit.`,
+        );
+      }
+    }
+
     // Milestone 2: sandbox copy is about to be provisioned.
     ctx?.reportProgress?.(2, 4, 'provisioning sandbox');
 
