@@ -124,6 +124,52 @@ export function findPythonTestSelection(targetFile: string, workspaceRoot: strin
   return [...new Set(found)];
 }
 
+const PYTHON_TEST_IGNORE_DIRS = new Set([
+  'node_modules',
+  '.git',
+  '.venv',
+  'venv',
+  '__pycache__',
+  'build',
+  'dist',
+  '.tox',
+  'site-packages',
+]);
+
+function isPythonTestFile(name: string): boolean {
+  return name.endsWith('.py') && (name.startsWith('test_') || name.endsWith('_test.py'));
+}
+
+/**
+ * True when the workspace contains at least one Python test file.
+ *
+ * Distinguishes "this project has no Python tests" from "the test suite is
+ * failing" — pytest exits 5 for the former, which must not be reported as a
+ * broken suite.
+ */
+export function workspaceHasPythonTests(workspaceRoot: string, maxDepth = 6): boolean {
+  const walk = (dir: string, depth: number): boolean => {
+    if (depth > maxDepth) return false;
+    let entries: import('fs').Dirent[];
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return false;
+    }
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        if (PYTHON_TEST_IGNORE_DIRS.has(entry.name) || entry.name.startsWith('.')) continue;
+        if (walk(join(dir, entry.name), depth + 1)) return true;
+      } else if (entry.isFile() && isPythonTestFile(entry.name)) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  return walk(workspaceRoot, 0);
+}
+
 /**
  * Directories worth hunting recursively for a test file, beyond the fixed
  * candidates: the common top-level test roots plus the target's own top-level

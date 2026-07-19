@@ -16,7 +16,7 @@ import { formatResultAsText, buildResultPayload, type EnrichContext } from './fo
 import { evaluateGate } from './gate.js';
 import { ToolArgs, TOOL_ARG_VALIDATORS } from './tool-args-validation.js';
 import type { Severity } from './enrich.js';
-import { suggestTestFile, findPythonTestSelection } from './test-file.js';
+import { suggestTestFile, findPythonTestSelection, workspaceHasPythonTests } from './test-file.js';
 import { computeChangedRanges } from './utils/git-diff.js';
 import { saveRun, loadRun } from './utils/run-cache.js';
 import {
@@ -373,6 +373,17 @@ export async function auditFile(input: AuditFileInput): Promise<MutationResult> 
     projectType === 'python' &&
     (!runOptions.pythonTestSelection || runOptions.pythonTestSelection.length === 0)
   ) {
+    // Mutation testing is meaningless without tests, and cosmic-ray's baseline
+    // failure would otherwise be reported as "the test suite fails" — pytest
+    // exits 5 for "no tests collected", which is a different problem entirely.
+    if (!workspaceHasPythonTests(env.workspaceRoot)) {
+      throw new Error(
+        `No Python test files were found in ${env.workspaceRoot}. ` +
+          `Mutation testing needs a test suite to detect surviving mutants. ` +
+          `Add tests matching pytest's discovery conventions (test_*.py or *_test.py), ` +
+          `then re-run this audit.`,
+      );
+    }
     const auto = findPythonTestSelection(targetFile, env.workspaceRoot);
     if (auto.length > 0) {
       runOptions.pythonTestSelection = auto;
