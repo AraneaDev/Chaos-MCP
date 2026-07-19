@@ -44,7 +44,10 @@ vi.mock('fs', async () => {
 // by the dedicated case below.
 vi.mock('../test-file.js', async () => {
   const actual = await vi.importActual<typeof import('../test-file.js')>('../test-file.js');
-  return { ...actual, workspaceHasPythonTests: vi.fn().mockReturnValue(true) };
+  return {
+    ...actual,
+    workspaceHasPythonTests: vi.fn().mockReturnValue({ found: true, depthLimited: false }),
+  };
 });
 
 // Mock runShellCommand for prebuildCommand tests
@@ -1200,7 +1203,7 @@ describe('handleToolCall', () => {
       workspaceRoot: '/workspace',
       packageManager: 'pip',
     });
-    vi.mocked(workspaceHasPythonTests).mockReturnValueOnce(false);
+    vi.mocked(workspaceHasPythonTests).mockReturnValueOnce({ found: false, depthLimited: false });
 
     const request = makeRequest('audit_code_resilience', { filePath: 'src/calc.py' });
     const response = await handleToolCall(request);

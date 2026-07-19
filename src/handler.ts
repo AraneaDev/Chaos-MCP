@@ -376,12 +376,16 @@ export async function auditFile(input: AuditFileInput): Promise<MutationResult> 
     // Mutation testing is meaningless without tests, and cosmic-ray's baseline
     // failure would otherwise be reported as "the test suite fails" — pytest
     // exits 5 for "no tests collected", which is a different problem entirely.
-    if (!workspaceHasPythonTests(env.workspaceRoot)) {
+    // A depth-limited scan proves nothing, so only a tree-exhausted miss blocks.
+    const scan = workspaceHasPythonTests(env.workspaceRoot);
+    if (!scan.found && !scan.depthLimited) {
       throw new Error(
         `No Python test files were found in ${env.workspaceRoot}. ` +
           `Mutation testing needs a test suite to detect surviving mutants. ` +
           `Add tests matching pytest's discovery conventions (test_*.py or *_test.py), ` +
-          `then re-run this audit.`,
+          `then re-run this audit. ` +
+          `If the tests live somewhere unconventional, scope the run explicitly ` +
+          `via the \`cosmicray.testSelection\` config key.`,
       );
     }
     const auto = findPythonTestSelection(targetFile, env.workspaceRoot);
@@ -792,16 +796,19 @@ export async function handleToolCall(
     // the guard in `auditFile`, including its "no explicit test selection" gate.
     if (projectType === 'python') {
       const explicitSelection = config?.cosmicray?.testSelection;
-      if (
-        (!explicitSelection || explicitSelection.length === 0) &&
-        !workspaceHasPythonTests(env.workspaceRoot)
-      ) {
-        return toolError(
-          `No Python test files were found in ${env.workspaceRoot}. ` +
-            `Mutation testing needs a test suite to detect surviving mutants. ` +
-            `Add tests matching pytest's discovery conventions (test_*.py or *_test.py), ` +
-            `then re-run this audit.`,
-        );
+      if (!explicitSelection || explicitSelection.length === 0) {
+        // A depth-limited scan proves nothing, so only a tree-exhausted miss blocks.
+        const scan = workspaceHasPythonTests(env.workspaceRoot);
+        if (!scan.found && !scan.depthLimited) {
+          return toolError(
+            `No Python test files were found in ${env.workspaceRoot}. ` +
+              `Mutation testing needs a test suite to detect surviving mutants. ` +
+              `Add tests matching pytest's discovery conventions (test_*.py or *_test.py), ` +
+              `then re-run this audit. ` +
+              `If the tests live somewhere unconventional, scope the run explicitly ` +
+              `via the \`cosmicray.testSelection\` config key.`,
+          );
+        }
       }
     }
 
