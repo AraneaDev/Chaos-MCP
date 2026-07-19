@@ -14,3 +14,6 @@ docs/plans/
 .superpowers/
 .claude/
 CLAUDE.md
+
+# Local-only documentation
+/docs
