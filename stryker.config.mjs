@@ -17,7 +17,7 @@
 // through the wrapper, which scopes BOTH the mutated files and the test command:
 //
 //   npm run mutation -- src/gate.ts
-//   npm run mutation -- src/utils --concurrency 4
+//   npm run mutation -- src/utils --concurrency 2
 //
 // The wrapper (scripts/mutate.mjs) passes `--mutate <targets>` and sets
 // STRYKER_TEST_COMMAND to `vitest related <targets> --run` (only the tests whose
@@ -36,6 +36,7 @@ export default {
   reporters: ['clear-text', 'progress'],
   tempDirName: '.stryker-tmp',
   // Modest default so a scoped run never oversubscribes; override with
-  // `npm run mutation -- <target> --concurrency N`.
+  // Keep this at 2: command-runner mutants each launch a test process, so
+  // higher values can saturate developer machines quickly.
   concurrency: 2,
 };

@@ -7,6 +7,7 @@ import { existsSync } from 'fs';
 import {
   validateToolArgs,
   buildRunOptions,
+  buildVitestRelatedCommand,
   quoteCommandArg,
   resolveAuditTimeoutMs,
   resolvePrebuildCommand,
@@ -261,26 +262,39 @@ describe('buildRunOptions', () => {
   });
 
   it('auto-scopes Vitest 3 command-runner audits to tests related to the target', () => {
-    const options = buildRunOptions(
-      {},
-      {},
-      env({ testRunner: 'command', detectedRunner: 'vitest' }),
-      '/sb',
-      'typescript',
-      'src/my module.ts',
-    );
+    const platform = vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
+    try {
+      const options = buildRunOptions(
+        {},
+        {},
+        env({ testRunner: 'command', detectedRunner: 'vitest' }),
+        '/sb',
+        'typescript',
+        'src/my module.ts',
+      );
 
-    expect(options.commandRunnerCommand).toBe("npx vitest related 'src/my module.ts' --run");
+      expect(options.commandRunnerCommand).toBe("npx vitest related 'src/my module.ts' --run");
+    } finally {
+      platform.mockRestore();
+    }
   });
 
-  it('leaves shell-safe targets unquoted and escapes platform-specific unsafe targets', () => {
+  it('quotes unsafe POSIX targets and rejects unsafe Windows command strings', () => {
     expect(quoteCommandArg('src/app-file.ts')).toBe('src/app-file.ts');
     const platform = vi.spyOn(process, 'platform', 'get');
-    platform.mockReturnValue('linux');
-    expect(quoteCommandArg("src/a'b.ts")).toBe("'src/a'\\''b.ts'");
-    platform.mockReturnValue('win32');
-    expect(quoteCommandArg('src/a"b.ts')).toBe('"src/a""b.ts"');
-    platform.mockRestore();
+    try {
+      platform.mockReturnValue('linux');
+      expect(buildVitestRelatedCommand("src/a'b.ts")).toBe(
+        "npx vitest related 'src/a'\\''b.ts' --run",
+      );
+      platform.mockReturnValue('win32');
+      expect(buildVitestRelatedCommand('src/app.ts')).toBe('npx vitest related src/app.ts --run');
+      expect(buildVitestRelatedCommand('src/my module.ts')).toBeUndefined();
+      expect(buildVitestRelatedCommand('src/a&whoami.ts')).toBeUndefined();
+      expect(buildVitestRelatedCommand('src/a"b.ts')).toBeUndefined();
+    } finally {
+      platform.mockRestore();
+    }
   });
 
   it('does not invent a scoped command for native or non-Vitest runners', () => {

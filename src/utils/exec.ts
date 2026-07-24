@@ -50,6 +50,18 @@ export class ExecFailureError extends Error {
 export function killProcessTree(child: ChildProcess | undefined, detachedGroup: boolean): void {
   // Stryker disable next-line ConditionalExpression: continuing with an absent child is observably the same because both best-effort kill attempts are caught.
   if (!child?.pid) return;
+  if (process.platform === 'win32') {
+    try {
+      execFile(
+        'taskkill',
+        ['/PID', String(child.pid), '/T', '/F'],
+        { windowsHide: true },
+        () => undefined,
+      );
+    } catch {
+      // Fall through to direct-child termination.
+    }
+  }
   if (detachedGroup && process.platform !== 'win32') {
     try {
       process.kill(-child.pid, 'SIGKILL');
@@ -63,6 +75,32 @@ export function killProcessTree(child: ChildProcess | undefined, detachedGroup: 
   } catch {
     // Best effort on an already-failing timeout/cancellation path.
   }
+}
+
+/** Arm timeout/abort tree cleanup independently of the child close callback. */
+function installProcessTreeCleanup(
+  child: ChildProcess | undefined,
+  killTree: boolean,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): () => void {
+  if (!killTree || !child) return () => undefined;
+  let active = true;
+  const deactivate = (): boolean => {
+    if (!active) return false;
+    active = false;
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', terminate);
+    return true;
+  };
+  const terminate = () => {
+    if (deactivate()) killProcessTree(child, true);
+  };
+  const timer = setTimeout(terminate, timeoutMs);
+  timer.unref();
+  if (signal?.aborted) terminate();
+  else signal?.addEventListener('abort', terminate);
+  return () => void deactivate();
 }
 
 /**
@@ -92,6 +130,8 @@ export function runShellCommand(
 
   return new Promise((resolve, reject) => {
     const childRef: { current?: ChildProcess } = {};
+    let completed = false;
+    let stopTreeCleanup: () => void = () => undefined;
     childRef.current = exec(
       command,
       {
@@ -104,6 +144,8 @@ export function runShellCommand(
         ...(killTree && process.platform !== 'win32' ? { detached: true } : {}),
       },
       (err, stdout, stderr) => {
+        completed = true;
+        stopTreeCleanup();
         const stdoutStr = stdout ?? '';
         const stderrStr = stderr ?? '';
 
@@ -172,6 +214,9 @@ export function runShellCommand(
         resolve({ stdout: stdoutStr, stderr: stderrStr, exit: 0, signal: null });
       },
     );
+    if (!completed) {
+      stopTreeCleanup = installProcessTreeCleanup(childRef.current, killTree, timeoutMs, signal);
+    }
   });
 }
 
@@ -216,6 +261,8 @@ export function runShell(
 
   return new Promise((resolve, reject) => {
     const childRef: { current?: ChildProcess } = {};
+    let completed = false;
+    let stopTreeCleanup: () => void = () => undefined;
     childRef.current = execFile(
       command,
       args,
@@ -230,6 +277,8 @@ export function runShell(
         ...(killTree && process.platform !== 'win32' ? { detached: true } : {}),
       },
       (err, stdout, stderr) => {
+        completed = true;
+        stopTreeCleanup();
         const stdoutStr = stdout ?? '';
         const stderrStr = stderr ?? '';
 
@@ -328,5 +377,8 @@ export function runShell(
         resolve({ stdout: stdoutStr, stderr: stderrStr, exit: 0, signal: null });
       },
     );
+    if (!completed) {
+      stopTreeCleanup = installProcessTreeCleanup(childRef.current, killTree, timeoutMs, signal);
+    }
   });
 }

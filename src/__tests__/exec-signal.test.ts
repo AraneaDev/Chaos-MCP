@@ -47,14 +47,44 @@ describe('process-tree termination', () => {
     const processKill = vi.spyOn(process, 'kill').mockReturnValue(true);
     const childKill = vi.fn();
     const child = { pid: 123, kill: childKill } as unknown as cpType.ChildProcess;
+    vi.mocked(execFile).mockClear();
+    vi.mocked(execFile).mockImplementationOnce(((
+      _command: string,
+      _args: string[],
+      _options: Record<string, unknown>,
+      callback: () => void,
+    ) => {
+      callback();
+      return {} as cpType.ChildProcess;
+    }) as never);
     platform.mockReturnValue('linux');
     killProcessTree(child, false);
+    expect(execFile).not.toHaveBeenCalled();
     platform.mockReturnValue('win32');
     killProcessTree(child, true);
     expect(childKill).toHaveBeenNthCalledWith(1, 'SIGKILL');
     expect(childKill).toHaveBeenNthCalledWith(2, 'SIGKILL');
     expect(processKill).not.toHaveBeenCalled();
+    expect(execFile).toHaveBeenCalledWith(
+      'taskkill',
+      ['/PID', '123', '/T', '/F'],
+      { windowsHide: true },
+      expect.any(Function),
+    );
     processKill.mockRestore();
+    platform.mockRestore();
+  });
+
+  it('falls back to direct Windows child termination when taskkill cannot start', () => {
+    const platform = vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+    const childKill = vi.fn();
+    vi.mocked(execFile).mockImplementationOnce(() => {
+      throw new Error('taskkill unavailable');
+    });
+    expect(() =>
+      killProcessTree({ pid: 123, kill: childKill } as unknown as cpType.ChildProcess, true),
+    ).not.toThrow();
+    expect(childKill).toHaveBeenCalledWith('SIGKILL');
     platform.mockRestore();
   });
 
@@ -99,6 +129,7 @@ describe('process-tree termination', () => {
 describe('runShell signal forwarding', () => {
   it('sets safe spawn defaults and only detaches when process-tree cleanup is requested', async () => {
     const childKill = vi.fn();
+    vi.mocked(execFile).mockClear();
     vi.mocked(execFile).mockImplementation(((
       _f: string,
       _a: string[],
@@ -194,6 +225,129 @@ describe('runShell signal forwarding', () => {
       expect(r.stdout).toBe('ok');
     });
   });
+
+  it('kills the process tree on timeout even when execFile never invokes its callback', () => {
+    vi.useFakeTimers();
+    const platform = vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
+    const processKill = vi.spyOn(process, 'kill').mockReturnValue(true);
+    vi.mocked(execFile).mockImplementationOnce(
+      (() => ({ pid: 123, kill: vi.fn() }) as unknown as cpType.ChildProcess) as never,
+    );
+
+    void runShell('echo', ['hi'], { killTree: true, timeoutMs: 50 });
+    vi.advanceTimersByTime(49);
+    expect(processKill).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(processKill).toHaveBeenCalledWith(-123, 'SIGKILL');
+
+    processKill.mockRestore();
+    platform.mockRestore();
+    vi.useRealTimers();
+  });
+
+  it('disarms tree cleanup when execFile completes', async () => {
+    vi.useFakeTimers();
+    const platform = vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
+    const processKill = vi.spyOn(process, 'kill').mockReturnValue(true);
+    const controller = new AbortController();
+    vi.mocked(execFile).mockImplementationOnce(((
+      _f: string,
+      _a: string[],
+      _opts: Record<string, unknown>,
+      callback: (e: unknown, o: string, er: string) => void,
+    ) => {
+      setTimeout(() => callback(null, 'ok', ''), 10);
+      return { pid: 123, kill: vi.fn() } as unknown as cpType.ChildProcess;
+    }) as never);
+
+    const result = runShell('echo', ['hi'], {
+      killTree: true,
+      timeoutMs: 50,
+      signal: controller.signal,
+    });
+    await vi.advanceTimersByTimeAsync(10);
+    await expect(result).resolves.toMatchObject({ stdout: 'ok' });
+    controller.abort();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(processKill).not.toHaveBeenCalled();
+
+    processKill.mockRestore();
+    platform.mockRestore();
+    vi.useRealTimers();
+  });
+
+  it('does not arm tree cleanup without a child or when killTree is disabled', () => {
+    vi.useFakeTimers();
+    const platform = vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
+    const processKill = vi.spyOn(process, 'kill').mockReturnValue(true);
+    vi.mocked(execFile)
+      .mockImplementationOnce(() => undefined as unknown as cpType.ChildProcess)
+      .mockImplementationOnce(
+        (() => ({ pid: 123, kill: vi.fn() }) as unknown as cpType.ChildProcess) as never,
+      );
+
+    void runShell('echo', ['no-child'], { killTree: true, timeoutMs: 10 });
+    void runShell('echo', ['no-tree'], { killTree: false, timeoutMs: 10 });
+    vi.advanceTimersByTime(20);
+    expect(processKill).not.toHaveBeenCalled();
+
+    processKill.mockRestore();
+    platform.mockRestore();
+    vi.useRealTimers();
+  });
+
+  it('terminates only once and unregisters the abort listener', () => {
+    vi.useFakeTimers();
+    const platform = vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
+    const processKill = vi.spyOn(process, 'kill').mockReturnValue(true);
+    let abortListener: (() => void) | undefined;
+    const signal = {
+      aborted: false,
+      addEventListener: vi.fn((_event: string, listener: () => void) => {
+        abortListener = listener;
+      }),
+      removeEventListener: vi.fn(),
+    } as unknown as AbortSignal;
+    vi.mocked(execFile).mockImplementationOnce(
+      (() => ({ pid: 123, kill: vi.fn() }) as unknown as cpType.ChildProcess) as never,
+    );
+
+    void runShell('echo', ['hi'], { killTree: true, timeoutMs: 50, signal });
+    expect(abortListener).toBeTypeOf('function');
+    abortListener?.();
+    abortListener?.();
+    expect(processKill).toHaveBeenCalledTimes(1);
+    expect(signal.removeEventListener).toHaveBeenCalledWith('abort', abortListener);
+
+    processKill.mockRestore();
+    platform.mockRestore();
+    vi.useRealTimers();
+  });
+
+  it('does not arm cleanup after a synchronous execFile callback', async () => {
+    vi.useFakeTimers();
+    const platform = vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
+    const processKill = vi.spyOn(process, 'kill').mockReturnValue(true);
+    vi.mocked(execFile).mockImplementationOnce(((
+      _command: string,
+      _args: string[],
+      _options: Record<string, unknown>,
+      callback: (e: unknown, o: string, er: string) => void,
+    ) => {
+      callback(null, 'ok', '');
+      return { pid: 123, kill: vi.fn() } as unknown as cpType.ChildProcess;
+    }) as never);
+
+    await expect(
+      runShell('echo', ['hi'], { killTree: true, timeoutMs: 10 }),
+    ).resolves.toMatchObject({ stdout: 'ok' });
+    vi.advanceTimersByTime(20);
+    expect(processKill).not.toHaveBeenCalled();
+
+    processKill.mockRestore();
+    platform.mockRestore();
+    vi.useRealTimers();
+  });
 });
 
 describe('runShellCommand signal forwarding', () => {
@@ -288,6 +442,74 @@ describe('runShellCommand signal forwarding', () => {
     return runShellCommand('echo hi').then((r) => {
       expect(r.stdout).toBe('ok');
     });
+  });
+
+  it('kills the process tree on abort even when exec never invokes its callback', () => {
+    vi.useFakeTimers();
+    const platform = vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
+    const processKill = vi.spyOn(process, 'kill').mockReturnValue(true);
+    vi.mocked(exec).mockImplementationOnce(
+      (() => ({ pid: 456, kill: vi.fn() }) as unknown as cpType.ChildProcess) as never,
+    );
+    const controller = new AbortController();
+
+    void runShellCommand('echo hi', {
+      killTree: true,
+      timeoutMs: 1_000,
+      signal: controller.signal,
+    });
+    controller.abort();
+    expect(processKill).toHaveBeenCalledWith(-456, 'SIGKILL');
+
+    processKill.mockRestore();
+    platform.mockRestore();
+    vi.useRealTimers();
+  });
+
+  it('kills the process tree immediately for an already-aborted signal', () => {
+    vi.useFakeTimers();
+    const platform = vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
+    const processKill = vi.spyOn(process, 'kill').mockReturnValue(true);
+    vi.mocked(exec).mockImplementationOnce(
+      (() => ({ pid: 789, kill: vi.fn() }) as unknown as cpType.ChildProcess) as never,
+    );
+    const controller = new AbortController();
+    controller.abort();
+
+    void runShellCommand('echo hi', {
+      killTree: true,
+      timeoutMs: 1_000,
+      signal: controller.signal,
+    });
+    expect(processKill).toHaveBeenCalledWith(-789, 'SIGKILL');
+
+    processKill.mockRestore();
+    platform.mockRestore();
+    vi.useRealTimers();
+  });
+
+  it('does not arm cleanup after a synchronous exec callback', async () => {
+    vi.useFakeTimers();
+    const platform = vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
+    const processKill = vi.spyOn(process, 'kill').mockReturnValue(true);
+    vi.mocked(exec).mockImplementationOnce(((
+      _command: string,
+      _options: Record<string, unknown>,
+      callback: (e: unknown, o: string, er: string) => void,
+    ) => {
+      callback(null, 'ok', '');
+      return { pid: 456, kill: vi.fn() } as unknown as cpType.ChildProcess;
+    }) as never);
+
+    await expect(
+      runShellCommand('echo hi', { killTree: true, timeoutMs: 10 }),
+    ).resolves.toMatchObject({ stdout: 'ok' });
+    vi.advanceTimersByTime(20);
+    expect(processKill).not.toHaveBeenCalled();
+
+    processKill.mockRestore();
+    platform.mockRestore();
+    vi.useRealTimers();
   });
 });
 

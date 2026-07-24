@@ -204,11 +204,24 @@ export function resolveAuditTimeoutMs(
     : (engCfg?.timeoutMs ?? cfg.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS);
 }
 
-/** Quote a workspace-relative path for the host platform's command shell. */
+/** Quote one argument for a POSIX shell command string. */
 export function quoteCommandArg(value: string): string {
   if (/^[A-Za-z0-9_./\\-]+$/.test(value)) return value;
-  if (process.platform === 'win32') return `"${value.replaceAll('"', '""')}"`;
   return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+/**
+ * Build the Stryker command-runner string without exposing a Windows shell
+ * injection surface. Stryker accepts only a command string here, not argv.
+ * Unsafe Windows paths therefore fall back to the project's configured command
+ * instead of being interpolated through cmd.exe.
+ */
+export function buildVitestRelatedCommand(targetFile: string): string | undefined {
+  if (process.platform === 'win32') {
+    if (!/^[A-Za-z0-9_./\\:-]+$/.test(targetFile)) return undefined;
+    return `npx vitest related ${targetFile} --run`;
+  }
+  return `npx vitest related ${quoteCommandArg(targetFile)} --run`;
 }
 
 /**
@@ -248,7 +261,7 @@ export function buildRunOptions(
       testRunner === 'command' &&
       env.detectedRunner === 'vitest' &&
       targetFile
-        ? `npx vitest related ${quoteCommandArg(targetFile)} --run`
+        ? buildVitestRelatedCommand(targetFile)
         : undefined,
     workDir,
     timeoutMs: resolveAuditTimeoutMs(args, cfg, projectType),
@@ -868,8 +881,9 @@ export async function handleToolCall(
       // Reserve a small tail for report parsing, response formatting, and
       // sandbox cleanup. The engine and any prebuild share the remainder.
       const CLEANUP_RESERVE_MS = 2_000;
+      const MIN_ENGINE_BUDGET_MS = 1_000;
       const remainingMs = deadline.remainingMs(CLEANUP_RESERVE_MS);
-      if (remainingMs <= 0) {
+      if (remainingMs < MIN_ENGINE_BUDGET_MS) {
         return toolError(
           `Audit time budget exhausted before mutation execution after ${deadline.elapsedMs()}ms.`,
         );

@@ -25,7 +25,7 @@ import { listPrompts, getPrompt } from './prompts.js';
 import { ChaosConfig } from './utils/config-loader.js';
 import { runCli } from './cli.js';
 import { realpathSync } from 'node:fs';
-import { basename } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 // Re-export the primary API so existing import paths (tests, consumers) keep
 // working after the index.ts split. handleToolCall and TOOL_DEFINITION now live
@@ -118,27 +118,21 @@ export async function startServer(config?: ChaosConfig): Promise<void> {
 // "/usr/bin/chaos-mcp"), NOT the resolved .js path — using
 // `argv[1].endsWith("/index.js")` therefore silently dropped `runCli` and
 // the process exited 0 with no output (no --version, no MCP server).
-// We resolve symlinks via realpathSync so the suffix check works
-// consistently; if argv[1] resolves to something other than this file
-// (e.g. a vitest entrypoint that imported this module), we don't auto-start.
+// We resolve both paths via realpathSync and require exact identity; merely
+// being named index.js/index.ts is not sufficient to auto-start this module.
 const isDirectRun =
   // Stryker disable next-line all: Node always defines process; this guard exists for import safety in non-Node bundlers.
   typeof process !== 'undefined' &&
   // Stryker disable next-line all: argv[1] absence is not representable through the direct CLI execution path.
   process.argv[1] !== undefined &&
   (() => {
-    const argvPath = process.argv[1];
-    let resolved: string;
+    // Stryker disable BlockStatement: an empty catch yields undefined, which is equally falsy for the sole direct-run guard consumer.
     try {
-      resolved = realpathSync(argvPath);
+      return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
     } catch {
-      // Path doesn't exist (e.g. tests pass synthetic argv[1] like
-      // "/some/path/index.js"). Fall back to a basename check on the raw
-      // argv token so the existing test expectations still hold.
-      const base = basename(argvPath);
-      return base === 'index.js' || base === 'index.ts';
+      return false;
     }
-    return resolved.endsWith('/index.js') || resolved.endsWith('/index.ts');
+    // Stryker restore BlockStatement
   })();
 
 if (isDirectRun) {

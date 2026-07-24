@@ -3399,12 +3399,12 @@ describe('handleToolCall', () => {
     now.mockRestore();
   });
 
-  it('preserves the cleanup reserve before mutation execution', async () => {
+  it('rejects a near-zero engine budget before mutation execution', async () => {
     const now = vi
       .spyOn(Date, 'now')
       .mockReturnValueOnce(0)
       .mockReturnValueOnce(0)
-      .mockReturnValue(9_000);
+      .mockReturnValue(7_501);
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',
@@ -3418,6 +3418,40 @@ describe('handleToolCall', () => {
 
     expect(response.isError).toBe(true);
     expect((response.content[0] as { text: string }).text).toContain('before mutation execution');
+    now.mockRestore();
+  });
+
+  it('allows the minimum 1000ms engine budget boundary', async () => {
+    const mockRun = vi.fn().mockResolvedValue({
+      target: 'src/app.ts',
+      totalMutants: 0,
+      killed: 0,
+      survived: 0,
+      mutationScore: '100.00%',
+      vulnerabilities: [],
+    });
+    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    const now = vi
+      .spyOn(Date, 'now')
+      .mockReturnValueOnce(0)
+      .mockReturnValueOnce(0)
+      .mockReturnValue(7_000);
+    mockDetectEnv.mockReturnValue({
+      projectType: 'typescript',
+      testRunner: 'vitest',
+      detectedRunner: 'vitest',
+      workspaceRoot: '/workspace',
+    });
+
+    const response = await handleToolCall(
+      makeRequest('audit_code_resilience', { filePath: 'src/app.ts', timeoutMs: 10_000 }),
+    );
+
+    expect(response.isError).toBeUndefined();
+    expect(mockRun).toHaveBeenCalledWith(
+      'src/app.ts',
+      expect.objectContaining({ timeoutMs: 1_000 }),
+    );
     now.mockRestore();
   });
 });

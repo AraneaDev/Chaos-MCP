@@ -75,7 +75,8 @@ export async function handleEstimateCall(
     const cfg = config ?? {};
 
     // Resolve worker concurrency used only to project wall-clock time
-    // (mutants × baselineMs / concurrency). Match triage-handler: cpus-1 floored at 1.
+    // (mutants × baselineMs / concurrency). Reserve one CPU and cap estimates
+    // at two workers because command-runner processes amplify system load.
     const concurrency = resolveEstimateConcurrency(cpus().length);
 
     // Provision a sandbox only when required (Rust needs cargo-mutants --list;
