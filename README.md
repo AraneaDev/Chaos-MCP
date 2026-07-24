@@ -17,6 +17,7 @@ Chaos-MCP is an [MCP (Model Context Protocol)](https://modelcontextprotocol.io/)
 
 - **4 Languages Supported** — TypeScript/JavaScript (StrykerJS), Python (cosmic-ray), Rust (cargo-mutants), PHP (Infection)
 - **Sandbox Isolation** — all mutation runs execute in temporary directories; your real workspace is never touched
+- **Pinned Container Runners** — release-matched OCI images provide all four mutation engines without installing them on the host
 - **Auto-Detection** — automatically detects project type, test runner, and workspace root
 - **Async Subprocesses** — all mutation-tool execution uses async `execFile`/`exec` (subprocess runs never block the event loop; the one-time sandbox copy is synchronous)
 - **Rich Tool Schema** — supports line scoping, mutator denylists, concurrency control, dry-run mode, incremental runs, and output format selection
@@ -63,6 +64,24 @@ Notes:
 - In native mode, the tool must be on `PATH` (or, for StrykerJS, resolvable from the target project's `node_modules`), and its language toolchain must be installed.
 - **Python / cosmic-ray (native mode):** on modern distros a bare `pip install cosmic-ray` is blocked by [PEP 668](https://peps.python.org/pep-0668/) ("externally-managed-environment"); use `pipx install cosmic-ray` or an activated virtualenv. Chaos-MCP generates cosmic-ray's config and runs `baseline → init → exec → dump` in the sandbox. Use `testSelection` and `excludeOperators` to keep large audits tractable.
 - These engines run **inside the sandbox** against a copy of your workspace; Chaos-MCP never installs or modifies anything in your real project.
+
+For container mode, install Docker or Podman. Both runtimes normally pull a
+missing image while creating the first audit container, but pre-pulling avoids
+making a large download compete with the container startup timeout:
+
+```bash
+CHAOS_MCP_TAG="v$(node -p "require('./package.json').version")"
+docker pull "ghcr.io/araneadev/chaos-mcp-typescript:${CHAOS_MCP_TAG}"
+docker pull "ghcr.io/araneadev/chaos-mcp-python:${CHAOS_MCP_TAG}"
+docker pull "ghcr.io/araneadev/chaos-mcp-rust:${CHAOS_MCP_TAG}"
+docker pull "ghcr.io/araneadev/chaos-mcp-php:${CHAOS_MCP_TAG}"
+
+# From a source checkout:
+node build/index.js --container-doctor
+```
+
+Use `podman pull` instead when `"runtime": "podman"` is configured. Each
+Chaos-MCP release selects its matching `vX.Y.Z` image tags automatically.
 
 ## Quick Start
 
@@ -513,9 +532,10 @@ Tool call arguments override config defaults.
 
 Container mode removes the need to install StrykerJS, Cosmic Ray,
 cargo-mutants, or Infection on the host. Chaos-MCP starts one hardened,
-short-lived container per audit, mounts only the temporary sandbox at
-`/workspace`, and runs both prebuild and mutation commands in that session.
-The real workspace is never mounted.
+short-lived container per audit, mounts the temporary sandbox at `/workspace`,
+and runs both prebuild and mutation commands in that session. The real
+workspace is never mounted. Recognized dependency trees linked into the
+sandbox may be mounted separately and read-only, as described below.
 
 ```json
 {
@@ -538,6 +558,19 @@ Modes:
 - `auto` uses containers when the configured runtime is reachable and otherwise
   falls back to native. Image or project failures do not silently fall back.
 
+Container settings:
+
+| Key                | Type                          | Default                   | Description                                                                   |
+| ------------------ | ----------------------------- | ------------------------- | ----------------------------------------------------------------------------- |
+| `mode`             | `native \| container \| auto` | `native`                  | Select the execution backend or runtime-only fallback behavior                |
+| `runtime`          | `docker \| podman`            | `docker`                  | OCI-compatible command used to create and manage audit containers             |
+| `network`          | `string`                      | `bridge`                  | Container network mode or name; use `none` when project tests need no network |
+| `cpus`             | positive number               | `2`                       | CPU limit for each audit container                                            |
+| `memoryMb`         | positive integer              | `4096`                    | Memory limit in MiB for each audit container                                  |
+| `pidsLimit`        | positive integer              | `512`                     | Maximum number of processes in each audit container                           |
+| `startupTimeoutMs` | positive integer              | 60 s startup; 10 s probe  | Override the timeout for runtime probing, container creation, and startup     |
+| `images`           | per-language image map        | release-matched GHCR tags | Override the `typescript`, `python`, `rust`, or `php` image                   |
+
 The images pin the language runtime and mutation engine, while the project
 still supplies its own test dependencies. Existing sandbox dependency
 directories (`node_modules`, `.venv`/`venv`, and `vendor`) are mounted
@@ -548,18 +581,44 @@ Chaos-MCP selects release-matched GHCR images for all four languages by
 default; the optional `images` map accepts per-language tags or digest-pinned
 references for private mirrors and custom runtimes.
 
+The official images are published for Linux AMD64 and ARM64:
+
+| Language                | Default image                                   |
+| ----------------------- | ----------------------------------------------- |
+| TypeScript / JavaScript | `ghcr.io/araneadev/chaos-mcp-typescript:vX.Y.Z` |
+| Python                  | `ghcr.io/araneadev/chaos-mcp-python:vX.Y.Z`     |
+| Rust                    | `ghcr.io/araneadev/chaos-mcp-rust:vX.Y.Z`       |
+| PHP                     | `ghcr.io/araneadev/chaos-mcp-php:vX.Y.Z`        |
+
+The server never installs target-project dependencies. It reuses recognized
+dependency directories from the sandbox when available (`node_modules`,
+`.venv`/`venv`, and `vendor`), mounting host-linked directories read-only.
+Install the target project's dependencies before auditing it.
+
 Containers run with a read-only root filesystem, all Linux capabilities
 dropped, `no-new-privileges`, a private temporary filesystem, and configurable
 CPU, memory, and PID limits. Resource usage defaults to a conservative two CPUs
 and 4096 MiB of memory. The entire container is forcibly removed on timeout,
 cancellation, normal completion, or engine failure.
 
+Network mode is part of the audit's isolation boundary. The `bridge` default
+allows outbound access for tests or dependency resolution; use
+`"network": "none"` for untrusted code or offline audits that do not require
+network access. Avoid host networking unless the target project explicitly
+requires it and you accept the reduced isolation.
+
 Check runtime connectivity and whether all four configured images are already
 present without pulling anything:
 
 ```sh
-chaos-mcp --container-doctor
+node build/index.js --container-doctor
 ```
+
+The doctor exits non-zero when the runtime is unavailable or any configured
+image is missing. Pull the reported image, or set a matching entry in
+`container.images`, and run it again. `startupTimeoutMs` only governs runtime
+probing and container startup; `defaultTimeoutMs` and per-tool `timeoutMs`
+govern the mutation audit itself.
 
 ### Enabling `prebuildCommand`
 
