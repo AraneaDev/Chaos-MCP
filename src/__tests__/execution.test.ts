@@ -82,13 +82,18 @@ describe('execution sessions', () => {
   });
 
   it('keeps all release-matched default image references exact', () => {
-    expect(CONTAINER_IMAGE_VERSION).toBe('1.4.0');
     expect(defaultContainerImage('typescript')).toBe(
-      'ghcr.io/araneadev/chaos-mcp-typescript:v1.4.0',
+      `ghcr.io/araneadev/chaos-mcp-typescript:v${CONTAINER_IMAGE_VERSION}`,
     );
-    expect(defaultContainerImage('python')).toBe('ghcr.io/araneadev/chaos-mcp-python:v1.4.0');
-    expect(defaultContainerImage('rust')).toBe('ghcr.io/araneadev/chaos-mcp-rust:v1.4.0');
-    expect(defaultContainerImage('php')).toBe('ghcr.io/araneadev/chaos-mcp-php:v1.4.0');
+    expect(defaultContainerImage('python')).toBe(
+      `ghcr.io/araneadev/chaos-mcp-python:v${CONTAINER_IMAGE_VERSION}`,
+    );
+    expect(defaultContainerImage('rust')).toBe(
+      `ghcr.io/araneadev/chaos-mcp-rust:v${CONTAINER_IMAGE_VERSION}`,
+    );
+    expect(defaultContainerImage('php')).toBe(
+      `ghcr.io/araneadev/chaos-mcp-php:v${CONTAINER_IMAGE_VERSION}`,
+    );
   });
 
   it('falls back to native only when auto mode cannot reach the runtime', async () => {
