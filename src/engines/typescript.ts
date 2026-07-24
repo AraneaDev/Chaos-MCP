@@ -11,6 +11,87 @@ import { DEFAULT_TIMEOUT_MS } from '../utils/constants.js';
  * writes its output.
  */
 const STRIKER_JSON_REPORT = 'reports/mutation/mutation.json';
+const CHAOS_STRYKER_CONFIG = '.chaos-mcp.stryker.config.mjs';
+const COMMAND_BATCH_LINES = 80;
+const COMMAND_BATCH_THRESHOLD_LINES = 120;
+const MIN_BATCH_BUDGET_MS = 3_000;
+
+/** Stryker's supported config names, in its own discovery order. */
+const STRYKER_CONFIG_NAMES = [
+  'stryker.conf.json',
+  'stryker.conf.js',
+  'stryker.conf.mjs',
+  'stryker.conf.cjs',
+  'stryker.config.json',
+  'stryker.config.js',
+  'stryker.config.mjs',
+  'stryker.config.cjs',
+  '.stryker.conf.json',
+  '.stryker.conf.js',
+  '.stryker.conf.mjs',
+  '.stryker.conf.cjs',
+  '.stryker.config.json',
+  '.stryker.config.js',
+  '.stryker.config.mjs',
+  '.stryker.config.cjs',
+] as const;
+
+/** Split requested physical line ranges into bounded command-runner batches. */
+export function planLineBatches(
+  totalLines: number,
+  ranges?: { start: number; end: number }[],
+): { start: number; end: number }[] {
+  // Stryker disable ArrayDeclaration: sentinel array elements are outside the typed input domain.
+  const requestedLineCount = (ranges ?? []).reduce(
+    (sum, range) => sum + Math.max(0, range.end - range.start + 1),
+    0,
+  );
+  const requested =
+    ranges && ranges.length > 0
+      ? requestedLineCount > COMMAND_BATCH_LINES
+        ? ranges
+        : []
+      : totalLines > COMMAND_BATCH_THRESHOLD_LINES
+        ? [{ start: 1, end: totalLines }]
+        : [];
+  // Stryker restore ArrayDeclaration
+  const batches: { start: number; end: number }[] = [];
+  for (const range of requested) {
+    for (let start = range.start; start <= range.end; start += COMMAND_BATCH_LINES) {
+      batches.push({ start, end: Math.min(range.end, start + COMMAND_BATCH_LINES - 1) });
+    }
+  }
+  return batches;
+}
+
+export function mergeBatchResults(
+  filePath: string,
+  results: MutationResult[],
+  planned: number,
+  complete: boolean,
+): MutationResult {
+  const totalMutants = results.reduce((sum, result) => sum + result.totalMutants, 0);
+  const killed = results.reduce((sum, result) => sum + result.killed, 0);
+  const survived = results.reduce((sum, result) => sum + result.survived, 0);
+  const incompetent = results.reduce((sum, result) => sum + (result.incompetent ?? 0), 0);
+  const score = totalMutants > 0 ? `${((killed / totalMutants) * 100).toFixed(2)}%` : '100.00%';
+  return {
+    target: filePath,
+    totalMutants,
+    killed,
+    survived,
+    mutationScore: score,
+    vulnerabilities: results.flatMap((result) => result.vulnerabilities),
+    incompetent: incompetent > 0 ? incompetent : undefined,
+    complete,
+    batchesCompleted: results.length,
+    batchesPlanned: planned,
+    stoppedReason: complete ? undefined : 'time_budget_exhausted',
+    scopeNote: complete
+      ? `Completed ${planned} bounded mutation batches.`
+      : `Partial audit: completed ${results.length} of ${planned} bounded mutation batches before the time budget was exhausted.`,
+  };
+}
 
 /**
  * Structured JSON produced by the Stryker JSON reporter.
@@ -165,6 +246,64 @@ function writeStrykerMutatorConfig(cwd: string, denylist: string[]): void {
 }
 
 /**
+ * Write an explicit Stryker overlay config for runtime-only settings.
+ *
+ * The overlay imports (or inlines, for JSON) the project's existing config and
+ * changes only the command-runner and mutator-exclusion fields Chaos-MCP owns.
+ * This is written solely inside the disposable outer sandbox and selected
+ * explicitly on the Stryker CLI, so the user's real config is never modified.
+ */
+export function writeStrykerRuntimeConfig(
+  cwd: string,
+  command: string,
+  denylist: string[],
+): string {
+  const existingName = STRYKER_CONFIG_NAMES.find((name) => existsSync(join(cwd, name)));
+  let baseDeclaration = 'const base = {};';
+  if (existingName?.endsWith('.json')) {
+    try {
+      const parsed = JSON.parse(readFileSync(join(cwd, existingName), 'utf-8')) as unknown;
+      if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        baseDeclaration = `const base = ${JSON.stringify(parsed)};`;
+      }
+    } catch {
+      // Match the legacy denylist behavior: an invalid JSON config degrades to
+      // an empty base and Stryker validates the generated overlay.
+    }
+  } else if (existingName) {
+    baseDeclaration =
+      `import importedConfig from ${JSON.stringify(`./${existingName}`)};\n` +
+      'const base = importedConfig ?? {};';
+  }
+
+  const source = `${baseDeclaration}
+const legacyExcluded = Object.entries(base.mutators ?? {})
+  .filter(([, enabled]) => enabled === false)
+  .map(([name]) => name);
+const existingExcluded = Array.isArray(base.mutator?.excludedMutations)
+  ? base.mutator.excludedMutations.filter((name) => typeof name === 'string')
+  : [];
+const { mutators: _legacyMutators, ...withoutLegacyMutators } = base;
+export default {
+  ...withoutLegacyMutators,
+  testRunner: 'command',
+  coverageAnalysis: 'off',
+  commandRunner: { ...(base.commandRunner ?? {}), command: ${JSON.stringify(command)} },
+  mutator: {
+    ...(base.mutator ?? {}),
+    excludedMutations: [...new Set([
+      ...existingExcluded,
+      ...legacyExcluded,
+      ...${JSON.stringify(denylist)},
+    ])],
+  },
+};
+`;
+  writeFileSync(join(cwd, CHAOS_STRYKER_CONFIG), source, 'utf-8');
+  return CHAOS_STRYKER_CONFIG;
+}
+
+/**
  * StrykerJS test-runner plugin packages, keyed by the resolved runner name.
  *
  * Under pnpm's non-hoisted node_modules layout, StrykerJS's default plugin
@@ -199,12 +338,72 @@ const STRYKER_RUNNER_PLUGINS: Record<string, string> = {
 export class TypeScriptEngine extends BaseEngine {
   async run(filePath: string, options?: RunOptions): Promise<MutationResult> {
     const resolvedRunner = options?.testRunner ?? 'command';
+    if (resolvedRunner === 'command' && !options?.dryRun) {
+      let totalLines = 0;
+      try {
+        totalLines = readFileSync(join(options?.workDir ?? process.cwd(), filePath), 'utf-8').split(
+          '\n',
+        ).length;
+      } catch {
+        // Keep the zero default and fall back to a single run.
+      }
+      const requestedRanges =
+        options?.lineRanges ?? (options?.lineScope ? [options.lineScope] : undefined);
+      const batches = planLineBatches(totalLines, requestedRanges);
+      // Stryker disable next-line EqualityOperator: the planner invariant returns either zero or at least two batches.
+      if (batches.length > 1) return this.runBatched(filePath, batches, options ?? {});
+    }
+    return this.runOnce(filePath, options);
+  }
+
+  private async runBatched(
+    filePath: string,
+    batches: { start: number; end: number }[],
+    options: RunOptions,
+  ): Promise<MutationResult> {
+    const deadline = Date.now() + (options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    const completed: MutationResult[] = [];
+    let firstTimeout: Error | undefined;
+
+    for (let index = 0; index < batches.length; index++) {
+      const remaining = deadline - Date.now();
+      const batchesLeft = batches.length - index;
+      const batchBudget = Math.floor(remaining / batchesLeft);
+      if (batchBudget < MIN_BATCH_BUDGET_MS) break;
+      try {
+        completed.push(
+          await this.runOnce(filePath, {
+            ...options,
+            lineScope: undefined,
+            lineRanges: [batches[index]],
+            timeoutMs: batchBudget,
+          }),
+        );
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (!/timed out/i.test(message)) throw error;
+        firstTimeout ??= error instanceof Error ? error : new Error(message);
+      }
+    }
+
+    if (completed.length === 0 && firstTimeout) throw firstTimeout;
+    return mergeBatchResults(
+      filePath,
+      completed,
+      batches.length,
+      completed.length === batches.length,
+    );
+  }
+
+  private async runOnce(filePath: string, options?: RunOptions): Promise<MutationResult> {
+    const resolvedRunner = options?.testRunner ?? 'command';
     const cwd = options?.workDir ?? process.cwd();
     const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
     const effectiveRanges =
       options?.lineRanges ?? (options?.lineScope ? [options.lineScope] : undefined);
     const mutateArg = buildMutateArg(filePath, effectiveRanges);
+    let runtimeConfig: string | undefined;
 
     // StrykerJS v9 removed the `--mutators` CLI flag. We express denylists by
     // writing mutator.excludedMutations into the sandbox stryker.config.json.
@@ -216,7 +415,13 @@ export class TypeScriptEngine extends BaseEngine {
           `Requested allowlist: ${options.mutatorAllowlist.join(', ')}`,
       );
     }
-    if (options?.mutatorDenylist && options.mutatorDenylist.length > 0) {
+    if (resolvedRunner === 'command' && options?.commandRunnerCommand) {
+      runtimeConfig = writeStrykerRuntimeConfig(
+        cwd,
+        options.commandRunnerCommand,
+        options.mutatorDenylist ?? [],
+      );
+    } else if (options?.mutatorDenylist && options.mutatorDenylist.length > 0) {
       writeStrykerMutatorConfig(cwd, options.mutatorDenylist);
     }
 
@@ -227,6 +432,7 @@ export class TypeScriptEngine extends BaseEngine {
       '--no-install',
       'stryker',
       'run',
+      ...(runtimeConfig ? [runtimeConfig] : []),
       '--mutate',
       mutateArg,
       '--testRunner',

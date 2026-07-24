@@ -12,6 +12,7 @@ vi.mock('../utils/exec.js', () => ({
 import { invokeMutationTool, MutationToolStartupError } from '../utils/exec-classify.js';
 import { runShell } from '../utils/exec.js';
 import { estimateAudit, estimateNeedsSandbox } from '../estimate.js';
+import { projectTimingRange } from '../baseline-timing.js';
 import type { EnvironmentInfo } from '../utils/project-detector.js';
 
 const mockInvoke = vi.mocked(invokeMutationTool);
@@ -158,11 +159,120 @@ describe('estimateAudit withTiming', () => {
     expect(r.baselineMs).toBeTypeOf('number');
     expect(r.concurrency).toBe(2);
     expect(r.estimatedMs).toBeTypeOf('number');
-    // estimatedMs = ceil(mutants * baselineMs / 2)
-    expect(r.estimatedMs).toBe(Math.ceil((r.mutants * (r.baselineMs ?? 0)) / 2));
+    expect(r.optimisticMs).toBe(Math.ceil((r.mutants * (r.baselineMs ?? 0)) / 2));
+    expect(r.upperBoundMs).toBeGreaterThan(r.estimatedMs ?? 0);
+    expect(r.timingConfidence).toBe('medium');
     // baselineMs = Date.now() - t0 must be a small elapsed duration. A `Date.now() + t0`
     // mutant would yield ~2× the epoch (>1e12); pin it to a sane upper bound.
     expect(r.baselineMs).toBeLessThan(60_000);
+  });
+
+  it('adds budget admission metadata when a timeout budget is supplied', async () => {
+    mockRunShell.mockResolvedValueOnce({
+      stdout: '',
+      stderr: '',
+      exit: 0,
+      signal: null,
+    } as never);
+
+    const r = await estimateAudit({
+      absFile: __filename,
+      relFile: 'src/__tests__/estimate.test.ts',
+      projectType: 'typescript',
+      workDir: '/sandbox',
+      withTiming: true,
+      env: { ...baseEnv(), testRunner: 'command', detectedRunner: 'vitest' },
+      concurrency: 1,
+      timeoutMs: 1,
+    });
+
+    expect(r.budgetMs).toBe(1);
+    expect(r.fitsBudget).toBe(false);
+    expect(r.recommendation).toMatch(/narrow|budget/i);
+    expect(mockRunShell).toHaveBeenCalledWith(
+      'npx',
+      ['vitest', 'related', 'src/__tests__/estimate.test.ts', '--run'],
+      expect.objectContaining({ timeoutMs: 1 }),
+    );
+  });
+
+  it('uses the command-runner projection only for TypeScript command-runner audits', async () => {
+    mockRunShell.mockResolvedValue({
+      stdout: '',
+      stderr: '',
+      exit: 0,
+      signal: null,
+    } as never);
+
+    const command = await estimateAudit({
+      absFile: __filename,
+      relFile: 'src/__tests__/estimate.test.ts',
+      projectType: 'typescript',
+      workDir: '/sandbox',
+      withTiming: true,
+      env: { ...baseEnv(), testRunner: 'command' },
+      concurrency: 1,
+    });
+    const native = await estimateAudit({
+      absFile: __filename,
+      relFile: 'src/__tests__/estimate.test.ts',
+      projectType: 'typescript',
+      workDir: '/sandbox',
+      withTiming: true,
+      env: { ...baseEnv(), testRunner: 'vitest' },
+      concurrency: 1,
+    });
+    const nonTypeScript = await estimateAudit({
+      absFile: __filename,
+      relFile: 'src/app.py',
+      projectType: 'python',
+      workDir: '/sandbox',
+      withTiming: true,
+      env: { ...baseEnv(), testRunner: 'command' },
+      concurrency: 1,
+    });
+
+    expect(command.timingConfidence).toBe('low');
+    expect(native.timingConfidence).toBe('medium');
+    expect(nonTypeScript.timingConfidence).toBe('medium');
+  });
+
+  it('treats an upper bound exactly equal to the budget as fitting', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000);
+    mockRunShell.mockResolvedValue({
+      stdout: '',
+      stderr: '',
+      exit: 0,
+      signal: null,
+    } as never);
+    const withoutBudget = await estimateAudit({
+      absFile: __filename,
+      relFile: 'src/__tests__/estimate.test.ts',
+      projectType: 'typescript',
+      workDir: '/sandbox',
+      withTiming: true,
+      env: { ...baseEnv(), testRunner: 'command' },
+      concurrency: 1,
+    });
+    expect(withoutBudget.budgetMs).toBeUndefined();
+    expect(withoutBudget.fitsBudget).toBeUndefined();
+    expect(withoutBudget.recommendation).toBeUndefined();
+
+    const exactBudget = projectTimingRange(withoutBudget.mutants, 0, 1, true).upperBoundMs;
+    const atBoundary = await estimateAudit({
+      absFile: __filename,
+      relFile: 'src/__tests__/estimate.test.ts',
+      projectType: 'typescript',
+      workDir: '/sandbox',
+      withTiming: true,
+      env: { ...baseEnv(), testRunner: 'command' },
+      concurrency: 1,
+      timeoutMs: exactBudget,
+    });
+    expect(atBoundary.upperBoundMs).toBe(exactBudget);
+    expect(atBoundary.fitsBudget).toBe(true);
+    expect(atBoundary.recommendation).toBe('Estimated to fit the configured audit budget.');
+    now.mockRestore();
   });
 
   it('omits timing fields and appends note when runShell throws', async () => {

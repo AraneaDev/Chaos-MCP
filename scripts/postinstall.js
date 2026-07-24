@@ -7,6 +7,32 @@
  * missing dev deps.
  */
 
+import { chmodSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Defensive chmod: ensure the CLI entrypoint is executable after npm copies
+// tarball files into node_modules. npm's `pkg.bin` → chmod step is not
+// reliable across all npm versions/platforms, so we redo it explicitly.
+// Runs for both local and global installs (the local .bin/ symlink also
+// needs +x on the underlying file).
+try {
+  const binPath = path.resolve(__dirname, '..', 'build', 'index.js');
+  chmodSync(binPath, 0o755);
+} catch (err) {
+  // ENOENT means the package was installed without a build (e.g. a
+  // downstream consumer who only imported types). Skip silently there.
+  // Any other failure (EACCES on a read-only filesystem, etc.) is real —
+  // surface it via stderr without failing the whole install.
+  if (err && err.code !== 'ENOENT') {
+    console.error(
+      `postinstall: failed to chmod bin (${err.code}): ${err.message}`,
+    );
+  }
+}
+
 // Only show the message when installed globally (not during dev installs).
 // npm sets `npm_config_global` to "true" when installing with -g.
 const isGlobal = process.env.npm_config_global === 'true';

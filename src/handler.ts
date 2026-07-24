@@ -35,6 +35,8 @@ import {
   type BaselineInput,
   type MutantKey,
 } from './verify.js';
+import { DEFAULT_TIMEOUT_MS } from './utils/constants.js';
+import { AuditDeadline } from './utils/deadline.js';
 
 // Re-export so legacy callers (estimate-handler, triage-handler, external
 // consumers) keep working. New code prefers importing from
@@ -189,6 +191,39 @@ function resolvePositiveMs(arg: unknown, fallback: unknown): number | undefined 
   return undefined;
 }
 
+/** Resolve the single wall-clock budget shared by every phase of an audit. */
+export function resolveAuditTimeoutMs(
+  args: ToolArgs,
+  cfg: ChaosConfig,
+  projectType: ProjectType,
+): number {
+  const configKey = ENGINE_REGISTRY[projectType as SupportedProjectType]?.configKey;
+  const engCfg = configKey ? cfg[configKey] : undefined;
+  return typeof args.timeoutMs === 'number' && args.timeoutMs > 0
+    ? args.timeoutMs
+    : (engCfg?.timeoutMs ?? cfg.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS);
+}
+
+/** Quote one argument for a POSIX shell command string. */
+export function quoteCommandArg(value: string): string {
+  if (/^[A-Za-z0-9_./\\-]+$/.test(value)) return value;
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+/**
+ * Build the Stryker command-runner string without exposing a Windows shell
+ * injection surface. Stryker accepts only a command string here, not argv.
+ * Unsafe Windows paths therefore fall back to the project's configured command
+ * instead of being interpolated through cmd.exe.
+ */
+export function buildVitestRelatedCommand(targetFile: string): string | undefined {
+  if (process.platform === 'win32') {
+    if (!/^[A-Za-z0-9_./\\:-]+$/.test(targetFile)) return undefined;
+    return `npx vitest related ${targetFile} --run`;
+  }
+  return `npx vitest related ${quoteCommandArg(targetFile)} --run`;
+}
+
 /**
  * Assemble {@link RunOptions} from tool-call arguments merged with config
  * defaults. Tool-call arguments always take precedence over config values.
@@ -199,6 +234,7 @@ export function buildRunOptions(
   env: EnvironmentInfo,
   workDir: string,
   projectType: ProjectType,
+  targetFile?: string,
 ): RunOptions {
   // Extract engine-specific config for the current project type.
   // Precedence: args > engine-specific config section > global config defaults.
@@ -216,14 +252,19 @@ export function buildRunOptions(
       : configKey === 'cosmicray'
         ? cfg.cosmicray?.testRunner
         : undefined;
+  const testRunner = engineTestRunner ?? cfg.testRunner ?? env.testRunner;
 
   return {
-    testRunner: engineTestRunner ?? cfg.testRunner ?? env.testRunner,
+    testRunner,
+    commandRunnerCommand:
+      projectType === 'typescript' &&
+      testRunner === 'command' &&
+      env.detectedRunner === 'vitest' &&
+      targetFile
+        ? buildVitestRelatedCommand(targetFile)
+        : undefined,
     workDir,
-    timeoutMs:
-      typeof args.timeoutMs === 'number' && args.timeoutMs > 0
-        ? args.timeoutMs
-        : (engCfg?.timeoutMs ?? cfg.defaultTimeoutMs),
+    timeoutMs: resolveAuditTimeoutMs(args, cfg, projectType),
     lineScope: normalizeLineScope(args.lineScope),
     // mutatorAllowlist is intentionally NOT propagated. StrykerJS v9 cannot
     // express an allowlist, so the TS engine rejects it; sourcing it here (from
@@ -362,7 +403,7 @@ export interface AuditFileInput {
 export async function auditFile(input: AuditFileInput): Promise<MutationResult> {
   const { targetFile, env, projectType, engine, args, config, workDir, prebuildCmd, lineRanges } =
     input;
-  const runOptions = buildRunOptions(args, config, env, workDir, projectType);
+  const runOptions = buildRunOptions(args, config, env, workDir, projectType, targetFile);
   if (lineRanges) runOptions.lineRanges = lineRanges;
   // Python only: when neither the tool args nor the config scoped the suite,
   // default to the target file's own test module(s). cosmic-ray otherwise runs
@@ -409,7 +450,11 @@ export async function auditFile(input: AuditFileInput): Promise<MutationResult> 
     }
     const prebuildStart = Date.now();
     try {
-      await runShellCommand(prebuildCmd, { cwd: workDir, timeoutMs: runOptions.timeoutMs });
+      await runShellCommand(prebuildCmd, {
+        cwd: workDir,
+        timeoutMs: runOptions.timeoutMs,
+        killTree: true,
+      });
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       throw new Error(`Prebuild command failed in sandbox: ${message}`);
@@ -766,26 +811,26 @@ export async function handleToolCall(
     // Strict argument validation (H5 / M5 / perMutantTimeoutMs / prebuildCommand).
     const argError = validateToolArgs(earlyArgs);
     if (argError) return argError;
+    const cfg = config ?? {};
+    const deadline = new AuditDeadline(resolveAuditTimeoutMs(earlyArgs, cfg, projectType));
 
     // Resolve the line scope (diff-aware A2 + verify-mode A3) on the REAL tree
     // before the sandbox copy, so a "no changes" diff can short-circuit.
     // Key verify-by-runId by the workspace-relative path (the same expression
     // triage uses: `relative(env.workspaceRoot, resolvedFile)` == relFromRoot),
     // so audit and triage agree on the cache key. Stays within workspaceRoot (C2).
-    const scope = await computeScope(
-      earlyArgs,
-      targetFile,
-      env,
-      projectType,
-      config ?? {},
-      relFromRoot,
-    );
+    const scope = await computeScope(earlyArgs, targetFile, env, projectType, cfg, relFromRoot);
     if (scope.kind === 'result') {
       // Emit complete only on successful short-circuits (no-changes = no isError).
       if (!scope.result.isError) ctx?.reportProgress?.(4, 4, 'complete');
       return scope.result;
     }
     const { diffRanges, scopeNote, baselineKeys } = scope;
+    if (deadline.expired()) {
+      return toolError(
+        `Audit time budget exhausted during scope resolution after ${deadline.elapsedMs()}ms.`,
+      );
+    }
 
     // Abort short-circuit #2 — after scope resolution, before sandbox provisioning.
     if (ctx?.signal?.aborted) return toolError('Operation cancelled.');
@@ -828,8 +873,25 @@ export async function handleToolCall(
     }
 
     try {
-      const args = request.params.arguments ?? {};
-      const cfg = config ?? {};
+      if (deadline.expired()) {
+        return toolError(
+          `Audit time budget exhausted during sandbox provisioning after ${deadline.elapsedMs()}ms.`,
+        );
+      }
+      // Reserve a small tail for report parsing, response formatting, and
+      // sandbox cleanup. The engine and any prebuild share the remainder.
+      const CLEANUP_RESERVE_MS = 2_000;
+      const MIN_ENGINE_BUDGET_MS = 1_000;
+      const remainingMs = deadline.remainingMs(CLEANUP_RESERVE_MS);
+      if (remainingMs < MIN_ENGINE_BUDGET_MS) {
+        return toolError(
+          `Audit time budget exhausted before mutation execution after ${deadline.elapsedMs()}ms.`,
+        );
+      }
+      const args: ToolArgs = {
+        ...(request.params.arguments ?? {}),
+        timeoutMs: remainingMs,
+      };
 
       if (isVerbose()) {
         const engCfg = cfg[ENGINE_REGISTRY[projectType].configKey];

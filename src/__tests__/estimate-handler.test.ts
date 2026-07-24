@@ -39,7 +39,7 @@ vi.mock('fs', async () => {
   };
 });
 
-import { handleEstimateCall } from '../estimate-handler.js';
+import { handleEstimateCall, resolveEstimateConcurrency } from '../estimate-handler.js';
 import { estimateAudit, estimateNeedsSandbox } from '../estimate.js';
 import { detectEnvironment } from '../utils/project-detector.js';
 import { createSandbox } from '../utils/sandbox.js';
@@ -318,40 +318,34 @@ describe('handleEstimateCall', () => {
 
   // ── Concurrency projection (line 83) ──────────────────────────────────────
 
-  it('passes concurrency = max(1, cpus-1) to estimateAudit', async () => {
+  it('passes conservative concurrency = max(1, min(2, cpus-1)) to estimateAudit', async () => {
     mockEstimateAudit.mockResolvedValue(approxResult);
     await handleEstimateCall(req({ filePath: 'src/math.ts' }));
     expect(mockEstimateAudit).toHaveBeenCalledWith(
-      expect.objectContaining({ concurrency: Math.max(1, cpus().length - 1) }),
+      expect.objectContaining({ concurrency: Math.max(1, Math.min(2, cpus().length - 1)) }),
     );
   });
 
   // ── Timeout config plumbing (line 108) ────────────────────────────────────
 
-  it('passes timeoutMs=undefined when no config is supplied', async () => {
+  it('passes the default 5-minute budget when no config is supplied', async () => {
     mockEstimateAudit.mockResolvedValue(approxResult);
     await handleEstimateCall(req({ filePath: 'src/math.ts' }));
-    expect(mockEstimateAudit).toHaveBeenCalledWith(
-      expect.objectContaining({ timeoutMs: undefined }),
-    );
+    expect(mockEstimateAudit).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 300_000 }));
   });
 
-  it('treats a non-positive defaultTimeoutMs as undefined (not a real cap)', async () => {
+  it('treats a non-positive defaultTimeoutMs as the standard budget', async () => {
     mockEstimateAudit.mockResolvedValue(approxResult);
     await handleEstimateCall(req({ filePath: 'src/math.ts' }), { defaultTimeoutMs: 0 });
-    expect(mockEstimateAudit).toHaveBeenCalledWith(
-      expect.objectContaining({ timeoutMs: undefined }),
-    );
+    expect(mockEstimateAudit).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 300_000 }));
   });
 
-  it('treats a non-numeric defaultTimeoutMs as undefined', async () => {
+  it('treats a non-numeric defaultTimeoutMs as the standard budget', async () => {
     mockEstimateAudit.mockResolvedValue(approxResult);
     await handleEstimateCall(req({ filePath: 'src/math.ts' }), {
       defaultTimeoutMs: 'soon' as never,
     });
-    expect(mockEstimateAudit).toHaveBeenCalledWith(
-      expect.objectContaining({ timeoutMs: undefined }),
-    );
+    expect(mockEstimateAudit).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 300_000 }));
   });
 
   // ── Sandbox provisioning failure (line 91) ────────────────────────────────
@@ -390,5 +384,14 @@ describe('handleEstimateCall', () => {
     const sc = res.structuredContent as Record<string, unknown>;
     expect(sc.language).toBe('python');
     expect(sc.mutants).toBe(7);
+  });
+});
+
+describe('resolveEstimateConcurrency', () => {
+  it('reserves one CPU before applying the two-worker cap', () => {
+    expect(resolveEstimateConcurrency(1)).toBe(1);
+    expect(resolveEstimateConcurrency(2)).toBe(1);
+    expect(resolveEstimateConcurrency(3)).toBe(2);
+    expect(resolveEstimateConcurrency(8)).toBe(2);
   });
 });

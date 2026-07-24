@@ -184,6 +184,20 @@ describe('TOOL_DEFINITION phase-1 additions', () => {
     expect(out.properties.summary).toBeDefined();
     expect(out.properties.survivors).toBeDefined();
   });
+
+  it('fully types partial-audit completion metadata', () => {
+    const props = TOOL_DEFINITION.outputSchema?.properties as Record<
+      string,
+      { type?: string; enum?: readonly string[] }
+    >;
+    expect(props.complete).toEqual({ type: 'boolean' });
+    expect(props.batchesCompleted).toEqual({ type: 'integer' });
+    expect(props.batchesPlanned).toEqual({ type: 'integer' });
+    expect(props.stoppedReason).toEqual({
+      type: 'string',
+      enum: ['time_budget_exhausted'],
+    });
+  });
 });
 
 describe('TOOL_DEFINITION phase-3 additions', () => {
@@ -266,5 +280,18 @@ describe('ESTIMATE_TOOL_DEFINITION contract', () => {
     expect(outputRequired).not.toContain('baselineMs');
     expect(outputRequired).not.toContain('estimatedMs');
     expect(outputRequired).not.toContain('concurrency');
+  });
+
+  it('fully types timing-range and budget-admission output fields', () => {
+    const props = ESTIMATE_TOOL_DEFINITION.outputSchema?.properties as Record<
+      string,
+      { type?: string; enum?: readonly string[] }
+    >;
+    expect(props.optimisticMs).toEqual({ type: 'integer' });
+    expect(props.upperBoundMs).toEqual({ type: 'integer' });
+    expect(props.timingConfidence).toEqual({ type: 'string', enum: ['low', 'medium'] });
+    expect(props.budgetMs).toEqual({ type: 'integer' });
+    expect(props.fitsBudget).toEqual({ type: 'boolean' });
+    expect(props.recommendation).toEqual({ type: 'string' });
   });
 });

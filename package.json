@@ -41,6 +41,7 @@
     "prepare": "npm run build",
     "prepublishOnly": "npm run build && npm run check",
     "test": "vitest run",
+    "test:self": "npm run build && node scripts/meta-test.js",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "lint": "eslint src/",

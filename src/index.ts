@@ -24,6 +24,8 @@ import { listResources, readResource } from './resources.js';
 import { listPrompts, getPrompt } from './prompts.js';
 import { ChaosConfig } from './utils/config-loader.js';
 import { runCli } from './cli.js';
+import { realpathSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 // Re-export the primary API so existing import paths (tests, consumers) keep
 // working after the index.ts split. handleToolCall and TOOL_DEFINITION now live
@@ -109,11 +111,29 @@ export async function startServer(config?: ChaosConfig): Promise<void> {
   await server.connect(transport);
 }
 
-// Auto-start when run directly (not when imported for testing)
+// Auto-start when run directly (not when imported for testing).
+//
+// `process.argv[1]` is the path the kernel saw when the entrypoint was
+// exec'd. After `npm install -g .` that's the symlink name (e.g.
+// "/usr/bin/chaos-mcp"), NOT the resolved .js path — using
+// `argv[1].endsWith("/index.js")` therefore silently dropped `runCli` and
+// the process exited 0 with no output (no --version, no MCP server).
+// We resolve both paths via realpathSync and require exact identity; merely
+// being named index.js/index.ts is not sufficient to auto-start this module.
 const isDirectRun =
+  // Stryker disable next-line all: Node always defines process; this guard exists for import safety in non-Node bundlers.
   typeof process !== 'undefined' &&
-  process.argv[1] &&
-  (process.argv[1].endsWith('/index.js') || process.argv[1].endsWith('/index.ts'));
+  // Stryker disable next-line all: argv[1] absence is not representable through the direct CLI execution path.
+  process.argv[1] !== undefined &&
+  (() => {
+    // Stryker disable BlockStatement: an empty catch yields undefined, which is equally falsy for the sole direct-run guard consumer.
+    try {
+      return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+    } catch {
+      return false;
+    }
+    // Stryker restore BlockStatement
+  })();
 
 if (isDirectRun) {
   runCli({ appVersion: APP_VERSION, startServer });

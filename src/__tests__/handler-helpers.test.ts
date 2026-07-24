@@ -7,6 +7,9 @@ import { existsSync } from 'fs';
 import {
   validateToolArgs,
   buildRunOptions,
+  buildVitestRelatedCommand,
+  quoteCommandArg,
+  resolveAuditTimeoutMs,
   resolvePrebuildCommand,
   auditFile,
   isPrebuildAllowed,
@@ -256,6 +259,79 @@ describe('buildRunOptions', () => {
     expect(buildRunOptions({}, {}, env({ testRunner: 'd' }), '/sb', 'typescript').testRunner).toBe(
       'd',
     );
+  });
+
+  it('auto-scopes Vitest 3 command-runner audits to tests related to the target', () => {
+    const platform = vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
+    try {
+      const options = buildRunOptions(
+        {},
+        {},
+        env({ testRunner: 'command', detectedRunner: 'vitest' }),
+        '/sb',
+        'typescript',
+        'src/my module.ts',
+      );
+
+      expect(options.commandRunnerCommand).toBe("npx vitest related 'src/my module.ts' --run");
+    } finally {
+      platform.mockRestore();
+    }
+  });
+
+  it('quotes unsafe POSIX targets and rejects unsafe Windows command strings', () => {
+    expect(quoteCommandArg('src/app-file.ts')).toBe('src/app-file.ts');
+    const platform = vi.spyOn(process, 'platform', 'get');
+    try {
+      platform.mockReturnValue('linux');
+      expect(buildVitestRelatedCommand("src/a'b.ts")).toBe(
+        "npx vitest related 'src/a'\\''b.ts' --run",
+      );
+      platform.mockReturnValue('win32');
+      expect(buildVitestRelatedCommand('src/app.ts')).toBe('npx vitest related src/app.ts --run');
+      expect(buildVitestRelatedCommand('src/my module.ts')).toBeUndefined();
+      expect(buildVitestRelatedCommand('src/a&whoami.ts')).toBeUndefined();
+      expect(buildVitestRelatedCommand('src/a"b.ts')).toBeUndefined();
+    } finally {
+      platform.mockRestore();
+    }
+  });
+
+  it('does not invent a scoped command for native or non-Vitest runners', () => {
+    expect(
+      buildRunOptions(
+        {},
+        {},
+        env({ testRunner: 'vitest', detectedRunner: 'vitest' }),
+        '/sb',
+        'typescript',
+        'src/app.ts',
+      ).commandRunnerCommand,
+    ).toBeUndefined();
+    expect(
+      buildRunOptions(
+        {},
+        {},
+        env({ testRunner: 'command', detectedRunner: 'node:test' }),
+        '/sb',
+        'typescript',
+        'src/app.ts',
+      ).commandRunnerCommand,
+    ).toBeUndefined();
+    expect(
+      buildRunOptions(
+        {},
+        {},
+        env({ testRunner: 'command', detectedRunner: 'vitest' }),
+        '/sb',
+        'python',
+        'src/app.py',
+      ).commandRunnerCommand,
+    ).toBeUndefined();
+  });
+
+  it('falls back safely when resolving an unsupported project timeout', () => {
+    expect(resolveAuditTimeoutMs({}, { defaultTimeoutMs: 1234 }, 'cobol' as never)).toBe(1234);
   });
 
   it('resolves Python testRunner from the cosmicray section, never from stryker', () => {

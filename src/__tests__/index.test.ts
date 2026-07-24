@@ -1,4 +1,8 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   ListToolsRequestSchema,
   CallToolRequestSchema,
@@ -228,6 +232,8 @@ describe('startServer', () => {
 
 describe('direct-run guard (isDirectRun)', () => {
   const origArgv1 = process.argv[1];
+  const sourceEntry = realpathSync(fileURLToPath(new URL('../index.ts', import.meta.url)));
+  const tempDirs: string[] = [];
 
   async function loadIndexWith(argv1: string): Promise<typeof import('../cli.js').runCli> {
     vi.resetModules();
@@ -238,25 +244,40 @@ describe('direct-run guard (isDirectRun)', () => {
     return runCli;
   }
 
+  afterEach(() => {
+    process.argv[1] = origArgv1;
+    for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
   it('invokes runCli with the app version and server factory when run directly', async () => {
-    const runCli = await loadIndexWith('/some/path/index.js');
+    const runCli = await loadIndexWith(sourceEntry);
     expect(vi.mocked(runCli)).toHaveBeenCalledTimes(1);
     // Pin the injected dependency object (the `{ appVersion, startServer }` literal).
     expect(vi.mocked(runCli)).toHaveBeenCalledWith(
       expect.objectContaining({ appVersion: APP_VERSION, startServer: expect.any(Function) }),
     );
-    process.argv[1] = origArgv1;
   });
 
-  it('invokes runCli when argv[1] ends with /index.ts (ts-node/tsx)', async () => {
-    const runCli = await loadIndexWith('/some/path/index.ts');
+  it('invokes runCli through a symlink that resolves to the module', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'chaos-index-'));
+    tempDirs.push(dir);
+    const link = join(dir, 'chaos-mcp');
+    symlinkSync(sourceEntry, link);
+    const runCli = await loadIndexWith(link);
     expect(vi.mocked(runCli)).toHaveBeenCalledTimes(1);
-    process.argv[1] = origArgv1;
   });
 
-  it('does NOT invoke runCli when argv[1] is some other entrypoint', async () => {
-    const runCli = await loadIndexWith('/some/path/vitest-worker.js');
+  it('does not invoke runCli for a nonexistent path with a matching basename', async () => {
+    const runCli = await loadIndexWith('/some/path/index.js');
     expect(vi.mocked(runCli)).not.toHaveBeenCalled();
-    process.argv[1] = origArgv1;
+  });
+
+  it('does not invoke runCli for a different existing index.js', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'chaos-index-'));
+    tempDirs.push(dir);
+    const unrelated = join(dir, 'index.js');
+    writeFileSync(unrelated, '');
+    const indirect = await loadIndexWith(unrelated);
+    expect(vi.mocked(indirect)).not.toHaveBeenCalled();
   });
 });

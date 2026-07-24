@@ -60,7 +60,7 @@ export async function invokeMutationTool(
   options: { cwd?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv; signal?: AbortSignal } = {},
 ): Promise<ExecResult> {
   try {
-    return await runShell(command, args, options);
+    return await runShell(command, args, { ...options, killTree: true });
   } catch (error: unknown) {
     if (!(error instanceof ExecFailureError)) {
       // Something unexpected (e.g. programmer error). Rethrow untouched.

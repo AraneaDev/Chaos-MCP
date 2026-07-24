@@ -46,6 +46,14 @@ export interface MutationResult {
    * test command never actually ran — see PythonEngine's degenerate-run guard.
    */
   incompetent?: number;
+  /** False when a time-budgeted audit returned completed batches only. */
+  complete?: boolean;
+  /** Number of mutation batches that produced usable reports. */
+  batchesCompleted?: number;
+  /** Total number of batches planned for the requested scope. */
+  batchesPlanned?: number;
+  /** Machine-readable reason a partial audit stopped. */
+  stoppedReason?: 'time_budget_exhausted';
 }
 
 /**
@@ -58,6 +66,16 @@ export interface RunOptions {
    * For Python: 'pytest' | 'unittest' | custom command string
    */
   testRunner?: string;
+
+  /**
+   * Test command used when {@link testRunner} resolves to StrykerJS's generic
+   * `command` runner. Chaos-MCP uses this to scope frameworks such as Vitest 3
+   * to tests related to the mutation target instead of running the entire
+   * project suite once per mutant.
+   *
+   * **TypeScript/JavaScript engine only.**
+   */
+  commandRunnerCommand?: string;
 
   /**
    * Working directory override for sandbox isolation.
