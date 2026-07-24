@@ -65,6 +65,54 @@ describe('estimateAudit', () => {
     expect(r.basis).toMatch(/cargo-mutants/);
   });
 
+  it('forwards the container session to exact counting and baseline timing', async () => {
+    const executor = {
+      kind: 'container' as const,
+      workDir: '/sandbox',
+      run: vi.fn().mockResolvedValue({
+        stdout: '',
+        stderr: '',
+        exit: 0,
+        signal: null,
+      }),
+      runCommand: vi.fn(),
+      dispose: vi.fn(),
+    };
+    mockInvoke.mockResolvedValueOnce({
+      stdout: 'src/lib.rs:1:1: replace foo -> bar\n',
+      stderr: '',
+    } as never);
+
+    await estimateAudit({
+      absFile: '/ws/src/lib.rs',
+      relFile: 'src/lib.rs',
+      projectType: 'rust',
+      workDir: '/sandbox',
+      withTiming: true,
+      env: {
+        projectType: 'rust',
+        testRunner: 'cargo',
+        detectedRunner: 'cargo',
+        packageManager: 'cargo',
+        workspaceRoot: '/ws',
+      },
+      executor,
+    });
+
+    expect(mockInvoke).toHaveBeenCalledWith(
+      'cargo-mutants',
+      'cargo',
+      expect.any(Array),
+      expect.objectContaining({ executor }),
+    );
+    expect(executor.run).toHaveBeenCalledWith(
+      'cargo',
+      ['test'],
+      expect.objectContaining({ cwd: '/sandbox', killTree: true }),
+    );
+    expect(mockRunShell).not.toHaveBeenCalled();
+  });
+
   it('falls back to heuristic when cargo-mutants is missing', async () => {
     // Real constructor: (tool: ExecutableTool, message: string)
     mockInvoke.mockRejectedValueOnce(
@@ -192,7 +240,7 @@ describe('estimateAudit withTiming', () => {
     expect(mockRunShell).toHaveBeenCalledWith(
       'npx',
       ['vitest', 'related', 'src/__tests__/estimate.test.ts', '--run'],
-      expect.objectContaining({ timeoutMs: 1 }),
+      expect.objectContaining({ timeoutMs: 1, killTree: true }),
     );
   });
 

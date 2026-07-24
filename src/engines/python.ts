@@ -255,6 +255,7 @@ export class PythonEngine extends BaseEngine {
             `Details: ${(e.stderr || e.message).slice(0, 500)}`,
         ),
       signal: options?.signal,
+      executor: options?.executor,
     });
 
     // Step 2: init — enumerate mutants into the session DB (no tests run).
@@ -264,6 +265,7 @@ export class PythonEngine extends BaseEngine {
           `cosmic-ray init failed (exit ${e.exit}): ${(e.stderr || e.message).slice(0, 500)}`,
         ),
       signal: options?.signal,
+      executor: options?.executor,
     });
 
     // Step 2.5: operator filter — mark mutants matching excludeOperators as
@@ -280,6 +282,7 @@ export class PythonEngine extends BaseEngine {
             `cosmic-ray operator filter failed (exit ${e.exit}): ${(e.stderr || e.message).slice(0, 500)}`,
           ),
         signal: options?.signal,
+        executor: options?.executor,
       });
     }
 
@@ -290,6 +293,7 @@ export class PythonEngine extends BaseEngine {
           `cosmic-ray exec failed (exit ${e.exit}): ${(e.stderr || e.message).slice(0, 500)}`,
         ),
       signal: options?.signal,
+      executor: options?.executor,
     });
 
     // Step 4: dump — structured JSON results.
@@ -299,6 +303,7 @@ export class PythonEngine extends BaseEngine {
           `cosmic-ray dump failed (exit ${e.exit}): ${(e.stderr || e.message).slice(0, 500)}`,
         ),
       signal: options?.signal,
+      executor: options?.executor,
     });
 
     const result = parseCosmicRayDump(dump.stdout, filePath) as MutationResult & {
@@ -343,6 +348,7 @@ export class PythonEngine extends BaseEngine {
       onExecFailure: (e: ExecFailureError) => Error;
       signal?: AbortSignal;
       command?: string;
+      executor?: RunOptions['executor'];
     },
   ): Promise<{ stdout: string; stderr: string }> {
     try {
@@ -352,6 +358,7 @@ export class PythonEngine extends BaseEngine {
         cwd,
         timeoutMs,
         signal: opts.signal,
+        executor: opts.executor,
       });
     } catch (error: unknown) {
       if (error instanceof MutationToolStartupError) throw new Error(error.message);

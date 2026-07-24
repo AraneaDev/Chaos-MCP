@@ -9,6 +9,7 @@ import { ENGINE_REGISTRY, type SupportedProjectType } from './engines/registry.j
 import { detectProjectType, detectEnvironment, EnvironmentInfo } from './utils/project-detector.js';
 import { createSandbox } from './utils/sandbox.js';
 import { runShellCommand } from './utils/exec.js';
+import { createExecutionSession } from './utils/execution.js';
 import { isCancel } from './utils/cancel.js';
 import { ChaosConfig } from './utils/config-loader.js';
 import { log, isVerbose } from './utils/logger.js';
@@ -439,35 +440,49 @@ export async function auditFile(input: AuditFileInput): Promise<MutationResult> 
   // in-flight subprocesses are killed when the caller cancels.
   if (input.signal) runOptions.signal = input.signal;
 
-  if (prebuildCmd !== null) {
-    if (isVerbose()) {
-      const prebuildExplicit =
-        typeof args.prebuildCommand === 'string' && args.prebuildCommand.trim().length > 0;
-      const autoLabel =
-        env.packageManager && env.packageManager !== 'pip' ? env.packageManager : projectType;
-      const source = prebuildExplicit ? 'explicit' : `auto (${autoLabel})`;
-      log(`Running prebuild command in sandbox [${source}]: ${prebuildCmd}`);
-    }
-    const prebuildStart = Date.now();
-    try {
-      await runShellCommand(prebuildCmd, {
-        cwd: workDir,
-        timeoutMs: runOptions.timeoutMs,
-        killTree: true,
-      });
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
-      throw new Error(`Prebuild command failed in sandbox: ${message}`);
-    }
-    if (isVerbose()) log('Prebuild command completed successfully');
-    // Deduct prebuild time so timeoutMs bounds the whole run (audit Med#3).
-    if (typeof runOptions.timeoutMs === 'number') {
-      const remaining = runOptions.timeoutMs - (Date.now() - prebuildStart);
-      runOptions.timeoutMs = remaining > 0 ? remaining : 1;
-    }
-  }
+  const containerMode = config.container?.mode;
+  const executor =
+    containerMode && containerMode !== 'native'
+      ? await createExecutionSession(projectType, workDir, config.container, input.signal)
+      : undefined;
+  if (executor) runOptions.executor = executor;
 
-  return engine.run(targetFile, runOptions);
+  try {
+    if (prebuildCmd !== null) {
+      if (isVerbose()) {
+        const prebuildExplicit =
+          typeof args.prebuildCommand === 'string' && args.prebuildCommand.trim().length > 0;
+        const autoLabel =
+          env.packageManager && env.packageManager !== 'pip' ? env.packageManager : projectType;
+        const source = prebuildExplicit ? 'explicit' : `auto (${autoLabel})`;
+        log(`Running prebuild command in sandbox [${source}]: ${prebuildCmd}`);
+      }
+      const prebuildStart = Date.now();
+      try {
+        const prebuildOptions = {
+          cwd: workDir,
+          timeoutMs: runOptions.timeoutMs,
+          signal: input.signal,
+          killTree: true,
+        };
+        if (executor) await executor.runCommand(prebuildCmd, prebuildOptions);
+        else await runShellCommand(prebuildCmd, prebuildOptions);
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`Prebuild command failed in sandbox: ${message}`);
+      }
+      if (isVerbose()) log('Prebuild command completed successfully');
+      // Deduct prebuild time so timeoutMs bounds the whole run (audit Med#3).
+      if (typeof runOptions.timeoutMs === 'number') {
+        const remaining = runOptions.timeoutMs - (Date.now() - prebuildStart);
+        runOptions.timeoutMs = remaining > 0 ? remaining : 1;
+      }
+    }
+
+    return await engine.run(targetFile, runOptions);
+  } finally {
+    await executor?.dispose();
+  }
 }
 
 /** Construct the engine for a (supported) project type. */

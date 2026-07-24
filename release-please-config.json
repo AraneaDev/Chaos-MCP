@@ -9,6 +9,10 @@
         {
           "type": "generic",
           "path": "src/index.ts"
+        },
+        {
+          "type": "generic",
+          "path": "src/utils/execution.ts"
         }
       ]
     }

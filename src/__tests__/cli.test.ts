@@ -10,16 +10,21 @@ vi.mock('../utils/logger.js', () => ({
   log: vi.fn(),
   isVerbose: vi.fn(() => false),
 }));
+vi.mock('../utils/execution.js', () => ({
+  inspectContainerRuntime: vi.fn(),
+}));
 
 import { checkNodeVersion, buildHelpText, runCli } from '../cli.js';
 import { loadConfig, validateConfig } from '../utils/config-loader.js';
 import { enableVerbose, isVerbose, log } from '../utils/logger.js';
+import { inspectContainerRuntime } from '../utils/execution.js';
 
 const mockLoadConfig = vi.mocked(loadConfig);
 const mockValidateConfig = vi.mocked(validateConfig);
 const mockEnableVerbose = vi.mocked(enableVerbose);
 const mockIsVerbose = vi.mocked(isVerbose);
 const mockLog = vi.mocked(log);
+const mockInspectContainerRuntime = vi.mocked(inspectContainerRuntime);
 
 /** A process.exit stub that throws so control flow halts like the real exit. */
 class ExitError extends Error {
@@ -39,6 +44,7 @@ describe('cli', () => {
     mockLoadConfig.mockReturnValue({});
     mockValidateConfig.mockReturnValue({ config: {}, warnings: [] });
     mockIsVerbose.mockReturnValue(false);
+    process.exitCode = undefined;
     exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
       throw new ExitError(code ?? 0);
     }) as never);
@@ -51,6 +57,7 @@ describe('cli', () => {
     exitSpy.mockRestore();
     logSpy.mockRestore();
     errSpy.mockRestore();
+    process.exitCode = undefined;
   });
 
   /** Run cli with the given flags; returns the injected startServer spy. */
@@ -80,6 +87,7 @@ describe('cli', () => {
         '--help',
         '--config',
         '--validate-config',
+        '--container-doctor',
         '--strict',
         '--verbose',
       ]) {
@@ -148,6 +156,92 @@ describe('cli', () => {
       expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('chaos-mcp v9.9.9'));
       expect(exitCode).toBe(0);
       expect(startServer).not.toHaveBeenCalled();
+    });
+
+    it('--container-doctor reports all image states without starting the server', async () => {
+      mockLoadConfig.mockReturnValue({ container: { mode: 'container' } });
+      mockInspectContainerRuntime.mockResolvedValue({
+        runtime: 'docker',
+        available: true,
+        serverVersion: '27.0.0',
+        mode: 'container',
+        images: {
+          typescript: { image: 'ts', present: true },
+          python: { image: 'py', present: true },
+          rust: { image: 'rs', present: true },
+          php: { image: 'php', present: true },
+        },
+      });
+
+      const { startServer } = run(['--container-doctor']);
+      const report = await mockInspectContainerRuntime.mock.results[0]?.value;
+      await vi.waitFor(() => expect(logSpy).toHaveBeenCalledWith(JSON.stringify(report, null, 2)));
+
+      expect(mockInspectContainerRuntime).toHaveBeenCalledWith({ mode: 'container' });
+      expect(process.exitCode).toBe(0);
+      expect(startServer).not.toHaveBeenCalled();
+    });
+
+    it('--container-doctor honors --config and fails when one image is missing', async () => {
+      mockLoadConfig.mockReturnValue({ container: { mode: 'auto' } });
+      mockInspectContainerRuntime.mockResolvedValue({
+        runtime: 'podman',
+        available: true,
+        mode: 'auto',
+        images: {
+          typescript: { image: 'ts', present: true },
+          python: { image: 'py', present: false },
+          rust: { image: 'rs', present: true },
+          php: { image: 'php', present: true },
+        },
+      });
+
+      run(['--container-doctor', '--config', '/tmp/custom.json']);
+      await vi.waitFor(() => expect(process.exitCode).toBe(1));
+
+      expect(mockLoadConfig).toHaveBeenCalledWith('/tmp/custom.json');
+      expect(mockInspectContainerRuntime).toHaveBeenCalledWith({ mode: 'auto' });
+    });
+
+    it('--container-doctor fails when the runtime is unavailable', async () => {
+      mockInspectContainerRuntime.mockResolvedValue({
+        runtime: 'docker',
+        available: false,
+        mode: 'native',
+        images: {
+          typescript: { image: 'ts', present: true },
+          python: { image: 'py', present: true },
+          rust: { image: 'rs', present: true },
+          php: { image: 'php', present: true },
+        },
+      });
+
+      run(['--container-doctor']);
+      await vi.waitFor(() => expect(process.exitCode).toBe(1));
+    });
+
+    it('--container-doctor reports configuration load failures and stops', () => {
+      mockLoadConfig.mockImplementationOnce(() => {
+        throw new Error('bad config');
+      });
+
+      const { startServer } = run(['--container-doctor']);
+
+      expect(errSpy).toHaveBeenCalledWith('Container doctor could not load config: bad config');
+      expect(process.exitCode).toBe(1);
+      expect(mockInspectContainerRuntime).not.toHaveBeenCalled();
+      expect(startServer).not.toHaveBeenCalled();
+    });
+
+    it('--container-doctor reports asynchronous diagnostic failures', async () => {
+      mockInspectContainerRuntime.mockRejectedValueOnce(new Error('daemon failed'));
+
+      run(['--container-doctor']);
+      await vi.waitFor(() =>
+        expect(errSpy).toHaveBeenCalledWith('Container doctor failed: daemon failed'),
+      );
+
+      expect(process.exitCode).toBe(1);
     });
 
     it('--validate-config with no warnings reports valid, exits 0, and passes no config path', () => {

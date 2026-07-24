@@ -1,5 +1,6 @@
 import { ExecResult, ExecFailureError, runShell } from './exec.js';
 import { DEFAULT_TIMEOUT_MS } from './constants.js';
+import type { ExecutionSession } from './execution.js';
 
 /**
  * The mutation tools Chaos-MCP can invoke. Each tool name maps to a CLI
@@ -57,10 +58,19 @@ export async function invokeMutationTool(
   tool: ExecutableTool,
   command: string,
   args: string[],
-  options: { cwd?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv; signal?: AbortSignal } = {},
+  options: {
+    cwd?: string;
+    timeoutMs?: number;
+    env?: NodeJS.ProcessEnv;
+    signal?: AbortSignal;
+    executor?: ExecutionSession;
+  } = {},
 ): Promise<ExecResult> {
   try {
-    return await runShell(command, args, { ...options, killTree: true });
+    const { executor, ...execOptions } = options;
+    return executor
+      ? await executor.run(command, args, { ...execOptions, killTree: true })
+      : await runShell(command, args, { ...execOptions, killTree: true });
   } catch (error: unknown) {
     if (!(error instanceof ExecFailureError)) {
       // Something unexpected (e.g. programmer error). Rethrow untouched.

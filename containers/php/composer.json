@@ -1,0 +1,15 @@
+{
+  "name": "araneadev/chaos-mcp-php-runner",
+  "description": "Locked Infection dependencies for the Chaos-MCP PHP runner",
+  "type": "project",
+  "license": "MIT",
+  "require": {
+    "infection/infection": "0.34.0"
+  },
+  "config": {
+    "allow-plugins": {
+      "infection/extension-installer": true
+    },
+    "sort-packages": true
+  }
+}

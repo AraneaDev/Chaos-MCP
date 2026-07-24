@@ -428,9 +428,9 @@ export class TypeScriptEngine extends BaseEngine {
     // ── Build the Stryker CLI arguments ──
     // Use --concurrency when provided; omit to let Stryker auto-detect CPU cores.
     const args = [
-      'npx',
-      '--no-install',
-      'stryker',
+      ...(options?.executor?.kind === 'container'
+        ? ['stryker']
+        : ['npx', '--no-install', 'stryker']),
       'run',
       ...(runtimeConfig ? [runtimeConfig] : []),
       '--mutate',
@@ -486,7 +486,7 @@ export class TypeScriptEngine extends BaseEngine {
     }
 
     if (isVerbose()) {
-      log(`TypeScriptEngine: npx stryker ${args.slice(2).join(' ')}`);
+      log(`TypeScriptEngine: ${args.join(' ')}`);
     }
 
     try {
@@ -494,6 +494,7 @@ export class TypeScriptEngine extends BaseEngine {
         cwd,
         timeoutMs,
         signal: options?.signal,
+        executor: options?.executor,
       });
     } catch (error: unknown) {
       // Startup-class failures (not-installed / timeout / signal crash) are

@@ -236,6 +236,32 @@ describe('PythonEngine (cosmic-ray)', () => {
     }
   });
 
+  it('runs every cosmic-ray phase through the container session', async () => {
+    const executor = {
+      kind: 'container' as const,
+      workDir: '/tmp/sandbox',
+      run: vi
+        .fn()
+        .mockResolvedValueOnce(ok())
+        .mockResolvedValueOnce(ok())
+        .mockResolvedValueOnce(ok())
+        .mockResolvedValueOnce(ok('')),
+      runCommand: vi.fn(),
+      dispose: vi.fn(),
+    };
+
+    await engine.run('m.py', { workDir: '/tmp/sandbox', executor });
+
+    expect(executor.run).toHaveBeenCalledTimes(4);
+    expect(executor.run.mock.calls.map((call) => call[1][0])).toEqual([
+      'baseline',
+      'init',
+      'exec',
+      'dump',
+    ]);
+    expect(mockRunShell).not.toHaveBeenCalled();
+  });
+
   it('throws an install hint when cosmic-ray is not installed (ENOENT)', async () => {
     mockRunShell.mockRejectedValueOnce(fail({ code: 'ENOENT' }));
     await expect(engine.run('m.py', { workDir: '/tmp/sandbox' })).rejects.toThrow(

@@ -19,6 +19,31 @@ beforeEach(() => {
 });
 
 describe('invokeMutationTool', () => {
+  it('uses the provided execution session instead of the host subprocess', async () => {
+    const result = { stdout: 'container', stderr: '', exit: 0, signal: null };
+    const executor = {
+      kind: 'container' as const,
+      workDir: '/tmp/sandbox',
+      run: vi.fn().mockResolvedValue(result),
+      runCommand: vi.fn(),
+      dispose: vi.fn(),
+    };
+
+    await expect(
+      invokeMutationTool('StrykerJS', 'stryker', ['run'], {
+        cwd: '/tmp/sandbox',
+        timeoutMs: 1234,
+        executor,
+      }),
+    ).resolves.toBe(result);
+    expect(executor.run).toHaveBeenCalledWith('stryker', ['run'], {
+      cwd: '/tmp/sandbox',
+      timeoutMs: 1234,
+      killTree: true,
+    });
+    expect(mockRunShell).not.toHaveBeenCalled();
+  });
+
   it('returns ExecResult on successful tool run', async () => {
     const result = { stdout: 'ok', stderr: '', exit: 0, signal: null };
     mockRunShell.mockResolvedValue(result);
