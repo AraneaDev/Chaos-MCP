@@ -1344,6 +1344,30 @@ describe('TypeScriptEngine', () => {
     );
   });
 
+  it('uses the image-provided Stryker binary in container mode', async () => {
+    const executor = {
+      kind: 'container' as const,
+      workDir: '/sb',
+      run: vi.fn().mockResolvedValue(makeExecResult()),
+      runCommand: vi.fn(),
+      dispose: vi.fn(),
+    };
+    mockReadFileSync.mockReturnValue(makeJsonReport([]));
+
+    await engine.run('src/math.ts', {
+      testRunner: 'command',
+      workDir: '/sb',
+      executor,
+    });
+
+    expect(executor.run).toHaveBeenCalledWith(
+      'stryker',
+      expect.arrayContaining(['run', '--mutate', 'src/math.ts']),
+      expect.objectContaining({ cwd: '/sb' }),
+    );
+    expect(mockRunShell).not.toHaveBeenCalled();
+  });
+
   it('accepts lineScope at the boundaries (start=1, end=start)', async () => {
     mockRunShell.mockResolvedValue(makeExecResult());
     mockReadFileSync.mockReturnValue(makeJsonReport([]));
@@ -1417,7 +1441,7 @@ describe('TypeScriptEngine', () => {
     expect(argList).not.toContain('--timeoutMs');
   });
 
-  it('logs the exact stryker invocation (sliced past npx/--no-install) in verbose mode', async () => {
+  it('logs the exact native Stryker invocation in verbose mode', async () => {
     const { isVerbose, log } = await import('../utils/logger.js');
     vi.mocked(isVerbose).mockReturnValue(true);
     const mockLog = vi.mocked(log);
@@ -1428,7 +1452,7 @@ describe('TypeScriptEngine', () => {
     await engine.run('src/math.ts');
 
     expect(mockLog).toHaveBeenCalledWith(
-      'TypeScriptEngine: npx stryker stryker run --mutate src/math.ts --testRunner command ' +
+      'TypeScriptEngine: npx --no-install stryker run --mutate src/math.ts --testRunner command ' +
         '--reporters json --logLevel off --cleanTempDir true --tempDirName .stryker-tmp',
     );
     vi.mocked(isVerbose).mockReturnValue(false);

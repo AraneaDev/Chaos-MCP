@@ -258,6 +258,25 @@ describe('RustEngine', () => {
     );
   });
 
+  it('runs cargo-mutants through the container session', async () => {
+    const executor = {
+      kind: 'container' as const,
+      workDir: '/sb',
+      run: vi.fn().mockResolvedValue(makeExecResult('')),
+      runCommand: vi.fn(),
+      dispose: vi.fn(),
+    };
+
+    await engine.run('src/test.rs', { workDir: '/sb', executor, concurrency: 1 });
+
+    expect(executor.run).toHaveBeenCalledWith(
+      'cargo',
+      ['mutants', '--file', 'src/test.rs'],
+      expect.objectContaining({ cwd: '/sb' }),
+    );
+    expect(mockRunShell).not.toHaveBeenCalled();
+  });
+
   // ─── JSON output parsing tests ──────────────────────────────────────────
 
   it('parses valid JSON output and prioritises it over text', async () => {

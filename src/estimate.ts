@@ -5,6 +5,7 @@ import { estimateHeuristic } from './estimate-heuristic.js';
 import { invokeMutationTool, MutationToolStartupError } from './utils/exec-classify.js';
 import { runShell } from './utils/exec.js';
 import { resolveBaselineTestCommand, projectTimingRange } from './baseline-timing.js';
+import type { ExecutionSession } from './utils/execution.js';
 
 export type Fidelity = 'exact' | 'approx';
 
@@ -41,6 +42,8 @@ export interface EstimateOptions {
   concurrency?: number;
   /** Abort signal; forwarded to subprocesses so the caller can cancel in-flight work. */
   signal?: AbortSignal;
+  /** Internal native/container execution session for exact counts and timing. */
+  executor?: ExecutionSession;
 }
 
 const ESTIMATE_TIMEOUT_MS = 60_000;
@@ -115,6 +118,7 @@ async function computeCount(opts: EstimateOptions): Promise<EstimateResult> {
           cwd: opts.workDir,
           timeoutMs: opts.timeoutMs ?? ESTIMATE_TIMEOUT_MS,
           signal: opts.signal,
+          executor: opts.executor,
         },
       );
       return {
@@ -153,11 +157,13 @@ async function applyTiming(result: EstimateResult, opts: EstimateOptions): Promi
   }
   try {
     const t0 = Date.now();
-    await runShell(cmd.command, cmd.args, {
+    const execOptions = {
       cwd: opts.workDir,
       timeoutMs: opts.timeoutMs ?? ESTIMATE_TIMEOUT_MS,
       signal: opts.signal,
-    });
+    };
+    if (opts.executor) await opts.executor.run(cmd.command, cmd.args, execOptions);
+    else await runShell(cmd.command, cmd.args, execOptions);
     const baselineMs = Date.now() - t0;
     const concurrency = opts.concurrency ?? 1;
     const commandRunner = opts.projectType === 'typescript' && opts.env.testRunner === 'command';

@@ -23,6 +23,7 @@ const KNOWN_KEYS = new Set([
   'cosmicray',
   'rust',
   'infection',
+  'container',
 ]);
 
 /** Valid keys within a StrykerConfig section. */
@@ -50,6 +51,17 @@ const KNOWN_RUST_KEYS = new Set(['timeoutMs', 'concurrency']);
 
 /** Valid keys within an InfectionConfig section. */
 const KNOWN_INFECTION_KEYS = new Set(['timeoutMs', 'threads', 'testFrameworkOptions']);
+const KNOWN_CONTAINER_KEYS = new Set([
+  'mode',
+  'runtime',
+  'network',
+  'cpus',
+  'memoryMb',
+  'pidsLimit',
+  'startupTimeoutMs',
+  'images',
+]);
+const KNOWN_CONTAINER_IMAGE_KEYS = new Set(['typescript', 'python', 'rust', 'php']);
 
 /**
  * StrykerJS-specific config overrides.
@@ -116,6 +128,25 @@ export interface InfectionConfig {
   threads?: number | 'max';
   /** Extra options forwarded to the PHP test framework (e.g. "--testsuite=unit"). */
   testFrameworkOptions?: string;
+}
+
+export interface ContainerConfig {
+  /** Native subprocesses, pinned containers, or containers with native fallback. */
+  mode?: 'native' | 'container' | 'auto';
+  /** OCI-compatible CLI. Docker is the default; Podman is also supported. */
+  runtime?: 'docker' | 'podman';
+  /** Container network name/mode. Defaults to bridge for project dependency resolution. */
+  network?: string;
+  /** CPU limit passed to the container runtime. Defaults to a conservative 2. */
+  cpus?: number;
+  /** Memory limit in MiB. Defaults to 4096. */
+  memoryMb?: number;
+  /** Maximum processes in one audit container. */
+  pidsLimit?: number;
+  /** Runtime probe/create/start timeout in milliseconds. */
+  startupTimeoutMs?: number;
+  /** Per-language image override. Digest-pinned references are recommended. */
+  images?: Partial<Record<'typescript' | 'python' | 'rust' | 'php', string>>;
 }
 
 /**
@@ -187,6 +218,9 @@ export interface ChaosConfig {
 
   /** Infection (PHP)-specific overrides (precedence over global defaults). */
   infection?: InfectionConfig;
+
+  /** Optional OCI-container execution backend shared by every language engine. */
+  container?: ContainerConfig;
 }
 
 /** Default config file name looked up from the working directory. */
@@ -326,6 +360,51 @@ function parseInfectionConfig(raw: unknown): InfectionConfig | undefined {
   return hasAny ? result : undefined;
 }
 
+function parseContainerConfig(raw: unknown): ContainerConfig | undefined {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return undefined;
+  const value = raw as Record<string, unknown>;
+  const result: ContainerConfig = {};
+  let hasAny = false;
+
+  if (value.mode === 'native' || value.mode === 'container' || value.mode === 'auto') {
+    result.mode = value.mode;
+    hasAny = true;
+  }
+  if (value.runtime === 'docker' || value.runtime === 'podman') {
+    result.runtime = value.runtime;
+    hasAny = true;
+  }
+  if (typeof value.network === 'string' && value.network.trim().length > 0) {
+    result.network = value.network.trim();
+    hasAny = true;
+  }
+  if (typeof value.cpus === 'number' && Number.isFinite(value.cpus) && value.cpus > 0) {
+    result.cpus = value.cpus;
+    hasAny = true;
+  }
+  for (const key of ['memoryMb', 'pidsLimit', 'startupTimeoutMs'] as const) {
+    const candidate = value[key];
+    if (typeof candidate === 'number' && Number.isInteger(candidate) && candidate > 0) {
+      result[key] = candidate;
+      hasAny = true;
+    }
+  }
+  if (typeof value.images === 'object' && value.images !== null && !Array.isArray(value.images)) {
+    const images: NonNullable<ContainerConfig['images']> = {};
+    for (const language of KNOWN_CONTAINER_IMAGE_KEYS) {
+      const image = (value.images as Record<string, unknown>)[language];
+      if (typeof image === 'string' && image.trim().length > 0) {
+        images[language as keyof typeof images] = image.trim();
+      }
+    }
+    if (Object.keys(images).length > 0) {
+      result.images = images;
+      hasAny = true;
+    }
+  }
+  return hasAny ? result : undefined;
+}
+
 /**
  * Per-engine config sections, in one place. Replaces the parallel per-section
  * dispatch previously repeated in {@link buildConfig} and {@link validateConfig}.
@@ -456,6 +535,7 @@ function buildConfig(raw: Record<string, unknown>): ChaosConfig {
     // always set, to the parsed section or undefined).
     (result as Record<string, unknown>)[section.key] = section.parse(raw[section.key]);
   }
+  result.container = parseContainerConfig(raw.container);
 
   return result;
 }
@@ -500,6 +580,16 @@ export function validateConfig(configPath?: string): { config: ChaosConfig; warn
   for (const section of ENGINE_CONFIG_SECTIONS) {
     validateEngineSection(raw[section.key], section.key, section.knownKeys, warnings);
   }
+  validateEngineSection(raw.container, 'container', KNOWN_CONTAINER_KEYS, warnings);
+  if (
+    typeof raw.container === 'object' &&
+    raw.container !== null &&
+    !Array.isArray(raw.container)
+  ) {
+    const images = (raw.container as Record<string, unknown>).images;
+    validateEngineSection(images, 'container.images', KNOWN_CONTAINER_IMAGE_KEYS, warnings);
+  }
+  validateContainerConfig(raw.container, warnings);
 
   // ── Validate global fields ──
   if ('defaultTimeoutMs' in raw && typeof raw.defaultTimeoutMs !== 'number') {
@@ -701,6 +791,49 @@ function validateEngineSection(
     warnings.push(
       `Engine section "${sectionName}" has no valid fields — the entire section will be ignored.`,
     );
+  }
+}
+
+function validateContainerConfig(raw: unknown, warnings: string[]): void {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return;
+  const value = raw as Record<string, unknown>;
+  if (
+    'mode' in value &&
+    value.mode !== 'native' &&
+    value.mode !== 'container' &&
+    value.mode !== 'auto'
+  ) {
+    warnings.push('container.mode must be one of "native", "container", or "auto".');
+  }
+  if ('runtime' in value && value.runtime !== 'docker' && value.runtime !== 'podman') {
+    warnings.push('container.runtime must be "docker" or "podman".');
+  }
+  if (
+    'network' in value &&
+    (typeof value.network !== 'string' || value.network.trim().length === 0)
+  ) {
+    warnings.push('container.network must be a non-empty string.');
+  }
+  if (
+    'cpus' in value &&
+    (typeof value.cpus !== 'number' || !Number.isFinite(value.cpus) || value.cpus <= 0)
+  ) {
+    warnings.push('container.cpus must be a positive number.');
+  }
+  for (const key of ['memoryMb', 'pidsLimit', 'startupTimeoutMs'] as const) {
+    const candidate = value[key];
+    if (
+      key in value &&
+      (typeof candidate !== 'number' || !Number.isInteger(candidate) || candidate <= 0)
+    ) {
+      warnings.push(`container.${key} must be a positive integer.`);
+    }
+  }
+  if (
+    'images' in value &&
+    (typeof value.images !== 'object' || value.images === null || Array.isArray(value.images))
+  ) {
+    warnings.push('container.images must be an object.');
   }
 }
 
