@@ -1723,12 +1723,17 @@ describe('handleToolCall', () => {
     };
 
     const request = makeRequest('audit_code_resilience', { filePath: 'src/app.ts' });
-    await handleToolCall(request, config);
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000);
+    try {
+      await handleToolCall(request, config);
 
-    expect(mockRun).toHaveBeenCalledWith(
-      'src/app.ts',
-      expect.objectContaining({ timeoutMs: 58000 }),
-    );
+      expect(mockRun).toHaveBeenCalledWith(
+        'src/app.ts',
+        expect.objectContaining({ timeoutMs: 58000 }),
+      );
+    } finally {
+      now.mockRestore();
+    }
   });
 
   it('uses stryker engine perMutantTimeoutMs over global perMutantTimeoutMs', async () => {
