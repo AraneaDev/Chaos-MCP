@@ -2,6 +2,18 @@
 
 All notable changes to Chaos-MCP are documented in this file.
 
+## [1.4.0](https://github.com/AraneaDev/Chaos-MCP/compare/v1.3.1...v1.4.0) (2026-07-24)
+
+
+### Features
+
+* harden mutation audits and CLI execution ([7785640](https://github.com/AraneaDev/Chaos-MCP/commit/7785640b6c6ab014654ad3f24d3a9dc807eee0b1))
+
+
+### Bug Fixes
+
+* address review timeout and portability issues ([18455df](https://github.com/AraneaDev/Chaos-MCP/commit/18455df4883f93dc6d79d40fef7f7cefc1641ba2))
+
 ## [1.3.1](https://github.com/AraneaDev/Chaos-MCP/compare/v1.3.0...v1.3.1) (2026-07-19)
 
 
