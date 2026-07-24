@@ -41,8 +41,7 @@ behavior.
 For each audit, the server:
 
 1. creates the normal temporary mutation sandbox on the host;
-2. creates one short-lived container and mounts only that sandbox at
-   `/workspace`;
+2. creates one short-lived container and mounts that sandbox at `/workspace`;
 3. runs the prebuild and mutation commands in the same container; and
 4. forcibly removes the container on completion, failure, cancellation, or
    timeout.
@@ -50,8 +49,9 @@ For each audit, the server:
 The real workspace is never mounted. The container has a read-only root
 filesystem, dropped Linux capabilities, `no-new-privileges`, a private `/tmp`,
 and bounded CPU, memory, and process counts. Project dependencies remain the
-project's responsibility; recognized dependency directories linked into the
-sandbox are mounted read-only.
+project's responsibility. Recognized dependency trees linked into the sandbox
+(`node_modules`, `.venv`/`venv`, and `vendor`) are allowed as additional,
+read-only mounts.
 
 ## Local builds
 

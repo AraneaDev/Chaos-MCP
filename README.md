@@ -532,9 +532,10 @@ Tool call arguments override config defaults.
 
 Container mode removes the need to install StrykerJS, Cosmic Ray,
 cargo-mutants, or Infection on the host. Chaos-MCP starts one hardened,
-short-lived container per audit, mounts only the temporary sandbox at
-`/workspace`, and runs both prebuild and mutation commands in that session.
-The real workspace is never mounted.
+short-lived container per audit, mounts the temporary sandbox at `/workspace`,
+and runs both prebuild and mutation commands in that session. The real
+workspace is never mounted. Recognized dependency trees linked into the
+sandbox may be mounted separately and read-only, as described below.
 
 ```json
 {
@@ -599,6 +600,12 @@ dropped, `no-new-privileges`, a private temporary filesystem, and configurable
 CPU, memory, and PID limits. Resource usage defaults to a conservative two CPUs
 and 4096 MiB of memory. The entire container is forcibly removed on timeout,
 cancellation, normal completion, or engine failure.
+
+Network mode is part of the audit's isolation boundary. The `bridge` default
+allows outbound access for tests or dependency resolution; use
+`"network": "none"` for untrusted code or offline audits that do not require
+network access. Avoid host networking unless the target project explicitly
+requires it and you accept the reduced isolation.
 
 Check runtime connectivity and whether all four configured images are already
 present without pulling anything:
