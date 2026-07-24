@@ -25,7 +25,7 @@ export interface ExecutionSession {
   dispose(): Promise<void>;
 }
 
-export const CONTAINER_IMAGE_VERSION = '1.4.0'; // x-release-please-version
+export const CONTAINER_IMAGE_VERSION = '1.5.0'; // x-release-please-version
 
 const DEFAULT_IMAGES: Record<SupportedProjectType, string> = {
   typescript: `ghcr.io/araneadev/chaos-mcp-typescript:v${CONTAINER_IMAGE_VERSION}`,
