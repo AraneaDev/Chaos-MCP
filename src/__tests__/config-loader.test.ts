@@ -1360,6 +1360,17 @@ describe('container execution config', () => {
   it('drops image maps whose only values are whitespace', () => {
     setContainer({ images: { python: '   ' } });
     expect(loadConfig('/tmp/config.json').container).toBeUndefined();
+    expect(validateConfig('/tmp/config.json').warnings).toContain(
+      'container.images.python must be a non-empty string.',
+    );
+  });
+
+  it('warns when a container image override is not a string', () => {
+    setContainer({ images: { php: 42 } });
+    expect(loadConfig('/tmp/config.json').container).toBeUndefined();
+    expect(validateConfig('/tmp/config.json').warnings).toContain(
+      'container.images.php must be a non-empty string.',
+    );
   });
 
   it.each([

@@ -160,7 +160,7 @@ class ContainerExecutionSession implements ExecutionSession {
           // The engine will surface missing project dependencies normally.
         }
         if (sitePackages.length > 0) {
-          args.push('--env', `PYTHONPATH=${sitePackages.join(':')}`);
+          args.push('--env', `PYTHONPATH=${sitePackages.sort().join(':')}`);
         }
         // Keep the image's pinned Python and mutation engine ahead of project
         // scripts, while still exposing console scripts installed by the project.
@@ -247,7 +247,7 @@ class ContainerExecutionSession implements ExecutionSession {
   }
 
   runCommand(command: string, options: ExecuteOptions = {}): Promise<ExecResult> {
-    return this.run('sh', ['-lc', command], options);
+    return this.run('sh', ['-c', command], options);
   }
 
   async dispose(): Promise<void> {

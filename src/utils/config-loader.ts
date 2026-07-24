@@ -834,6 +834,16 @@ function validateContainerConfig(raw: unknown, warnings: string[]): void {
     (typeof value.images !== 'object' || value.images === null || Array.isArray(value.images))
   ) {
     warnings.push('container.images must be an object.');
+  } else if ('images' in value) {
+    for (const language of ['typescript', 'python', 'rust', 'php'] as const) {
+      const images = value.images as Record<string, unknown>;
+      if (
+        language in images &&
+        (typeof images[language] !== 'string' || images[language].trim().length === 0)
+      ) {
+        warnings.push(`container.images.${language} must be a non-empty string.`);
+      }
+    }
   }
 }
 

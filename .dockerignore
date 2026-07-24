@@ -4,5 +4,6 @@
 build
 coverage
 node_modules
+containers/php/vendor
 reports
 tmp

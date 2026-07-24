@@ -393,6 +393,9 @@ describe('handleEstimateCall', () => {
     expect(mockEstimateAudit).toHaveBeenCalledWith(expect.objectContaining({ executor }));
     expect(executor.dispose).toHaveBeenCalledOnce();
     expect(cleanupSpy).toHaveBeenCalledOnce();
+    expect(executor.dispose.mock.invocationCallOrder[0]).toBeLessThan(
+      cleanupSpy.mock.invocationCallOrder[0],
+    );
   });
 
   it('does not create a container when an estimate needs no sandbox', async () => {

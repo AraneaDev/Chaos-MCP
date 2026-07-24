@@ -5,19 +5,27 @@ MCP server remains on the host; it mounts only the temporary mutation sandbox
 at `/workspace` and executes prebuild and engine commands in one short-lived
 container.
 
-| Image                     | Runtime        | Mutation engine      |
-| ------------------------- | -------------- | -------------------- |
-| `chaos-mcp-typescript`    | Node.js 22.18.0 | StrykerJS 9.6.1     |
-| `chaos-mcp-python`        | Python 3.13.5   | Cosmic Ray 8.4.6     |
-| `chaos-mcp-rust`          | Rust 1.94.0     | cargo-mutants 27.1.0 |
-| `chaos-mcp-php`           | PHP 8.4.10      | Infection 0.34.0     |
+| Image                  | Runtime         | Mutation engine      |
+| ---------------------- | --------------- | -------------------- |
+| `chaos-mcp-typescript` | Node.js 22.18.0 | StrykerJS 9.6.1      |
+| `chaos-mcp-python`     | Python 3.13.5   | Cosmic Ray 8.4.6     |
+| `chaos-mcp-rust`       | Rust 1.94.0     | cargo-mutants 27.1.0 |
+| `chaos-mcp-php`        | PHP 8.4.10      | Infection 0.34.0     |
 
 Build every local image:
 
 ```sh
-docker buildx bake
+docker buildx bake local
 ```
 
-Base images and mutation-engine versions are pinned. The runtime configuration
-accepts per-language image overrides, including digest-pinned images for
-projects that require another runtime version.
+The `local` group builds single-platform images into the local Docker image
+store. Bake may build its four targets concurrently; on a resource-constrained
+host, build `typescript-local`, `python-local`, `rust-local`, and `php-local`
+one at a time. The default group remains multi-platform for registry
+publication.
+
+Base images, mutation-engine versions, and their dependency graphs are pinned:
+npm uses `package-lock.json`, pip requires a fully hashed `requirements.txt`,
+Composer uses `composer.lock`, and Cargo installs with `--locked`. The runtime
+configuration accepts per-language image overrides, including digest-pinned
+images for projects that require another runtime version.

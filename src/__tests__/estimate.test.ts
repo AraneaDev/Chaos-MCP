@@ -108,7 +108,7 @@ describe('estimateAudit', () => {
     expect(executor.run).toHaveBeenCalledWith(
       'cargo',
       ['test'],
-      expect.objectContaining({ cwd: '/sandbox' }),
+      expect.objectContaining({ cwd: '/sandbox', killTree: true }),
     );
     expect(mockRunShell).not.toHaveBeenCalled();
   });
@@ -240,7 +240,7 @@ describe('estimateAudit withTiming', () => {
     expect(mockRunShell).toHaveBeenCalledWith(
       'npx',
       ['vitest', 'related', 'src/__tests__/estimate.test.ts', '--run'],
-      expect.objectContaining({ timeoutMs: 1 }),
+      expect.objectContaining({ timeoutMs: 1, killTree: true }),
     );
   });
 

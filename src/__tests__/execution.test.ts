@@ -1,7 +1,23 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+  type Dirent,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return {
+    ...actual,
+    readdirSync: vi.fn(actual.readdirSync),
+  };
+});
 
 vi.mock('../utils/exec.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../utils/exec.js')>();
@@ -317,7 +333,7 @@ describe('execution sessions', () => {
     expect(vi.mocked(runShell).mock.calls[1]?.[1]).toContain('example/php@sha256:abc');
     expect(vi.mocked(runShell).mock.calls[1]?.[1]).toEqual(expect.arrayContaining(['--cpus', '2']));
     expect(vi.mocked(runShell).mock.calls[3]?.[1]).toEqual(
-      expect.arrayContaining(['sh', '-lc', 'composer install']),
+      expect.arrayContaining(['sh', '-c', 'composer install']),
     );
   });
 
@@ -708,6 +724,12 @@ describe('execution sessions', () => {
     mkdirSync(join(virtualenv, 'bin'), { recursive: true });
     writeFileSync(join(virtualenv, 'bin', 'project-tool'), '');
     symlinkSync(virtualenv, join(workDir, '.venv'), 'dir');
+    vi.mocked(readdirSync).mockReturnValueOnce([
+      { name: 'python3.13', isDirectory: () => true },
+      { name: 'python3.12', isDirectory: () => true },
+      { name: 'not-python', isDirectory: () => true },
+      { name: 'python-file', isDirectory: () => false },
+    ] as Dirent[]);
     vi.mocked(runShell)
       .mockResolvedValueOnce(ok('27.0.0'))
       .mockResolvedValueOnce(ok('cid'))

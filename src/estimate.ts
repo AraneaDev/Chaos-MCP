@@ -161,6 +161,7 @@ async function applyTiming(result: EstimateResult, opts: EstimateOptions): Promi
       cwd: opts.workDir,
       timeoutMs: opts.timeoutMs ?? ESTIMATE_TIMEOUT_MS,
       signal: opts.signal,
+      killTree: true,
     };
     if (opts.executor) await opts.executor.run(cmd.command, cmd.args, execOptions);
     else await runShell(cmd.command, cmd.args, execOptions);

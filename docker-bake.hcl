@@ -10,8 +10,17 @@ group "default" {
   targets = ["typescript", "python", "rust", "php"]
 }
 
+group "local" {
+  targets = ["typescript-local", "python-local", "rust-local", "php-local"]
+}
+
 target "_common" {
   platforms = ["linux/amd64", "linux/arm64"]
+}
+
+target "_local" {
+  platforms = ["linux/amd64"]
+  output = ["type=docker"]
 }
 
 target "typescript" {
@@ -40,4 +49,20 @@ target "php" {
   context = "."
   dockerfile = "containers/php/Dockerfile"
   tags = ["${REGISTRY}/chaos-mcp-php:${VERSION}"]
+}
+
+target "typescript-local" {
+  inherits = ["typescript", "_local"]
+}
+
+target "python-local" {
+  inherits = ["python", "_local"]
+}
+
+target "rust-local" {
+  inherits = ["rust", "_local"]
+}
+
+target "php-local" {
+  inherits = ["php", "_local"]
 }
