@@ -171,6 +171,28 @@ describe('PhpEngine.run', () => {
     expect(result.survived).toBe(1);
   });
 
+  it('forwards the container session to Infection execution', async () => {
+    mockExists.mockImplementation((p) => String(p).endsWith('chaos-infection-log.json'));
+    mockRead.mockReturnValue(SAMPLE_LOG);
+    mockInvoke.mockResolvedValue({ stdout: '', stderr: '', exit: 0, signal: null });
+    const executor = {
+      kind: 'container' as const,
+      workDir: '/sb',
+      run: vi.fn(),
+      runCommand: vi.fn(),
+      dispose: vi.fn(),
+    };
+
+    await new PhpEngine().run('src/Calculator.php', { workDir: '/sb', executor });
+
+    expect(mockInvoke).toHaveBeenCalledWith(
+      'Infection',
+      'infection',
+      expect.any(Array),
+      expect.objectContaining({ executor }),
+    );
+  });
+
   it('does NOT overwrite an existing project infection.json and prefers vendor/bin/infection', async () => {
     mockExists.mockImplementation((p) => {
       const s = String(p);

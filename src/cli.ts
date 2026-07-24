@@ -1,5 +1,6 @@
 import { loadConfig, validateConfig, ChaosConfig } from './utils/config-loader.js';
 import { enableVerbose, log, isVerbose } from './utils/logger.js';
+import { inspectContainerRuntime } from './utils/execution.js';
 
 /** Minimum Node.js version required by Chaos-MCP (matches package.json `engines.node`). */
 const MIN_NODE_VERSION = '18.0.0';
@@ -35,6 +36,7 @@ Flags:
   --help             Show this help text and exit
   --config           Path to a JSON config file with default settings (chaos-mcp.config.json)
   --validate-config  Load and validate the config file, report warnings, then exit
+  --container-doctor Check the OCI runtime and all four configured language images
   --strict           Used with --validate-config: exit 2 on warnings (fatal in CI)
   --verbose          Enable diagnostic logging to stderr
 
@@ -51,7 +53,8 @@ Configuration (chaos-mcp.config.json):
   {
     "defaultTimeoutMs": 300000,
     "stryker": { "concurrency": 4, "perMutantTimeoutMs": 10000 },
-    "rust": { "timeoutMs": 600000 }
+    "rust": { "timeoutMs": 600000 },
+    "container": { "mode": "auto", "runtime": "docker", "cpus": 2 }
   }
 
   Engine-specific sections ("stryker", "cosmicray", "rust", "infection") override the
@@ -59,6 +62,8 @@ Configuration (chaos-mcp.config.json):
   mutatorDenylist, perMutantTimeoutMs, dryRun, incremental.
   All other engine sections support: timeoutMs. cosmicray also supports:
   testRunner, testSelection, excludeOperators.
+  The shared "container" section supports native/container/auto mode, Docker or
+  Podman, resource limits, network selection, and per-language image overrides.
 
 Tool: audit_code_resilience
   Parameters:
@@ -158,6 +163,31 @@ export function runCli({ appVersion, startServer }: CliDeps): void {
     }
     console.error('Config is valid — no warnings.');
     process.exit(0);
+  }
+
+  if (args.includes('--container-doctor')) {
+    const configPath = getFlagValue(args, '--config');
+    let config: ChaosConfig = {};
+    try {
+      config = loadConfig(configPath);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Container doctor could not load config: ${message}`);
+      process.exitCode = 1;
+      return;
+    }
+    void inspectContainerRuntime(config.container)
+      .then((report) => {
+        console.log(JSON.stringify(report, null, 2));
+        process.exitCode =
+          report.available && Object.values(report.images).every((image) => image.present) ? 0 : 1;
+      })
+      .catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`Container doctor failed: ${message}`);
+        process.exitCode = 1;
+      });
+    return;
   }
 
   // --verbose flag

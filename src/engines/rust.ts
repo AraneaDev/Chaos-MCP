@@ -289,6 +289,7 @@ export class RustEngine extends BaseEngine {
         cwd,
         timeoutMs,
         signal: options?.signal,
+        executor: options?.executor,
       });
       stdout = result.stdout;
       stderr = result.stderr;

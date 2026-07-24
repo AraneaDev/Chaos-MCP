@@ -1299,3 +1299,199 @@ describe('back-compat: legacy engine section', () => {
     expect(warnings.some((w) => w.includes(`"${legacyKey}"`))).toBe(true);
   });
 });
+
+describe('container execution config', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockExistsSync.mockReturnValue(true);
+  });
+
+  function setContainer(container: unknown): void {
+    mockReadFileSync.mockReturnValue(JSON.stringify({ container }));
+  }
+
+  it.each(['native', 'container', 'auto'] as const)('loads isolated %s mode', (mode) => {
+    setContainer({ mode });
+    expect(loadConfig('/tmp/config.json').container).toEqual({ mode });
+    expect(
+      validateConfig('/tmp/config.json').warnings.some((warning) =>
+        warning.includes('container.mode'),
+      ),
+    ).toBe(false);
+  });
+
+  it.each(['docker', 'podman'] as const)('loads isolated %s runtime', (runtime) => {
+    setContainer({ runtime });
+    expect(loadConfig('/tmp/config.json').container).toEqual({ runtime });
+    expect(
+      validateConfig('/tmp/config.json').warnings.some((warning) =>
+        warning.includes('container.runtime'),
+      ),
+    ).toBe(false);
+  });
+
+  it('trims isolated network and image values', () => {
+    setContainer({
+      network: '  internal  ',
+      images: {
+        typescript: '  registry/ts:test  ',
+        python: ' registry/python:test ',
+        rust: ' registry/rust:test ',
+        php: ' registry/php:test ',
+      },
+    });
+    expect(loadConfig('/tmp/config.json').container).toEqual({
+      network: 'internal',
+      images: {
+        typescript: 'registry/ts:test',
+        python: 'registry/python:test',
+        rust: 'registry/rust:test',
+        php: 'registry/php:test',
+      },
+    });
+  });
+
+  it('loads an isolated trimmed network and validates it without warnings', () => {
+    setContainer({ network: '  internal  ' });
+    expect(loadConfig('/tmp/config.json').container).toEqual({ network: 'internal' });
+    expect(validateConfig('/tmp/config.json').warnings).toEqual([]);
+  });
+
+  it('drops image maps whose only values are whitespace', () => {
+    setContainer({ images: { python: '   ' } });
+    expect(loadConfig('/tmp/config.json').container).toBeUndefined();
+  });
+
+  it.each([
+    ['cpus', 0.5],
+    ['memoryMb', 1],
+    ['pidsLimit', 1],
+    ['startupTimeoutMs', 1],
+  ] as const)('loads isolated positive %s boundary', (key, value) => {
+    setContainer({ [key]: value });
+    expect(loadConfig('/tmp/config.json').container).toEqual({ [key]: value });
+    expect(
+      validateConfig('/tmp/config.json').warnings.some((warning) =>
+        warning.includes(`container.${key}`),
+      ),
+    ).toBe(false);
+  });
+
+  it.each([null, [], 'container', 7])(
+    'treats non-object container value %j as absent',
+    (container) => {
+      setContainer(container);
+      expect(loadConfig('/tmp/config.json').container).toBeUndefined();
+      expect(() => validateConfig('/tmp/config.json')).not.toThrow();
+    },
+  );
+
+  it.each([
+    ['mode', 'invalid', 'container.mode must be one of "native", "container", or "auto".'],
+    ['runtime', 'invalid', 'container.runtime must be "docker" or "podman".'],
+    ['network', '   ', 'container.network must be a non-empty string.'],
+    ['network', 1, 'container.network must be a non-empty string.'],
+    ['cpus', 0, 'container.cpus must be a positive number.'],
+    ['cpus', '2', 'container.cpus must be a positive number.'],
+    ['memoryMb', 0, 'container.memoryMb must be a positive integer.'],
+    ['memoryMb', 1.5, 'container.memoryMb must be a positive integer.'],
+    ['pidsLimit', 0, 'container.pidsLimit must be a positive integer.'],
+    ['pidsLimit', 1.5, 'container.pidsLimit must be a positive integer.'],
+    ['startupTimeoutMs', 0, 'container.startupTimeoutMs must be a positive integer.'],
+    ['startupTimeoutMs', 1.5, 'container.startupTimeoutMs must be a positive integer.'],
+    ['images', null, 'container.images must be an object.'],
+    ['images', [], 'container.images must be an object.'],
+    ['images', 'image', 'container.images must be an object.'],
+  ] as const)('warns precisely for invalid container.%s value', (key, value, message) => {
+    setContainer({ [key]: value });
+    const { config, warnings } = validateConfig('/tmp/config.json');
+    expect(config.container).toBeUndefined();
+    expect(warnings).toContain(message);
+  });
+
+  it('loads the shared backend and all four image overrides', () => {
+    mockReadFileSync.mockReturnValue(
+      JSON.stringify({
+        container: {
+          mode: 'container',
+          runtime: 'podman',
+          network: 'none',
+          cpus: 2,
+          memoryMb: 2048,
+          pidsLimit: 256,
+          startupTimeoutMs: 45000,
+          images: {
+            typescript: 'registry/ts@sha256:a',
+            python: 'registry/python@sha256:b',
+            rust: 'registry/rust@sha256:c',
+            php: 'registry/php@sha256:d',
+          },
+        },
+      }),
+    );
+
+    expect(loadConfig('/tmp/config.json').container).toEqual({
+      mode: 'container',
+      runtime: 'podman',
+      network: 'none',
+      cpus: 2,
+      memoryMb: 2048,
+      pidsLimit: 256,
+      startupTimeoutMs: 45000,
+      images: {
+        typescript: 'registry/ts@sha256:a',
+        python: 'registry/python@sha256:b',
+        rust: 'registry/rust@sha256:c',
+        php: 'registry/php@sha256:d',
+      },
+    });
+  });
+
+  it('drops invalid container values and reports actionable warnings', () => {
+    mockReadFileSync.mockReturnValue(
+      JSON.stringify({
+        container: {
+          mode: 'sometimes',
+          runtime: 'containerd',
+          network: '',
+          cpus: 0,
+          memoryMb: 1.5,
+          pidsLimit: -1,
+          startupTimeoutMs: 'fast',
+          images: { ruby: 'unexpected', python: '' },
+          mystery: true,
+        },
+      }),
+    );
+
+    const { config, warnings } = validateConfig('/tmp/config.json');
+    expect(config.container).toBeUndefined();
+    expect(warnings).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('container.mode'),
+        expect.stringContaining('container.runtime'),
+        expect.stringContaining('container.network'),
+        expect.stringContaining('container.cpus'),
+        expect.stringContaining('container.memoryMb'),
+        expect.stringContaining('container.pidsLimit'),
+        expect.stringContaining('container.startupTimeoutMs'),
+        expect.stringContaining('mystery'),
+        expect.stringContaining('ruby'),
+      ]),
+    );
+  });
+
+  it('accepts auto mode with a partial image map', () => {
+    mockReadFileSync.mockReturnValue(
+      JSON.stringify({
+        container: { mode: 'auto', images: { rust: 'local/rust:test' } },
+      }),
+    );
+    const { config, warnings } = validateConfig('/tmp/config.json');
+    expect(config.container).toEqual({
+      mode: 'auto',
+      images: { rust: 'local/rust:test' },
+    });
+    expect(warnings).toEqual([]);
+  });
+});

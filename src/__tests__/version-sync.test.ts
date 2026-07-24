@@ -3,6 +3,7 @@ import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { APP_VERSION } from '../index.js';
+import { CONTAINER_IMAGE_VERSION } from '../utils/execution.js';
 
 /**
  * Verifies that the APP_VERSION exported from src/index.ts matches the
@@ -26,6 +27,7 @@ describe('version sync', () => {
     };
     expect(packageJson.version).toBeDefined();
     expect(APP_VERSION).toBe(packageJson.version);
+    expect(CONTAINER_IMAGE_VERSION).toBe(packageJson.version);
   });
 
   it('APP_VERSION follows semver format (MAJOR.MINOR.PATCH)', () => {

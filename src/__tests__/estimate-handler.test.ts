@@ -29,6 +29,10 @@ vi.mock('../utils/sandbox.js', () => ({
   })),
 }));
 
+vi.mock('../utils/execution.js', () => ({
+  createExecutionSession: vi.fn(),
+}));
+
 // Mock realpathSync (used by isRealPathInside in handler.ts) to be identity,
 // so boundary tests work without a real filesystem.
 vi.mock('fs', async () => {
@@ -43,11 +47,13 @@ import { handleEstimateCall, resolveEstimateConcurrency } from '../estimate-hand
 import { estimateAudit, estimateNeedsSandbox } from '../estimate.js';
 import { detectEnvironment } from '../utils/project-detector.js';
 import { createSandbox } from '../utils/sandbox.js';
+import { createExecutionSession } from '../utils/execution.js';
 
 const mockEstimateAudit = vi.mocked(estimateAudit);
 const mockEstimateNeedsSandbox = vi.mocked(estimateNeedsSandbox);
 const mockDetectEnv = vi.mocked(detectEnvironment);
 const mockCreateSandbox = vi.mocked(createSandbox);
+const mockCreateExecutionSession = vi.mocked(createExecutionSession);
 
 function req(args: Record<string, unknown>): CallToolRequest {
   return {
@@ -360,6 +366,58 @@ describe('handleEstimateCall', () => {
     expect(text(res)).toMatch(/Failed to provision sandbox/i);
     // estimateAudit must NOT run if the sandbox could not be created.
     expect(mockEstimateAudit).not.toHaveBeenCalled();
+  });
+
+  it('uses and disposes a container session for sandboxed estimates', async () => {
+    mockEstimateNeedsSandbox.mockReturnValue(true);
+    const executor = {
+      kind: 'container' as const,
+      workDir: '/tmp/chaos-estimate-sandbox',
+      run: vi.fn(),
+      runCommand: vi.fn(),
+      dispose: vi.fn().mockResolvedValue(undefined),
+    };
+    mockCreateExecutionSession.mockResolvedValue(executor);
+    mockEstimateAudit.mockResolvedValue(approxResult);
+
+    await handleEstimateCall(req({ filePath: 'src/math.ts', withTiming: true }), {
+      container: { mode: 'container' },
+    });
+
+    expect(mockCreateExecutionSession).toHaveBeenCalledWith(
+      'typescript',
+      '/tmp/chaos-estimate-sandbox',
+      { mode: 'container' },
+      undefined,
+    );
+    expect(mockEstimateAudit).toHaveBeenCalledWith(expect.objectContaining({ executor }));
+    expect(executor.dispose).toHaveBeenCalledOnce();
+    expect(cleanupSpy).toHaveBeenCalledOnce();
+  });
+
+  it('does not create a container when an estimate needs no sandbox', async () => {
+    mockEstimateNeedsSandbox.mockReturnValue(false);
+    mockEstimateAudit.mockResolvedValue(approxResult);
+
+    await handleEstimateCall(req({ filePath: 'src/math.ts' }), {
+      container: { mode: 'container' },
+    });
+
+    expect(mockCreateExecutionSession).not.toHaveBeenCalled();
+    const options = mockEstimateAudit.mock.calls[0]?.[0];
+    expect(options && Object.hasOwn(options, 'executor')).toBe(true);
+    expect(options?.executor).toBeUndefined();
+  });
+
+  it('does not create a container for explicit native mode', async () => {
+    mockEstimateNeedsSandbox.mockReturnValue(true);
+    mockEstimateAudit.mockResolvedValue(approxResult);
+
+    await handleEstimateCall(req({ filePath: 'src/math.ts' }), {
+      container: { mode: 'native' },
+    });
+
+    expect(mockCreateExecutionSession).not.toHaveBeenCalled();
   });
 
   it('handles a Python file (.py) successfully', async () => {

@@ -49,3 +49,41 @@ jobs:
       - name: 'CLI: validate-config smoke tests'
         if: always()
         run: npx vitest run src/__tests__/cli-validate-config.test.ts
+
+  container-build:
+    name: Container Build (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: typescript
+            smoke-command: stryker --version
+          - language: python
+            smoke-command: cosmic-ray --version
+          - language: rust
+            smoke-command: cargo mutants --version
+          - language: php
+            smoke-command: infection --version
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build ${{ matrix.language }} image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: containers/${{ matrix.language }}/Dockerfile
+          load: true
+          push: false
+          tags: chaos-mcp-${{ matrix.language }}:ci
+          cache-from: type=gha,scope=container-${{ matrix.language }}
+          cache-to: type=gha,mode=max,scope=container-${{ matrix.language }}
+
+      - name: Smoke-test pinned mutation engine
+        run: docker run --rm chaos-mcp-${{ matrix.language }}:ci ${{ matrix.smoke-command }}

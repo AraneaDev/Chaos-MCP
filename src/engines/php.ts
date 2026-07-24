@@ -171,7 +171,7 @@ export class PhpEngine extends BaseEngine {
 
     // Prefer the vendored binary; fall back to a global `infection` on PATH.
     const vendored = join(cwd, 'vendor', 'bin', 'infection');
-    const bin = existsSync(vendored) ? vendored : 'infection';
+    const bin = existsSync(vendored) ? './vendor/bin/infection' : 'infection';
 
     const threads =
       options?.phpThreads ?? (options?.concurrency ? String(options.concurrency) : 'max');
@@ -222,6 +222,7 @@ export class PhpEngine extends BaseEngine {
         timeoutMs,
         env,
         signal: options?.signal,
+        executor: options?.executor,
       });
       stderr = res.stderr;
     } catch (error: unknown) {

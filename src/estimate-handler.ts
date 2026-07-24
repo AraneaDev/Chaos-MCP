@@ -10,6 +10,7 @@ import type { ChaosConfig } from './utils/config-loader.js';
 import type { ToolContext } from './tool-context.js';
 import { isCancel } from './utils/cancel.js';
 import { DEFAULT_TIMEOUT_MS } from './utils/constants.js';
+import { createExecutionSession } from './utils/execution.js';
 
 export function resolveEstimateConcurrency(cpuCount: number): number {
   return Math.max(1, Math.min(2, cpuCount - 1));
@@ -93,25 +94,35 @@ export async function handleEstimateCall(
     }
 
     try {
-      const result = await estimateAudit({
-        absFile: resolvedFile,
-        relFile,
-        projectType,
-        workDir: sandbox?.workDir,
-        withTiming,
-        env,
-        concurrency,
-        timeoutMs:
-          typeof cfg.defaultTimeoutMs === 'number' && cfg.defaultTimeoutMs > 0
-            ? cfg.defaultTimeoutMs
-            : DEFAULT_TIMEOUT_MS,
-        signal: ctx?.signal,
-      });
+      const containerMode = cfg.container?.mode;
+      const executor =
+        sandbox && containerMode && containerMode !== 'native'
+          ? await createExecutionSession(projectType, sandbox.workDir, cfg.container, ctx?.signal)
+          : undefined;
+      try {
+        const result = await estimateAudit({
+          absFile: resolvedFile,
+          relFile,
+          projectType,
+          workDir: sandbox?.workDir,
+          withTiming,
+          env,
+          concurrency,
+          timeoutMs:
+            typeof cfg.defaultTimeoutMs === 'number' && cfg.defaultTimeoutMs > 0
+              ? cfg.defaultTimeoutMs
+              : DEFAULT_TIMEOUT_MS,
+          signal: ctx?.signal,
+          executor,
+        });
 
-      return {
-        content: [{ type: 'text', text: JSON.stringify(result) }],
-        structuredContent: result as unknown as Record<string, unknown>,
-      };
+        return {
+          content: [{ type: 'text', text: JSON.stringify(result) }],
+          structuredContent: result as unknown as Record<string, unknown>,
+        };
+      } finally {
+        await executor?.dispose();
+      }
     } finally {
       // Always clean up the sandbox, even if estimateAudit threw (C2).
       sandbox?.cleanup();

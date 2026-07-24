@@ -1,5 +1,6 @@
 import { ExecFailureError } from '../utils/exec.js';
 import { MutationToolStartupError } from '../utils/exec-classify.js';
+import type { ExecutionSession } from '../utils/execution.js';
 
 /**
  * Describes a single surviving mutant — a logical fault the test suite failed to catch.
@@ -60,6 +61,9 @@ export interface MutationResult {
  * Options for tuning a mutation testing run.
  */
 export interface RunOptions {
+  /** Internal per-audit native/container execution session. */
+  executor?: ExecutionSession;
+
   /**
    * Test runner override detected from the workspace environment.
    * For JS/TS: 'vitest' | 'jest' | 'mocha' | 'jasmine' | 'command'
