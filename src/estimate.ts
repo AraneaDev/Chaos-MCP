@@ -4,7 +4,7 @@ import type { EnvironmentInfo } from './utils/project-detector.js';
 import { estimateHeuristic } from './estimate-heuristic.js';
 import { invokeMutationTool, MutationToolStartupError } from './utils/exec-classify.js';
 import { runShell } from './utils/exec.js';
-import { resolveBaselineTestCommand, projectEstimatedMs } from './baseline-timing.js';
+import { resolveBaselineTestCommand, projectTimingRange } from './baseline-timing.js';
 
 export type Fidelity = 'exact' | 'approx';
 
@@ -15,8 +15,14 @@ export interface EstimateResult {
   fidelity: Fidelity;
   basis: string;
   baselineMs?: number;
+  optimisticMs?: number;
   estimatedMs?: number;
+  upperBoundMs?: number;
   concurrency?: number;
+  timingConfidence?: 'low' | 'medium';
+  budgetMs?: number;
+  fitsBudget?: boolean;
+  recommendation?: string;
   note: string;
 }
 
@@ -139,19 +145,36 @@ async function computeCount(opts: EstimateOptions): Promise<EstimateResult> {
 async function applyTiming(result: EstimateResult, opts: EstimateOptions): Promise<void> {
   if (!opts.withTiming || !opts.workDir || !opts.env) return;
 
-  const cmd = resolveBaselineTestCommand(opts.env, opts.projectType);
+  const cmd = resolveBaselineTestCommand(opts.env, opts.projectType, opts.relFile);
+  // Stryker disable next-line ConditionalExpression,BlockStatement: the surrounding catch produces the same public fallback if an undefined command is dereferenced.
   if (cmd === undefined) {
     result.note += ' (timing unavailable)';
     return;
   }
   try {
     const t0 = Date.now();
-    await runShell(cmd.command, cmd.args, { cwd: opts.workDir, signal: opts.signal });
+    await runShell(cmd.command, cmd.args, {
+      cwd: opts.workDir,
+      timeoutMs: opts.timeoutMs ?? ESTIMATE_TIMEOUT_MS,
+      signal: opts.signal,
+    });
     const baselineMs = Date.now() - t0;
     const concurrency = opts.concurrency ?? 1;
+    const commandRunner = opts.projectType === 'typescript' && opts.env.testRunner === 'command';
+    const projection = projectTimingRange(result.mutants, baselineMs, concurrency, commandRunner);
     result.baselineMs = baselineMs;
     result.concurrency = concurrency;
-    result.estimatedMs = projectEstimatedMs(result.mutants, baselineMs, concurrency);
+    result.optimisticMs = projection.optimisticMs;
+    result.estimatedMs = projection.estimatedMs;
+    result.upperBoundMs = projection.upperBoundMs;
+    result.timingConfidence = projection.confidence;
+    if (opts.timeoutMs !== undefined) {
+      result.budgetMs = opts.timeoutMs;
+      result.fitsBudget = projection.upperBoundMs <= opts.timeoutMs;
+      result.recommendation = result.fitsBudget
+        ? 'Estimated to fit the configured audit budget.'
+        : 'Upper estimate exceeds the configured audit budget; narrow lineScope/diffBase or use a larger budget.';
+    }
   } catch {
     result.note += ' (timing unavailable)';
   }

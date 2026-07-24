@@ -232,8 +232,10 @@ describe('handleToolCall', () => {
 
     expect(mockRun).toHaveBeenCalledWith(
       'src/math.ts',
-      expect.objectContaining({ timeoutMs: 60000 }),
+      expect.objectContaining({ timeoutMs: expect.any(Number) }),
     );
+    expect(mockRun.mock.calls[0][1].timeoutMs).toBeGreaterThanOrEqual(57000);
+    expect(mockRun.mock.calls[0][1].timeoutMs).toBeLessThanOrEqual(58000);
   });
 
   it('passes lineScope to RunOptions', async () => {
@@ -454,10 +456,12 @@ describe('handleToolCall', () => {
     expect(mockRun).toHaveBeenCalledWith(
       'src/app.ts',
       expect.objectContaining({
-        timeoutMs: 60000, // from args (overrides config)
+        timeoutMs: expect.any(Number), // remaining args budget after setup/reserve
         mutatorDenylist: ['StringLiteral'], // from config (no arg override)
       }),
     );
+    expect(mockRun.mock.calls[0][1].timeoutMs).toBeGreaterThanOrEqual(57000);
+    expect(mockRun.mock.calls[0][1].timeoutMs).toBeLessThanOrEqual(58000);
   });
 
   it('uses config defaultTimeoutMs when args do not provide one', async () => {
@@ -486,8 +490,10 @@ describe('handleToolCall', () => {
 
     expect(mockRun).toHaveBeenCalledWith(
       'src/app.ts',
-      expect.objectContaining({ timeoutMs: 60000 }),
+      expect.objectContaining({ timeoutMs: expect.any(Number) }),
     );
+    expect(mockRun.mock.calls[0][1].timeoutMs).toBeGreaterThanOrEqual(57000);
+    expect(mockRun.mock.calls[0][1].timeoutMs).toBeLessThanOrEqual(58000);
   });
 
   it('returns a toolError for unrecognized tool names (audit I1)', async () => {
@@ -1095,7 +1101,8 @@ describe('handleToolCall', () => {
     // Prebuild must run in sandbox cwd before engine
     expect(mockRunShellCommand).toHaveBeenCalledWith('npm run build', {
       cwd: '/tmp/chaos-mcp-sandbox',
-      timeoutMs: undefined,
+      timeoutMs: 298000,
+      killTree: true,
     });
     expect(mockRun).toHaveBeenCalled();
   });
@@ -1162,8 +1169,8 @@ describe('handleToolCall', () => {
     });
     await handleToolCall(request, { allowPrebuild: true });
 
-    // 10000ms total budget − 4000ms spent on prebuild = 6000ms left for the engine.
-    expect(mockRun.mock.calls[0][1].timeoutMs).toBe(6000);
+    // 10000ms total − 2000ms cleanup reserve − 4000ms prebuild = 4000ms.
+    expect(mockRun.mock.calls[0][1].timeoutMs).toBe(4000);
     dateSpy.mockRestore();
   });
 
@@ -1720,7 +1727,7 @@ describe('handleToolCall', () => {
 
     expect(mockRun).toHaveBeenCalledWith(
       'src/app.ts',
-      expect.objectContaining({ timeoutMs: 60000 }),
+      expect.objectContaining({ timeoutMs: 58000 }),
     );
   });
 
@@ -1789,10 +1796,12 @@ describe('handleToolCall', () => {
     expect(mockRun).toHaveBeenCalledWith(
       'src/app.ts',
       expect.objectContaining({
-        timeoutMs: 15000, // from args (overrides everything)
+        timeoutMs: expect.any(Number), // remaining args budget after setup/reserve
         concurrency: 4, // from stryker engine config
       }),
     );
+    expect(mockRun.mock.calls[0][1].timeoutMs).toBeGreaterThanOrEqual(12000);
+    expect(mockRun.mock.calls[0][1].timeoutMs).toBeLessThanOrEqual(13000);
   });
 
   it('uses rust engine timeout for .rs files', async () => {
@@ -1836,8 +1845,10 @@ describe('handleToolCall', () => {
 
     expect(mockRun).toHaveBeenCalledWith(
       'src/main.rs',
-      expect.objectContaining({ timeoutMs: 600000 }),
+      expect.objectContaining({ timeoutMs: expect.any(Number) }),
     );
+    expect(mockRun.mock.calls[0][1].timeoutMs).toBeGreaterThanOrEqual(597000);
+    expect(mockRun.mock.calls[0][1].timeoutMs).toBeLessThanOrEqual(598000);
   });
 
   it('stryker engine config does not affect Python runs', async () => {
@@ -1874,8 +1885,10 @@ describe('handleToolCall', () => {
     // Should use global timeout (no engine config), NOT the stryker section
     expect(mockRun).toHaveBeenCalledWith(
       'src/calc.py',
-      expect.objectContaining({ timeoutMs: 300000 }),
+      expect.objectContaining({ timeoutMs: expect.any(Number) }),
     );
+    expect(mockRun.mock.calls[0][1].timeoutMs).toBeGreaterThanOrEqual(297000);
+    expect(mockRun.mock.calls[0][1].timeoutMs).toBeLessThanOrEqual(298000);
   });
 
   it('uses cosmicray engine config timeoutMs for Python files', async () => {
@@ -1910,8 +1923,10 @@ describe('handleToolCall', () => {
 
     expect(mockRun).toHaveBeenCalledWith(
       'src/calc.py',
-      expect.objectContaining({ timeoutMs: 120000 }),
+      expect.objectContaining({ timeoutMs: expect.any(Number) }),
     );
+    expect(mockRun.mock.calls[0][1].timeoutMs).toBeGreaterThanOrEqual(117000);
+    expect(mockRun.mock.calls[0][1].timeoutMs).toBeLessThanOrEqual(118000);
   });
 
   it('uses cosmicray engine config testRunner override for Python files', async () => {
@@ -2407,10 +2422,15 @@ describe('handleToolCall', () => {
     });
     await handleToolCall(request, { allowPrebuild: true });
 
-    expect(mockRunShellCommand).toHaveBeenCalledWith('pip install -e .', {
-      cwd: '/tmp/chaos-mcp-sandbox',
-      timeoutMs: undefined,
-    });
+    expect(mockRunShellCommand).toHaveBeenCalledWith(
+      'pip install -e .',
+      expect.objectContaining({
+        cwd: '/tmp/chaos-mcp-sandbox',
+        timeoutMs: expect.any(Number),
+        killTree: true,
+      }),
+    );
+    expect(mockRunShellCommand.mock.calls[0][1].timeoutMs).toBeGreaterThanOrEqual(297000);
     expect(mockRun).toHaveBeenCalled();
   });
 
@@ -2484,10 +2504,15 @@ describe('handleToolCall', () => {
     const request = makeRequest('audit_code_resilience', { filePath: 'src/main.rs' });
     await handleToolCall(request);
 
-    expect(mockRunShellCommand).toHaveBeenCalledWith('cargo check', {
-      cwd: '/tmp/chaos-mcp-sandbox',
-      timeoutMs: undefined,
-    });
+    expect(mockRunShellCommand).toHaveBeenCalledWith(
+      'cargo check',
+      expect.objectContaining({
+        cwd: '/tmp/chaos-mcp-sandbox',
+        timeoutMs: expect.any(Number),
+        killTree: true,
+      }),
+    );
+    expect(mockRunShellCommand.mock.calls[0][1].timeoutMs).toBeGreaterThanOrEqual(297000);
     expect(mockRun).toHaveBeenCalled();
   });
 
@@ -3330,6 +3355,70 @@ describe('handleToolCall', () => {
       expect(json.killedCount).toBe(1);
       expect(json.nowKilled).toEqual([{ line: 7, mutator: 'RustMut' }]);
     });
+  });
+
+  it('halts when the absolute deadline expires during scope resolution', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValueOnce(0).mockReturnValue(20_000);
+    mockDetectEnv.mockReturnValue({
+      projectType: 'typescript',
+      testRunner: 'vitest',
+      detectedRunner: 'vitest',
+      workspaceRoot: '/workspace',
+    });
+
+    const response = await handleToolCall(
+      makeRequest('audit_code_resilience', { filePath: 'src/app.ts', timeoutMs: 10_000 }),
+    );
+
+    expect(response.isError).toBe(true);
+    expect((response.content[0] as { text: string }).text).toContain('scope resolution');
+    expect(mockCreateSandbox).not.toHaveBeenCalled();
+    now.mockRestore();
+  });
+
+  it('halts when the absolute deadline expires during sandbox provisioning', async () => {
+    const now = vi
+      .spyOn(Date, 'now')
+      .mockReturnValueOnce(0)
+      .mockReturnValueOnce(0)
+      .mockReturnValue(20_000);
+    mockDetectEnv.mockReturnValue({
+      projectType: 'typescript',
+      testRunner: 'vitest',
+      detectedRunner: 'vitest',
+      workspaceRoot: '/workspace',
+    });
+
+    const response = await handleToolCall(
+      makeRequest('audit_code_resilience', { filePath: 'src/app.ts', timeoutMs: 10_000 }),
+    );
+
+    expect(response.isError).toBe(true);
+    expect((response.content[0] as { text: string }).text).toContain('sandbox provisioning');
+    expect(mockCreateSandbox).toHaveBeenCalledTimes(1);
+    now.mockRestore();
+  });
+
+  it('preserves the cleanup reserve before mutation execution', async () => {
+    const now = vi
+      .spyOn(Date, 'now')
+      .mockReturnValueOnce(0)
+      .mockReturnValueOnce(0)
+      .mockReturnValue(9_000);
+    mockDetectEnv.mockReturnValue({
+      projectType: 'typescript',
+      testRunner: 'vitest',
+      detectedRunner: 'vitest',
+      workspaceRoot: '/workspace',
+    });
+
+    const response = await handleToolCall(
+      makeRequest('audit_code_resilience', { filePath: 'src/app.ts', timeoutMs: 10_000 }),
+    );
+
+    expect(response.isError).toBe(true);
+    expect((response.content[0] as { text: string }).text).toContain('before mutation execution');
+    now.mockRestore();
   });
 });
 

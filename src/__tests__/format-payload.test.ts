@@ -201,3 +201,31 @@ describe('buildResultPayload gate', () => {
     expect(buildResultPayload(r, {}).gate).toBeUndefined();
   });
 });
+
+describe('buildResultPayload batch completion metadata', () => {
+  it('threads every partial-audit field into the payload', () => {
+    const payload = buildResultPayload(
+      result({
+        complete: false,
+        batchesCompleted: 1,
+        batchesPlanned: 3,
+        stoppedReason: 'time_budget_exhausted',
+      }),
+      {},
+    );
+    expect(payload).toMatchObject({
+      complete: false,
+      batchesCompleted: 1,
+      batchesPlanned: 3,
+      stoppedReason: 'time_budget_exhausted',
+    });
+  });
+
+  it('omits every batch field when the engine did not provide it', () => {
+    const payload = buildResultPayload(result({}), {});
+    expect(payload).not.toHaveProperty('complete');
+    expect(payload).not.toHaveProperty('batchesCompleted');
+    expect(payload).not.toHaveProperty('batchesPlanned');
+    expect(payload).not.toHaveProperty('stoppedReason');
+  });
+});

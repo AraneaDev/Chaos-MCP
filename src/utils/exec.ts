@@ -1,4 +1,4 @@
-import { execFile, exec } from 'child_process';
+import { execFile, exec, type ChildProcess } from 'child_process';
 import { log, isVerbose } from './logger.js';
 import { DEFAULT_TIMEOUT_MS } from './constants.js';
 
@@ -46,6 +46,25 @@ export class ExecFailureError extends Error {
   }
 }
 
+/** Best-effort termination of a detached subprocess and all descendants. */
+export function killProcessTree(child: ChildProcess | undefined, detachedGroup: boolean): void {
+  // Stryker disable next-line ConditionalExpression: continuing with an absent child is observably the same because both best-effort kill attempts are caught.
+  if (!child?.pid) return;
+  if (detachedGroup && process.platform !== 'win32') {
+    try {
+      process.kill(-child.pid, 'SIGKILL');
+      return;
+    } catch {
+      // The process group may already be gone; fall back to the direct child.
+    }
+  }
+  try {
+    child.kill('SIGKILL');
+  } catch {
+    // Best effort on an already-failing timeout/cancellation path.
+  }
+}
+
 /**
  * Run a shell command string (e.g. "npm run build", "go build ./...") inside
  * a child process with `shell: true`, capturing stdout and stderr.
@@ -63,16 +82,17 @@ export class ExecFailureError extends Error {
  */
 export function runShellCommand(
   command: string,
-  options: { cwd?: string; timeoutMs?: number; signal?: AbortSignal } = {},
+  options: { cwd?: string; timeoutMs?: number; signal?: AbortSignal; killTree?: boolean } = {},
 ): Promise<ExecResult> {
-  const { cwd = process.cwd(), timeoutMs = DEFAULT_TIMEOUT_MS, signal } = options;
+  const { cwd = process.cwd(), timeoutMs = DEFAULT_TIMEOUT_MS, signal, killTree = false } = options;
 
   if (isVerbose()) {
     log(`exec-shell: ${command}  (cwd=${cwd}, timeout=${timeoutMs}ms)`);
   }
 
   return new Promise((resolve, reject) => {
-    exec(
+    const childRef: { current?: ChildProcess } = {};
+    childRef.current = exec(
       command,
       {
         cwd,
@@ -81,6 +101,7 @@ export function runShellCommand(
         encoding: 'utf-8',
         maxBuffer: 10 * 1024 * 1024, // 10 MB stdout/stderr cap
         windowsHide: true,
+        ...(killTree && process.platform !== 'win32' ? { detached: true } : {}),
       },
       (err, stdout, stderr) => {
         const stdoutStr = stdout ?? '';
@@ -113,6 +134,7 @@ export function runShellCommand(
           // cancel is never mislabelled a tool failure — callers key on
           // `code === 'ABORTED'` to report "Operation cancelled." (audit M5).
           if (execErr.code === 'ABORT_ERR' || execErr.name === 'AbortError' || signal?.aborted) {
+            killProcessTree(childRef.current, killTree);
             reject(
               new ExecFailureError(
                 { ...result, code: 'ABORTED' },
@@ -126,6 +148,7 @@ export function runShellCommand(
           // elapses. Gating on `killed === true` (not just `signal`) distinguishes
           // internal timeouts from external kills (OOM, SIGTERM from parent).
           if (execErr.killed === true && result.exit === null && result.signal) {
+            killProcessTree(childRef.current, killTree);
             reject(
               new ExecFailureError(
                 { ...result, code: 'TIMEOUT' },
@@ -136,6 +159,7 @@ export function runShellCommand(
           }
 
           // Non-zero exit — surface with captured output.
+          if (result.signal) killProcessTree(childRef.current, killTree);
           reject(
             new ExecFailureError(
               { ...result, code: String(result.exit ?? 'SIGNAL') },
@@ -170,16 +194,29 @@ export function runShellCommand(
 export function runShell(
   command: string,
   args: string[],
-  options: { cwd?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv; signal?: AbortSignal } = {},
+  options: {
+    cwd?: string;
+    timeoutMs?: number;
+    env?: NodeJS.ProcessEnv;
+    signal?: AbortSignal;
+    killTree?: boolean;
+  } = {},
 ): Promise<ExecResult> {
-  const { cwd = process.cwd(), timeoutMs = DEFAULT_TIMEOUT_MS, env, signal } = options;
+  const {
+    cwd = process.cwd(),
+    timeoutMs = DEFAULT_TIMEOUT_MS,
+    env,
+    signal,
+    killTree = false,
+  } = options;
 
   if (isVerbose()) {
     log(`exec: ${command} ${args.join(' ')}  (cwd=${cwd}, timeout=${timeoutMs}ms)`);
   }
 
   return new Promise((resolve, reject) => {
-    execFile(
+    const childRef: { current?: ChildProcess } = {};
+    childRef.current = execFile(
       command,
       args,
       {
@@ -190,6 +227,7 @@ export function runShell(
         encoding: 'utf-8',
         maxBuffer: 10 * 1024 * 1024, // 10 MB stdout/stderr cap
         windowsHide: true,
+        ...(killTree && process.platform !== 'win32' ? { detached: true } : {}),
       },
       (err, stdout, stderr) => {
         const stdoutStr = stdout ?? '';
@@ -241,6 +279,7 @@ export function runShell(
             errnoError.name === 'AbortError' ||
             signal?.aborted
           ) {
+            killProcessTree(childRef.current, killTree);
             reject(
               new ExecFailureError(
                 { ...result, code: 'ABORTED' },
@@ -265,6 +304,7 @@ export function runShell(
           // distinguishes these so an external resource crash isn't misreported
           // as a tool timeout. (Live-audit L3 fix.)
           if (errnoError.killed === true && result.exit === null && result.signal) {
+            killProcessTree(childRef.current, killTree);
             reject(
               new ExecFailureError(
                 { ...result, code: 'TIMEOUT' },
@@ -275,6 +315,7 @@ export function runShell(
           }
 
           // Non-zero exit or signal — surface as a recoverable failure with captured output.
+          if (result.signal) killProcessTree(childRef.current, killTree);
           reject(
             new ExecFailureError(
               { ...result, code: String(result.exit ?? 'SIGNAL') },

@@ -259,4 +259,16 @@ describe('direct-run guard (isDirectRun)', () => {
     expect(vi.mocked(runCli)).not.toHaveBeenCalled();
     process.argv[1] = origArgv1;
   });
+
+  it('uses the resolved path for existing direct and non-direct entrypoints', async () => {
+    const direct = await loadIndexWith('/root/Chaos-MCP/build/index.js');
+    expect(vi.mocked(direct)).toHaveBeenCalledTimes(1);
+
+    const directSource = await loadIndexWith('/root/Chaos-MCP/src/index.ts');
+    expect(vi.mocked(directSource)).toHaveBeenCalledTimes(1);
+
+    const indirect = await loadIndexWith('/root/Chaos-MCP/package.json');
+    expect(vi.mocked(indirect)).not.toHaveBeenCalled();
+    process.argv[1] = origArgv1;
+  });
 });

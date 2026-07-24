@@ -45,8 +45,13 @@ vi.mock('fs', () => ({
 }));
 
 import { runShell, ExecFailureError } from '../utils/exec.js';
-import { existsSync, readFileSync } from 'fs';
-import { TypeScriptEngine } from '../engines/typescript.js';
+import { existsSync, readFileSync, writeFileSync } from 'fs';
+import {
+  TypeScriptEngine,
+  mergeBatchResults,
+  planLineBatches,
+  writeStrykerRuntimeConfig,
+} from '../engines/typescript.js';
 
 const mockRunShell = vi.mocked(runShell);
 const mockExistsSync = vi.mocked(existsSync);
@@ -106,6 +111,378 @@ describe('TypeScriptEngine', () => {
     vi.clearAllMocks();
     engine = new TypeScriptEngine();
     mockExistsSync.mockReturnValue(true);
+  });
+
+  it('plans bounded line batches only for large or explicitly ranged scopes', () => {
+    expect(planLineBatches(0)).toEqual([]);
+    expect(planLineBatches(120)).toEqual([]);
+    expect(planLineBatches(121)).toEqual([
+      { start: 1, end: 80 },
+      { start: 81, end: 121 },
+    ]);
+    expect(planLineBatches(500, [])).toEqual([
+      { start: 1, end: 80 },
+      { start: 81, end: 160 },
+      { start: 161, end: 240 },
+      { start: 241, end: 320 },
+      { start: 321, end: 400 },
+      { start: 401, end: 480 },
+      { start: 481, end: 500 },
+    ]);
+    expect(planLineBatches(500, [{ start: 9, end: 88 }])).toEqual([]);
+    expect(planLineBatches(500, [{ start: 9, end: 89 }])).toEqual([
+      { start: 9, end: 88 },
+      { start: 89, end: 89 },
+    ]);
+    expect(planLineBatches(500, [{ start: 75, end: 170 }])).toEqual([
+      { start: 75, end: 154 },
+      { start: 155, end: 170 },
+    ]);
+  });
+
+  it('merges completed batch metrics without losing partial-result metadata', () => {
+    const result = mergeBatchResults(
+      'src/app.ts',
+      [
+        {
+          target: 'src/app.ts',
+          totalMutants: 3,
+          killed: 2,
+          survived: 1,
+          incompetent: 2,
+          mutationScore: '66.67%',
+          vulnerabilities: [{ line: 2, mutator: 'BooleanLiteral', status: 'Survived' }],
+        },
+        {
+          target: 'src/app.ts',
+          totalMutants: 1,
+          killed: 1,
+          survived: 0,
+          mutationScore: '100.00%',
+          vulnerabilities: [],
+        },
+      ],
+      3,
+      false,
+    );
+
+    expect(result).toEqual({
+      target: 'src/app.ts',
+      totalMutants: 4,
+      killed: 3,
+      survived: 1,
+      mutationScore: '75.00%',
+      vulnerabilities: [{ line: 2, mutator: 'BooleanLiteral', status: 'Survived' }],
+      incompetent: 2,
+      complete: false,
+      batchesCompleted: 2,
+      batchesPlanned: 3,
+      stoppedReason: 'time_budget_exhausted',
+      scopeNote:
+        'Partial audit: completed 2 of 3 bounded mutation batches before the time budget was exhausted.',
+    });
+  });
+
+  it('merges empty and fully completed batches exactly', () => {
+    expect(mergeBatchResults('src/empty.ts', [], 0, true)).toEqual({
+      target: 'src/empty.ts',
+      totalMutants: 0,
+      killed: 0,
+      survived: 0,
+      mutationScore: '100.00%',
+      vulnerabilities: [],
+      incompetent: undefined,
+      complete: true,
+      batchesCompleted: 0,
+      batchesPlanned: 0,
+      stoppedReason: undefined,
+      scopeNote: 'Completed 0 bounded mutation batches.',
+    });
+  });
+
+  it('builds command-runner overlays for JSON, invalid, and absent project configs', () => {
+    const mockWrite = vi.mocked(writeFileSync);
+
+    mockExistsSync.mockImplementation((p: string) => p === '/json/stryker.config.json');
+    mockReadFileSync.mockReturnValueOnce(
+      JSON.stringify({ commandRunner: { timeout: 5 }, mutator: { excludedMutations: ['A'] } }),
+    );
+    expect(writeStrykerRuntimeConfig('/json', 'npm test', ['B'])).toBe(
+      '.chaos-mcp.stryker.config.mjs',
+    );
+    expect(String(mockWrite.mock.calls.at(-1)?.[1])).toContain(
+      'const base = {"commandRunner":{"timeout":5},"mutator":{"excludedMutations":["A"]}};',
+    );
+
+    mockExistsSync.mockImplementation((p: string) => p === '/invalid/stryker.config.json');
+    mockReadFileSync.mockReturnValueOnce('{');
+    writeStrykerRuntimeConfig('/invalid', 'npm test', []);
+    expect(String(mockWrite.mock.calls.at(-1)?.[1])).toContain('const base = {};');
+
+    mockExistsSync.mockReturnValue(false);
+    writeStrykerRuntimeConfig('/none', 'npm test', []);
+    const absentSource = String(mockWrite.mock.calls.at(-1)?.[1]);
+    expect(absentSource).toContain(
+      'commandRunner: { ...(base.commandRunner ?? {}), command: "npm test" }',
+    );
+    expect(absentSource).not.toContain('import importedConfig');
+    expect(mockWrite.mock.calls.at(-1)?.[2]).toBe('utf-8');
+  });
+
+  it.each([
+    ['null', 'null'],
+    ['array', '[]'],
+    ['string', '"bad"'],
+  ])('rejects a parsed %s JSON config as an overlay base', (_label, json) => {
+    const mockWrite = vi.mocked(writeFileSync);
+    mockExistsSync.mockImplementation((p: string) => p === '/bad/stryker.config.json');
+    mockReadFileSync.mockReturnValueOnce(json);
+    writeStrykerRuntimeConfig('/bad', 'npm test', []);
+    expect(String(mockWrite.mock.calls.at(-1)?.[1])).toContain('const base = {};');
+  });
+
+  it('imports an existing JavaScript config with the exact fallback declaration', () => {
+    const mockWrite = vi.mocked(writeFileSync);
+    mockExistsSync.mockImplementation((p: string) => p === '/js/stryker.config.mjs');
+    writeStrykerRuntimeConfig('/js', 'npm test', []);
+    expect(String(mockWrite.mock.calls.at(-1)?.[1])).toContain(
+      'import importedConfig from "./stryker.config.mjs";\nconst base = importedConfig ?? {};',
+    );
+  });
+
+  it('returns completed command-runner batches as an explicit partial result', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(0);
+    mockReadFileSync.mockImplementation((p: string) =>
+      p === '/sb/src/large.ts'
+        ? Array.from({ length: 200 }, () => 'const x = 1;').join('\n')
+        : makeJsonReport([]),
+    );
+    mockExistsSync.mockReturnValue(true);
+    mockRunShell
+      .mockResolvedValueOnce(makeExecResult())
+      .mockRejectedValueOnce(makeExecFailure({ code: 'TIMEOUT' }))
+      .mockResolvedValueOnce(makeExecResult());
+
+    const result = await engine.run('src/large.ts', {
+      workDir: '/sb',
+      testRunner: 'command',
+      timeoutMs: 30_000,
+    });
+
+    expect(mockRunShell).toHaveBeenCalledTimes(3);
+    expect(result.complete).toBe(false);
+    expect(result.batchesCompleted).toBe(2);
+    expect(result.batchesPlanned).toBe(3);
+    expect(result.stoppedReason).toBe('time_budget_exhausted');
+    expect(result.scopeNote).toContain('completed 2 of 3');
+    const calls = mockRunShell.mock.calls;
+    expect(calls.map((call) => (call[1] as string[])[4])).toEqual([
+      'src/large.ts:1-80',
+      'src/large.ts:81-160',
+      'src/large.ts:161-200',
+    ]);
+    expect(calls.map((call) => (call[2] as { timeoutMs: number }).timeoutMs)).toEqual([
+      10_000, 15_000, 30_000,
+    ]);
+    now.mockRestore();
+  });
+
+  it('marks a fully completed batch run complete and aggregates its reports', async () => {
+    mockReadFileSync.mockImplementation((p: string) =>
+      p === '/sb/src/large.ts'
+        ? Array.from({ length: 121 }, () => 'const x = 1;').join('\n')
+        : makeJsonReport([{ status: 'Killed', mutatorName: 'BooleanLiteral', line: 1 }]),
+    );
+    mockRunShell.mockResolvedValue(makeExecResult());
+
+    const result = await engine.run('src/large.ts', {
+      workDir: '/sb',
+      testRunner: 'command',
+      timeoutMs: 30_000,
+    });
+
+    expect(mockRunShell).toHaveBeenCalledTimes(2);
+    expect(result.complete).toBe(true);
+    expect(result.batchesCompleted).toBe(2);
+    expect(result.batchesPlanned).toBe(2);
+    expect(result.totalMutants).toBe(2);
+    expect(result.killed).toBe(2);
+    expect(result.scopeNote).toBe('Completed 2 bounded mutation batches.');
+  });
+
+  it('throws when every bounded batch times out', async () => {
+    mockReadFileSync.mockImplementation((p: string) =>
+      p === '/sb/src/large.ts'
+        ? Array.from({ length: 121 }, () => 'const x = 1;').join('\n')
+        : makeJsonReport([]),
+    );
+    mockRunShell.mockRejectedValue(makeExecFailure({ code: 'TIMEOUT' }));
+
+    await expect(
+      engine.run('src/large.ts', {
+        workDir: '/sb',
+        testRunner: 'command',
+        timeoutMs: 30_000,
+      }),
+    ).rejects.toThrow(/timed out/);
+  });
+
+  it('does not swallow a non-timeout failure from a bounded batch', async () => {
+    mockReadFileSync.mockImplementation((p: string) =>
+      p === '/sb/src/large.ts'
+        ? Array.from({ length: 121 }, () => 'const x = 1;').join('\n')
+        : makeJsonReport([]),
+    );
+    mockRunShell.mockRejectedValue(new Error('batch exploded'));
+
+    await expect(
+      engine.run('src/large.ts', {
+        workDir: '/sb',
+        testRunner: 'command',
+        timeoutMs: 30_000,
+      }),
+    ).rejects.toThrow('batch exploded');
+  });
+
+  it('stops immediately on a non-timeout failure even if a later batch could pass', async () => {
+    mockReadFileSync.mockImplementation((p: string) =>
+      p === '/sb/src/large.ts'
+        ? Array.from({ length: 121 }, () => 'const x = 1;').join('\n')
+        : makeJsonReport([]),
+    );
+    mockRunShell
+      .mockRejectedValueOnce(new Error('configuration exploded'))
+      .mockResolvedValueOnce(makeExecResult());
+
+    await expect(
+      engine.run('src/large.ts', {
+        workDir: '/sb',
+        testRunner: 'command',
+        timeoutMs: 30_000,
+      }),
+    ).rejects.toThrow('configuration exploded');
+    expect(mockRunShell).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns an empty partial result when no batch fits the remaining budget', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValueOnce(1_000).mockReturnValue(29_001);
+    mockReadFileSync.mockImplementation((p: string) =>
+      p === '/sb/src/large.ts'
+        ? Array.from({ length: 121 }, () => 'const x = 1;').join('\n')
+        : makeJsonReport([]),
+    );
+
+    const result = await engine.run('src/large.ts', {
+      workDir: '/sb',
+      testRunner: 'command',
+      timeoutMs: 30_000,
+    });
+
+    expect(mockRunShell).not.toHaveBeenCalled();
+    expect(result.complete).toBe(false);
+    expect(result.batchesCompleted).toBe(0);
+    expect(result.batchesPlanned).toBe(2);
+    now.mockRestore();
+  });
+
+  it('runs a batch whose allocated budget is exactly the minimum', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(0);
+    mockReadFileSync.mockImplementation((p: string) =>
+      p === '/sb/src/large.ts'
+        ? Array.from({ length: 121 }, () => 'const x = 1;').join('\n')
+        : makeJsonReport([]),
+    );
+    mockRunShell.mockResolvedValue(makeExecResult());
+
+    const result = await engine.run('src/large.ts', {
+      workDir: '/sb',
+      testRunner: 'command',
+      timeoutMs: 6_000,
+    });
+
+    expect(mockRunShell).toHaveBeenCalledTimes(2);
+    expect((mockRunShell.mock.calls[0]?.[2] as { timeoutMs: number }).timeoutMs).toBe(3_000);
+    expect(result.complete).toBe(true);
+    now.mockRestore();
+  });
+
+  it('does not batch large files for native runners or command-runner dry runs', async () => {
+    mockReadFileSync.mockImplementation((p: string) =>
+      p === '/sb/src/large.ts'
+        ? Array.from({ length: 121 }, () => 'const x = 1;').join('\n')
+        : makeJsonReport([]),
+    );
+    mockRunShell.mockResolvedValue(makeExecResult());
+
+    await engine.run('src/large.ts', { workDir: '/sb', testRunner: 'vitest' });
+    await engine.run('src/large.ts', {
+      workDir: '/sb',
+      testRunner: 'command',
+      dryRun: true,
+    });
+
+    expect(mockRunShell).toHaveBeenCalledTimes(2);
+    expect(mockRunShell.mock.calls[0]?.[1] as string[]).toContain('src/large.ts');
+    expect(mockRunShell.mock.calls[1]?.[1] as string[]).toContain('--dryRunOnly');
+  });
+
+  it('uses command-runner batching defaults when RunOptions are absent', async () => {
+    mockReadFileSync.mockImplementation((p: string) =>
+      p.endsWith('src/large.ts')
+        ? Array.from({ length: 121 }, () => 'const x = 1;').join('\n')
+        : makeJsonReport([]),
+    );
+    mockRunShell.mockResolvedValue(makeExecResult());
+
+    await engine.run('src/large.ts');
+
+    expect(mockRunShell).toHaveBeenCalledTimes(2);
+    expect(mockReadFileSync).toHaveBeenCalledWith(expect.stringContaining('src/large.ts'), 'utf-8');
+  });
+
+  it('falls back to one run when the source cannot be read for batch planning', async () => {
+    mockReadFileSync
+      .mockImplementationOnce(() => {
+        throw new Error('unreadable source');
+      })
+      .mockReturnValueOnce(makeJsonReport([]));
+    mockRunShell.mockResolvedValue(makeExecResult());
+
+    await engine.run('src/large.ts', { workDir: '/sb', testRunner: 'command' });
+    expect(mockRunShell).toHaveBeenCalledTimes(1);
+  });
+
+  it('prefers explicit lineRanges over a large legacy lineScope during planning', async () => {
+    mockReadFileSync.mockReturnValue(makeJsonReport([]));
+    mockRunShell.mockResolvedValue(makeExecResult());
+
+    await engine.run('src/large.ts', {
+      workDir: '/sb',
+      testRunner: 'command',
+      lineScope: { start: 1, end: 200 },
+      lineRanges: [{ start: 10, end: 20 }],
+    });
+
+    expect(mockRunShell).toHaveBeenCalledTimes(1);
+    expect(mockRunShell.mock.calls[0]?.[1]).toContain('src/large.ts:10-20');
+  });
+
+  it('batches a large legacy lineScope when lineRanges are absent', async () => {
+    mockReadFileSync.mockReturnValue(makeJsonReport([]));
+    mockRunShell.mockResolvedValue(makeExecResult());
+
+    await engine.run('src/large.ts', {
+      workDir: '/sb',
+      testRunner: 'command',
+      lineScope: { start: 1, end: 200 },
+    });
+
+    expect(mockRunShell).toHaveBeenCalledTimes(3);
+    expect(mockRunShell.mock.calls.map((call) => (call[1] as string[])[4])).toEqual([
+      'src/large.ts:1-80',
+      'src/large.ts:81-160',
+      'src/large.ts:161-200',
+    ]);
   });
 
   it('returns correct metrics when all mutants are killed', async () => {
@@ -233,6 +610,77 @@ describe('TypeScriptEngine', () => {
     const argList = callArgs?.[1] as string[];
     expect(argList).toContain('--testRunner');
     expect(argArgsContain(argList, '--testRunner', 'jest')).toBe(true);
+  });
+
+  it('uses an explicit overlay config for a scoped command runner', async () => {
+    const { writeFileSync } = await import('fs');
+    const mockWrite = vi.mocked(writeFileSync);
+    mockExistsSync.mockImplementation(
+      (p: string) => p === '/sb/stryker.config.mjs' || p === '/sb/reports/mutation/mutation.json',
+    );
+    mockRunShell.mockResolvedValue(makeExecResult());
+    mockReadFileSync.mockReturnValue(makeJsonReport([]));
+
+    await engine.run('src/app.ts', {
+      workDir: '/sb',
+      testRunner: 'command',
+      commandRunnerCommand: 'npx vitest related src/app.ts --run',
+      mutatorDenylist: ['StringLiteral'],
+    });
+
+    const configWrite = mockWrite.mock.calls.find(
+      (call) => call[0] === '/sb/.chaos-mcp.stryker.config.mjs',
+    );
+    expect(configWrite).toBeDefined();
+    const source = String(configWrite?.[1]);
+    expect(source).toContain('import importedConfig from "./stryker.config.mjs"');
+    expect(source).toContain('"npx vitest related src/app.ts --run"');
+    expect(source).toContain('"StringLiteral"');
+    expect(source).toContain("coverageAnalysis: 'off'");
+
+    const argList = mockRunShell.mock.calls[0]?.[1] as string[];
+    expect(argList.slice(0, 4)).toEqual([
+      '--no-install',
+      'stryker',
+      'run',
+      '.chaos-mcp.stryker.config.mjs',
+    ]);
+  });
+
+  it('writes an empty denylist into a command-runner overlay when none is configured', async () => {
+    const mockWrite = vi.mocked(writeFileSync);
+    mockExistsSync.mockImplementation((p: string) => p === '/sb/reports/mutation/mutation.json');
+    mockRunShell.mockResolvedValue(makeExecResult());
+    mockReadFileSync.mockReturnValue(makeJsonReport([]));
+
+    await engine.run('src/app.ts', {
+      workDir: '/sb',
+      testRunner: 'command',
+      commandRunnerCommand: 'npm test',
+    });
+
+    const source = String(
+      mockWrite.mock.calls.find((call) => call[0] === '/sb/.chaos-mcp.stryker.config.mjs')?.[1],
+    );
+    expect(source).toContain('...[],');
+    expect(source).not.toContain('Stryker was here');
+  });
+
+  it('does not apply a command-runner overlay to a native test runner', async () => {
+    const mockWrite = vi.mocked(writeFileSync);
+    mockRunShell.mockResolvedValue(makeExecResult());
+    mockReadFileSync.mockReturnValue(makeJsonReport([]));
+
+    await engine.run('src/app.ts', {
+      workDir: '/sb',
+      testRunner: 'vitest',
+      commandRunnerCommand: 'npm test',
+    });
+
+    expect(
+      mockWrite.mock.calls.some((call) => call[0] === '/sb/.chaos-mcp.stryker.config.mjs'),
+    ).toBe(false);
+    expect(mockRunShell.mock.calls[0]?.[1]).not.toContain('.chaos-mcp.stryker.config.mjs');
   });
 
   it('passes the runner plugin explicitly so it resolves under pnpm', async () => {

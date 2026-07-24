@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { resolveBaselineTestCommand, projectEstimatedMs } from '../baseline-timing.js';
+import {
+  resolveBaselineTestCommand,
+  projectEstimatedMs,
+  projectTimingRange,
+} from '../baseline-timing.js';
 import type { EnvironmentInfo } from '../utils/project-detector.js';
 
 const env = (over: Partial<EnvironmentInfo> = {}): EnvironmentInfo =>
@@ -22,6 +26,25 @@ describe('projectEstimatedMs', () => {
   it('rounds up fractional results', () => {
     expect(projectEstimatedMs(3, 100, 4)).toBe(75);
     expect(projectEstimatedMs(1, 100, 3)).toBe(34);
+  });
+});
+
+describe('projectTimingRange', () => {
+  it('adds conservative startup and per-mutant overhead for command runners', () => {
+    const result = projectTimingRange(40, 500, 4, true);
+    expect(result.optimisticMs).toBe(5_000);
+    expect(result.estimatedMs).toBe(40_000);
+    expect(result.upperBoundMs).toBe(70_000);
+    expect(result.confidence).toBe('low');
+  });
+
+  it('uses a tighter range for native runners', () => {
+    const command = projectTimingRange(40, 500, 4, true);
+    const native = projectTimingRange(40, 500, 4, false);
+    expect(native.estimatedMs).toBe(14_000);
+    expect(native.upperBoundMs).toBe(23_125);
+    expect(native.upperBoundMs).toBeLessThan(command.upperBoundMs);
+    expect(native.confidence).toBe('medium');
   });
 });
 
@@ -76,6 +99,34 @@ describe('resolveBaselineTestCommand', () => {
     const cmd = resolveBaselineTestCommand(env({ detectedRunner: 'vitest' }), 'typescript');
     expect(cmd?.command).toBe('npx');
     expect(cmd?.args).toEqual(['vitest']);
+  });
+  it('matches the scoped Vitest command-runner command used by mutation audits', () => {
+    expect(
+      resolveBaselineTestCommand(
+        env({ testRunner: 'command', detectedRunner: 'vitest' }),
+        'typescript',
+        'src/gate.ts',
+      ),
+    ).toEqual({
+      command: 'npx',
+      args: ['vitest', 'related', 'src/gate.ts', '--run'],
+    });
+  });
+  it('does not scope native Vitest or a command runner backed by another framework', () => {
+    expect(
+      resolveBaselineTestCommand(
+        env({ testRunner: 'vitest', detectedRunner: 'vitest' }),
+        'typescript',
+        'src/gate.ts',
+      ),
+    ).toEqual({ command: 'npx', args: ['vitest'] });
+    expect(
+      resolveBaselineTestCommand(
+        env({ testRunner: 'command', detectedRunner: 'jest' }),
+        'typescript',
+        'src/gate.ts',
+      ),
+    ).toEqual({ command: 'npx', args: ['jest'] });
   });
   it('resolves node:test to node --test', () => {
     const cmd = resolveBaselineTestCommand(env({ detectedRunner: 'node:test' }), 'typescript');

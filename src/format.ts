@@ -309,6 +309,10 @@ export interface ResultPayload {
   gate?: GateResult;
   /** Mutants excluded from the score because the mutated code never scored (audit I3). */
   incompetent?: number;
+  complete?: boolean;
+  batchesCompleted?: number;
+  batchesPlanned?: number;
+  stoppedReason?: 'time_budget_exhausted';
 }
 
 export interface ResultPayloadOpts {
@@ -407,6 +411,10 @@ export function buildResultPayload(
   if (nFloor.filtered > 0) payload.noCoverageFiltered = nFloor.filtered;
   if (enrichNote) payload.enrichNote = enrichNote;
   if (result.scopeNote) payload.scopeNote = result.scopeNote;
+  if (result.complete !== undefined) payload.complete = result.complete;
+  if (result.batchesCompleted !== undefined) payload.batchesCompleted = result.batchesCompleted;
+  if (result.batchesPlanned !== undefined) payload.batchesPlanned = result.batchesPlanned;
+  if (result.stoppedReason) payload.stoppedReason = result.stoppedReason;
   if (opts.suggestedTestFile) payload.suggestedTestFile = opts.suggestedTestFile;
   if (opts.ignoredOptions && opts.ignoredOptions.length > 0)
     payload.ignoredOptions = opts.ignoredOptions;

@@ -9,6 +9,11 @@ import { estimateAudit, estimateNeedsSandbox } from './estimate.js';
 import type { ChaosConfig } from './utils/config-loader.js';
 import type { ToolContext } from './tool-context.js';
 import { isCancel } from './utils/cancel.js';
+import { DEFAULT_TIMEOUT_MS } from './utils/constants.js';
+
+export function resolveEstimateConcurrency(cpuCount: number): number {
+  return Math.max(1, Math.min(2, cpuCount - 1));
+}
 
 /**
  * Handle `estimate_audit` tool invocations.
@@ -71,7 +76,7 @@ export async function handleEstimateCall(
 
     // Resolve worker concurrency used only to project wall-clock time
     // (mutants × baselineMs / concurrency). Match triage-handler: cpus-1 floored at 1.
-    const concurrency = Math.max(1, cpus().length - 1);
+    const concurrency = resolveEstimateConcurrency(cpus().length);
 
     // Provision a sandbox only when required (Rust needs cargo-mutants --list;
     // withTiming needs a test run). Otherwise skip the expensive workspace copy.
@@ -98,7 +103,7 @@ export async function handleEstimateCall(
         timeoutMs:
           typeof cfg.defaultTimeoutMs === 'number' && cfg.defaultTimeoutMs > 0
             ? cfg.defaultTimeoutMs
-            : undefined,
+            : DEFAULT_TIMEOUT_MS,
         signal: ctx?.signal,
       });
 

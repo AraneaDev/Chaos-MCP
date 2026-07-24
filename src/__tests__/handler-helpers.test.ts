@@ -7,6 +7,8 @@ import { existsSync } from 'fs';
 import {
   validateToolArgs,
   buildRunOptions,
+  quoteCommandArg,
+  resolveAuditTimeoutMs,
   resolvePrebuildCommand,
   auditFile,
   isPrebuildAllowed,
@@ -256,6 +258,66 @@ describe('buildRunOptions', () => {
     expect(buildRunOptions({}, {}, env({ testRunner: 'd' }), '/sb', 'typescript').testRunner).toBe(
       'd',
     );
+  });
+
+  it('auto-scopes Vitest 3 command-runner audits to tests related to the target', () => {
+    const options = buildRunOptions(
+      {},
+      {},
+      env({ testRunner: 'command', detectedRunner: 'vitest' }),
+      '/sb',
+      'typescript',
+      'src/my module.ts',
+    );
+
+    expect(options.commandRunnerCommand).toBe("npx vitest related 'src/my module.ts' --run");
+  });
+
+  it('leaves shell-safe targets unquoted and escapes platform-specific unsafe targets', () => {
+    expect(quoteCommandArg('src/app-file.ts')).toBe('src/app-file.ts');
+    const platform = vi.spyOn(process, 'platform', 'get');
+    platform.mockReturnValue('linux');
+    expect(quoteCommandArg("src/a'b.ts")).toBe("'src/a'\\''b.ts'");
+    platform.mockReturnValue('win32');
+    expect(quoteCommandArg('src/a"b.ts')).toBe('"src/a""b.ts"');
+    platform.mockRestore();
+  });
+
+  it('does not invent a scoped command for native or non-Vitest runners', () => {
+    expect(
+      buildRunOptions(
+        {},
+        {},
+        env({ testRunner: 'vitest', detectedRunner: 'vitest' }),
+        '/sb',
+        'typescript',
+        'src/app.ts',
+      ).commandRunnerCommand,
+    ).toBeUndefined();
+    expect(
+      buildRunOptions(
+        {},
+        {},
+        env({ testRunner: 'command', detectedRunner: 'node:test' }),
+        '/sb',
+        'typescript',
+        'src/app.ts',
+      ).commandRunnerCommand,
+    ).toBeUndefined();
+    expect(
+      buildRunOptions(
+        {},
+        {},
+        env({ testRunner: 'command', detectedRunner: 'vitest' }),
+        '/sb',
+        'python',
+        'src/app.py',
+      ).commandRunnerCommand,
+    ).toBeUndefined();
+  });
+
+  it('falls back safely when resolving an unsupported project timeout', () => {
+    expect(resolveAuditTimeoutMs({}, { defaultTimeoutMs: 1234 }, 'cobol' as never)).toBe(1234);
   });
 
   it('resolves Python testRunner from the cosmicray section, never from stryker', () => {

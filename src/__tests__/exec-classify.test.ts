@@ -25,7 +25,7 @@ describe('invokeMutationTool', () => {
 
     const out = await invokeMutationTool('StrykerJS', 'npx', ['stryker', 'run']);
     expect(out).toBe(result);
-    expect(mockRunShell).toHaveBeenCalledWith('npx', ['stryker', 'run'], {});
+    expect(mockRunShell).toHaveBeenCalledWith('npx', ['stryker', 'run'], { killTree: true });
   });
 
   it('passes options through to runShell', async () => {
@@ -37,6 +37,7 @@ describe('invokeMutationTool', () => {
     expect(mockRunShell).toHaveBeenCalledWith('mutmut', ['run'], {
       cwd: '/tmp/sandbox',
       timeoutMs: 5000,
+      killTree: true,
     });
   });
 
