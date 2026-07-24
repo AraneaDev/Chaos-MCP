@@ -2,6 +2,19 @@
 
 All notable changes to Chaos-MCP are documented in this file.
 
+## [1.5.0](https://github.com/AraneaDev/Chaos-MCP/compare/v1.4.0...v1.5.0) (2026-07-24)
+
+
+### Features
+
+* add containerized mutation engines ([974e0e0](https://github.com/AraneaDev/Chaos-MCP/commit/974e0e0ce5b374944c3f2e279b6024d528a62dcf))
+* add containerized mutation engines ([31219e7](https://github.com/AraneaDev/Chaos-MCP/commit/31219e73c9790d618c92255cfec6ac259704dd42))
+
+
+### Bug Fixes
+
+* address container execution review ([de49439](https://github.com/AraneaDev/Chaos-MCP/commit/de49439c9c8b0479e7a8a33c7cb923b8c5025b4c))
+
 ## [1.4.0](https://github.com/AraneaDev/Chaos-MCP/compare/v1.3.1...v1.4.0) (2026-07-24)
 
 
