@@ -14,10 +14,11 @@ vi.mock('fs', async () => {
     writeFileSync: vi.fn(),
     readFileSync: vi.fn(),
     mkdirSync: vi.fn(),
+    rmSync: vi.fn(),
   };
 });
 
-import { existsSync, writeFileSync, readFileSync, mkdirSync } from 'fs';
+import { existsSync, writeFileSync, readFileSync, mkdirSync, rmSync } from 'fs';
 import { invokeMutationTool, MutationToolStartupError } from '../utils/exec-classify.js';
 import { ExecFailureError } from '../utils/exec.js';
 import {
@@ -33,6 +34,7 @@ const mockExists = vi.mocked(existsSync);
 const mockWrite = vi.mocked(writeFileSync);
 const mockRead = vi.mocked(readFileSync);
 const mockMkdir = vi.mocked(mkdirSync);
+const mockRm = vi.mocked(rmSync);
 
 // A minimal Infection JSON log: 3 killed, 1 timed-out, 1 escaped → killed 4, survived 1.
 const SAMPLE_LOG = JSON.stringify({
@@ -195,6 +197,43 @@ describe('parseInfectionJsonLog', () => {
     expect(r.mutationScore).toBe('100.00%');
   });
 
+  it('refuses a log whose mutants all belong to a different file', () => {
+    // The sandbox is a copy of the workspace, so a `chaos-infection-log.json`
+    // left over from an earlier audit is copied in with it. When Infection then
+    // fails to start, that stale log is still on disk and used to be parsed and
+    // reported as THIS file's result: auditing GraphReconciler.php returned
+    // "100%, 27/27 killed" for 27 mutants that all belonged to
+    // CliErrorRenderer.php and were hours old.
+    const log = JSON.stringify({
+      stats: { killedCount: 1 },
+      escaped: [],
+      killed: [{ mutator: { mutatorName: 'Plus', originalFilePath: '/sb/src/Other.php' } }],
+    });
+
+    expect(() => parseInfectionJsonLog(log, 'src/Calculator.php')).toThrow(/different file/i);
+  });
+
+  it('accepts a log whose mutants carry no file path (nothing to contradict)', () => {
+    // Provenance is only enforceable when Infection records paths; a log that
+    // omits them must still parse rather than becoming an unusable audit.
+    const log = JSON.stringify({ stats: { killedCount: 2 }, escaped: [], killed: [{}, {}] });
+
+    expect(parseInfectionJsonLog(log, 'src/Calculator.php').killed).toBe(2);
+  });
+
+  it('accepts a log when at least one mutant matches the audited file', () => {
+    const log = JSON.stringify({
+      stats: { killedCount: 2 },
+      escaped: [],
+      killed: [
+        { mutator: { mutatorName: 'Plus', originalFilePath: '/sb/src/Calculator.php' } },
+        { mutator: { mutatorName: 'Minus' } },
+      ],
+    });
+
+    expect(parseInfectionJsonLog(log, 'src/Calculator.php').killed).toBe(2);
+  });
+
   it('L5: stays identical to the stats-driven count when stats and escaped agree (normal case)', () => {
     const r = parseInfectionJsonLog(SAMPLE_LOG, 'src/Calculator.php');
     // Unchanged behavior versus the pre-fix path: escapedCount (1) already
@@ -231,6 +270,45 @@ describe('PhpEngine.run', () => {
     expect(args).toContain('--no-progress');
     expect(args).toContain('--no-interaction');
     expect(result.survived).toBe(1);
+  });
+
+  it('deletes any pre-existing JSON log before running so a stale one cannot be read', async () => {
+    mockExists.mockImplementation((p) => String(p).endsWith('chaos-infection-log.json'));
+    mockRead.mockReturnValue(SAMPLE_LOG);
+    mockInvoke.mockResolvedValue({ stdout: '', stderr: '', exit: 0, signal: null });
+
+    await new PhpEngine().run('src/Calculator.php', { workDir: '/sb' });
+
+    expect(mockRm).toHaveBeenCalledWith(
+      expect.stringContaining('chaos-infection-log.json'),
+      expect.objectContaining({ force: true }),
+    );
+    // Removal must precede the run, or it would delete this run's own output.
+    expect(mockRm.mock.invocationCallOrder[0]).toBeLessThan(mockInvoke.mock.invocationCallOrder[0]);
+  });
+
+  it('reports the Infection failure instead of a stale log left in the sandbox', async () => {
+    // Regression: a sandbox copy carries the workspace's old
+    // chaos-infection-log.json. Infection's initial test run failed (exit 1),
+    // but because a log file "existed" the engine skipped its no-log error path
+    // and reported the stale contents as a fresh 100% score.
+    let logOnDisk = true; // the stale copy
+    mockExists.mockImplementation((p) => {
+      const s = String(p);
+      if (s.endsWith('chaos-infection-log.json')) return logOnDisk;
+      return s.endsWith('phpunit.xml'); // a normal PHPUnit project
+    });
+    mockRm.mockImplementation(() => {
+      logOnDisk = false;
+    });
+    mockRead.mockReturnValue(SAMPLE_LOG);
+    mockInvoke.mockRejectedValue(
+      new ExecFailureError('Infection failed', 1, null, 'initial test run failed', ''),
+    );
+
+    await expect(new PhpEngine().run('src/Calculator.php', { workDir: '/sb' })).rejects.toThrow(
+      /without producing a JSON log/,
+    );
   });
 
   it('forwards the container session to Infection execution', async () => {

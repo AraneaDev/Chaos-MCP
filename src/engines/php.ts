@@ -1,4 +1,4 @@
-import { writeFileSync, existsSync, readFileSync, mkdirSync } from 'node:fs';
+import { writeFileSync, existsSync, readFileSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { BaseEngine, RunOptions, MutationResult, Vulnerability } from './base.js';
 import { invokeMutationTool } from '../utils/exec-classify.js';
@@ -161,6 +161,39 @@ interface InfectionJsonLog {
  * minor Infection version bump does not silently zero the count. The E2E in
  * Task 4 is the reality check.
  */
+/**
+ * Reject a log that demonstrably describes some other file.
+ *
+ * `--filter` scopes the run to one file, so every mutant Infection records
+ * should sit in it. When none do, the log did not come from this run — the
+ * observed case being a stale `chaos-infection-log.json` copied into the
+ * sandbox with the workspace and read after Infection failed to start, which
+ * reported another file's hours-old mutants as a fresh 100% score.
+ *
+ * Paths are compared by suffix because the log records absolute sandbox paths
+ * while the audit target is workspace-relative. Mutants with no recorded path
+ * cannot contradict anything, so a log carrying none is left alone rather than
+ * made unusable.
+ */
+function assertLogDescribes(filePath: string, mutants: InfectionMutant[]): void {
+  const recorded = mutants
+    .map((m) => m.mutator?.originalFilePath)
+    .filter((p): p is string => typeof p === 'string' && p.length > 0)
+    .map((p) => p.replace(/\\/g, '/'));
+  if (recorded.length === 0) {
+    return;
+  }
+  const target = filePath.replace(/\\/g, '/').replace(/^\.\//, '');
+  if (recorded.some((p) => p === target || p.endsWith(`/${target}`))) {
+    return;
+  }
+  throw new Error(
+    `Infection's JSON log describes a different file than the one audited (${filePath}); ` +
+      `its mutants belong to ${recorded[0]}. The log is stale or left over from another run, ` +
+      `so no result can be reported for ${filePath}.`,
+  );
+}
+
 export function parseInfectionJsonLog(logText: string, filePath: string): MutationResult {
   let parsed: InfectionJsonLog;
   try {
@@ -174,6 +207,9 @@ export function parseInfectionJsonLog(logText: string, filePath: string): Mutati
 
   const escaped = Array.isArray(parsed.escaped) ? parsed.escaped : [];
   const killedArr = Array.isArray(parsed.killed) ? parsed.killed : [];
+
+  assertLogDescribes(filePath, [...escaped, ...killedArr]);
+
   const timedOutArr = Array.isArray(parsed.timeouted)
     ? parsed.timeouted
     : Array.isArray(parsed.timedOut)
@@ -232,6 +268,19 @@ export class PhpEngine extends BaseEngine {
     const cwd = options?.workDir ?? process.cwd();
     const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const jsonLogPath = join(cwd, JSON_LOG_NAME);
+
+    // The sandbox is a copy of the workspace, so an earlier audit's
+    // `chaos-infection-log.json` is copied in along with it. The failure path
+    // below treats "a log exists" as proof that Infection ran, so a stale copy
+    // silently stood in for a run that never happened — auditing one file
+    // returned a hours-old 100% score computed for a different file entirely.
+    // Removing it first makes any log read below necessarily this run's output.
+    try {
+      rmSync(jsonLogPath, { force: true });
+    } catch {
+      // Best-effort. If the stale log cannot be removed, the provenance check in
+      // parseInfectionJsonLog is the remaining guard against reporting it.
+    }
 
     // Hybrid config: only generate when the project ships none.
     const hasProjectConfig = PROJECT_CONFIG_NAMES.some((n) => existsSync(join(cwd, n)));

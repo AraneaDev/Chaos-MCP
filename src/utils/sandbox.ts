@@ -123,6 +123,9 @@ const ALWAYS_EXCLUDE = new Set([
   '.nyc_output',
   '.next',
   'target', // Rust build artifacts (excluded — NOT symlinked; audit H1)
+  // Our own derived output from a previous audit. Copying it in lets a run that
+  // never produced a log read the old one and report it as a fresh result.
+  'chaos-infection-log.json',
 ]);
 
 /**
