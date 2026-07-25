@@ -7,8 +7,81 @@
  * callers (estimate-handler, triage-handler); new code should import
  * directly from this module.
  */
-import { relative, isAbsolute } from 'node:path';
+import { relative, isAbsolute, resolve, delimiter } from 'node:path';
 import { realpathSync } from 'node:fs';
+
+/**
+ * Environment variable naming additional directories this process may audit,
+ * separated by the platform path delimiter (`:` on POSIX, `;` on Windows).
+ */
+export const ALLOWED_ROOTS_ENV = 'CHAOS_ALLOWED_ROOTS';
+
+/**
+ * Extra workspace roots this process is permitted to sandbox, beyond its own
+ * working directory.
+ *
+ * An MCP server is launched with one fixed cwd, and both the workspace-root
+ * walk and the sandbox guard clamp to it — so a server started in project A
+ * cannot audit project B at all, even when the operator wants exactly that.
+ * This opt-in list restores that ability without dropping the boundary: only
+ * roots the operator named in the server definition are reachable, and the
+ * variable being unset leaves the cwd-only behaviour untouched.
+ *
+ * Read fresh on each call rather than cached at import: tests set the variable
+ * per case, and an MCP server is long-lived enough that a cached empty list
+ * would outlive a configuration change.
+ *
+ * Relative entries resolve against the current working directory. Blank
+ * segments are dropped — an empty entry would otherwise resolve to cwd and
+ * silently widen nothing, or worse read as "everything" to a future reader.
+ */
+export function allowedWorkspaceRoots(): string[] {
+  const raw = process.env[ALLOWED_ROOTS_ENV];
+  if (raw === undefined) return [];
+  // No whitespace-only fast path: the trim + length filter below already maps
+  // '   ' to an empty list, so an extra guard here would be unreachable in
+  // effect (mutation testing flagged all three of its mutants as equivalent).
+  return raw
+    .split(delimiter)
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0)
+    .map((entry) => resolve(entry));
+}
+
+/**
+ * True when `candidate` may be used as a workspace root: it is inside the
+ * process working directory, or inside one of {@link allowedWorkspaceRoots}.
+ *
+ * Symlinks are resolved on both sides (see {@link isRealPathInside}) so an
+ * allowed root cannot be widened by pointing a symlink out of it.
+ */
+export function isWorkspaceRootAllowed(candidate: string): boolean {
+  if (isRealPathInside(candidate, resolve(process.cwd()))) return true;
+  return allowedWorkspaceRoots().some((root) => isRealPathInside(candidate, root));
+}
+
+/**
+ * The boundary the upward workspace-root walk must not climb past for a file at
+ * `fileDir`: the innermost allowed root containing it, else the process cwd.
+ *
+ * Returning the *innermost* match matters when roots nest (e.g. a monorepo and
+ * one of its packages both listed) — clamping to the outer one would let the
+ * marker walk escape the package and resolve the wrong workspace.
+ */
+export function workspaceRootBoundary(fileDir: string): string {
+  const cwd = resolve(process.cwd());
+  if (isRealPathInside(fileDir, cwd)) return cwd;
+
+  let boundary: string | null = null;
+  for (const root of allowedWorkspaceRoots()) {
+    if (!isRealPathInside(fileDir, root)) continue;
+    // `>` vs `>=` is an equivalent mutation here and is left unpinned: two
+    // DIFFERENT roots of equal length cannot both be ancestors of the same
+    // directory, so the tie branch is unreachable.
+    if (boundary === null || root.length > boundary.length) boundary = root;
+  }
+  return boundary ?? cwd;
+}
 
 /**
  * Returns true when `candidate` is `root` itself, or a path strictly inside

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Mock fs module (sync exports only — async fs.cp lives in fs/promises).
 vi.mock('fs', () => ({
@@ -35,8 +35,9 @@ vi.mock('../utils/logger.js', () => ({
 import { mkdtempSync, symlinkSync, rmSync, existsSync, statSync, readdirSync } from 'fs';
 import { cp } from 'fs/promises';
 import { tmpdir } from 'os';
-import { resolve } from 'path';
+import { resolve, join } from 'path';
 import { createSandbox, SandboxContext } from '../utils/sandbox.js';
+import { ALLOWED_ROOTS_ENV } from '../utils/path-safety.js';
 
 // Test workspace root — must resolve inside the test process cwd because
 // createSandbox now refuses workspaces that escape cwd (audit finding C2).
@@ -60,8 +61,18 @@ const SANDBOX_DIR = '/tmp/chaos-mcp-00000000-0000-0000-0000-000000000000';
 describe('createSandbox', () => {
   let sandbox: SandboxContext;
 
+  // Snapshot the ambient allow-list once, and reset to a clean (unset) state
+  // before every case so a test that sets it cannot widen the boundary for the
+  // cwd-rejection cases that follow it.
+  const originalAllowedRoots = process.env[ALLOWED_ROOTS_ENV];
+  afterEach(() => {
+    if (originalAllowedRoots === undefined) Reflect.deleteProperty(process.env, ALLOWED_ROOTS_ENV);
+    else process.env[ALLOWED_ROOTS_ENV] = originalAllowedRoots;
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
+    Reflect.deleteProperty(process.env, ALLOWED_ROOTS_ENV);
     mockTmpdir.mockReturnValue('/tmp');
     mockMkdtempSync.mockReturnValue(SANDBOX_DIR);
     // Default: cp resolves to undefined (mimics successful copy).
@@ -711,6 +722,70 @@ describe('createSandbox', () => {
 
     await expect(createSandbox('src/utils/math.ts', siblingDir)).rejects.toThrow(
       /Refusing to sandbox workspace outside process cwd/,
+    );
+  });
+
+  // ─── CHAOS_ALLOWED_ROOTS opt-in ──────────────────────────────────────────
+
+  it('accepts a workspace outside cwd when it is listed in CHAOS_ALLOWED_ROOTS', async () => {
+    // An MCP server runs with one fixed cwd, so without this a server started
+    // in project A could not audit project B at all. The opt-in list restores
+    // that without dropping the boundary.
+    const siblingDir = resolve(process.cwd(), '..', 'sibling-project');
+    process.env[ALLOWED_ROOTS_ENV] = siblingDir;
+    mockExistsSync.mockImplementation((path: string) => {
+      return path === `${SANDBOX_DIR}/src/utils/math.ts`;
+    });
+
+    await expect(createSandbox('src/utils/math.ts', siblingDir)).resolves.toBeDefined();
+  });
+
+  it('accepts a workspace nested under a CHAOS_ALLOWED_ROOTS entry', async () => {
+    const allowedRoot = resolve(process.cwd(), '..', 'monorepo');
+    const nested = join(allowedRoot, 'packages', 'api');
+    process.env[ALLOWED_ROOTS_ENV] = allowedRoot;
+    mockExistsSync.mockImplementation((path: string) => {
+      return path === `${SANDBOX_DIR}/src/utils/math.ts`;
+    });
+
+    await expect(createSandbox('src/utils/math.ts', nested)).resolves.toBeDefined();
+  });
+
+  it('still rejects a workspace that no CHAOS_ALLOWED_ROOTS entry covers', async () => {
+    // Widening to one root must not widen to its siblings.
+    process.env[ALLOWED_ROOTS_ENV] = resolve(process.cwd(), '..', 'allowed-project');
+    const otherDir = resolve(process.cwd(), '..', 'unlisted-project');
+    mockExistsSync.mockImplementation((path: string) => {
+      return path === `${SANDBOX_DIR}/src/utils/math.ts`;
+    });
+
+    await expect(createSandbox('src/utils/math.ts', otherDir)).rejects.toThrow(
+      /Refusing to sandbox workspace outside process cwd/,
+    );
+  });
+
+  it('names the configured roots in the rejection so the misconfiguration is visible', async () => {
+    const allowed = resolve(process.cwd(), '..', 'allowed-project');
+    process.env[ALLOWED_ROOTS_ENV] = allowed;
+    const otherDir = resolve(process.cwd(), '..', 'unlisted-project');
+    mockExistsSync.mockImplementation((path: string) => {
+      return path === `${SANDBOX_DIR}/src/utils/math.ts`;
+    });
+
+    await expect(createSandbox('src/utils/math.ts', otherDir)).rejects.toThrow(
+      new RegExp(`${ALLOWED_ROOTS_ENV} entry \\(${allowed.replace(/[/\\]/g, '\\$&')}\\)`),
+    );
+  });
+
+  it('points at the variable when nothing is configured at all', async () => {
+    Reflect.deleteProperty(process.env, ALLOWED_ROOTS_ENV);
+    const otherDir = resolve(process.cwd(), '..', 'unlisted-project');
+    mockExistsSync.mockImplementation((path: string) => {
+      return path === `${SANDBOX_DIR}/src/utils/math.ts`;
+    });
+
+    await expect(createSandbox('src/utils/math.ts', otherDir)).rejects.toThrow(
+      new RegExp(`Set ${ALLOWED_ROOTS_ENV} to audit workspaces`),
     );
   });
 

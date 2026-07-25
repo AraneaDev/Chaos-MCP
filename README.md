@@ -565,6 +565,35 @@ chaos-mcp --container-doctor
 
 The `prebuildCommand` tool argument runs an arbitrary shell command inside the sandbox, which can reach outside it. It is **disabled by default**. Enable it explicitly with `"allowPrebuild": true` in `chaos-mcp.config.json`, or by setting the `CHAOS_MCP_ALLOW_PREBUILD=1` environment variable. The auto-detected prebuild for Rust (`cargo check`) runs without this flag.
 
+### Auditing workspaces outside the working directory
+
+By default Chaos-MCP only audits files beneath the directory the process was
+launched in: the workspace-root walk stops at `process.cwd()`, and the sandbox
+refuses to copy anything that escapes it. For an MCP server — which is launched
+once with a fixed cwd — that means a server started in project A cannot audit
+project B at all.
+
+Set `CHAOS_ALLOWED_ROOTS` to name additional roots, separated by the platform
+path delimiter (`:` on POSIX, `;` on Windows):
+
+```json
+{
+  "mcpServers": {
+    "chaos-mcp": {
+      "command": "node",
+      "args": ["/path/to/Chaos-MCP/build/index.js"],
+      "env": { "CHAOS_ALLOWED_ROOTS": "/srv/project-b:/srv/project-c" }
+    }
+  }
+}
+```
+
+A workspace is accepted when it is inside the working directory **or** inside
+one of these roots; everything else is still refused. Descendants of a listed
+root are included, siblings and parents are not. When roots nest (a monorepo and
+one of its packages), the innermost match bounds the root walk. Leaving the
+variable unset keeps the cwd-only behaviour exactly as before.
+
 ## Supported Test Runners (Auto-Detected)
 
 | Language      | Mutation Tool | Detected Runners                             |

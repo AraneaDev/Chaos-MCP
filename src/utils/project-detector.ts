@@ -1,10 +1,23 @@
 import { existsSync, readFileSync } from 'fs';
 import { resolve, dirname, join } from 'path';
+import { workspaceRootBoundary } from './path-safety.js';
 
 /**
  * Supported project types for mutation testing.
  */
 export type ProjectType = 'typescript' | 'python' | 'rust' | 'php' | 'unsupported';
+
+/**
+ * The project types that map to a real mutation engine (everything but
+ * 'unsupported').
+ *
+ * Declared here, in the detection leaf, rather than next to the engine registry
+ * that consumes it: `utils/execution.ts` needs this type, and importing it from
+ * `engines/registry.ts` made a utility depend on the engine layer — closing an
+ * 8-module import cycle (exec-classify → execution → registry → engines →
+ * exec-classify). `engines/registry.ts` re-exports it for existing callers.
+ */
+export type SupportedProjectType = Exclude<ProjectType, 'unsupported'>;
 
 /**
  * Structured environment information resolved from workspace signals.
@@ -532,7 +545,7 @@ interface LanguageDetector {
   packageManager?: (workspaceRoot: string) => string;
 }
 
-const LANGUAGE_DETECTORS: Record<Exclude<ProjectType, 'unsupported'>, LanguageDetector> = {
+const LANGUAGE_DETECTORS: Record<SupportedProjectType, LanguageDetector> = {
   typescript: {
     matches: (p) => /\.(c|m)?[jt]sx?$/.test(p),
     markers: JS_ROOT_MARKERS,
@@ -561,10 +574,7 @@ const LANGUAGE_DETECTORS: Record<Exclude<ProjectType, 'unsupported'>, LanguageDe
 };
 
 /** Detection order — preserves the original typescript→python→rust sequence. */
-const LANGUAGE_DETECTOR_TYPES = Object.keys(LANGUAGE_DETECTORS) as Exclude<
-  ProjectType,
-  'unsupported'
->[];
+const LANGUAGE_DETECTOR_TYPES = Object.keys(LANGUAGE_DETECTORS) as SupportedProjectType[];
 
 // ─── Main detection entry point ──────────────────────────────────────────────
 
@@ -593,11 +603,17 @@ export function detectEnvironment(filePath: string): EnvironmentInfo {
   const detector = LANGUAGE_DETECTORS[projectType];
 
   // Resolve the workspace root from the file's directory.
-  // Clamp the upward walk to the current working directory: the sandbox refuses
-  // to copy a workspace outside cwd, so a root resolved above cwd would break
-  // every audit. (Med#5: run-from-subdirectory previously failed at provisioning.)
+  // Clamp the upward walk to a boundary the sandbox will actually accept: the
+  // process working directory, or — when the file lives under one — the
+  // innermost CHAOS_ALLOWED_ROOTS entry. A root resolved above that boundary
+  // would break every audit at provisioning.
+  // (Med#5: run-from-subdirectory previously failed at provisioning.)
   const fileDir = dirname(resolve(filePath));
-  const workspaceRoot = resolveWorkspaceRoot(fileDir, detector.markers, process.cwd());
+  const workspaceRoot = resolveWorkspaceRoot(
+    fileDir,
+    detector.markers,
+    workspaceRootBoundary(fileDir),
+  );
 
   // Stryker/mutmut-compatible runner, plus the raw runner/orchestrator so
   // EnvironmentInfo.detectedRunner captures the actual signal (e.g. 'bun',

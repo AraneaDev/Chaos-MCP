@@ -1,9 +1,10 @@
 import { cp } from 'fs/promises';
 import { mkdtempSync, symlinkSync, rmSync, existsSync, statSync, readdirSync } from 'fs';
-import { join, resolve, isAbsolute, relative, sep } from 'path';
+import { join, resolve, sep } from 'path';
 import { tmpdir } from 'os';
 import { randomUUID } from 'crypto';
 import { warn } from './logger.js';
+import { ALLOWED_ROOTS_ENV, allowedWorkspaceRoots, isWorkspaceRootAllowed } from './path-safety.js';
 
 /**
  * Registry of active sandbox directories that have not yet been cleaned up.
@@ -62,26 +63,6 @@ function ensureExitHandler(): void {
       process.exit(128 + SIGNAL_NUMBERS[sig]);
     });
   }
-}
-
-/**
- * Returns true when `candidate` is `root` itself, or a path strictly inside
- * `root` (no `..` traversal, no absolute escape).
- *
- * Defense-in-depth against path traversal (audit finding C2): even if the
- * handler layer forgets to validate `filePath`, the sandbox refuses to
- * copy a workspace that lies outside the current process working directory.
- */
-function isPathInside(candidate: string, root: string): boolean {
-  const rel = relative(root, candidate);
-  // INSIDE means equal-to (rel === '') or strictly inside (rel === 'foo/…').
-  // A parent ('..'), sibling ('../foo'), or absolute-escape path is rejected.
-  // Note `!rel.startsWith('..')` already covers the bare '..' parent case, so
-  // no separate `rel !== '..'` check is needed (it would be dead code).
-  // (Live-audit L1 fix: previously required `rel !== ''` which blocked the
-  // legitimate case where `workspaceRoot === process.cwd()`, causing audit
-  // calls on the user's own project to fail unconditionally.)
-  return !rel.startsWith('..') && !isAbsolute(rel);
 }
 
 /**
@@ -347,10 +328,14 @@ export async function createSandbox(
   // the temp dir was created first, so a boundary-guard trip left an empty,
   // untracked directory behind permanently.)
   const absoluteCwd = resolve(process.cwd());
-  if (!isPathInside(absoluteWorkspace, absoluteCwd)) {
+  if (!isWorkspaceRootAllowed(absoluteWorkspace)) {
+    const extra = allowedWorkspaceRoots();
     throw new Error(
       `Refusing to sandbox workspace outside process cwd: ` +
-        `"${absoluteWorkspace}" is not inside "${absoluteCwd}".`,
+        `"${absoluteWorkspace}" is not inside "${absoluteCwd}"` +
+        (extra.length > 0
+          ? ` or any ${ALLOWED_ROOTS_ENV} entry (${extra.join(', ')}).`
+          : `. Set ${ALLOWED_ROOTS_ENV} to audit workspaces outside the working directory.`),
     );
   }
 
