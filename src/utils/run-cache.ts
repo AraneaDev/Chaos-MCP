@@ -71,9 +71,13 @@ function evict(dir: string, ttlMs: number, max: number, now: number): void {
       }
     }
   }
+  // Oldest first, with the id breaking a same-millisecond tie. Without the
+  // tiebreak equal timestamps kept their readdir order, which is
+  // filesystem-defined over random run ids — so the same cache state evicted
+  // a different entry between otherwise identical runs.
   const live = entries
     .filter((e) => now - e.createdAt <= ttlMs)
-    .sort((a, b) => a.createdAt - b.createdAt);
+    .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
   for (let i = 0; i < live.length - max + 1; i++) {
     try {
       rmSync(join(dir, `${live[i].id}.json`), { force: true });
