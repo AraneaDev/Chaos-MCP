@@ -1,0 +1,4 @@
+{
+  "comment": "Pre-existing TypeScript errors under tsconfig.tests.json (the test suite was never type-checked before this gate existed). This number may only go DOWN. See scripts/typecheck-tests.mjs.",
+  "errors": 258
+}

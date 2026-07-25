@@ -360,9 +360,7 @@ describe('RustEngine', () => {
 
   it('throws MutationToolStartupError from cargo-mutants verbatim', async () => {
     const { MutationToolStartupError } = await import('../utils/exec-classify.js');
-    mockRunShell.mockRejectedValue(
-      new MutationToolStartupError('cargo-mutants', 'not installed', ''),
-    );
+    mockRunShell.mockRejectedValue(new MutationToolStartupError('cargo-mutants', 'not installed'));
 
     // Verbatim: the message must be re-thrown unchanged, NOT wrapped in the
     // generic "<tool> execution failed: …" prefix that non-startup errors get.

@@ -18,6 +18,20 @@ function makeContext(initialAborted = false): {
   return { ctx, abort: () => controller.abort() };
 }
 
+/**
+ * Build an `ExecFailureError` exactly the way `runShell` / `runShellCommand` do:
+ * an ExecResult-shaped first argument (carrying the errno `code`) and the
+ * human-readable message second.
+ *
+ * Using the real constructor shape matters. Passing `(message, code, exit)` —
+ * the shape these tests used before — type-checks nowhere and silently yields
+ * `err.code === undefined`, so every "non-ABORTED code" case was really an
+ * "absent code" case and never exercised the `code === 'ABORTED'` comparison.
+ */
+function execFailure(code: string, exit: number | null, message: string): ExecFailureError {
+  return new ExecFailureError({ stdout: '', stderr: '', exit, signal: null, code }, message);
+}
+
 describe('isCancel', () => {
   // ─── Branch 1: ctx.signal.aborted === true ──────────────────────────────
   describe('when ctx.signal.aborted is true', () => {
@@ -68,10 +82,7 @@ describe('isCancel', () => {
     // do when an aborted child surfaces: constructor takes the ExecResult-shaped
     // first arg (with optional `code`) and the human-readable message second.
     function abortedChildError(): ExecFailureError {
-      return new ExecFailureError(
-        { stdout: '', stderr: '', exit: null, signal: null, code: 'ABORTED' },
-        'Shell command was cancelled: <test>',
-      );
+      return execFailure('ABORTED', null, 'Shell command was cancelled: <test>');
     }
 
     it('returns true for the canonical engine-aborted failure', () => {
@@ -97,7 +108,11 @@ describe('isCancel', () => {
     });
 
     it('returns false for an ExecFailureError with a non-ABORTED code', () => {
-      const err = new ExecFailureError('timeout', 'TIMEOUT', 124);
+      const err = execFailure('TIMEOUT', 124, 'timeout');
+      // Guard the premise: the point of this case is a code that is SET but is
+      // not 'ABORTED'. An absent code would pass the assertion for the wrong
+      // reason and leave the `code === 'ABORTED'` comparison unexercised.
+      expect(err.code).toBe('TIMEOUT');
       expect(isCancel(err)).toBe(false);
     });
 
@@ -129,7 +144,7 @@ describe('isCancel', () => {
     it('signal-flip during teardown wins over a non-cancel error', () => {
       const { ctx, abort } = makeContext(false);
       // Simulate mid-flight engine error then caller aborts.
-      const err = new ExecFailureError('disk full', 'EIO', 1);
+      const err = execFailure('EIO', 1, 'disk full');
       expect(isCancel(err, ctx)).toBe(false);
       abort();
       expect(isCancel(err, ctx)).toBe(true);
@@ -137,7 +152,7 @@ describe('isCancel', () => {
 
     it('a non-cancel ctx + non-cancel error + non-ABORTED ExecFailure returns false', () => {
       const { ctx } = makeContext(false);
-      const err = new ExecFailureError('plain fail', 'ENOENT', 2);
+      const err = execFailure('ENOENT', 2, 'plain fail');
       expect(isCancel(err, ctx)).toBe(false);
     });
   });

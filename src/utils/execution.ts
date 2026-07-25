@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { lstatSync, readdirSync, realpathSync } from 'node:fs';
 import { sep } from 'node:path';
-import type { SupportedProjectType } from '../engines/registry.js';
+import type { SupportedProjectType } from './project-detector.js';
 import type { ContainerConfig } from './config-loader.js';
 import { ExecFailureError, type ExecResult, runShell, runShellCommand } from './exec.js';
 import { warn } from './logger.js';

@@ -1,0 +1,17 @@
+// Typecheck-only project covering the WHOLE source tree, tests included.
+//
+// tsconfig.json deliberately excludes src/__tests__ because tests must not be
+// emitted into build/. The side effect was that nothing ever type-checked them:
+// `tsc --noEmit` (CI) skipped them by exclusion, and Vitest transpiles via
+// esbuild without type information. Type errors in tests accumulated silently.
+//
+// Used by `npm run typecheck:tests`. Emits nothing — this project exists only
+// to give the test sources a type-checking pass.
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["node_modules", "build"]
+}

@@ -43,6 +43,15 @@ jobs:
         if: always()
         run: npx tsc --noEmit
 
+      # `tsc --noEmit` above uses tsconfig.json, which EXCLUDES src/__tests__ so
+      # tests are never emitted into build/. The side effect was that nothing
+      # type-checked the test suite at all (Vitest transpiles via esbuild, which
+      # discards types), and 271 errors accumulated unnoticed. This step checks
+      # the tests too, against a baseline that may only decrease.
+      - name: Typecheck tests (ratchet)
+        if: always()
+        run: npm run typecheck:tests
+
       # Smoke test the CLI binary: verify --validate-config and
       # --validate-config --strict exit with the expected codes and
       # report warnings correctly to stderr.

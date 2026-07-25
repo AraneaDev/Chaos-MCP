@@ -1254,7 +1254,7 @@ describe('TypeScriptEngine', () => {
 
   it('throws MutationToolStartupError verbatim', async () => {
     const { MutationToolStartupError } = await import('../utils/exec-classify.js');
-    mockRunShell.mockRejectedValue(new MutationToolStartupError('StrykerJS', 'not found', ''));
+    mockRunShell.mockRejectedValue(new MutationToolStartupError('StrykerJS', 'not found'));
 
     await expect(engine.run('src/test.ts')).rejects.toThrow('not found');
   });
