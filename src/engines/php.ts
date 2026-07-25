@@ -127,6 +127,45 @@ export function diagnoseInfectionStartupFailure(output: string): string | null {
   return null;
 }
 
+/**
+ * True when a PHPUnit configuration makes a warning fail the run.
+ *
+ * Only the root element counts, and comments are stripped first: a config that
+ * merely *mentions* the attribute — the shape one acquires right after reading
+ * about this trap — does not have it set.
+ */
+export function phpunitFailsOnWarning(configXml: string): boolean {
+  const root = /<phpunit\b[^>]*>/i.exec(configXml.replace(/<!--[\s\S]*?-->/g, ''));
+  return root !== null && /\bfailOnWarning\s*=\s*(["'])true\1/i.test(root[0]);
+}
+
+/**
+ * The advisory attached to a PHP result that reports survivors while the
+ * project's PHPUnit config lets warnings pass.
+ *
+ * Infection sets `stopOnDefect="true"` in the config it writes for each mutant,
+ * so the suite halts as soon as a mutant proves itself killed. That is sound
+ * only while a defect also means a non-zero exit code. A PHP warning is a
+ * defect for `stopOnDefect` but is not a failure under `failOnWarning="false"`,
+ * so a mutant whose effect makes an *earlier* test warn stops the run with exit
+ * 0 — and Infection records it as escaped without ever reaching the test that
+ * asserts the mutated behaviour.
+ *
+ * Measured on Knossos-MCP: one such mutant halted the suite after 86 of 1,858
+ * tests, and the file reported ten survivors at 96%. With `failOnWarning="true"`
+ * the same file reports zero survivors at 100% — every one had been a phantom.
+ *
+ * The error is one-directional: scores are depressed, never inflated. That
+ * makes it expensive rather than dangerous, because it sends a reader off
+ * writing tests for mutants their suite already kills.
+ */
+export const WARNING_FIDELITY_NOTE =
+  'Survivors may be overstated: this project\'s PHPUnit config does not set failOnWarning="true". ' +
+  'Infection sets stopOnDefect="true" for each mutant, so a mutant whose effect makes an earlier ' +
+  'test emit a PHP warning halts the suite with exit 0 and is recorded as escaped before the test ' +
+  'that would assert the change ever runs. Confirm a survivor by applying its mutation by hand and ' +
+  'running the covering test file; if that fails, set failOnWarning="true" and re-audit.';
+
 /** One mutant entry in Infection's JSON log. */
 interface InfectionMutant {
   mutator?: { mutatorName?: string; originalFilePath?: string; originalStartLine?: number };
@@ -413,6 +452,30 @@ export class PhpEngine extends BaseEngine {
       );
     }
 
-    return parseInfectionJsonLog(logText, filePath);
+    const result = parseInfectionJsonLog(logText, filePath);
+    // Only worth saying when there is something it could be wrong about: a
+    // clean run has no survivor to doubt.
+    if (result.survived > 0 && !this.projectFailsOnWarning(cwd)) {
+      result.fidelityNote = WARNING_FIDELITY_NOTE;
+    }
+    return result;
+  }
+
+  /**
+   * Whether the audited project's PHPUnit config fails on warnings. An
+   * unreadable or absent config answers `true` — the advisory exists to explain
+   * a specific misconfiguration, not to speculate about one we cannot see.
+   */
+  private projectFailsOnWarning(cwd: string): boolean {
+    for (const name of PHPUNIT_CONFIG_NAMES) {
+      const path = join(cwd, name);
+      if (!existsSync(path)) continue;
+      try {
+        return phpunitFailsOnWarning(readFileSync(path, 'utf8'));
+      } catch {
+        return true;
+      }
+    }
+    return true;
   }
 }

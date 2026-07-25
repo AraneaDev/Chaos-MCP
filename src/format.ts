@@ -219,6 +219,7 @@ export function formatResultAsText(
     `Mutation score: ${noMutants ? 'n/a' : result.mutationScore} (${result.killed}/${result.totalMutants} killed, ${result.survived} survived)`,
   ];
   if (result.scopeNote) lines.push(`Scope: ${result.scopeNote}`);
+  if (result.fidelityNote) lines.push(`Warning: ${result.fidelityNote}`);
   // Surface unscoreable mutants in text format too (audit L6) so a caller
   // asking for human-readable output can see why total < generated.
   if (result.incompetent && result.incompetent > 0) {
@@ -302,6 +303,8 @@ export interface ResultPayload {
   survivorsFiltered?: number;
   noCoverageFiltered?: number;
   scopeNote?: string;
+  /** Advisory that the run itself may misreport; see MutationResult.fidelityNote. */
+  fidelityNote?: string;
   enrichNote?: string;
   note: string;
   runId?: string;
@@ -411,6 +414,7 @@ export function buildResultPayload(
   if (nFloor.filtered > 0) payload.noCoverageFiltered = nFloor.filtered;
   if (enrichNote) payload.enrichNote = enrichNote;
   if (result.scopeNote) payload.scopeNote = result.scopeNote;
+  if (result.fidelityNote) payload.fidelityNote = result.fidelityNote;
   if (result.complete !== undefined) payload.complete = result.complete;
   if (result.batchesCompleted !== undefined) payload.batchesCompleted = result.batchesCompleted;
   if (result.batchesPlanned !== undefined) payload.batchesPlanned = result.batchesPlanned;

@@ -27,6 +27,7 @@ import {
   buildInfectionConfig,
   inferSourceDir,
   infectionDiagnostics,
+  phpunitFailsOnWarning,
 } from '../engines/php.js';
 
 const mockInvoke = vi.mocked(invokeMutationTool);
@@ -57,6 +58,51 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockExists.mockReturnValue(false);
   mockWrite.mockReturnValue(undefined);
+});
+
+describe('phpunitFailsOnWarning', () => {
+  it('is true when the root element sets failOnWarning="true"', () => {
+    expect(phpunitFailsOnWarning('<phpunit failOnWarning="true"></phpunit>')).toBe(true);
+  });
+
+  /** Real configs spread attributes over many lines. */
+  it('finds the attribute across a multi-line root element', () => {
+    const xml = `<?xml version="1.0"?>
+<phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         bootstrap="tests/bootstrap.php"
+         failOnRisky="true"
+         failOnWarning="true"
+         cacheDirectory=".phpunit.cache">
+  <testsuites/>
+</phpunit>`;
+    expect(phpunitFailsOnWarning(xml)).toBe(true);
+  });
+
+  it('accepts single-quoted attribute values', () => {
+    expect(phpunitFailsOnWarning("<phpunit failOnWarning='true'/>")).toBe(true);
+  });
+
+  it('is false when the attribute is absent', () => {
+    expect(phpunitFailsOnWarning('<phpunit bootstrap="x.php"><testsuites/></phpunit>')).toBe(false);
+  });
+
+  it('is false when the attribute is explicitly false', () => {
+    expect(phpunitFailsOnWarning('<phpunit failOnWarning="false"/>')).toBe(false);
+  });
+
+  /**
+   * The setting is only meaningful on the root element. A comment quoting it —
+   * the shape a config carries right after someone reads about this trap — must
+   * not be mistaken for the setting itself.
+   */
+  it('ignores the attribute when it appears only in a comment', () => {
+    const xml = `<!-- consider failOnWarning="true" here -->\n<phpunit bootstrap="x.php"/>`;
+    expect(phpunitFailsOnWarning(xml)).toBe(false);
+  });
+
+  it('is false for a file with no phpunit element at all', () => {
+    expect(phpunitFailsOnWarning('<not-phpunit failOnWarning="true"/>')).toBe(false);
+  });
 });
 
 describe('inferSourceDir', () => {
@@ -270,6 +316,79 @@ describe('PhpEngine.run', () => {
     expect(args).toContain('--no-progress');
     expect(args).toContain('--no-interaction');
     expect(result.survived).toBe(1);
+  });
+
+  /**
+   * The survivors this engine reports are only trustworthy if a killed mutant
+   * reliably produces a failing exit code. Under `failOnWarning="false"` it does
+   * not, so the result says so rather than letting a caller act on phantoms.
+   */
+  it('flags survivors when the project does not fail on warnings', async () => {
+    mockExists.mockImplementation(
+      (p) => String(p).endsWith('chaos-infection-log.json') || String(p).endsWith('phpunit.xml'),
+    );
+    mockRead.mockImplementation((p) =>
+      String(p).endsWith('phpunit.xml')
+        ? '<phpunit failOnWarning="false"><testsuites/></phpunit>'
+        : SAMPLE_LOG,
+    );
+    mockInvoke.mockResolvedValue({ stdout: '', stderr: '', exit: 0, signal: null });
+
+    const result = await new PhpEngine().run('src/Calculator.php', { workDir: '/sb' });
+
+    expect(result.survived).toBe(1);
+    expect(result.fidelityNote).toContain('failOnWarning');
+  });
+
+  it('does not flag survivors when the project already fails on warnings', async () => {
+    mockExists.mockImplementation(
+      (p) => String(p).endsWith('chaos-infection-log.json') || String(p).endsWith('phpunit.xml'),
+    );
+    mockRead.mockImplementation((p) =>
+      String(p).endsWith('phpunit.xml')
+        ? '<phpunit failOnWarning="true"><testsuites/></phpunit>'
+        : SAMPLE_LOG,
+    );
+    mockInvoke.mockResolvedValue({ stdout: '', stderr: '', exit: 0, signal: null });
+
+    const result = await new PhpEngine().run('src/Calculator.php', { workDir: '/sb' });
+
+    expect(result.fidelityNote).toBeUndefined();
+  });
+
+  /** No survivor, nothing to doubt — the advisory would be noise. */
+  it('does not flag a run with no survivors', async () => {
+    const cleanLog = JSON.stringify({
+      stats: { totalMutantsCount: 2, killedCount: 2, escapedCount: 0, timeOutCount: 0 },
+      escaped: [],
+      killed: [{ mutator: { originalFilePath: 'src/Calculator.php' } }, {}],
+    });
+    mockExists.mockImplementation(
+      (p) => String(p).endsWith('chaos-infection-log.json') || String(p).endsWith('phpunit.xml'),
+    );
+    mockRead.mockImplementation((p) =>
+      String(p).endsWith('phpunit.xml')
+        ? '<phpunit failOnWarning="false"><testsuites/></phpunit>'
+        : cleanLog,
+    );
+    mockInvoke.mockResolvedValue({ stdout: '', stderr: '', exit: 0, signal: null });
+
+    const result = await new PhpEngine().run('src/Calculator.php', { workDir: '/sb' });
+
+    expect(result.survived).toBe(0);
+    expect(result.fidelityNote).toBeUndefined();
+  });
+
+  /** A project with no PHPUnit config at all is not evidence of the trap. */
+  it('does not flag when no PHPUnit config can be read', async () => {
+    mockExists.mockImplementation((p) => String(p).endsWith('chaos-infection-log.json'));
+    mockRead.mockReturnValue(SAMPLE_LOG);
+    mockInvoke.mockResolvedValue({ stdout: '', stderr: '', exit: 0, signal: null });
+
+    const result = await new PhpEngine().run('src/Calculator.php', { workDir: '/sb' });
+
+    expect(result.survived).toBe(1);
+    expect(result.fidelityNote).toBeUndefined();
   });
 
   it('deletes any pre-existing JSON log before running so a stale one cannot be read', async () => {

@@ -61,6 +61,7 @@ a clear error naming the exact install command.
 Notes:
 
 - In native mode, the tool must be on `PATH` (or, for StrykerJS, resolvable from the target project's `node_modules`), and its language toolchain must be installed.
+- **PHP / Infection:** set `failOnWarning="true"` in your `phpunit.xml`. Infection writes a PHPUnit config per mutant with `stopOnDefect="true"`, so the suite stops as soon as a mutant looks killed — but a PHP warning is a _defect_ without being a _failure_, so under `failOnWarning="false"` a mutant that makes an earlier test warn stops the run with exit 0 and is reported as **survived** before the asserting test runs. Scores are only ever depressed by this, never inflated. Chaos-MCP reads your PHPUnit config and attaches a `fidelityNote` to any PHP result that reports survivors while the setting is off.
 - **Python / cosmic-ray (native mode):** on modern distros a bare `pip install cosmic-ray` is blocked by [PEP 668](https://peps.python.org/pep-0668/) ("externally-managed-environment"); use `pipx install cosmic-ray` or an activated virtualenv. Chaos-MCP generates cosmic-ray's config and runs `baseline → init → exec → dump` in the sandbox. Use `testSelection` and `excludeOperators` to keep large audits tractable.
 - These engines run **inside the sandbox** against a copy of your workspace; Chaos-MCP never installs or modifies anything in your real project.
 
