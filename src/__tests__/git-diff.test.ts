@@ -242,6 +242,58 @@ describe('listChangedFiles', () => {
     expect(calls.some((c) => c.includes('merge-base'))).toBe(false);
   });
 
+  /**
+   * Git writes one path per line, and a checkout with CRLF endings leaves a
+   * `\r` on each. Untrimmed, `src/a.ts\r` reaches the engines as a path that
+   * does not exist, so the file is silently dropped from the audit.
+   */
+  it('trims carriage returns and stray whitespace off each path', async () => {
+    mockRunShell
+      .mockResolvedValueOnce(ok('true\n')) // work-tree
+      .mockResolvedValueOnce(ok('abc123\n')) // merge-base
+      .mockResolvedValueOnce(ok('src/a.ts\r\n  src/b.ts  \n')) // diff --name-only
+      .mockResolvedValueOnce(ok('src/c.ts\r\n')); // ls-files --others
+
+    const r = await listChangedFiles('/ws', 'main');
+
+    expect(r).toEqual({ kind: 'files', files: ['src/a.ts', 'src/b.ts', 'src/c.ts'] });
+  });
+
+  /**
+   * The list is the work-order for a triage run. Leaving it in git's order
+   * makes the same working tree audit its files in a different sequence
+   * depending on which git command reported them, so a truncated run
+   * (`maxFiles`) covers a different set each time.
+   */
+  it('returns the paths sorted, not in the order git reported them', async () => {
+    mockRunShell
+      .mockResolvedValueOnce(ok('true\n')) // work-tree
+      .mockResolvedValueOnce(ok('abc123\n')) // merge-base
+      .mockResolvedValueOnce(ok('src/z.ts\nsrc/m.ts\n')) // diff --name-only
+      .mockResolvedValueOnce(ok('src/a.ts\n')); // ls-files --others
+
+    const r = await listChangedFiles('/ws', 'main');
+
+    expect(r).toEqual({ kind: 'files', files: ['src/a.ts', 'src/m.ts', 'src/z.ts'] });
+  });
+
+  /**
+   * Untracked discovery is best-effort: when `ls-files` fails the tracked
+   * changes still stand. What must not happen is the failed command's state
+   * leaking into the result as a phantom path.
+   */
+  it('keeps the tracked changes when untracked discovery fails', async () => {
+    mockRunShell
+      .mockResolvedValueOnce(ok('true\n')) // work-tree
+      .mockResolvedValueOnce(ok('abc123\n')) // merge-base
+      .mockResolvedValueOnce(ok('src/a.ts\n')) // diff --name-only
+      .mockRejectedValueOnce(fail('ls-files exploded')); // ls-files --others
+
+    const r = await listChangedFiles('/ws', 'main');
+
+    expect(r).toEqual({ kind: 'files', files: ['src/a.ts'] });
+  });
+
   it('runs every git call as "git" in the workspace with the read-only timeout', async () => {
     mockRunShell
       .mockResolvedValueOnce(ok('true\n')) // work-tree
