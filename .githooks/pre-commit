@@ -1,0 +1,37 @@
+#!/bin/sh
+# Refuse commits made directly on an integration branch.
+#
+# Work belongs on a topic branch so it can be reviewed as a pull request.
+# Committing to main locally is easy to do by accident and awkward to undo once
+# anything is built on top of it.
+#
+# This lives in .git/hooks/ ON PURPOSE rather than in a tracked directory
+# reached via core.hooksPath: a tracked hook only exists in the working tree
+# when a branch containing it is checked out, so it would be absent on main —
+# the one branch it is meant to guard.
+#
+# Deliberate exception (a release chore, an emergency fix):
+#     git commit --no-verify
+set -eu
+
+PROTECTED='main master'
+
+# Empty during a rebase, cherry-pick, or any other detached-HEAD operation,
+# which must not be blocked — those commits were already made on a branch.
+branch=$(git symbolic-ref --quiet --short HEAD || true)
+[ -n "$branch" ] || exit 0
+
+for protected in $PROTECTED; do
+    if [ "$branch" = "$protected" ]; then
+        printf '%s\n' \
+            "Refusing to commit directly to '$branch'." \
+            "" \
+            "Move to a topic branch first — it carries the staged changes with it:" \
+            "    git checkout -b <type>/<short-description>" \
+            "" \
+            "Intentional? Re-run with --no-verify." >&2
+        exit 1
+    fi
+done
+
+exit 0
