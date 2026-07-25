@@ -398,6 +398,10 @@ export async function createSandbox(
     // with a confusing "target not found" (Med#7).
     const absoluteTarget = resolve(absoluteWorkspace, targetFile);
 
+    // Heavyweight dirs the filter skipped, at any depth, to be symlinked back in
+    // Step 2. Populated by the filter callback below (which cp calls synchronously).
+    const skippedHeavyDirs = new Set<string>();
+
     // ── Audit C1: async cp releases the event loop during disk I/O. ──
     // The filter callback is synchronous — Node's async fs.cp calls the
     // filter sync per entry and accumulates results internally.
@@ -409,13 +413,25 @@ export async function createSandbox(
 
         const segments = src.split(sep);
         const basename = segments[segments.length - 1] ?? '';
-        if (ALWAYS_EXCLUDE.has(basename)) return false;
         // Symlinked heavyweight dirs (node_modules, .venv, venv, and — except
         // for Composer PHP audits — vendor) are materialised as symlinks in
         // Step 2, so they must never be copied here: a copied dir would make the
         // later symlinkSync fail with EEXIST. Dirs we deliberately COPY (vendor
         // for PHP) are absent from this set and fall through to be copied.
-        if (symlinkDirsSet.has(basename)) return false;
+        //
+        // This matches on a path SEGMENT, so it skips these dirs at every depth.
+        // Record each one: Step 2 used to symlink only the workspace root, so a
+        // workspace layout (npm workspaces, or a PHP project shipping a Node
+        // worker) lost its NESTED dependencies from the sandbox entirely.
+        //
+        // Checked BEFORE ALWAYS_EXCLUDE because node_modules/.venv/venv appear
+        // in both lists; an ALWAYS_EXCLUDE hit first would drop them silently
+        // instead of recording them for re-linking.
+        if (symlinkDirsSet.has(basename)) {
+          skippedHeavyDirs.add(src);
+          return false;
+        }
+        if (ALWAYS_EXCLUDE.has(basename)) return false;
         // Audit finding M6: segment-based matching prevents over-eager substring
         // exclusion. Excludes only when a path segment exactly equals the
         // pattern, not when the pattern is a substring of any path component.
@@ -446,6 +462,14 @@ export async function createSandbox(
       if (existsSync(src)) {
         safeSymlink(src, dst);
       }
+      skippedHeavyDirs.delete(src); // handled above; do not link it twice
+    }
+    // Nested occurrences (e.g. workers/typescript/node_modules). Their parent
+    // directories were copied, so the link destination's parent already exists.
+    for (const src of skippedHeavyDirs) {
+      if (!src.startsWith(absoluteWorkspace + sep)) continue;
+      if (!existsSync(src)) continue;
+      safeSymlink(src, join(sandboxDir, src.slice(absoluteWorkspace.length + 1)));
     }
 
     if (options?.signal?.aborted) throw abortError();

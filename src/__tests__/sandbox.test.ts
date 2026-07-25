@@ -866,6 +866,38 @@ describe('createSandbox', () => {
     expect(linked).toContain(`${TEST_PROJECT}/venv`);
   });
 
+  it('symlinks a nested node_modules the copy filter skipped, not just the root one', async () => {
+    // The copy filter matches on a path SEGMENT, so it skips `node_modules` at
+    // every depth, but Step 2 only ever symlinked the workspace root. In a
+    // workspace layout (npm workspaces, a PHP project shipping a Node worker)
+    // the nested dependencies were therefore dropped from the sandbox
+    // altogether: Knossos-MCP's PHP suite spawns `workers/typescript`, whose
+    // node_modules vanished, so its test run errored and Infection never got
+    // past its initial run.
+    const nested = `${TEST_PROJECT}/workers/typescript/node_modules`;
+    mockExistsSync.mockImplementation((path: string) => {
+      if (path === `${SANDBOX_DIR}/src/utils/math.ts`) return true;
+      return path === TEST_PROJECT_NODE_MODULES || path === nested;
+    });
+    // Real `cp` consults the filter per entry as it walks; the mock must too,
+    // or the nested dir is never observed as skipped.
+    let skippedNested: boolean | undefined;
+    mockCp.mockImplementation((async (
+      _s: string,
+      _d: string,
+      opts: { filter: (src: string) => boolean },
+    ) => {
+      skippedNested = opts.filter(nested);
+    }) as never);
+
+    await createSandbox('src/utils/math.ts', TEST_PROJECT);
+
+    expect(skippedNested).toBe(false); // skipped by the copy…
+    const linked = mockSymlinkSync.mock.calls.map((c) => String(c[0]));
+    expect(linked).toContain(TEST_PROJECT_NODE_MODULES);
+    expect(linked).toContain(nested);
+  });
+
   it('does not exclude everything when an ignorePattern is only a separator', async () => {
     mockExistsSync.mockImplementation((path: string) => {
       return path === `${SANDBOX_DIR}/src/utils/math.ts`;
