@@ -1,4 +1,5 @@
 import { relative, isAbsolute } from 'path';
+import { statSync } from 'fs';
 import { cpus } from 'os';
 import type { CallToolRequest, CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { detectProjectType, detectEnvironment } from './utils/project-detector.js';
@@ -14,6 +15,15 @@ import { createExecutionSession } from './utils/execution.js';
 
 export function resolveEstimateConcurrency(cpuCount: number): number {
   return Math.max(1, Math.min(2, cpuCount - 1));
+}
+
+/** True when the path exists and is a regular file (a directory is not a target). */
+function isReadableFile(absolutePath: string): boolean {
+  try {
+    return statSync(absolutePath).isFile();
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -59,6 +69,19 @@ export async function handleEstimateCall(
 
     if (projectType === 'unsupported') {
       return toolError(`Error: Extension unsupported for file target ${rawFilePath}`);
+    }
+
+    // A missing target must fail loudly. The heuristic degrades a read failure
+    // to an empty source, which yields `mutants: 0` — indistinguishable from a
+    // genuinely trivial file, so a mistyped path or a wrong workspace reads as
+    // "nothing to audit". The audit tool already rejects such a target when it
+    // provisions the sandbox; the estimate skips the sandbox and so must check
+    // for itself.
+    if (!isReadableFile(resolvedFile)) {
+      return toolError(
+        `Error: file target "${rawFilePath}" was not found, or is not a file. ` +
+          'Paths are resolved relative to the workspace root.',
+      );
     }
 
     // Auto-detect the workspace environment (test runner, workspace root).

@@ -35,14 +35,18 @@ vi.mock('../utils/execution.js', () => ({
 
 // Mock realpathSync (used by isRealPathInside in handler.ts) to be identity,
 // so boundary tests work without a real filesystem.
+// statSync is mocked alongside it: the handler stats the target to reject a
+// missing path, and these cases run against paths that exist only in the mock.
 vi.mock('fs', async () => {
   const actual = await vi.importActual<typeof import('fs')>('fs');
   return {
     ...actual,
     realpathSync: vi.fn((p: string) => p),
+    statSync: vi.fn(),
   };
 });
 
+import { statSync } from 'fs';
 import { handleEstimateCall, resolveEstimateConcurrency } from '../estimate-handler.js';
 import { estimateAudit, estimateNeedsSandbox } from '../estimate.js';
 import { detectEnvironment } from '../utils/project-detector.js';
@@ -54,6 +58,7 @@ const mockEstimateNeedsSandbox = vi.mocked(estimateNeedsSandbox);
 const mockDetectEnv = vi.mocked(detectEnvironment);
 const mockCreateSandbox = vi.mocked(createSandbox);
 const mockCreateExecutionSession = vi.mocked(createExecutionSession);
+const mockStatSync = vi.mocked(statSync);
 
 function req(args: Record<string, unknown>): CallToolRequest {
   return {
@@ -94,6 +99,9 @@ describe('handleEstimateCall', () => {
     cleanupSpy.mockReset();
     mockEstimateNeedsSandbox.mockReturnValue(false);
     mockDetectEnv.mockReturnValue(defaultEnv);
+    // Default: every target resolves to a readable file. Cases that exercise a
+    // missing or non-file target override this.
+    mockStatSync.mockReturnValue({ isFile: () => true } as ReturnType<typeof statSync>);
   });
 
   // ── Input validation ──────────────────────────────────────────────────────
@@ -142,6 +150,38 @@ describe('handleEstimateCall', () => {
     const res = await handleEstimateCall(req({ filePath: 'src/main.cpp' }));
     expect(res.isError).toBe(true);
     expect(text(res)).toMatch(/unsupported/i);
+  });
+
+  // ── Missing target ────────────────────────────────────────────────────────
+
+  /**
+   * A path that does not exist used to reach the heuristic, whose read failure
+   * degrades to an empty source — reporting `mutants: 0` with the same shape a
+   * genuinely trivial file produces. A caller reading that estimate concludes
+   * there is nothing to audit, when in fact it mistyped the path or pointed at
+   * the wrong workspace. Only an error distinguishes the two.
+   */
+  it('rejects a filePath that does not exist instead of estimating zero mutants', async () => {
+    mockStatSync.mockImplementation(() => {
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    });
+
+    const res = await handleEstimateCall(req({ filePath: 'src/typo.ts' }));
+
+    expect(res.isError).toBe(true);
+    expect(text(res)).toMatch(/not found/i);
+    expect(text(res)).toContain('src/typo.ts');
+    expect(mockEstimateAudit).not.toHaveBeenCalled();
+  });
+
+  it('rejects a filePath that names a directory', async () => {
+    mockStatSync.mockReturnValue({ isFile: () => false } as ReturnType<typeof statSync>);
+
+    const res = await handleEstimateCall(req({ filePath: 'src/utils.ts' }));
+
+    expect(res.isError).toBe(true);
+    expect(text(res)).toMatch(/not a file|not found/i);
+    expect(mockEstimateAudit).not.toHaveBeenCalled();
   });
 
   // ── Happy path (no sandbox) ───────────────────────────────────────────────
