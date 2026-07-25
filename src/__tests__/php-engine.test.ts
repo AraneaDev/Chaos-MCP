@@ -25,6 +25,7 @@ import {
   parseInfectionJsonLog,
   buildInfectionConfig,
   inferSourceDir,
+  infectionDiagnostics,
 } from '../engines/php.js';
 
 const mockInvoke = vi.mocked(invokeMutationTool);
@@ -63,6 +64,17 @@ describe('inferSourceDir', () => {
   });
   it('returns "." for a bare filename', () => {
     expect(inferSourceDir('Calculator.php')).toBe('.');
+  });
+  it('returns "." for a leading-slash path rather than an empty source directory', () => {
+    // The `slash > 0` guard, not `>= 0`: a path starting with a separator has
+    // its first slash at index 0, and slicing there yields '' — which would be
+    // written into the generated config as `source.directories: [""]` and make
+    // Infection mutate nothing. Normalized backslashes take the same path.
+    expect(inferSourceDir('/Calculator.php')).toBe('.');
+    expect(inferSourceDir('\\Calculator.php')).toBe('.');
+  });
+  it('normalizes backslash separators to forward slashes', () => {
+    expect(inferSourceDir('src\\Domain\\Calculator.php')).toBe('src');
   });
 });
 
@@ -131,6 +143,56 @@ describe('parseInfectionJsonLog', () => {
     expect(r.survived).toBe(1);
     expect(r.totalMutants).toBe(4); // 3 killed + 1 survived (consistent with vulnerabilities)
     expect(r.mutationScore).toBe('75.00%');
+  });
+
+  it('tolerates an escaped entry with no mutator metadata instead of throwing', () => {
+    // The `e.mutator?.` optional chaining and its `?? 0` / default-name
+    // fallbacks: an Infection version skew that omits `mutator` must degrade to
+    // a placeholder survivor, not crash the whole audit.
+    const log = JSON.stringify({
+      stats: { killedCount: 1 },
+      escaped: [{}],
+      killed: [{}],
+    });
+    const r = parseInfectionJsonLog(log, 'src/X.php');
+    expect(r.vulnerabilities).toHaveLength(1);
+    expect(r.vulnerabilities[0].line).toBe(0);
+    expect(r.vulnerabilities[0].mutator).toBe('PHP Mutation Operator');
+    expect(r.vulnerabilities[0].description).toContain('line 0');
+  });
+
+  it('trims surrounding whitespace off a survivor diff', () => {
+    const log = JSON.stringify({
+      stats: { killedCount: 0 },
+      escaped: [
+        { mutator: { mutatorName: 'Plus', originalStartLine: 4 }, diff: '\n  - $a + $b\n\n' },
+      ],
+      killed: [],
+    });
+    const r = parseInfectionJsonLog(log, 'src/X.php');
+    expect(r.vulnerabilities[0].mutated).toBe('- $a + $b');
+  });
+
+  it('falls back to array lengths when the log carries no stats block', () => {
+    // `parsed.stats ?? {}` plus the `?? …length` fallbacks: a log without
+    // `stats` must still score, not read every count as undefined.
+    const log = JSON.stringify({
+      escaped: [{ mutator: { mutatorName: 'Plus', originalStartLine: 1 } }],
+      killed: [{}, {}, {}],
+      timeouted: [{}],
+    });
+    const r = parseInfectionJsonLog(log, 'src/X.php');
+    expect(r.killed).toBe(4); // 3 killed + 1 timed-out, both from array lengths
+    expect(r.survived).toBe(1);
+    expect(r.mutationScore).toBe('80.00%');
+  });
+
+  it('treats a non-array escaped field as no survivors rather than trusting it', () => {
+    const log = JSON.stringify({ stats: { killedCount: 2 }, escaped: null, killed: [{}, {}] });
+    const r = parseInfectionJsonLog(log, 'src/X.php');
+    expect(r.survived).toBe(0);
+    expect(r.vulnerabilities).toEqual([]);
+    expect(r.mutationScore).toBe('100.00%');
   });
 
   it('L5: stays identical to the stats-driven count when stats and escaped agree (normal case)', () => {
@@ -298,6 +360,104 @@ describe('PhpEngine.run', () => {
     await expect(run).rejects.not.toThrow(/Xdebug or PCOV/);
   });
 
+  it('names the STDERR-abort cause instead of blaming the suite when PHPUnit exits 143', async () => {
+    // Real failure observed auditing a project whose suite passes cleanly:
+    // Infection's InitialTestsRunner stops the test process on the first byte
+    // written to STDERR, PHPUnit exits 143, and the generic message sends the
+    // caller off checking the coverage driver and the suite's health instead.
+    mockExists.mockImplementation((p) => String(p).endsWith('phpunit.xml'));
+    mockInvoke.mockRejectedValue(
+      new ExecFailureError(
+        {
+          stdout:
+            '[ERROR] Project tests must be in a passing state before running Infection.\n' +
+            'PHPUnit reported an exit code of 143.\n' +
+            'STDERR:\nAPP_RUNTIME_ERROR: msg\n',
+          stderr: '',
+          exit: 1,
+          signal: null,
+          code: undefined,
+        },
+        'nonzero',
+      ),
+    );
+
+    const run = new PhpEngine().run('src/Calculator.php', { workDir: '/sb' });
+    await expect(run).rejects.toThrow(/first byte written to STDERR/);
+    await expect(run).rejects.not.toThrow(/Xdebug or PCOV/);
+  });
+
+  it('diagnoses the startup failure from STDERR too, not only from STDOUT', async () => {
+    // The diagnosis input joins both streams (`stdout ?? '' + '\n' + stderr ?? ''`).
+    // Mutation testing showed that join was only ever exercised through stdout,
+    // so a variant that dropped the stderr half went undetected — yet a wrapper
+    // or a differently-configured Infection can put the banner on stderr.
+    mockExists.mockImplementation((p) => String(p).endsWith('phpunit.xml'));
+    mockInvoke.mockRejectedValue(
+      new ExecFailureError(
+        {
+          stdout: '',
+          stderr: 'PHPUnit reported an exit code of 143.',
+          exit: 1,
+          signal: null,
+          code: undefined,
+        },
+        'nonzero',
+      ),
+    );
+
+    await expect(new PhpEngine().run('src/Calculator.php', { workDir: '/sb' })).rejects.toThrow(
+      /first byte written to STDERR/,
+    );
+  });
+
+  it('keeps the generic guidance when neither known startup failure matches', async () => {
+    // The specific-diagnosis branch must not swallow the fallback: an ordinary
+    // failing suite still gets the coverage-driver hint.
+    mockExists.mockImplementation((p) => String(p).endsWith('phpunit.xml'));
+    mockInvoke.mockRejectedValue(
+      new ExecFailureError(
+        {
+          stdout: 'FAILURES!\nTests: 10, Assertions: 12, Failures: 1.',
+          stderr: '',
+          exit: 1,
+          signal: null,
+          code: undefined,
+        },
+        'nonzero',
+      ),
+    );
+
+    const run = new PhpEngine().run('src/Calculator.php', { workDir: '/sb' });
+    await expect(run).rejects.toThrow(/Xdebug or PCOV/);
+    await expect(run).rejects.not.toThrow(/first byte written to STDERR/);
+  });
+
+  it('names the coverage-scope cause when a coverage-target attribute trips stopOnDefect', async () => {
+    // `--filter` narrows the generated initial config's <source> to one file,
+    // invalidating every #[CoversClass] elsewhere; Infection's own injected
+    // stopOnDefect turns that warning into an aborted run.
+    mockExists.mockImplementation((p) => String(p).endsWith('phpunit.xml'));
+    mockInvoke.mockRejectedValue(
+      new ExecFailureError(
+        {
+          stdout:
+            '[ERROR] Project tests must be in a passing state before running Infection.\n' +
+            'Class App\\Thing is not a valid target for code coverage\n',
+          stderr: '',
+          exit: 1,
+          signal: null,
+          code: undefined,
+        },
+        'nonzero',
+      ),
+    );
+
+    const run = new PhpEngine().run('src/Calculator.php', { workDir: '/sb' });
+    await expect(run).rejects.toThrow(/coverage-target attributes/);
+    await expect(run).rejects.not.toThrow(/Xdebug or PCOV/);
+  });
+
   it('rethrows the install hint when the binary is missing', async () => {
     mockExists.mockReturnValue(false);
     mockInvoke.mockRejectedValue(
@@ -378,5 +538,82 @@ describe('PhpEngine.run', () => {
     mockInvoke.mockClear();
     await engine.run('src/Calculator.php', { workDir: '/sb' });
     expect(argsOf()).toContain('--threads=max');
+  });
+});
+
+describe('infectionDiagnostics', () => {
+  // Regression: Infection reports startup failures on its OWN stdout, not
+  // stderr. The engine used to interpolate only `stderr`, so a real failure —
+  // e.g. PHPUnit halting on a coverage-scope warning under Infection's
+  // stopOnDefect — surfaced as a bare "stderr:" with nothing after it.
+  it('surfaces stdout, where Infection writes its error block', () => {
+    const out = infectionDiagnostics({
+      stdout: '[ERROR] Project tests must be in a passing state before running Infection.',
+      stderr: '',
+    });
+    expect(out).toContain('Infection output (tail)');
+    expect(out).toContain('must be in a passing state');
+  });
+
+  it('includes both streams when each has content, stdout first', () => {
+    const out = infectionDiagnostics({ stdout: 'STDOUT_MARKER', stderr: 'STDERR_MARKER' });
+    expect(out).toContain('STDOUT_MARKER');
+    expect(out).toContain('STDERR_MARKER');
+    expect(out.indexOf('STDOUT_MARKER')).toBeLessThan(out.indexOf('STDERR_MARKER'));
+  });
+
+  it('keeps the TAIL of a long stream, where the cause lives', () => {
+    // Infection prints a banner and progress dots first; the error block is last.
+    const long = `BANNER${'.'.repeat(5000)}THE_ACTUAL_ERROR`;
+    const out = infectionDiagnostics({ stdout: long });
+    expect(out).toContain('THE_ACTUAL_ERROR');
+    expect(out).not.toContain('BANNER');
+    expect(out).toContain('…');
+  });
+
+  it('reports explicitly when both streams are empty', () => {
+    expect(infectionDiagnostics({ stdout: '', stderr: '' })).toBe(
+      '(Infection produced no output on stdout or stderr.)',
+    );
+    expect(infectionDiagnostics({})).toBe('(Infection produced no output on stdout or stderr.)');
+  });
+
+  // The next four cases pin behaviour that mutation testing found unprotected:
+  // trimEnd-vs-trimStart, the truncation boundary, tail-vs-head slicing, and the
+  // blank line between the two sections.
+  it('strips only TRAILING whitespace, keeping leading indentation', () => {
+    // Infection indents its error block; that indentation is meaningful context.
+    const out = infectionDiagnostics({ stdout: '  indented line\ntrailing  \n' });
+    expect(out).toContain('\n  indented line');
+    expect(out.endsWith('trailing')).toBe(true);
+  });
+
+  it('does NOT truncate a stream exactly at the tail limit', () => {
+    // DIAGNOSTIC_TAIL_CHARS is 2000; the comparison must be `>`, not `>=`.
+    const exact = 'A'.repeat(2000);
+    const out = infectionDiagnostics({ stdout: exact });
+    expect(out).not.toContain('…');
+    expect(out).toContain(exact);
+  });
+
+  it('slices from the END, keeping content that a head-slice would drop', () => {
+    // Length 2411. A tail slice keeps the last 2000 chars (MID + TAIL); a head
+    // slice from index 2000 would keep only ~400 chars and lose MID.
+    const stream = `HEAD${'x'.repeat(1500)}MID${'y'.repeat(900)}TAIL`;
+    const out = infectionDiagnostics({ stdout: stream });
+    expect(out).toContain('MID');
+    expect(out).toContain('TAIL');
+    expect(out).not.toContain('HEAD');
+  });
+
+  it('separates the two sections with a blank line', () => {
+    const out = infectionDiagnostics({ stdout: 'OUT', stderr: 'ERR' });
+    expect(out).toContain('OUT\n\nstderr (tail):');
+  });
+
+  it('ignores a stream that is only whitespace', () => {
+    const out = infectionDiagnostics({ stdout: '   \n\n  ', stderr: 'real failure' });
+    expect(out).not.toContain('Infection output (tail)');
+    expect(out).toContain('stderr (tail)');
   });
 });
