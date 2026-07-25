@@ -56,6 +56,21 @@ export function allowedWorkspaceRoots(): string[] {
  * allowed root cannot be widened by pointing a symlink out of it.
  */
 export function isWorkspaceRootAllowed(candidate: string): boolean {
+  return isPathPermitted(candidate);
+}
+
+/**
+ * True when `candidate` lies inside a directory this process may touch: the
+ * working directory, or one of {@link allowedWorkspaceRoots}. Same boundary as
+ * {@link isWorkspaceRootAllowed}, named for the callers that ask about a file
+ * rather than about a root.
+ *
+ * The tool handlers validate their path arguments against this. Clamping them
+ * to cwd alone made {@link ALLOWED_ROOTS_ENV} unreachable in practice: every
+ * call was rejected at the entry point, before the sandbox — the layer the
+ * opt-in was built into — ever saw the path.
+ */
+export function isPathPermitted(candidate: string): boolean {
   if (isRealPathInside(candidate, resolve(process.cwd()))) return true;
   return allowedWorkspaceRoots().some((root) => isRealPathInside(candidate, root));
 }

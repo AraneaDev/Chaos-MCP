@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { dirname, basename, join } from 'path';
+import { dirname, basename, join, resolve } from 'path';
 import type { CallToolRequest } from '@modelcontextprotocol/sdk/types.js';
 import { resolveStrykerConcurrency } from '../triage-handler.js';
+import { ALLOWED_ROOTS_ENV } from '../utils/path-safety.js';
 
 vi.mock('../triage.js', async () => {
   const actual = await vi.importActual<typeof import('../triage.js')>('../triage.js');
@@ -112,6 +113,22 @@ describe('handleTriageCall', () => {
     const res = await handleTriageCall(req({ paths: ['src'], maxFiles: 2.5 }));
     expect(res.isError).toBe(true);
     expect(res.content[0]).toEqual({ type: 'text', text: 'maxFiles must be an integer >= 1.' });
+  });
+
+  it('accepts a path under a CHAOS_ALLOWED_ROOTS entry', async () => {
+    // The opt-in exists so a server started in project A can triage project B.
+    // Clamping this guard to cwd rejected every such call before discovery ran.
+    const allowed = resolve(process.cwd(), '..', 'allowed-project');
+    const previous = process.env[ALLOWED_ROOTS_ENV];
+    process.env[ALLOWED_ROOTS_ENV] = allowed;
+    mockDiscover.mockReturnValue({ files: [], discovered: 0, skipped: 0 });
+    try {
+      const res = await handleTriageCall(req({ paths: [join(allowed, 'src')] }));
+      expect(res.isError).toBeUndefined();
+    } finally {
+      if (previous === undefined) Reflect.deleteProperty(process.env, ALLOWED_ROOTS_ENV);
+      else process.env[ALLOWED_ROOTS_ENV] = previous;
+    }
   });
 
   it('rejects a path that resolves outside the workspace', async () => {
