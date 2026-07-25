@@ -24,8 +24,19 @@ function stripNoise(source: string, projectType: SupportedProjectType): string {
     s = s.replace(/\/\/[^\n]*/g, ' ');
     // PHP also supports `#` line comments (and `#[Attr]` attributes, dropped as
     // comments — acceptable for an approximate estimate).
-    if (projectType === 'php') s = s.replace(/#[^\n]*/g, ' ');
+    if (projectType === 'php') {
+      s = s.replace(/#[^\n]*/g, ' ');
+      // The open/close tags are punctuation, not code: `<?php` otherwise reads
+      // as a `<` comparison plus a `?` ternary in every single file.
+      s = s.replace(/<\?php|<\?=|\?>/g, ' ');
+    }
   }
+  // Member and arrow tokens are punctuation too, and they are the single
+  // largest source of over-estimation: `->` contributed a phantom `-` AND a
+  // phantom `>` (weighted x2 as a comparison), `?->` added a phantom ternary,
+  // and `=>` — PHP array keys, JS/TS arrow functions — a phantom `>`. On one
+  // 600-line PHP file that turned 27 real mutants into an estimate of 903.
+  s = s.replace(/\?->|->|=>/g, ' ');
   // Template literals (JS/TS) then ordinary single/double-quoted strings.
   // Using String.fromCharCode to avoid esbuild backtick parsing issues
   const backtick = String.fromCharCode(96);

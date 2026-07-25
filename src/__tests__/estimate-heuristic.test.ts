@@ -57,6 +57,52 @@ describe('estimateHeuristic', () => {
     );
   });
 
+  it('does NOT count the arrow in a PHP member access as an operator', () => {
+    // `->` used to contribute a phantom `-` (arithmetic) AND a phantom `>`
+    // (comparison, weighted x2) — three mutants per member access. On one
+    // 600-line file that inflated the estimate from ~27 real mutants to 903.
+    const withArrows = `<?php $a->b(); $a->c(); $a->d();`;
+    const none = `<?php ;`;
+    expect(estimateHeuristic(withArrows, 'php')).toEqual(estimateHeuristic(none, 'php'));
+  });
+
+  it('does NOT count a PHP nullsafe arrow as a ternary', () => {
+    const withNullsafe = `<?php $a?->b();`;
+    const none = `<?php ;`;
+    expect(estimateHeuristic(withNullsafe, 'php')).toEqual(estimateHeuristic(none, 'php'));
+  });
+
+  it('does NOT count a fat arrow as a comparison', () => {
+    // Shared by PHP array keys and JS/TS arrow functions — neither is `>`.
+    const phpArray = `<?php $x = [1 => 2];`;
+    expect(estimateHeuristic(phpArray, 'php').mutants).toBe(
+      estimateHeuristic(`<?php $x = [1, 2];`, 'php').mutants,
+    );
+    const arrowFn = `const f = (a) => a;`;
+    expect(estimateHeuristic(arrowFn, 'typescript')).toEqual(
+      estimateHeuristic(`const f = a;`, 'typescript'),
+    );
+  });
+
+  it('replaces a stripped arrow or PHP tag with a separating space, not nothing', () => {
+    // Dropping the token outright would fuse its neighbours: `[1=>2]` would read
+    // as the single number 12, and `<?=1?>2` as 12 rather than two literals.
+    expect(estimateHeuristic('<?php [1=>2];', 'php').mutants).toBe(2);
+    expect(estimateHeuristic('<?=1?>2', 'php').mutants).toBe(2);
+  });
+
+  it('strips `#` as a comment only for PHP, not for a TypeScript private field', () => {
+    // `#n` is a class field, not a comment; treating it as one would swallow the
+    // rest of the line and everything countable on it.
+    expect(estimateHeuristic('class A { #n = 1; }', 'typescript').mutants).toBe(1);
+  });
+
+  it('still counts a real comparison that neighbours an arrow', () => {
+    // The strip must not swallow `>=` or a standalone `>`.
+    const src = `<?php $r = $a->b >= $c;`;
+    expect(estimateHeuristic(src, 'php').mutants).toBe(2);
+  });
+
   it('is monotonic — more constructs yield more mutants', () => {
     const small = `return a + b;`;
     const big = `return a + b + c + d + e;`;
