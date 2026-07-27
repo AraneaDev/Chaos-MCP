@@ -55,11 +55,11 @@ describe('invokeMutationTool', () => {
 
   it('passes options through to runShell', async () => {
     mockRunShell.mockResolvedValue({ stdout: '', stderr: '', exit: 0, signal: null });
-    await invokeMutationTool('mutmut', 'mutmut', ['run'], {
+    await invokeMutationTool('cosmic-ray', 'cosmic-ray', ['run'], {
       cwd: '/tmp/sandbox',
       timeoutMs: 5000,
     });
-    expect(mockRunShell).toHaveBeenCalledWith('mutmut', ['run'], {
+    expect(mockRunShell).toHaveBeenCalledWith('cosmic-ray', ['run'], {
       cwd: '/tmp/sandbox',
       timeoutMs: 5000,
       killTree: true,
@@ -189,7 +189,7 @@ describe('invokeMutationTool', () => {
     );
     mockRunShell.mockRejectedValue(crashError);
 
-    await expect(invokeMutationTool('mutmut', 'mutmut', [])).rejects.toThrow(/was killed/);
+    await expect(invokeMutationTool('cosmic-ray', 'cosmic-ray', [])).rejects.toThrow(/was killed/);
   });
 
   it('rethrows non-ExecFailureError errors verbatim (not wrapped)', async () => {
@@ -230,7 +230,7 @@ describe('invokeMutationTool', () => {
 
   it('throws non-ExecFailureError errors verbatim even if they mock ExecFailureError properties', async () => {
     const fakeError = new Error('fake plain error');
-    (fakeError as Record<string, unknown>).code = 'ENOENT';
+    (fakeError as unknown as Record<string, unknown>).code = 'ENOENT';
     mockRunShell.mockRejectedValue(fakeError);
 
     await expect(invokeMutationTool('StrykerJS', 'stryker', ['run'])).rejects.toBe(fakeError);

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
+import { firstText } from './helpers/content.js';
 import type { CallToolRequest } from '@modelcontextprotocol/sdk/types.js';
 
 // Mock engines
@@ -124,7 +125,7 @@ describe('handleToolCall', () => {
     mockExistsSync.mockReturnValue(false);
 
     // Default sandbox mock
-    mockCreateSandbox.mockReturnValue({
+    mockCreateSandbox.mockResolvedValue({
       workDir: '/tmp/chaos-mcp-sandbox',
       targetFile: '',
       cleanup: vi.fn(),
@@ -152,6 +153,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -187,6 +189,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: nestedRoot,
     });
 
@@ -221,6 +224,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -254,6 +258,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -276,6 +281,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -309,6 +315,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -341,6 +348,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -355,7 +363,7 @@ describe('handleToolCall', () => {
 
   it('cleans up sandbox after engine throws', async () => {
     const mockCleanup = vi.fn();
-    mockCreateSandbox.mockReturnValue({
+    mockCreateSandbox.mockResolvedValue({
       workDir: '/tmp/chaos-mcp-sandbox',
       targetFile: 'src/bad.ts',
       cleanup: mockCleanup,
@@ -372,6 +380,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -406,6 +415,7 @@ describe('handleToolCall', () => {
       projectType: 'rust',
       testRunner: 'cargo test',
       detectedRunner: 'cargo test',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -438,6 +448,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -480,6 +491,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -500,7 +512,7 @@ describe('handleToolCall', () => {
     const request = makeRequest('unknown_tool', { filePath: 'test.ts' });
     const res = await handleToolCall(request);
     expect(res.isError).toBe(true);
-    expect(res.content[0].text).toContain('Unknown tool: unknown_tool');
+    expect(firstText(res)).toContain('Unknown tool: unknown_tool');
   });
 
   // ─── dryRun / incremental / concurrency / ignorePatterns wiring tests ─────
@@ -521,6 +533,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -549,6 +562,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -580,6 +594,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -611,6 +626,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -653,6 +669,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -684,6 +701,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -715,6 +733,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -740,6 +759,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -763,6 +783,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -783,6 +804,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -806,6 +828,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -837,6 +860,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -877,6 +901,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
   }
@@ -996,6 +1021,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -1026,6 +1052,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -1049,6 +1076,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -1081,6 +1109,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -1109,7 +1138,7 @@ describe('handleToolCall', () => {
 
   it('rejects an explicit prebuildCommand unless allowPrebuild is enabled', async () => {
     const mockCleanup = vi.fn();
-    mockCreateSandbox.mockReturnValue({
+    mockCreateSandbox.mockResolvedValue({
       workDir: '/tmp/chaos-mcp-sandbox',
       targetFile: 'src/math.ts',
       cleanup: mockCleanup,
@@ -1120,6 +1149,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -1151,6 +1181,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -1181,6 +1212,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -1312,6 +1344,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -1327,7 +1360,7 @@ describe('handleToolCall', () => {
 
   it('returns error and cleans up sandbox when prebuildCommand fails', async () => {
     const mockCleanup = vi.fn();
-    mockCreateSandbox.mockReturnValue({
+    mockCreateSandbox.mockResolvedValue({
       workDir: '/tmp/chaos-mcp-sandbox',
       targetFile: 'src/math.ts',
       cleanup: mockCleanup,
@@ -1340,6 +1373,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -1371,6 +1405,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
     mockComputeChangedRanges.mockResolvedValue({ kind: 'no-changes' });
@@ -1404,6 +1439,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
     mockComputeChangedRanges.mockResolvedValue({ kind: 'no-changes' });
@@ -1439,6 +1475,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -1469,6 +1506,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -1483,7 +1521,7 @@ describe('handleToolCall', () => {
   });
 
   it('returns a prebuild failure verbatim, not re-wrapped by the outer catch', async () => {
-    mockCreateSandbox.mockReturnValue({
+    mockCreateSandbox.mockResolvedValue({
       workDir: '/tmp/chaos-mcp-sandbox',
       targetFile: 'src/math.ts',
       cleanup: vi.fn(),
@@ -1494,6 +1532,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
     mockRunShellCommand.mockRejectedValue(new Error('boom'));
@@ -1572,6 +1611,7 @@ describe('handleToolCall', () => {
       projectType: 'rust',
       testRunner: 'cargo',
       detectedRunner: 'cargo',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -1629,6 +1669,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -1651,6 +1692,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -1683,6 +1725,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -1714,6 +1757,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -1751,6 +1795,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -1783,6 +1828,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -1829,6 +1875,7 @@ describe('handleToolCall', () => {
       projectType: 'rust',
       testRunner: 'cargo test',
       detectedRunner: 'cargo test',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -1876,6 +1923,7 @@ describe('handleToolCall', () => {
       projectType: 'python',
       testRunner: 'pytest',
       detectedRunner: 'pytest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -1916,6 +1964,7 @@ describe('handleToolCall', () => {
       projectType: 'python',
       testRunner: 'pytest',
       detectedRunner: 'pytest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -1954,6 +2003,7 @@ describe('handleToolCall', () => {
       projectType: 'python',
       testRunner: 'pytest',
       detectedRunner: 'pytest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -1985,6 +2035,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -2011,6 +2062,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -2040,6 +2092,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -2075,6 +2128,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -2105,6 +2159,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -2135,6 +2190,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -2166,6 +2222,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -2196,6 +2253,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -2226,6 +2284,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -2256,6 +2315,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -2285,6 +2345,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -2314,6 +2375,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -2435,7 +2497,7 @@ describe('handleToolCall', () => {
         killTree: true,
       }),
     );
-    expect(mockRunShellCommand.mock.calls[0][1].timeoutMs).toBeGreaterThanOrEqual(297000);
+    expect(mockRunShellCommand.mock.calls[0][1]?.timeoutMs).toBeGreaterThanOrEqual(297000);
     expect(mockRun).toHaveBeenCalled();
   });
 
@@ -2493,6 +2555,7 @@ describe('handleToolCall', () => {
       projectType: 'rust',
       testRunner: 'cargo test',
       detectedRunner: 'cargo test',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -2517,7 +2580,7 @@ describe('handleToolCall', () => {
         killTree: true,
       }),
     );
-    expect(mockRunShellCommand.mock.calls[0][1].timeoutMs).toBeGreaterThanOrEqual(297000);
+    expect(mockRunShellCommand.mock.calls[0][1]?.timeoutMs).toBeGreaterThanOrEqual(297000);
     expect(mockRun).toHaveBeenCalled();
   });
 
@@ -2541,6 +2604,7 @@ describe('handleToolCall', () => {
       projectType: 'rust',
       testRunner: 'cargo test',
       detectedRunner: 'cargo test',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -2651,6 +2715,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -2714,6 +2779,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -2735,6 +2801,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -2756,6 +2823,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -2777,6 +2845,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -2798,6 +2867,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -2824,6 +2894,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -2835,7 +2906,7 @@ describe('handleToolCall', () => {
 
     // A non-enum outputFormat is rejected before the engine runs (L4).
     expect(res.isError).toBe(true);
-    expect(res.content[0].text).toContain('outputFormat must be one of "text" or "json"');
+    expect(firstText(res)).toContain('outputFormat must be one of "text" or "json"');
     expect(mockRun).not.toHaveBeenCalled();
   });
 
@@ -2858,6 +2929,7 @@ describe('handleToolCall', () => {
       projectType: 'rust',
       testRunner: 'cargo test',
       detectedRunner: 'cargo test',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -2896,6 +2968,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -2924,6 +2997,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -2952,6 +3026,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -2980,6 +3055,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -3052,6 +3128,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -3088,6 +3165,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -3150,6 +3228,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -3165,6 +3244,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript' as const,
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     };
 
@@ -3242,6 +3322,7 @@ describe('handleToolCall', () => {
         projectType: 'rust',
         testRunner: 'cargo test',
         detectedRunner: 'cargo test',
+        packageManager: '',
         workspaceRoot: '/workspace',
       });
       mockComputeChangedRanges.mockResolvedValue({
@@ -3291,6 +3372,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript' as const,
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     };
 
@@ -3343,6 +3425,7 @@ describe('handleToolCall', () => {
         projectType: 'rust',
         testRunner: 'cargo test',
         detectedRunner: 'cargo test',
+        packageManager: '',
         workspaceRoot: '/workspace',
       });
 
@@ -3368,6 +3451,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -3391,6 +3475,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -3414,6 +3499,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 
@@ -3445,6 +3531,7 @@ describe('handleToolCall', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
 

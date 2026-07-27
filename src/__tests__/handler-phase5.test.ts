@@ -111,6 +111,7 @@ function stubWorkspaceEnv(): void {
     projectType: 'typescript',
     testRunner: 'vitest',
     detectedRunner: 'vitest',
+    packageManager: '',
     workspaceRoot: '/workspace',
   });
 }
@@ -128,7 +129,7 @@ describe('handleToolCall — Phase 5: progress milestones + cancellation', () =>
     cwdSpy.mockReturnValue('/workspace');
 
     // Default sandbox mock
-    mockCreateSandbox.mockReturnValue({
+    mockCreateSandbox.mockResolvedValue({
       workDir: '/tmp/chaos-mcp-sandbox',
       targetFile: '',
       cleanup: vi.fn(),

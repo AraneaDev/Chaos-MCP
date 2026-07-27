@@ -46,6 +46,7 @@ vi.mock('fs', () => ({
 
 import { runShell, ExecFailureError } from '../utils/exec.js';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
+import type { PathLike, PathOrFileDescriptor } from 'fs';
 import {
   TypeScriptEngine,
   mergeBatchResults,
@@ -151,7 +152,13 @@ describe('TypeScriptEngine', () => {
           survived: 1,
           incompetent: 2,
           mutationScore: '66.67%',
-          vulnerabilities: [{ line: 2, mutator: 'BooleanLiteral', status: 'Survived' }],
+          vulnerabilities: [
+            {
+              line: 2,
+              mutator: 'BooleanLiteral',
+              description: 'Survived boolean literal mutation',
+            },
+          ],
         },
         {
           target: 'src/app.ts',
@@ -172,7 +179,9 @@ describe('TypeScriptEngine', () => {
       killed: 3,
       survived: 1,
       mutationScore: '75.00%',
-      vulnerabilities: [{ line: 2, mutator: 'BooleanLiteral', status: 'Survived' }],
+      vulnerabilities: [
+        { line: 2, mutator: 'BooleanLiteral', description: 'Survived boolean literal mutation' },
+      ],
       incompetent: 2,
       complete: false,
       batchesCompleted: 2,
@@ -203,7 +212,7 @@ describe('TypeScriptEngine', () => {
   it('builds command-runner overlays for JSON, invalid, and absent project configs', () => {
     const mockWrite = vi.mocked(writeFileSync);
 
-    mockExistsSync.mockImplementation((p: string) => p === '/json/stryker.config.json');
+    mockExistsSync.mockImplementation((p: PathLike) => p === '/json/stryker.config.json');
     mockReadFileSync.mockReturnValueOnce(
       JSON.stringify({ commandRunner: { timeout: 5 }, mutator: { excludedMutations: ['A'] } }),
     );
@@ -214,7 +223,7 @@ describe('TypeScriptEngine', () => {
       'const base = {"commandRunner":{"timeout":5},"mutator":{"excludedMutations":["A"]}};',
     );
 
-    mockExistsSync.mockImplementation((p: string) => p === '/invalid/stryker.config.json');
+    mockExistsSync.mockImplementation((p: PathLike) => p === '/invalid/stryker.config.json');
     mockReadFileSync.mockReturnValueOnce('{');
     writeStrykerRuntimeConfig('/invalid', 'npm test', []);
     expect(String(mockWrite.mock.calls.at(-1)?.[1])).toContain('const base = {};');
@@ -235,7 +244,7 @@ describe('TypeScriptEngine', () => {
     ['string', '"bad"'],
   ])('rejects a parsed %s JSON config as an overlay base', (_label, json) => {
     const mockWrite = vi.mocked(writeFileSync);
-    mockExistsSync.mockImplementation((p: string) => p === '/bad/stryker.config.json');
+    mockExistsSync.mockImplementation((p: PathLike) => p === '/bad/stryker.config.json');
     mockReadFileSync.mockReturnValueOnce(json);
     writeStrykerRuntimeConfig('/bad', 'npm test', []);
     expect(String(mockWrite.mock.calls.at(-1)?.[1])).toContain('const base = {};');
@@ -243,7 +252,7 @@ describe('TypeScriptEngine', () => {
 
   it('imports an existing JavaScript config with the exact fallback declaration', () => {
     const mockWrite = vi.mocked(writeFileSync);
-    mockExistsSync.mockImplementation((p: string) => p === '/js/stryker.config.mjs');
+    mockExistsSync.mockImplementation((p: PathLike) => p === '/js/stryker.config.mjs');
     writeStrykerRuntimeConfig('/js', 'npm test', []);
     expect(String(mockWrite.mock.calls.at(-1)?.[1])).toContain(
       'import importedConfig from "./stryker.config.mjs";\nconst base = importedConfig ?? {};',
@@ -252,7 +261,7 @@ describe('TypeScriptEngine', () => {
 
   it('returns completed command-runner batches as an explicit partial result', async () => {
     const now = vi.spyOn(Date, 'now').mockReturnValue(0);
-    mockReadFileSync.mockImplementation((p: string) =>
+    mockReadFileSync.mockImplementation((p: PathOrFileDescriptor) =>
       p === '/sb/src/large.ts'
         ? Array.from({ length: 200 }, () => 'const x = 1;').join('\n')
         : makeJsonReport([]),
@@ -288,7 +297,7 @@ describe('TypeScriptEngine', () => {
   });
 
   it('marks a fully completed batch run complete and aggregates its reports', async () => {
-    mockReadFileSync.mockImplementation((p: string) =>
+    mockReadFileSync.mockImplementation((p: PathOrFileDescriptor) =>
       p === '/sb/src/large.ts'
         ? Array.from({ length: 121 }, () => 'const x = 1;').join('\n')
         : makeJsonReport([{ status: 'Killed', mutatorName: 'BooleanLiteral', line: 1 }]),
@@ -311,7 +320,7 @@ describe('TypeScriptEngine', () => {
   });
 
   it('throws when every bounded batch times out', async () => {
-    mockReadFileSync.mockImplementation((p: string) =>
+    mockReadFileSync.mockImplementation((p: PathOrFileDescriptor) =>
       p === '/sb/src/large.ts'
         ? Array.from({ length: 121 }, () => 'const x = 1;').join('\n')
         : makeJsonReport([]),
@@ -328,7 +337,7 @@ describe('TypeScriptEngine', () => {
   });
 
   it('does not swallow a non-timeout failure from a bounded batch', async () => {
-    mockReadFileSync.mockImplementation((p: string) =>
+    mockReadFileSync.mockImplementation((p: PathOrFileDescriptor) =>
       p === '/sb/src/large.ts'
         ? Array.from({ length: 121 }, () => 'const x = 1;').join('\n')
         : makeJsonReport([]),
@@ -345,7 +354,7 @@ describe('TypeScriptEngine', () => {
   });
 
   it('stops immediately on a non-timeout failure even if a later batch could pass', async () => {
-    mockReadFileSync.mockImplementation((p: string) =>
+    mockReadFileSync.mockImplementation((p: PathOrFileDescriptor) =>
       p === '/sb/src/large.ts'
         ? Array.from({ length: 121 }, () => 'const x = 1;').join('\n')
         : makeJsonReport([]),
@@ -366,7 +375,7 @@ describe('TypeScriptEngine', () => {
 
   it('returns an empty partial result when no batch fits the remaining budget', async () => {
     const now = vi.spyOn(Date, 'now').mockReturnValueOnce(1_000).mockReturnValue(29_001);
-    mockReadFileSync.mockImplementation((p: string) =>
+    mockReadFileSync.mockImplementation((p: PathOrFileDescriptor) =>
       p === '/sb/src/large.ts'
         ? Array.from({ length: 121 }, () => 'const x = 1;').join('\n')
         : makeJsonReport([]),
@@ -387,7 +396,7 @@ describe('TypeScriptEngine', () => {
 
   it('runs a batch whose allocated budget is exactly the minimum', async () => {
     const now = vi.spyOn(Date, 'now').mockReturnValue(0);
-    mockReadFileSync.mockImplementation((p: string) =>
+    mockReadFileSync.mockImplementation((p: PathOrFileDescriptor) =>
       p === '/sb/src/large.ts'
         ? Array.from({ length: 121 }, () => 'const x = 1;').join('\n')
         : makeJsonReport([]),
@@ -407,7 +416,7 @@ describe('TypeScriptEngine', () => {
   });
 
   it('does not batch large files for native runners or command-runner dry runs', async () => {
-    mockReadFileSync.mockImplementation((p: string) =>
+    mockReadFileSync.mockImplementation((p: PathOrFileDescriptor) =>
       p === '/sb/src/large.ts'
         ? Array.from({ length: 121 }, () => 'const x = 1;').join('\n')
         : makeJsonReport([]),
@@ -427,8 +436,8 @@ describe('TypeScriptEngine', () => {
   });
 
   it('uses command-runner batching defaults when RunOptions are absent', async () => {
-    mockReadFileSync.mockImplementation((p: string) =>
-      p.endsWith('src/large.ts')
+    mockReadFileSync.mockImplementation((p: PathOrFileDescriptor) =>
+      String(p).endsWith('src/large.ts')
         ? Array.from({ length: 121 }, () => 'const x = 1;').join('\n')
         : makeJsonReport([]),
     );
@@ -616,7 +625,7 @@ describe('TypeScriptEngine', () => {
     const { writeFileSync } = await import('fs');
     const mockWrite = vi.mocked(writeFileSync);
     mockExistsSync.mockImplementation(
-      (p: string) => p === '/sb/stryker.config.mjs' || p === '/sb/reports/mutation/mutation.json',
+      (p: PathLike) => p === '/sb/stryker.config.mjs' || p === '/sb/reports/mutation/mutation.json',
     );
     mockRunShell.mockResolvedValue(makeExecResult());
     mockReadFileSync.mockReturnValue(makeJsonReport([]));
@@ -649,7 +658,7 @@ describe('TypeScriptEngine', () => {
 
   it('writes an empty denylist into a command-runner overlay when none is configured', async () => {
     const mockWrite = vi.mocked(writeFileSync);
-    mockExistsSync.mockImplementation((p: string) => p === '/sb/reports/mutation/mutation.json');
+    mockExistsSync.mockImplementation((p: PathLike) => p === '/sb/reports/mutation/mutation.json');
     mockRunShell.mockResolvedValue(makeExecResult());
     mockReadFileSync.mockReturnValue(makeJsonReport([]));
 
@@ -850,7 +859,9 @@ describe('TypeScriptEngine', () => {
     const mockWrite = vi.mocked(writeFileSync);
 
     // No pre-existing stryker.config.json in the sandbox (report path still exists).
-    mockExistsSync.mockImplementation((p: string) => p !== '/tmp/test-sandbox/stryker.config.json');
+    mockExistsSync.mockImplementation(
+      (p: PathLike) => p !== '/tmp/test-sandbox/stryker.config.json',
+    );
     mockRunShell.mockResolvedValue(makeExecResult());
     mockReadFileSync.mockReturnValue(makeJsonReport([]));
 
@@ -887,7 +898,7 @@ describe('TypeScriptEngine', () => {
     });
 
     mockExistsSync.mockReturnValue(true);
-    mockReadFileSync.mockImplementation((p: string) =>
+    mockReadFileSync.mockImplementation((p: PathOrFileDescriptor) =>
       p === configPath ? existingConfig : makeJsonReport([]),
     );
     mockRunShell.mockResolvedValue(makeExecResult());
@@ -918,7 +929,7 @@ describe('TypeScriptEngine', () => {
     });
 
     mockExistsSync.mockReturnValue(true);
-    mockReadFileSync.mockImplementation((p: string) =>
+    mockReadFileSync.mockImplementation((p: PathOrFileDescriptor) =>
       p === configPath ? existingConfig : makeJsonReport([]),
     );
     mockRunShell.mockResolvedValue(makeExecResult());

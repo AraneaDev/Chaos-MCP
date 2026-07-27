@@ -367,7 +367,7 @@ describe('RustEngine', () => {
     // Asserting exact equality (not a substring) kills the `instanceof
     // MutationToolStartupError → false` mutant in base.ts toExecFailure, under
     // which the message would become "cargo-mutants execution failed: not installed".
-    const err = await engine.run('src/test.rs').catch((e: unknown) => e as Error);
+    const err = (await engine.run('src/test.rs').catch((e: unknown) => e)) as Error;
     expect(err.message).toBe('not installed');
   });
 

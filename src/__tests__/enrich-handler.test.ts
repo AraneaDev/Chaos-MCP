@@ -1,5 +1,6 @@
 // src/__tests__/enrich-handler.test.ts
 import { describe, it, expect } from 'vitest';
+import { firstText } from './helpers/content.js';
 import { writeFileSync, mkdtempSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -22,7 +23,7 @@ describe('enrich schema + validation', () => {
   it('rejects a non-boolean enrich with a descriptive message', () => {
     const err = validateToolArgs({ enrich: 'yes' });
     expect(err?.isError).toBe(true);
-    expect(err?.content[0].text).toContain('enrich must be a boolean');
+    expect(firstText(err)).toContain('enrich must be a boolean');
   });
 });
 

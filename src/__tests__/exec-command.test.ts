@@ -23,6 +23,22 @@ vi.mock('../utils/logger.js', () => ({
 import { exec } from 'child_process';
 import { runShellCommand, ExecFailureError } from '../utils/exec.js';
 
+// `exec` is overloaded, so the stubs below are cast with `as never` to pick a
+// callable shape. That cast strips the contextual types off the parameters, so
+// they are annotated explicitly — otherwise they silently become `any`.
+// Several cases below hand the callback an `err` that deliberately violates
+// the ExecException contract (a null/string `code`, a plain-string or numeric
+// `signal`) because runShellCommand is defensive about exactly those shapes.
+// The stub's error parameter is widened to match, so those cases stay
+// type-checked instead of being cast away one by one.
+type ExecCallbackError = Error & {
+  code?: number | string | null;
+  killed?: boolean;
+  signal?: string | number | null;
+};
+type ExecCallback = (error: ExecCallbackError | null, stdout: string, stderr: string) => void;
+type ExecOptions = cpType.ExecOptions | null | undefined;
+
 async function expectRejection(fn: () => Promise<unknown>): Promise<ExecFailureError> {
   try {
     await fn();
@@ -45,7 +61,11 @@ describe('runShellCommand', () => {
 
   it('resolves with stdout and exit 0 on success', async () => {
     // Delegate to real exec; spawn a quick echo child
-    vi.mocked(exec).mockImplementationOnce(((_cmd, _opts, cb) => {
+    vi.mocked(exec).mockImplementationOnce(((
+      _cmd: string,
+      _opts: ExecOptions,
+      cb: ExecCallback,
+    ) => {
       setImmediate(() => cb(null, 'hello stdout', ''));
       return {} as cpType.ChildProcess;
     }) as never);
@@ -57,7 +77,11 @@ describe('runShellCommand', () => {
   });
 
   it('captures stderr even on success', async () => {
-    vi.mocked(exec).mockImplementationOnce(((_cmd, _opts, cb) => {
+    vi.mocked(exec).mockImplementationOnce(((
+      _cmd: string,
+      _opts: ExecOptions,
+      cb: ExecCallback,
+    ) => {
       setImmediate(() => cb(null, '', 'some stderr output'));
       return {} as cpType.ChildProcess;
     }) as never);
@@ -68,7 +92,11 @@ describe('runShellCommand', () => {
   });
 
   it('captures numeric exit code on non-zero exit', async () => {
-    vi.mocked(exec).mockImplementationOnce(((_cmd, _opts, cb) => {
+    vi.mocked(exec).mockImplementationOnce(((
+      _cmd: string,
+      _opts: ExecOptions,
+      cb: ExecCallback,
+    ) => {
       const err = Object.assign(new Error('Command failed'), {
         code: 1,
         killed: false,
@@ -85,7 +113,11 @@ describe('runShellCommand', () => {
   });
 
   it('captures exit code > 0', async () => {
-    vi.mocked(exec).mockImplementationOnce(((_cmd, _opts, cb) => {
+    vi.mocked(exec).mockImplementationOnce(((
+      _cmd: string,
+      _opts: ExecOptions,
+      cb: ExecCallback,
+    ) => {
       const err = Object.assign(new Error('Command failed'), {
         code: 42,
         killed: false,
@@ -100,7 +132,11 @@ describe('runShellCommand', () => {
   });
 
   it('classifies timeout (killed=true + signal) as code=TIMEOUT', async () => {
-    vi.mocked(exec).mockImplementationOnce(((_cmd, _opts, cb) => {
+    vi.mocked(exec).mockImplementationOnce(((
+      _cmd: string,
+      _opts: ExecOptions,
+      cb: ExecCallback,
+    ) => {
       const err = Object.assign(new Error('ETIMEDOUT'), {
         code: null,
         killed: true,
@@ -117,7 +153,11 @@ describe('runShellCommand', () => {
   });
 
   it('does NOT classify external signal (killed=false) as TIMEOUT', async () => {
-    vi.mocked(exec).mockImplementationOnce(((_cmd, _opts, cb) => {
+    vi.mocked(exec).mockImplementationOnce(((
+      _cmd: string,
+      _opts: ExecOptions,
+      cb: ExecCallback,
+    ) => {
       const err = Object.assign(new Error('Killed by OOM'), {
         code: null,
         killed: false,
@@ -136,7 +176,11 @@ describe('runShellCommand', () => {
 
   it('handles null signal gracefully when killed=true with no signal', async () => {
     // Edge case: killed=true but signal=null (unlikely but defensive)
-    vi.mocked(exec).mockImplementationOnce(((_cmd, _opts, cb) => {
+    vi.mocked(exec).mockImplementationOnce(((
+      _cmd: string,
+      _opts: ExecOptions,
+      cb: ExecCallback,
+    ) => {
       const err = Object.assign(new Error('killed'), {
         code: null,
         killed: true,
@@ -153,7 +197,11 @@ describe('runShellCommand', () => {
 
   it('handles err.code as string (non-number) gracefully', async () => {
     // exec() always sets code as number on non-zero exit, but defensive
-    vi.mocked(exec).mockImplementationOnce(((_cmd, _opts, cb) => {
+    vi.mocked(exec).mockImplementationOnce(((
+      _cmd: string,
+      _opts: ExecOptions,
+      cb: ExecCallback,
+    ) => {
       const err = Object.assign(new Error('weird error'), {
         code: 'SOME_ERRNO' as unknown as number,
         killed: false,
@@ -171,7 +219,11 @@ describe('runShellCommand', () => {
 
   it('handles err.signal as non-string gracefully', async () => {
     // Defensive: signal is sometimes set to a non-string value
-    vi.mocked(exec).mockImplementationOnce(((_cmd, _opts, cb) => {
+    vi.mocked(exec).mockImplementationOnce(((
+      _cmd: string,
+      _opts: ExecOptions,
+      cb: ExecCallback,
+    ) => {
       const err = Object.assign(new Error('killed'), {
         code: null,
         killed: false,
@@ -188,7 +240,7 @@ describe('runShellCommand', () => {
   });
 
   it('passes custom cwd to exec', async () => {
-    vi.mocked(exec).mockImplementationOnce(((_cmd, opts, cb) => {
+    vi.mocked(exec).mockImplementationOnce(((_cmd: string, opts: ExecOptions, cb: ExecCallback) => {
       setImmediate(() => cb(null, '', ''));
       return {} as cpType.ChildProcess;
     }) as never);
@@ -203,7 +255,7 @@ describe('runShellCommand', () => {
   });
 
   it('passes custom timeoutMs to exec', async () => {
-    vi.mocked(exec).mockImplementationOnce(((_cmd, opts, cb) => {
+    vi.mocked(exec).mockImplementationOnce(((_cmd: string, opts: ExecOptions, cb: ExecCallback) => {
       setImmediate(() => cb(null, '', ''));
       return {} as cpType.ChildProcess;
     }) as never);
@@ -218,7 +270,11 @@ describe('runShellCommand', () => {
   });
 
   it('handles null stdout and stderr from exec callback', async () => {
-    vi.mocked(exec).mockImplementationOnce(((_cmd, _opts, cb) => {
+    vi.mocked(exec).mockImplementationOnce(((
+      _cmd: string,
+      _opts: ExecOptions,
+      cb: ExecCallback,
+    ) => {
       setImmediate(() => cb(null, null as unknown as string, null as unknown as string));
       return {} as cpType.ChildProcess;
     }) as never);
@@ -234,7 +290,11 @@ describe('runShellCommand', () => {
     const mockVerbose = vi.mocked(isVerbose);
 
     mockVerbose.mockReturnValue(true);
-    vi.mocked(exec).mockImplementationOnce(((_cmd, _opts, cb) => {
+    vi.mocked(exec).mockImplementationOnce(((
+      _cmd: string,
+      _opts: ExecOptions,
+      cb: ExecCallback,
+    ) => {
       setImmediate(() => cb(null, '', ''));
       return {} as cpType.ChildProcess;
     }) as never);
@@ -252,7 +312,11 @@ describe('runShellCommand', () => {
   // mutants because no test asserted the exact failure strings.
 
   it('TIMEOUT failure message includes the timeout and command', async () => {
-    vi.mocked(exec).mockImplementationOnce(((_cmd, _opts, cb) => {
+    vi.mocked(exec).mockImplementationOnce(((
+      _cmd: string,
+      _opts: ExecOptions,
+      cb: ExecCallback,
+    ) => {
       const err = Object.assign(new Error('ETIMEDOUT'), {
         code: null,
         killed: true,
@@ -267,7 +331,11 @@ describe('runShellCommand', () => {
   });
 
   it('signal-crash failure message names the signal', async () => {
-    vi.mocked(exec).mockImplementationOnce(((_cmd, _opts, cb) => {
+    vi.mocked(exec).mockImplementationOnce(((
+      _cmd: string,
+      _opts: ExecOptions,
+      cb: ExecCallback,
+    ) => {
       const err = Object.assign(new Error('killed'), {
         code: null,
         killed: false,
@@ -282,7 +350,11 @@ describe('runShellCommand', () => {
   });
 
   it('non-zero exit failure message includes the numeric code', async () => {
-    vi.mocked(exec).mockImplementationOnce(((_cmd, _opts, cb) => {
+    vi.mocked(exec).mockImplementationOnce(((
+      _cmd: string,
+      _opts: ExecOptions,
+      cb: ExecCallback,
+    ) => {
       const err = Object.assign(new Error('failed'), {
         code: 5,
         killed: false,
@@ -300,7 +372,11 @@ describe('runShellCommand', () => {
     const { isVerbose, log } = await import('../utils/logger.js');
     vi.mocked(isVerbose).mockReturnValue(false);
     vi.mocked(log).mockClear();
-    vi.mocked(exec).mockImplementationOnce(((_cmd, _opts, cb) => {
+    vi.mocked(exec).mockImplementationOnce(((
+      _cmd: string,
+      _opts: ExecOptions,
+      cb: ExecCallback,
+    ) => {
       setImmediate(() => cb(null, '', ''));
       return {} as cpType.ChildProcess;
     }) as never);
@@ -314,7 +390,11 @@ describe('runShellCommand', () => {
     // then was killed). The TIMEOUT gate requires exit === null, so this must
     // fall through to the non-zero-exit branch. Kills the ConditionalExpression
     // mutant that drops the `result.exit === null` operand.
-    vi.mocked(exec).mockImplementationOnce(((_cmd, _opts, cb) => {
+    vi.mocked(exec).mockImplementationOnce(((
+      _cmd: string,
+      _opts: ExecOptions,
+      cb: ExecCallback,
+    ) => {
       const err = Object.assign(new Error('exited then killed'), {
         code: 5,
         killed: true,

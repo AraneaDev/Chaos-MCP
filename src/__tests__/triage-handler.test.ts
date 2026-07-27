@@ -59,6 +59,7 @@ const tsEnv = {
   projectType: 'typescript' as const,
   testRunner: 'vitest',
   detectedRunner: 'vitest',
+  packageManager: '',
   workspaceRoot: process.cwd(),
 };
 const mrOf = (over: Record<string, unknown>) => ({

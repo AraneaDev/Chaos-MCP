@@ -76,6 +76,7 @@ const defaultEnv = {
   projectType: 'typescript' as const,
   testRunner: 'vitest',
   detectedRunner: 'vitest',
+  packageManager: '',
   workspaceRoot: '/workspace',
 };
 
@@ -468,6 +469,7 @@ describe('handleEstimateCall', () => {
       projectType: 'python',
       testRunner: 'pytest',
       detectedRunner: 'pytest',
+      packageManager: '',
       workspaceRoot: '/workspace',
     });
     mockEstimateAudit.mockResolvedValue({

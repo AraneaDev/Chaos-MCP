@@ -422,7 +422,10 @@ describe('PhpEngine.run', () => {
     });
     mockRead.mockReturnValue(SAMPLE_LOG);
     mockInvoke.mockRejectedValue(
-      new ExecFailureError('Infection failed', 1, null, 'initial test run failed', ''),
+      new ExecFailureError(
+        { stdout: '', stderr: 'initial test run failed', exit: 1, signal: null, code: undefined },
+        'Infection failed',
+      ),
     );
 
     await expect(new PhpEngine().run('src/Calculator.php', { workDir: '/sb' })).rejects.toThrow(

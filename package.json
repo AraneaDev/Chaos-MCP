@@ -44,7 +44,7 @@
     "test:self": "npm run build && node scripts/meta-test.js",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "typecheck:tests": "node scripts/typecheck-tests.mjs",
+    "typecheck:tests": "tsc -p tsconfig.tests.json",
     "lint": "eslint src/",
     "lint:fix": "eslint src/ --fix",
     "format": "prettier --write src/",
