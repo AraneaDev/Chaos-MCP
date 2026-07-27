@@ -4,7 +4,7 @@
 
 ### Prerequisites
 
-- **Node.js** >= 18.0.0
+- **Node.js** >= 22.0.0
 - **npm** (bundled with Node.js)
 
 ### Setup
@@ -26,12 +26,12 @@ npm run check
 
 This single command runs four stages sequentially — **all must pass**:
 
-| Stage | Command | Description |
-|-------|---------|-------------|
-| 1. Build | `npm run build` | TypeScript compilation (`tsc`) + postbuild (shebang restoration, `chmod +x`) |
-| 2. Lint | `npm run lint` | ESLint with `typescript-eslint` strict + stylistic rules |
-| 3. Format | `npm run format:check` | Prettier formatting verification |
-| 4. Test | `npm run test` | Vitest — all unit, handler, and integration tests (build must exist first) |
+| Stage     | Command                | Description                                                                  |
+| --------- | ---------------------- | ---------------------------------------------------------------------------- |
+| 1. Build  | `npm run build`        | TypeScript compilation (`tsc`) + postbuild (shebang restoration, `chmod +x`) |
+| 2. Lint   | `npm run lint`         | ESLint with `typescript-eslint` strict + stylistic rules                     |
+| 3. Format | `npm run format:check` | Prettier formatting verification                                             |
+| 4. Test   | `npm run test`         | Vitest — all unit, handler, and integration tests (build must exist first)   |
 
 ### Individual Commands
 
@@ -59,24 +59,25 @@ src/
 ├── engines/
 │   ├── base.ts                  # Abstract BaseEngine + RunOptions + MutationResult types
 │   ├── typescript.ts            # StrykerJS engine (async, concurrency, dryRun, incremental)
-│   ├── python.ts                # Mutmut engine (text results parsing)
+│   ├── python.ts                # Cosmic Ray engine
 │   ├── rust.ts                  # cargo-mutants engine
 │   └── php.ts                   # Infection engine
 ├── utils/
 │   ├── exec.ts                  # Async runShell helper + ExecFailureError class
 │   ├── logger.ts                # Verbose-mode logging utility
 │   ├── sandbox.ts               # Sandbox isolation (os.tmpdir, symlinks, size guard)
+│   ├── execution.ts             # Native/container execution-session boundary
 │   ├── config-loader.ts         # chaos-mcp.config.json loader
 │   └── project-detector.ts      # Auto-detect project types & test runners
 └── __tests__/
     ├── handler.test.ts           # Tool dispatch + option wiring unit tests
     ├── typescript-engine.test.ts # Stryker engine unit tests
-    ├── python-engine.test.ts     # Mutmut engine unit tests
+    ├── python-engine.test.ts     # Cosmic Ray engine unit tests
     ├── rust-engine.test.ts       # Rust engine unit tests
     ├── project-detector.test.ts  # Detection logic unit tests
     ├── sandbox.test.ts           # Sandbox utility unit tests
     ├── config-loader.test.ts     # Config loader unit tests
-    ├── mutmut-parser.test.ts     # Mutmut results text parser unit tests
+    ├── cosmic-ray-parser.test.ts # Cosmic Ray results parser unit tests
     ├── build-output.test.ts      # Postbuild shebang restoration tests
     └── integration.test.ts       # End-to-end MCP server protocol test
 ```
@@ -103,7 +104,7 @@ We follow [Conventional Commits](https://www.conventionalcommits.org/):
 - `docs:` — documentation updates
 - `chore:` — tooling, dependencies, CI
 
-Example: `feat: add Ruby engine via mutmut-ruby`
+Example: `feat: add Go mutation engine`
 
 ## Release Process
 
@@ -127,7 +128,15 @@ the Release PR description before merging it.
 
 ## CI
 
-The CI pipeline (`.github/workflows/ci.yml`) runs `npm run check` on Node.js 22.x and 24.x for all pushes and pull requests to `main`. Both Node versions must pass.
+The CI pipeline (`.github/workflows/ci.yml`) runs `npm run check` on Node.js
+22.x and 24.x for all pushes and pull requests to `main`. It also builds the
+TypeScript, Python, Rust, and PHP container images without publishing them.
+Both Node jobs and all four image builds must pass.
+
+The reusable `container-images.yml` workflow publishes all four release-tagged
+images to GHCR for Linux AMD64 and ARM64 after Release Please creates a GitHub
+release. See [`containers/README.md`](containers/README.md) for local builds
+and versioning.
 
 ## End-to-End Testing
 
@@ -148,7 +157,7 @@ Two trigger paths for the same workflow:
 1. **Manual dispatch** — GitHub Actions tab → "E2E" workflow → "Run workflow" button.
 2. **Label-triggered** — add the `run-e2e` label to any PR. The `if:` condition gates on `github.event.action == 'labeled'` (not just label presence) so re-edits or removal of the label don't cause spurious re-runs.
 
-Both trigger paths run the full E2E suite (MCP pipeline + Stryker mutations) on Node 20.x with a 15-minute timeout.
+Both trigger paths run the E2E workflow on Node 22.x with a 15-minute timeout.
 
 ### When to trigger an E2E run
 
@@ -159,4 +168,4 @@ Both trigger paths run the full E2E suite (MCP pipeline + Stryker mutations) on 
 
 ### What gets exercised
 
-- **`e2e-mcp.test.ts`** — full-stdio JSON-RPC conversation with a real MCP server child process. Verifies tool registration, schema validation, and the `audit_code_resilience` happy path against a fixture project (uses `os.tmpdir()` + sandbox isolation). Has a leak detector that snapshots the tmpdir in `beforeAll` and only flags dirs created *by this run* (snapshot-relative, not absolute).
+- **`e2e-mcp.test.ts`** — full-stdio JSON-RPC conversation with a real MCP server child process. Verifies tool registration, schema validation, and the `audit_code_resilience` happy path against a fixture project (uses `os.tmpdir()` + sandbox isolation). Has a leak detector that snapshots the tmpdir in `beforeAll` and only flags dirs created _by this run_ (snapshot-relative, not absolute).
