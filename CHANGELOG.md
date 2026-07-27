@@ -2,6 +2,27 @@
 
 All notable changes to Chaos-MCP are documented in this file.
 
+## [1.6.0](https://github.com/AraneaDev/Chaos-MCP/compare/v1.5.0...v1.6.0) (2026-07-27)
+
+
+### Features
+
+* **php:** warn when a project's PHPUnit config makes survivors unreliable ([e5de20f](https://github.com/AraneaDev/Chaos-MCP/commit/e5de20f3f2ae6161c13d5699e93b1e8085b3e003))
+* **sandbox:** allow auditing workspaces named in CHAOS_ALLOWED_ROOTS ([482a1ca](https://github.com/AraneaDev/Chaos-MCP/commit/482a1ca2e81acbcb2719576f444683fa4f0b73d4))
+
+
+### Bug Fixes
+
+* **estimate:** reject a missing target instead of estimating zero mutants ([ee645b4](https://github.com/AraneaDev/Chaos-MCP/commit/ee645b4b570380f4a565962b1e90bba39c11e91f))
+* **estimate:** stop counting arrow and member tokens as operators ([b43d6da](https://github.com/AraneaDev/Chaos-MCP/commit/b43d6dab12a667c5acd083776b71289e66e946d6))
+* **git-diff:** trim and sort the changed-file list, and pin both ([fb16b10](https://github.com/AraneaDev/Chaos-MCP/commit/fb16b10f1d31ed5fce5eea9295ba1179d686c018))
+* **handler:** honour CHAOS_ALLOWED_ROOTS at every tool entry point ([79f8137](https://github.com/AraneaDev/Chaos-MCP/commit/79f8137dc494e7a43b48f8c49547d80fda0c73c3))
+* **php:** name the real cause when Infection aborts before logging ([b0f8269](https://github.com/AraneaDev/Chaos-MCP/commit/b0f8269a1bb7179ee84638c9357de8240ee48852))
+* **php:** never report a stale Infection log as a fresh result ([b4a0ef0](https://github.com/AraneaDev/Chaos-MCP/commit/b4a0ef0f00a8921a41ff368196eb28739b8428e4))
+* **run-cache:** break a createdAt tie by id so eviction is reproducible ([fdea68c](https://github.com/AraneaDev/Chaos-MCP/commit/fdea68c0b41b021d488bca4c2efa3030c9451b80))
+* **sandbox:** symlink nested heavyweight directories, not just the root ([0d6be1a](https://github.com/AraneaDev/Chaos-MCP/commit/0d6be1a25fe2b201ded97591b093bac14e05927d))
+* **types:** drive test type errors to zero and make the gate hard ([eb3354e](https://github.com/AraneaDev/Chaos-MCP/commit/eb3354eab54c600f8574dec9c0dd8697630ff801))
+
 ## [1.5.0](https://github.com/AraneaDev/Chaos-MCP/compare/v1.4.0...v1.5.0) (2026-07-24)
 
 
