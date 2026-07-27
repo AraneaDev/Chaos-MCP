@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
+import { firstText } from './helpers/content.js';
 import type { CallToolRequest } from '@modelcontextprotocol/sdk/types.js';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -141,7 +142,7 @@ describe('handleToolCall phase3 wiring', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     cwdSpy.mockReturnValue(WS);
-    mockCreateSandbox.mockReturnValue({
+    mockCreateSandbox.mockResolvedValue({
       workDir: '/tmp/chaos-mcp-sandbox',
       targetFile: '',
       cleanup: vi.fn(),
@@ -150,6 +151,7 @@ describe('handleToolCall phase3 wiring', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: WS,
     });
     // Isolate suppression writes to a throwaway absolute file per test.
@@ -184,6 +186,7 @@ describe('handleToolCall phase3 wiring', () => {
       projectType: 'typescript',
       testRunner: 'vitest',
       detectedRunner: 'vitest',
+      packageManager: '',
       workspaceRoot: subRoot,
     });
     stubEngine(resultWithSurvivor());
@@ -220,7 +223,7 @@ describe('handleToolCall phase3 wiring', () => {
     stubEngine(cleanResult());
     const res = await handleToolCall(makeRequest({ filePath: FILE, runId: 'deadbeef' }));
     expect(res.isError).toBe(true);
-    expect(res.content[0].text).toContain('not found or expired');
+    expect(firstText(res)).toContain('not found or expired');
   });
 
   it('rejects a runId whose cached file does not match the target', async () => {
@@ -233,7 +236,7 @@ describe('handleToolCall phase3 wiring', () => {
     stubEngine(cleanResult());
     const res = await handleToolCall(makeRequest({ filePath: FILE, runId }));
     expect(res.isError).toBe(true);
-    expect(res.content[0].text).toContain('was for');
+    expect(firstText(res)).toContain('was for');
   });
 
   it('filters suppressed mutants out of the result and reports suppressedCount', async () => {
@@ -289,7 +292,7 @@ describe('handleToolCall phase3 wiring', () => {
     expect(res.isError).toBeUndefined();
     // Verify mode now emits structuredContent alongside its text formatter (H3).
     expect(res.structuredContent).toMatchObject({ mode: 'verify' });
-    const delta = JSON.parse(res.content[0].text as string) as {
+    const delta = JSON.parse(firstText(res)) as {
       killedCount: number;
       stillSurviving: { line: number; mutator: string }[];
       nowKilled: { line: number; mutator: string }[];

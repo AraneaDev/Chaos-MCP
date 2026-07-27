@@ -1,4 +1,4 @@
-import { writeFileSync, existsSync, readFileSync, mkdirSync } from 'node:fs';
+import { writeFileSync, existsSync, readFileSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { BaseEngine, RunOptions, MutationResult, Vulnerability } from './base.js';
 import { invokeMutationTool } from '../utils/exec-classify.js';
@@ -48,6 +48,124 @@ export function buildInfectionConfig(sourceDir: string, jsonLogName: string): st
   );
 }
 
+/** How much of each stream to echo back when Infection dies before logging. */
+const DIAGNOSTIC_TAIL_CHARS = 2000;
+
+/**
+ * Build the operator-facing diagnostic tail for an Infection run that failed
+ * before writing its JSON log.
+ *
+ * Infection reports startup failures — "Project tests must be in a passing
+ * state", the PHPUnit exit code, and the wrapped PHPUnit STDOUT/STDERR — on its
+ * OWN STDOUT, not stderr. Reporting only `stderr` (as this engine used to) left
+ * every such failure ending in a bare "stderr:" with nothing after it, so the
+ * real cause (a failing test, a coverage-scope warning tripping PHPUnit's
+ * stopOnDefect, a killed process) was invisible and the caller was left with
+ * only the generic "ensure the suite passes" guess.
+ *
+ * The tail — not the head — carries the cause: Infection's banner and the test
+ * progress dots come first, and the error block is emitted last.
+ */
+export function infectionDiagnostics(err: { stdout?: string; stderr?: string }): string {
+  const tail = (s: string | undefined): string => {
+    const text = (s ?? '').trimEnd();
+    return text.length > DIAGNOSTIC_TAIL_CHARS ? `…${text.slice(-DIAGNOSTIC_TAIL_CHARS)}` : text;
+  };
+  const parts: string[] = [];
+  const out = tail(err.stdout);
+  const errOut = tail(err.stderr);
+  // Infection's own error block lives on stdout, so surface it first.
+  if (out) parts.push(`Infection output (tail):\n${out}`);
+  if (errOut) parts.push(`stderr (tail):\n${errOut}`);
+  return parts.length > 0
+    ? parts.join('\n\n')
+    : '(Infection produced no output on stdout or stderr.)';
+}
+
+/**
+ * Recognise the two Infection startup failures whose symptom is indistinguishable
+ * from "your test suite is broken" but whose cause is neither the suite nor the
+ * coverage driver. Both are specific to running Infection with `--filter`, which
+ * is how this engine always runs it, so both are reachable on a project whose
+ * suite passes perfectly under a plain `vendor/bin/phpunit`.
+ *
+ * Returns the actionable explanation, or null when the failure is not one of
+ * these and the generic guidance should stand.
+ */
+export function diagnoseInfectionStartupFailure(output: string): string | null {
+  // (1) Infection's InitialTestsRunner passes a callback to Symfony's
+  //     Process::run that calls `$process->stop()` as soon as the type is
+  //     Process::ERR — i.e. on the FIRST byte the test process writes to
+  //     STDERR, regardless of whether any test failed. PHPUnit is SIGTERMed
+  //     mid-suite and Infection reports the resulting exit code 143 under its
+  //     "Project tests must be in a passing state" banner.
+  if (/exit code of 143/.test(output)) {
+    return (
+      `Infection terminated the initial test run itself: it stops the test process on the first byte ` +
+      `written to STDERR (Symfony Process::ERR), and PHPUnit then exits 143 (SIGTERM). The suite is ` +
+      `probably fine — something it runs writes to STDERR. Find it with ` +
+      `\`vendor/bin/phpunit 2>/tmp/suite.err\` and make those writes go to an injectable stream that ` +
+      `tests can capture, so the suite emits nothing on STDERR.`
+    );
+  }
+
+  // (2) `--filter=<file>` makes Infection generate an initial-run PHPUnit config
+  //     whose <source> is narrowed to that one file. Every coverage-target
+  //     attribute (#[CoversClass] and friends) pointing outside it becomes
+  //     invalid, PHPUnit emits a warning, and Infection's own injected
+  //     stopOnDefect="true" halts the suite.
+  if (/is not a valid target for code coverage/.test(output)) {
+    return (
+      `PHPUnit stopped on a coverage-scope warning, not on a real test failure. Running Infection with ` +
+      `\`--filter\` narrows the generated initial-run config's <source> to the single target file, which ` +
+      `invalidates every #[CoversClass]/#[UsesClass] attribute pointing elsewhere; Infection injects ` +
+      `stopOnDefect="true" into that same config, so the first such warning aborts the suite. Remove the ` +
+      `coverage-target attributes from the test suite (or stop using --filter).`
+    );
+  }
+
+  return null;
+}
+
+/**
+ * True when a PHPUnit configuration makes a warning fail the run.
+ *
+ * Only the root element counts, and comments are stripped first: a config that
+ * merely *mentions* the attribute — the shape one acquires right after reading
+ * about this trap — does not have it set.
+ */
+export function phpunitFailsOnWarning(configXml: string): boolean {
+  const root = /<phpunit\b[^>]*>/i.exec(configXml.replace(/<!--[\s\S]*?-->/g, ''));
+  return root !== null && /\bfailOnWarning\s*=\s*(["'])true\1/i.test(root[0]);
+}
+
+/**
+ * The advisory attached to a PHP result that reports survivors while the
+ * project's PHPUnit config lets warnings pass.
+ *
+ * Infection sets `stopOnDefect="true"` in the config it writes for each mutant,
+ * so the suite halts as soon as a mutant proves itself killed. That is sound
+ * only while a defect also means a non-zero exit code. A PHP warning is a
+ * defect for `stopOnDefect` but is not a failure under `failOnWarning="false"`,
+ * so a mutant whose effect makes an *earlier* test warn stops the run with exit
+ * 0 — and Infection records it as escaped without ever reaching the test that
+ * asserts the mutated behaviour.
+ *
+ * Measured on Knossos-MCP: one such mutant halted the suite after 86 of 1,858
+ * tests, and the file reported ten survivors at 96%. With `failOnWarning="true"`
+ * the same file reports zero survivors at 100% — every one had been a phantom.
+ *
+ * The error is one-directional: scores are depressed, never inflated. That
+ * makes it expensive rather than dangerous, because it sends a reader off
+ * writing tests for mutants their suite already kills.
+ */
+export const WARNING_FIDELITY_NOTE =
+  'Survivors may be overstated: this project\'s PHPUnit config does not set failOnWarning="true". ' +
+  'Infection sets stopOnDefect="true" for each mutant, so a mutant whose effect makes an earlier ' +
+  'test emit a PHP warning halts the suite with exit 0 and is recorded as escaped before the test ' +
+  'that would assert the change ever runs. Confirm a survivor by applying its mutation by hand and ' +
+  'running the covering test file; if that fails, set failOnWarning="true" and re-audit.';
+
 /** One mutant entry in Infection's JSON log. */
 interface InfectionMutant {
   mutator?: { mutatorName?: string; originalFilePath?: string; originalStartLine?: number };
@@ -82,6 +200,39 @@ interface InfectionJsonLog {
  * minor Infection version bump does not silently zero the count. The E2E in
  * Task 4 is the reality check.
  */
+/**
+ * Reject a log that demonstrably describes some other file.
+ *
+ * `--filter` scopes the run to one file, so every mutant Infection records
+ * should sit in it. When none do, the log did not come from this run — the
+ * observed case being a stale `chaos-infection-log.json` copied into the
+ * sandbox with the workspace and read after Infection failed to start, which
+ * reported another file's hours-old mutants as a fresh 100% score.
+ *
+ * Paths are compared by suffix because the log records absolute sandbox paths
+ * while the audit target is workspace-relative. Mutants with no recorded path
+ * cannot contradict anything, so a log carrying none is left alone rather than
+ * made unusable.
+ */
+function assertLogDescribes(filePath: string, mutants: InfectionMutant[]): void {
+  const recorded = mutants
+    .map((m) => m.mutator?.originalFilePath)
+    .filter((p): p is string => typeof p === 'string' && p.length > 0)
+    .map((p) => p.replace(/\\/g, '/'));
+  if (recorded.length === 0) {
+    return;
+  }
+  const target = filePath.replace(/\\/g, '/').replace(/^\.\//, '');
+  if (recorded.some((p) => p === target || p.endsWith(`/${target}`))) {
+    return;
+  }
+  throw new Error(
+    `Infection's JSON log describes a different file than the one audited (${filePath}); ` +
+      `its mutants belong to ${recorded[0]}. The log is stale or left over from another run, ` +
+      `so no result can be reported for ${filePath}.`,
+  );
+}
+
 export function parseInfectionJsonLog(logText: string, filePath: string): MutationResult {
   let parsed: InfectionJsonLog;
   try {
@@ -95,6 +246,9 @@ export function parseInfectionJsonLog(logText: string, filePath: string): Mutati
 
   const escaped = Array.isArray(parsed.escaped) ? parsed.escaped : [];
   const killedArr = Array.isArray(parsed.killed) ? parsed.killed : [];
+
+  assertLogDescribes(filePath, [...escaped, ...killedArr]);
+
   const timedOutArr = Array.isArray(parsed.timeouted)
     ? parsed.timeouted
     : Array.isArray(parsed.timedOut)
@@ -153,6 +307,19 @@ export class PhpEngine extends BaseEngine {
     const cwd = options?.workDir ?? process.cwd();
     const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const jsonLogPath = join(cwd, JSON_LOG_NAME);
+
+    // The sandbox is a copy of the workspace, so an earlier audit's
+    // `chaos-infection-log.json` is copied in along with it. The failure path
+    // below treats "a log exists" as proof that Infection ran, so a stale copy
+    // silently stood in for a run that never happened — auditing one file
+    // returned a hours-old 100% score computed for a different file entirely.
+    // Removing it first makes any log read below necessarily this run's output.
+    try {
+      rmSync(jsonLogPath, { force: true });
+    } catch {
+      // Best-effort. If the stale log cannot be removed, the provenance check in
+      // parseInfectionJsonLog is the remaining guard against reporting it.
+    }
 
     // Hybrid config: only generate when the project ships none.
     const hasProjectConfig = PROJECT_CONFIG_NAMES.some((n) => existsSync(join(cwd, n)));
@@ -246,13 +413,24 @@ export class PhpEngine extends BaseEngine {
               `${PHPUNIT_CONFIG_NAMES.join(', ')}). Chaos-MCP's PHP engine drives Infection, which ` +
               `requires PHPUnit; this project appears to use a different or custom test runner. Add a ` +
               `phpunit.xml, or ship an Infection config (${PROJECT_CONFIG_NAMES.join('/')}) that ` +
-              `targets your framework. stderr: ${execErr.stderr?.slice(0, 300) ?? ''}`,
+              `targets your framework.\n${infectionDiagnostics(execErr)}`,
+          );
+        }
+        // Infection reports startup failures on its own STDOUT, so the specific
+        // cause — when there is one we can name — is found there.
+        const specific = diagnoseInfectionStartupFailure(
+          `${execErr.stdout ?? ''}\n${execErr.stderr ?? ''}`,
+        );
+        if (specific !== null) {
+          throw new Error(
+            `Infection failed (exit ${execErr.exit}) without producing a JSON log. ` +
+              `${specific}\n${infectionDiagnostics(execErr)}`,
           );
         }
         throw new Error(
           `Infection failed (exit ${execErr.exit}) without producing a JSON log. This usually means ` +
             `the initial test run failed — ensure the PHPUnit suite passes (vendor/bin/phpunit) and a ` +
-            `coverage driver (Xdebug or PCOV) is enabled. stderr: ${execErr.stderr?.slice(0, 500) ?? ''}`,
+            `coverage driver (Xdebug or PCOV) is enabled.\n${infectionDiagnostics(execErr)}`,
         );
       }
     }
@@ -274,6 +452,30 @@ export class PhpEngine extends BaseEngine {
       );
     }
 
-    return parseInfectionJsonLog(logText, filePath);
+    const result = parseInfectionJsonLog(logText, filePath);
+    // Only worth saying when there is something it could be wrong about: a
+    // clean run has no survivor to doubt.
+    if (result.survived > 0 && !this.projectFailsOnWarning(cwd)) {
+      result.fidelityNote = WARNING_FIDELITY_NOTE;
+    }
+    return result;
+  }
+
+  /**
+   * Whether the audited project's PHPUnit config fails on warnings. An
+   * unreadable or absent config answers `true` — the advisory exists to explain
+   * a specific misconfiguration, not to speculate about one we cannot see.
+   */
+  private projectFailsOnWarning(cwd: string): boolean {
+    for (const name of PHPUNIT_CONFIG_NAMES) {
+      const path = join(cwd, name);
+      if (!existsSync(path)) continue;
+      try {
+        return phpunitFailsOnWarning(readFileSync(path, 'utf8'));
+      } catch {
+        return true;
+      }
+    }
+    return true;
   }
 }

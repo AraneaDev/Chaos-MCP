@@ -23,7 +23,7 @@ beforeEach(async () => {
 
   // Mock stderr.write to capture output
   vi.spyOn(process.stderr, 'write').mockImplementation(((
-    chunk: string,
+    chunk: string | Uint8Array,
     _encoding?: string,
     cb?: () => void,
   ) => {

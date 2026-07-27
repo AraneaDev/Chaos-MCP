@@ -41,6 +41,13 @@ export interface MutationResult {
    */
   scopeNote?: string;
   /**
+   * Optional warning that the run's own results may be unreliable — a
+   * misconfiguration in the audited project that makes the underlying tool
+   * misreport, rather than anything about the code under test. Surfaced
+   * alongside `scopeNote`. See `WARNING_FIDELITY_NOTE` in the PHP engine.
+   */
+  fidelityNote?: string;
+  /**
    * Mutants the tool could not score because the mutated code failed before a
    * real pass/fail (cosmic-ray `incompetent`, Stryker compile errors). Excluded
    * from the denominator. A non-zero value with `totalMutants === 0` means the

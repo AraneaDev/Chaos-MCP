@@ -3,7 +3,8 @@ import { cpus } from 'os';
 import { readFileSync } from 'fs';
 import type { CallToolRequest, CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { auditFile, makeEngine, resolvePrebuildCommand } from './handler.js';
-import { isRealPathInside } from './utils/path-safety.js';
+import { isPathPermitted } from './utils/path-safety.js';
+import { describeBoundary } from './utils/file-path.js';
 import { validateMinScore } from './gate.js';
 import {
   discoverFiles,
@@ -116,9 +117,9 @@ export async function handleTriageCall(
   if (paths) {
     for (const p of paths) {
       const abs = resolve(rootCwd, p);
-      if (!isRealPathInside(abs, rootCwd)) {
+      if (!isPathPermitted(abs)) {
         return triageError(
-          `Each path must resolve within the workspace (${rootCwd}); received "${p}".`,
+          `Each path must resolve within the workspace (${describeBoundary(rootCwd)}); received "${p}".`,
         );
       }
     }
@@ -167,7 +168,7 @@ export async function handleTriageCall(
     const sel = discoverChangedFiles(listed.files, paths, maxFiles);
     // Defense-in-depth: git normally only reports workspace-relative paths, but
     // filter any path whose realpath resolves outside the workspace root. (C2 parity)
-    files = sel.files.filter((file) => isRealPathInside(resolve(rootCwd, file), rootCwd));
+    files = sel.files.filter((file) => isPathPermitted(resolve(rootCwd, file)));
     discovered = sel.discovered;
     skipped = sel.skipped;
     scopeNote = `Scoped to files changed vs ${args.diffBase}. TypeScript files mutated on changed lines; other languages whole-file.`;

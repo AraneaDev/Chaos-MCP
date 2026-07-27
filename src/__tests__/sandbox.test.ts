@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Mock fs module (sync exports only — async fs.cp lives in fs/promises).
 vi.mock('fs', () => ({
@@ -33,10 +33,12 @@ vi.mock('../utils/logger.js', () => ({
 }));
 
 import { mkdtempSync, symlinkSync, rmSync, existsSync, statSync, readdirSync } from 'fs';
+import type { PathLike } from 'fs';
 import { cp } from 'fs/promises';
 import { tmpdir } from 'os';
-import { resolve } from 'path';
+import { resolve, join } from 'path';
 import { createSandbox, SandboxContext } from '../utils/sandbox.js';
+import { ALLOWED_ROOTS_ENV } from '../utils/path-safety.js';
 
 // Test workspace root — must resolve inside the test process cwd because
 // createSandbox now refuses workspaces that escape cwd (audit finding C2).
@@ -60,15 +62,25 @@ const SANDBOX_DIR = '/tmp/chaos-mcp-00000000-0000-0000-0000-000000000000';
 describe('createSandbox', () => {
   let sandbox: SandboxContext;
 
+  // Snapshot the ambient allow-list once, and reset to a clean (unset) state
+  // before every case so a test that sets it cannot widen the boundary for the
+  // cwd-rejection cases that follow it.
+  const originalAllowedRoots = process.env[ALLOWED_ROOTS_ENV];
+  afterEach(() => {
+    if (originalAllowedRoots === undefined) Reflect.deleteProperty(process.env, ALLOWED_ROOTS_ENV);
+    else process.env[ALLOWED_ROOTS_ENV] = originalAllowedRoots;
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
+    Reflect.deleteProperty(process.env, ALLOWED_ROOTS_ENV);
     mockTmpdir.mockReturnValue('/tmp');
     mockMkdtempSync.mockReturnValue(SANDBOX_DIR);
     // Default: cp resolves to undefined (mimics successful copy).
     mockCp.mockResolvedValue(undefined as never);
 
     // Default: target file exists, node_modules exists
-    mockExistsSync.mockImplementation((path: string) => {
+    mockExistsSync.mockImplementation((path: PathLike) => {
       if (path === `${SANDBOX_DIR}/src/utils/math.ts`) return true;
       if (path === TEST_PROJECT_NODE_MODULES) return true;
       return false;
@@ -78,7 +90,7 @@ describe('createSandbox', () => {
   it('creates a sandbox directory using os.tmpdir()', async () => {
     mockTmpdir.mockReturnValue('/custom/tmp');
     mockMkdtempSync.mockReturnValue('/custom/tmp/chaos-mcp-00000000-0000-0000-0000-000000000000');
-    mockExistsSync.mockImplementation((path: string) => {
+    mockExistsSync.mockImplementation((path: PathLike) => {
       return (
         path === '/custom/tmp/chaos-mcp-00000000-0000-0000-0000-000000000000/src/utils/math.ts'
       );
@@ -110,7 +122,7 @@ describe('createSandbox', () => {
   });
 
   it('symlinks node_modules into sandbox', async () => {
-    mockExistsSync.mockImplementation((path: string) => {
+    mockExistsSync.mockImplementation((path: PathLike) => {
       if (path === `${SANDBOX_DIR}/src/utils/math.ts`) return true;
       if (path === TEST_PROJECT_NODE_MODULES) return true;
       return false;
@@ -126,7 +138,7 @@ describe('createSandbox', () => {
   });
 
   it('symlinks .venv into sandbox when present', async () => {
-    mockExistsSync.mockImplementation((path: string) => {
+    mockExistsSync.mockImplementation((path: PathLike) => {
       if (path === `${SANDBOX_DIR}/src/main.py`) return true;
       if (path === TEST_PROJECT_VENV) return true;
       return false;
@@ -138,7 +150,7 @@ describe('createSandbox', () => {
   });
 
   it('symlinks vendor into sandbox when present', async () => {
-    mockExistsSync.mockImplementation((path: string) => {
+    mockExistsSync.mockImplementation((path: PathLike) => {
       if (path === `${SANDBOX_DIR}/src/Calculator.php`) return true;
       if (path === TEST_PROJECT_VENDOR) return true;
       return false;
@@ -161,7 +173,7 @@ describe('createSandbox', () => {
     // PHP audit vendor/ must be COPIED, not symlinked — which also means the
     // copy+symlink collision (EEXIST) that failed every PHP project cannot
     // occur, because vendor is never symlinked.
-    mockExistsSync.mockImplementation((path: string) => {
+    mockExistsSync.mockImplementation((path: PathLike) => {
       if (path === `${SANDBOX_DIR}/src/Calculator.php`) return true;
       if (path === TEST_PROJECT_VENDOR) return true;
       if (path === `${TEST_PROJECT}/composer.json`) return true; // marks a Composer project
@@ -183,7 +195,7 @@ describe('createSandbox', () => {
     // Without a Composer marker (composer.json / vendor/composer) there is no
     // autoloader-through-symlink hazard, so vendor keeps the cheap symlink path
     // and is excluded from the copy (symlinked ⇔ not copied).
-    mockExistsSync.mockImplementation((path: string) => {
+    mockExistsSync.mockImplementation((path: PathLike) => {
       if (path === `${SANDBOX_DIR}/src/Calculator.php`) return true;
       if (path === TEST_PROJECT_VENDOR) return true;
       return false;
@@ -229,7 +241,7 @@ describe('createSandbox', () => {
     // when the two paths were equal (rel === ''). This blocked the legitimate
     // case where the user's workspace IS the cwd (the most common case).
     const cwd = process.cwd();
-    mockExistsSync.mockImplementation((path: string) => {
+    mockExistsSync.mockImplementation((path: PathLike) => {
       return path === `${SANDBOX_DIR}/src/utils/math.ts` || path === cwd;
     });
 
@@ -239,7 +251,7 @@ describe('createSandbox', () => {
   it('strips trailing separator from ignorePatterns (Live-audit L2)', async () => {
     // Convention `["fixtures/"]` should exclude the `fixtures` directory
     // segment, not silently fail because the segment lacks the trailing slash.
-    mockExistsSync.mockImplementation((path: string) => {
+    mockExistsSync.mockImplementation((path: PathLike) => {
       if (path === `${SANDBOX_DIR}/src/utils/math.ts`) return true;
       return false;
     });
@@ -259,7 +271,7 @@ describe('createSandbox', () => {
     // 'build' is in ALWAYS_EXCLUDE, but here it is an ancestor of the audited
     // target. Excluding it would drop the file and fail provisioning. The
     // target and every directory on the path to it must be force-included.
-    mockExistsSync.mockImplementation((path: string) => {
+    mockExistsSync.mockImplementation((path: PathLike) => {
       return path === `${SANDBOX_DIR}/build/gen.ts`;
     });
 
@@ -273,7 +285,7 @@ describe('createSandbox', () => {
   });
 
   it('never excludes the target when an ignorePattern matches an ancestor segment', async () => {
-    mockExistsSync.mockImplementation((path: string) => {
+    mockExistsSync.mockImplementation((path: PathLike) => {
       return path === `${SANDBOX_DIR}/fixtures/keep.ts`;
     });
 
@@ -290,7 +302,7 @@ describe('createSandbox', () => {
     // Audit finding H1: target/ contains Rust build artifacts. Symlinking
     // would let mutation runs corrupt the host workspace's build cache.
     // The sandbox must exclude target/ outright (always) instead of symlinking.
-    mockExistsSync.mockImplementation((path: string) => {
+    mockExistsSync.mockImplementation((path: PathLike) => {
       if (path === `${SANDBOX_DIR}/src/main.rs`) return true;
       if (path === TEST_PROJECT_TARGET) return true;
       return false;
@@ -307,7 +319,7 @@ describe('createSandbox', () => {
     // Audit finding M6: substring matching over-eagerly excludes files whose
     // path contains the pattern anywhere. Segment matching only excludes when
     // a single path segment equals the pattern.
-    mockExistsSync.mockImplementation((path: string) => {
+    mockExistsSync.mockImplementation((path: PathLike) => {
       if (path === `${SANDBOX_DIR}/src/utils/math.ts`) return true;
       return false;
     });
@@ -326,7 +338,7 @@ describe('createSandbox', () => {
   });
 
   it('skips symlinks for directories that do not exist', async () => {
-    mockExistsSync.mockImplementation((path: string) => {
+    mockExistsSync.mockImplementation((path: PathLike) => {
       return path === `${SANDBOX_DIR}/src/utils/math.ts`;
     });
 
@@ -361,7 +373,7 @@ describe('createSandbox', () => {
   });
 
   it('cleanup() removes sandbox directory', async () => {
-    mockExistsSync.mockImplementation((path: string) => {
+    mockExistsSync.mockImplementation((path: PathLike) => {
       return path === `${SANDBOX_DIR}/src/utils/math.ts`;
     });
 
@@ -372,7 +384,7 @@ describe('createSandbox', () => {
   });
 
   it('cleanup() swallows errors gracefully', async () => {
-    mockExistsSync.mockImplementation((path: string) => {
+    mockExistsSync.mockImplementation((path: PathLike) => {
       return path === `${SANDBOX_DIR}/src/utils/math.ts`;
     });
 
@@ -386,7 +398,7 @@ describe('createSandbox', () => {
   });
 
   it('filter excludes node_modules, .git, target, and generated dirs', async () => {
-    mockExistsSync.mockImplementation((path: string) => {
+    mockExistsSync.mockImplementation((path: PathLike) => {
       return path === `${SANDBOX_DIR}/src/utils/math.ts`;
     });
 
@@ -416,7 +428,7 @@ describe('createSandbox', () => {
   // ─── Exit cleanup handler ──────────────────────────────────────────────────
 
   it('cleanup() removes sandbox from active registry', async () => {
-    mockExistsSync.mockImplementation((path: string) => {
+    mockExistsSync.mockImplementation((path: PathLike) => {
       return path === `${SANDBOX_DIR}/src/utils/math.ts`;
     });
 
@@ -440,7 +452,7 @@ describe('createSandbox', () => {
   // ─── safeSymlink and Windows junction fallback ──────────────────────────
 
   it('retries with junction on Windows EPERM, surfaces error on Linux', async () => {
-    mockExistsSync.mockImplementation((path: string) => {
+    mockExistsSync.mockImplementation((path: PathLike) => {
       if (path === `${SANDBOX_DIR}/src/utils/math.ts`) return true;
       if (path === TEST_PROJECT_NODE_MODULES) return true;
       return false;
@@ -461,7 +473,7 @@ describe('createSandbox', () => {
     vi.resetModules();
     const freshSandbox = await import('../utils/sandbox.js');
     mockMkdtempSync.mockReturnValue(SANDBOX_DIR);
-    mockExistsSync.mockImplementation((path: string) => {
+    mockExistsSync.mockImplementation((path: PathLike) => {
       return path === `${SANDBOX_DIR}/src/utils/math.ts`;
     });
     mockCp.mockResolvedValue(undefined as never);
@@ -500,7 +512,7 @@ describe('createSandbox', () => {
       size: 250 * 1024 * 1024,
     } as never);
 
-    mockExistsSync.mockImplementation((path: string) => {
+    mockExistsSync.mockImplementation((path: PathLike) => {
       return path === `${SANDBOX_DIR}/src/utils/math.ts`;
     });
 
@@ -529,7 +541,7 @@ describe('createSandbox', () => {
     );
     vi.mocked(statSync).mockReturnValue({ size: 250 * 1024 * 1024 } as never);
 
-    mockExistsSync.mockImplementation((path: string) => {
+    mockExistsSync.mockImplementation((path: PathLike) => {
       return path === `${SANDBOX_DIR}/src/utils/math.ts`;
     });
 
@@ -560,7 +572,7 @@ describe('createSandbox', () => {
     );
     vi.mocked(statSync).mockReturnValue({ size: 250 * 1024 * 1024 } as never);
 
-    mockExistsSync.mockImplementation((path: string) => {
+    mockExistsSync.mockImplementation((path: PathLike) => {
       return path === `${SANDBOX_DIR}/src/utils/math.ts`;
     });
 
@@ -588,7 +600,7 @@ describe('createSandbox', () => {
     ] as never);
     vi.mocked(statSync).mockReturnValueOnce({ size: 1000 } as never);
 
-    mockExistsSync.mockImplementation((path: string) => {
+    mockExistsSync.mockImplementation((path: PathLike) => {
       return path === `${SANDBOX_DIR}/src/utils/math.ts`;
     });
 
@@ -626,7 +638,7 @@ describe('createSandbox', () => {
   // ─── ignorePatterns edge cases ──────────────────────────────────────────
 
   it('skips empty ignorePatterns', async () => {
-    mockExistsSync.mockImplementation((path: string) => {
+    mockExistsSync.mockImplementation((path: PathLike) => {
       return path === `${SANDBOX_DIR}/src/utils/math.ts`;
     });
 
@@ -639,7 +651,7 @@ describe('createSandbox', () => {
   });
 
   it('excludes by segment containing trailing separator in ignorePattern', async () => {
-    mockExistsSync.mockImplementation((path: string) => {
+    mockExistsSync.mockImplementation((path: PathLike) => {
       return path === `${SANDBOX_DIR}/src/utils/math.ts`;
     });
 
@@ -654,7 +666,7 @@ describe('createSandbox', () => {
   // ─── estimateWorkspaceSize error-catch paths ─────────────────────────────
 
   it('estimateWorkspaceSize handles readdirSync errors gracefully', async () => {
-    mockExistsSync.mockImplementation((path: string) => {
+    mockExistsSync.mockImplementation((path: PathLike) => {
       return path === `${SANDBOX_DIR}/src/utils/math.ts`;
     });
 
@@ -668,7 +680,7 @@ describe('createSandbox', () => {
   });
 
   it('estimateWorkspaceSize handles statSync errors gracefully', async () => {
-    mockExistsSync.mockImplementation((path: string) => {
+    mockExistsSync.mockImplementation((path: PathLike) => {
       return path === `${SANDBOX_DIR}/src/utils/math.ts`;
     });
 
@@ -693,7 +705,7 @@ describe('createSandbox', () => {
   it('rejects workspace that is parent of cwd (rel === "..")', async () => {
     // isPathInside should reject when the workspace resolves to the parent of cwd
     const parentCwd = resolve(process.cwd(), '..');
-    mockExistsSync.mockImplementation((path: string) => {
+    mockExistsSync.mockImplementation((path: PathLike) => {
       return path === `${SANDBOX_DIR}/src/utils/math.ts`;
     });
 
@@ -705,7 +717,7 @@ describe('createSandbox', () => {
   it('rejects workspace that is a sibling directory of cwd (rel starts with ..)', async () => {
     // isPathInside should reject sibling directories (rel = '../sibling')
     const siblingDir = resolve(process.cwd(), '..', 'sibling-project');
-    mockExistsSync.mockImplementation((path: string) => {
+    mockExistsSync.mockImplementation((path: PathLike) => {
       return path === `${SANDBOX_DIR}/src/utils/math.ts`;
     });
 
@@ -714,10 +726,74 @@ describe('createSandbox', () => {
     );
   });
 
+  // ─── CHAOS_ALLOWED_ROOTS opt-in ──────────────────────────────────────────
+
+  it('accepts a workspace outside cwd when it is listed in CHAOS_ALLOWED_ROOTS', async () => {
+    // An MCP server runs with one fixed cwd, so without this a server started
+    // in project A could not audit project B at all. The opt-in list restores
+    // that without dropping the boundary.
+    const siblingDir = resolve(process.cwd(), '..', 'sibling-project');
+    process.env[ALLOWED_ROOTS_ENV] = siblingDir;
+    mockExistsSync.mockImplementation((path: PathLike) => {
+      return path === `${SANDBOX_DIR}/src/utils/math.ts`;
+    });
+
+    await expect(createSandbox('src/utils/math.ts', siblingDir)).resolves.toBeDefined();
+  });
+
+  it('accepts a workspace nested under a CHAOS_ALLOWED_ROOTS entry', async () => {
+    const allowedRoot = resolve(process.cwd(), '..', 'monorepo');
+    const nested = join(allowedRoot, 'packages', 'api');
+    process.env[ALLOWED_ROOTS_ENV] = allowedRoot;
+    mockExistsSync.mockImplementation((path: PathLike) => {
+      return path === `${SANDBOX_DIR}/src/utils/math.ts`;
+    });
+
+    await expect(createSandbox('src/utils/math.ts', nested)).resolves.toBeDefined();
+  });
+
+  it('still rejects a workspace that no CHAOS_ALLOWED_ROOTS entry covers', async () => {
+    // Widening to one root must not widen to its siblings.
+    process.env[ALLOWED_ROOTS_ENV] = resolve(process.cwd(), '..', 'allowed-project');
+    const otherDir = resolve(process.cwd(), '..', 'unlisted-project');
+    mockExistsSync.mockImplementation((path: PathLike) => {
+      return path === `${SANDBOX_DIR}/src/utils/math.ts`;
+    });
+
+    await expect(createSandbox('src/utils/math.ts', otherDir)).rejects.toThrow(
+      /Refusing to sandbox workspace outside process cwd/,
+    );
+  });
+
+  it('names the configured roots in the rejection so the misconfiguration is visible', async () => {
+    const allowed = resolve(process.cwd(), '..', 'allowed-project');
+    process.env[ALLOWED_ROOTS_ENV] = allowed;
+    const otherDir = resolve(process.cwd(), '..', 'unlisted-project');
+    mockExistsSync.mockImplementation((path: PathLike) => {
+      return path === `${SANDBOX_DIR}/src/utils/math.ts`;
+    });
+
+    await expect(createSandbox('src/utils/math.ts', otherDir)).rejects.toThrow(
+      new RegExp(`${ALLOWED_ROOTS_ENV} entry \\(${allowed.replace(/[/\\]/g, '\\$&')}\\)`),
+    );
+  });
+
+  it('points at the variable when nothing is configured at all', async () => {
+    Reflect.deleteProperty(process.env, ALLOWED_ROOTS_ENV);
+    const otherDir = resolve(process.cwd(), '..', 'unlisted-project');
+    mockExistsSync.mockImplementation((path: PathLike) => {
+      return path === `${SANDBOX_DIR}/src/utils/math.ts`;
+    });
+
+    await expect(createSandbox('src/utils/math.ts', otherDir)).rejects.toThrow(
+      new RegExp(`Set ${ALLOWED_ROOTS_ENV} to audit workspaces`),
+    );
+  });
+
   // ─── !success finally cleanup path ────────────────────────────────────
 
   it('cleans up sandbox when fs.cp throws (success stays false)', async () => {
-    mockExistsSync.mockImplementation((path: string) => {
+    mockExistsSync.mockImplementation((path: PathLike) => {
       return path === `${SANDBOX_DIR}/src/utils/math.ts`;
     });
 
@@ -738,7 +814,7 @@ describe('createSandbox', () => {
   // ─── Mutation hardening ──────────────────────────────────────────────────
 
   it('does not delete the sandbox on a successful provision (success flag)', async () => {
-    mockExistsSync.mockImplementation((path: string) => {
+    mockExistsSync.mockImplementation((path: PathLike) => {
       if (path === `${SANDBOX_DIR}/src/utils/math.ts`) return true;
       return false;
     });
@@ -774,7 +850,7 @@ describe('createSandbox', () => {
   });
 
   it('symlinks each SYMLINK_DIRS entry that exists (node_modules, .venv, venv)', async () => {
-    mockExistsSync.mockImplementation((path: string) => {
+    mockExistsSync.mockImplementation((path: PathLike) => {
       if (path === `${SANDBOX_DIR}/src/utils/math.ts`) return true;
       return (
         path === TEST_PROJECT_NODE_MODULES ||
@@ -791,8 +867,40 @@ describe('createSandbox', () => {
     expect(linked).toContain(`${TEST_PROJECT}/venv`);
   });
 
+  it('symlinks a nested node_modules the copy filter skipped, not just the root one', async () => {
+    // The copy filter matches on a path SEGMENT, so it skips `node_modules` at
+    // every depth, but Step 2 only ever symlinked the workspace root. In a
+    // workspace layout (npm workspaces, a PHP project shipping a Node worker)
+    // the nested dependencies were therefore dropped from the sandbox
+    // altogether: Knossos-MCP's PHP suite spawns `workers/typescript`, whose
+    // node_modules vanished, so its test run errored and Infection never got
+    // past its initial run.
+    const nested = `${TEST_PROJECT}/workers/typescript/node_modules`;
+    mockExistsSync.mockImplementation((path: PathLike) => {
+      if (path === `${SANDBOX_DIR}/src/utils/math.ts`) return true;
+      return path === TEST_PROJECT_NODE_MODULES || path === nested;
+    });
+    // Real `cp` consults the filter per entry as it walks; the mock must too,
+    // or the nested dir is never observed as skipped.
+    let skippedNested: boolean | undefined;
+    mockCp.mockImplementation((async (
+      _s: string,
+      _d: string,
+      opts: { filter: (src: string) => boolean },
+    ) => {
+      skippedNested = opts.filter(nested);
+    }) as never);
+
+    await createSandbox('src/utils/math.ts', TEST_PROJECT);
+
+    expect(skippedNested).toBe(false); // skipped by the copy…
+    const linked = mockSymlinkSync.mock.calls.map((c) => String(c[0]));
+    expect(linked).toContain(TEST_PROJECT_NODE_MODULES);
+    expect(linked).toContain(nested);
+  });
+
   it('does not exclude everything when an ignorePattern is only a separator', async () => {
-    mockExistsSync.mockImplementation((path: string) => {
+    mockExistsSync.mockImplementation((path: PathLike) => {
       return path === `${SANDBOX_DIR}/src/utils/math.ts`;
     });
 
@@ -808,7 +916,7 @@ describe('createSandbox', () => {
     const { warn } = await import('../utils/logger.js');
     const mockedWarn = vi.mocked(warn);
 
-    mockExistsSync.mockImplementation((path: string) => {
+    mockExistsSync.mockImplementation((path: PathLike) => {
       return path === `${SANDBOX_DIR}/src/utils/math.ts`;
     });
 
@@ -905,7 +1013,7 @@ describe('createSandbox', () => {
     const onSpy = vi.spyOn(process, 'on');
 
     mockMkdtempSync.mockReturnValue(SANDBOX_DIR);
-    mockExistsSync.mockImplementation((path: string) => {
+    mockExistsSync.mockImplementation((path: PathLike) => {
       return path === `${SANDBOX_DIR}/src/utils/math.ts`;
     });
     mockCp.mockResolvedValue(undefined as never);
@@ -936,7 +1044,7 @@ describe('createSandbox', () => {
     const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
 
     mockMkdtempSync.mockReturnValue(SANDBOX_DIR);
-    mockExistsSync.mockImplementation((path: string) => {
+    mockExistsSync.mockImplementation((path: PathLike) => {
       return path === `${SANDBOX_DIR}/src/utils/math.ts`;
     });
     mockCp.mockResolvedValue(undefined as never);

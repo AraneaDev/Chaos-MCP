@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import type { MockInstance } from 'vitest';
 
 // Mock the modules cli.ts depends on so runCli is exercised in-process.
 vi.mock('../utils/config-loader.js', () => ({
@@ -34,9 +35,12 @@ class ExitError extends Error {
 }
 
 describe('cli', () => {
-  let exitSpy: ReturnType<typeof vi.spyOn>;
-  let logSpy: ReturnType<typeof vi.spyOn>;
-  let errSpy: ReturnType<typeof vi.spyOn>;
+  // Typed per spied function — a bare `ReturnType<typeof vi.spyOn>` resolves to
+  // the generic `(...args: unknown[]) => unknown` instance, which the concrete
+  // `process.exit` spy is not assignable to.
+  let exitSpy: MockInstance<typeof process.exit>;
+  let logSpy: MockInstance<typeof console.log>;
+  let errSpy: MockInstance<typeof console.error>;
   const origArgv = process.argv;
 
   beforeEach(() => {

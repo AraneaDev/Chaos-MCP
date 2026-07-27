@@ -135,11 +135,15 @@ export async function listChangedFiles(
     return { kind: 'bad-ref', ref: diffBase };
   }
 
+  // Best-effort: untracked discovery failing is non-fatal, so the initial
+  // empty value stands and only the tracked changes are reported. Re-assigning
+  // it in the catch would say the same thing twice — and each assignment would
+  // mask a fault in the other, leaving neither pinned by any test.
   let untracked = '';
   try {
     untracked = (await git(['ls-files', '--others', '--exclude-standard'])).stdout;
   } catch {
-    untracked = ''; // best-effort: untracked discovery failing is non-fatal
+    /* keep the empty default */
   }
 
   const split = (s: string) =>

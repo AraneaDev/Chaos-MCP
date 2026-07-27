@@ -7,7 +7,7 @@
  * process cwd; defensively resolve symlinks. This module consolidates that
  * logic so the three callers cannot drift on the security boundary.
  */
-import { isRealPathInside } from './path-safety.js';
+import { allowedWorkspaceRoots, isPathPermitted } from './path-safety.js';
 import { resolve } from 'node:path';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 
@@ -53,11 +53,11 @@ export function validateFilePath(rawFilePath: unknown, argName = 'filePath'): Fi
 
   const rootCwd = resolve(process.cwd());
   const resolvedFile = resolve(rootCwd, rawFilePath);
-  if (!isRealPathInside(resolvedFile, rootCwd)) {
+  if (!isPathPermitted(resolvedFile)) {
     return {
       ok: false,
       error: pathValidationError(
-        `Error: ${argName} must resolve within the workspace (${rootCwd}); received "${rawFilePath}".`,
+        `Error: ${argName} must resolve within the workspace (${describeBoundary(rootCwd)}); received "${rawFilePath}".`,
       ),
     };
   }
@@ -70,6 +70,16 @@ export function validateFilePath(rawFilePath: unknown, argName = 'filePath'): Fi
       raw: rawFilePath,
     },
   };
+}
+
+/**
+ * The boundary as the operator configured it: the working directory, plus any
+ * roots named in CHAOS_ALLOWED_ROOTS. A rejection that named only cwd left the
+ * caller unable to tell a missing grant from a mistyped one.
+ */
+export function describeBoundary(rootCwd: string): string {
+  const extra = allowedWorkspaceRoots();
+  return extra.length === 0 ? rootCwd : [rootCwd, ...extra].join(' or ');
 }
 
 function pathValidationError(text: string): CallToolResult {

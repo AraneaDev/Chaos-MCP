@@ -4,11 +4,16 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 // `renameSync`, which is wrapped in a `vi.fn` so a single test can force it
 // to throw (simulating ENOSPC/permission failures) without disturbing every
 // other real filesystem interaction in this suite.
+// `readdirSync` is wrapped the same way so one test can hand back a reversed
+// listing: directory order is filesystem-defined, and on ext4 it happens to
+// match the order the tie-break wants, which would let an eviction that relies
+// on luck pass. Both wrappers delegate to the real implementation otherwise.
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
   return {
     ...actual,
     renameSync: vi.fn(actual.renameSync),
+    readdirSync: vi.fn(actual.readdirSync),
   };
 });
 
@@ -224,6 +229,89 @@ describe('run-cache', () => {
     expect(jsonCount()).toBe(2);
     expect(existsSync(join(dir, 'expired00.json'))).toBe(false);
     expect(existsSync(join(dir, 'liveaaaa3.json'))).toBe(true);
+  });
+
+  /**
+   * Eviction order must not depend on the order the directory happens to be
+   * read in. It used to: `listEntries` returned entries in readdir order, and
+   * run ids are random, so the victim a broken comparator picked changed from
+   * run to run — the suite passed or failed on the same code depending on which
+   * uuids came out. Pre-placing five known ids and dropping three pins the
+   * whole ordering: every entry's fate is asserted, not just the count.
+   */
+  it('evicts oldest-first deterministically regardless of directory order', () => {
+    const put = (id: string, createdAt: number) =>
+      writeFileSync(
+        join(dir, `${id}.json`),
+        JSON.stringify({
+          runId: id,
+          file: id,
+          projectType: 't',
+          createdAt,
+          survivors: [],
+          noCoverage: [],
+        }),
+      );
+    // Ids deliberately counter-sorted against age so a comparator that ignores
+    // createdAt (or adds instead of subtracting) cannot land on the right set.
+    put('eeeeeeee', 100);
+    put('dddddddd', 200);
+    put('cccccccc', 300);
+    put('bbbbbbbb', 400);
+    put('aaaaaaaa', 500);
+
+    // max 3 → room for the newcomer means dropping 5 - 3 + 1 = 3 entries.
+    const fresh = saveRun(
+      { file: 'new', projectType: 't', survivors: [], noCoverage: [] },
+      { dir, max: 3, now: 600 },
+    );
+
+    expect(existsSync(join(dir, 'eeeeeeee.json'))).toBe(false);
+    expect(existsSync(join(dir, 'dddddddd.json'))).toBe(false);
+    expect(existsSync(join(dir, 'cccccccc.json'))).toBe(false);
+    expect(existsSync(join(dir, 'bbbbbbbb.json'))).toBe(true);
+    expect(existsSync(join(dir, 'aaaaaaaa.json'))).toBe(true);
+    expect(loadRun(fresh, { dir, now: 600 })?.file).toBe('new');
+    expect(jsonCount()).toBe(3);
+  });
+
+  /**
+   * Two entries written in the same millisecond used to be separated by
+   * readdir order alone — the same input could evict either one. The id breaks
+   * the tie so the choice is reproducible.
+   */
+  it('breaks a createdAt tie by id so the victim is reproducible', () => {
+    const put = (id: string, createdAt: number) =>
+      writeFileSync(
+        join(dir, `${id}.json`),
+        JSON.stringify({
+          runId: id,
+          file: id,
+          projectType: 't',
+          createdAt,
+          survivors: [],
+          noCoverage: [],
+        }),
+      );
+    put('zzzzzzzz', 100);
+    put('aaaaaaaa', 100);
+
+    // Hand the scan the two entries in descending id order, the one order a
+    // tie-break-free sort would resolve the wrong way. Without this the
+    // assertion below passes on whatever order ext4 happens to return.
+    const listing = readdirSync(dir) as unknown as string[];
+    vi.mocked(readdirSync).mockReturnValueOnce(
+      [...listing].sort().reverse() as unknown as ReturnType<typeof readdirSync>,
+    );
+
+    // max 2 → drop 2 - 2 + 1 = 1: the tie is resolved by the lower id.
+    saveRun(
+      { file: 'new', projectType: 't', survivors: [], noCoverage: [] },
+      { dir, max: 2, now: 100 },
+    );
+
+    expect(existsSync(join(dir, 'aaaaaaaa.json'))).toBe(false);
+    expect(existsSync(join(dir, 'zzzzzzzz.json'))).toBe(true);
   });
 
   it('loadRun rejects an entry whose createdAt is not a number', () => {

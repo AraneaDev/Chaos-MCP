@@ -2,7 +2,15 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../utils/exec.js', () => ({
   runShell: vi.fn(),
-  ExecFailureError: class ExecFailureError extends Error {},
+  // Mirror the real two-argument constructor (ExecResult-shaped first arg,
+  // message second). A bare `extends Error {}` accepted the message in slot 1,
+  // which diverged from the real class every call site is type-checked against.
+  ExecFailureError: class ExecFailureError extends Error {
+    constructor(_result: unknown, message: string) {
+      super(message);
+      this.name = 'ExecFailureError';
+    }
+  },
 }));
 
 import { runShell, ExecFailureError } from '../utils/exec.js';
@@ -10,6 +18,9 @@ import { parseHunks, computeChangedRanges, listChangedFiles } from '../utils/git
 
 const mockRunShell = vi.mocked(runShell);
 const ok = (stdout = '') => ({ stdout, stderr: '', exit: 0, signal: null });
+/** A failed git invocation, built the way `runShell` builds it. */
+const fail = (message: string) =>
+  new ExecFailureError({ stdout: '', stderr: message, exit: 1, signal: null }, message);
 
 describe('parseHunks', () => {
   it('parses a single hunk new-side range', () => {
@@ -66,14 +77,14 @@ describe('computeChangedRanges', () => {
   beforeEach(() => vi.clearAllMocks());
 
   it('returns not-a-repo when rev-parse fails', async () => {
-    mockRunShell.mockRejectedValueOnce(new ExecFailureError('not a repo'));
+    mockRunShell.mockRejectedValueOnce(fail('not a repo'));
     expect(await computeChangedRanges('a.ts', '/w', 'HEAD')).toEqual({ kind: 'not-a-repo' });
   });
 
   it('returns untracked when ls-files fails', async () => {
     mockRunShell
       .mockResolvedValueOnce(ok('true\n')) // rev-parse
-      .mockRejectedValueOnce(new ExecFailureError('not tracked')); // ls-files
+      .mockRejectedValueOnce(fail('not tracked')); // ls-files
     expect(await computeChangedRanges('a.ts', '/w', 'HEAD')).toEqual({ kind: 'untracked' });
   });
 
@@ -81,7 +92,7 @@ describe('computeChangedRanges', () => {
     mockRunShell
       .mockResolvedValueOnce(ok('true\n')) // rev-parse
       .mockResolvedValueOnce(ok('a.ts\n')) // ls-files
-      .mockRejectedValueOnce(new ExecFailureError('unknown ref')); // merge-base
+      .mockRejectedValueOnce(fail('unknown ref')); // merge-base
     expect(await computeChangedRanges('a.ts', '/w', 'nope')).toEqual({
       kind: 'bad-ref',
       ref: 'nope',
@@ -173,7 +184,7 @@ describe('computeChangedRanges', () => {
     mockRunShell
       .mockResolvedValueOnce(ok('true\n')) // rev-parse
       .mockResolvedValueOnce(ok('a.ts\n')) // ls-files
-      .mockRejectedValueOnce(new ExecFailureError('unknown ref')); // merge-base
+      .mockRejectedValueOnce(fail('unknown ref')); // merge-base
     await computeChangedRanges('a.ts', '/w', 'nope');
     // Only 3 calls: rev-parse, ls-files, merge-base. The diff must NOT be called.
     expect(mockRunShell).toHaveBeenCalledTimes(3);
@@ -184,7 +195,7 @@ describe('computeChangedRanges', () => {
       .mockResolvedValueOnce(ok('true\n')) // rev-parse
       .mockResolvedValueOnce(ok('a.ts\n')) // ls-files
       .mockResolvedValueOnce(ok('abc123\n')) // merge-base
-      .mockRejectedValueOnce(new ExecFailureError('diff failed')); // diff throws
+      .mockRejectedValueOnce(fail('diff failed')); // diff throws
     expect(await computeChangedRanges('a.ts', '/w', 'HEAD')).toEqual({
       kind: 'bad-ref',
       ref: 'HEAD',
@@ -231,6 +242,58 @@ describe('listChangedFiles', () => {
     expect(calls.some((c) => c.includes('merge-base'))).toBe(false);
   });
 
+  /**
+   * Git writes one path per line, and a checkout with CRLF endings leaves a
+   * `\r` on each. Untrimmed, `src/a.ts\r` reaches the engines as a path that
+   * does not exist, so the file is silently dropped from the audit.
+   */
+  it('trims carriage returns and stray whitespace off each path', async () => {
+    mockRunShell
+      .mockResolvedValueOnce(ok('true\n')) // work-tree
+      .mockResolvedValueOnce(ok('abc123\n')) // merge-base
+      .mockResolvedValueOnce(ok('src/a.ts\r\n  src/b.ts  \n')) // diff --name-only
+      .mockResolvedValueOnce(ok('src/c.ts\r\n')); // ls-files --others
+
+    const r = await listChangedFiles('/ws', 'main');
+
+    expect(r).toEqual({ kind: 'files', files: ['src/a.ts', 'src/b.ts', 'src/c.ts'] });
+  });
+
+  /**
+   * The list is the work-order for a triage run. Leaving it in git's order
+   * makes the same working tree audit its files in a different sequence
+   * depending on which git command reported them, so a truncated run
+   * (`maxFiles`) covers a different set each time.
+   */
+  it('returns the paths sorted, not in the order git reported them', async () => {
+    mockRunShell
+      .mockResolvedValueOnce(ok('true\n')) // work-tree
+      .mockResolvedValueOnce(ok('abc123\n')) // merge-base
+      .mockResolvedValueOnce(ok('src/z.ts\nsrc/m.ts\n')) // diff --name-only
+      .mockResolvedValueOnce(ok('src/a.ts\n')); // ls-files --others
+
+    const r = await listChangedFiles('/ws', 'main');
+
+    expect(r).toEqual({ kind: 'files', files: ['src/a.ts', 'src/m.ts', 'src/z.ts'] });
+  });
+
+  /**
+   * Untracked discovery is best-effort: when `ls-files` fails the tracked
+   * changes still stand. What must not happen is the failed command's state
+   * leaking into the result as a phantom path.
+   */
+  it('keeps the tracked changes when untracked discovery fails', async () => {
+    mockRunShell
+      .mockResolvedValueOnce(ok('true\n')) // work-tree
+      .mockResolvedValueOnce(ok('abc123\n')) // merge-base
+      .mockResolvedValueOnce(ok('src/a.ts\n')) // diff --name-only
+      .mockRejectedValueOnce(fail('ls-files exploded')); // ls-files --others
+
+    const r = await listChangedFiles('/ws', 'main');
+
+    expect(r).toEqual({ kind: 'files', files: ['src/a.ts'] });
+  });
+
   it('runs every git call as "git" in the workspace with the read-only timeout', async () => {
     mockRunShell
       .mockResolvedValueOnce(ok('true\n')) // work-tree
@@ -270,7 +333,7 @@ describe('listChangedFiles', () => {
   it('does not run the diff command when merge-base fails', async () => {
     mockRunShell
       .mockResolvedValueOnce(ok('true\n')) // work-tree
-      .mockRejectedValueOnce(new ExecFailureError('bad ref')); // merge-base
+      .mockRejectedValueOnce(fail('bad ref')); // merge-base
     const r = await listChangedFiles('/ws', 'nope');
     expect(r).toEqual({ kind: 'bad-ref', ref: 'nope' });
     // Only rev-parse + merge-base — the catch must return, not fall through.
@@ -281,7 +344,7 @@ describe('listChangedFiles', () => {
     mockRunShell
       .mockResolvedValueOnce(ok('true\n')) // work-tree
       .mockResolvedValueOnce(ok('abc123\n')) // merge-base
-      .mockRejectedValueOnce(new ExecFailureError('diff failed')); // diff --name-only
+      .mockRejectedValueOnce(fail('diff failed')); // diff --name-only
     expect(await listChangedFiles('/ws', 'main')).toEqual({ kind: 'bad-ref', ref: 'main' });
   });
 
@@ -290,7 +353,7 @@ describe('listChangedFiles', () => {
       .mockResolvedValueOnce(ok('true\n')) // work-tree
       .mockResolvedValueOnce(ok('abc123\n')) // merge-base
       .mockResolvedValueOnce(ok('src/a.ts\nsrc/b.ts\n')) // diff --name-only
-      .mockRejectedValueOnce(new ExecFailureError('ls-files blew up')); // ls-files --others
+      .mockRejectedValueOnce(fail('ls-files blew up')); // ls-files --others
     const r = await listChangedFiles('/ws', 'main');
     expect(r).toEqual({ kind: 'files', files: ['src/a.ts', 'src/b.ts'] });
   });

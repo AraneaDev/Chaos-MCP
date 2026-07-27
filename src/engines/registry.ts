@@ -3,10 +3,14 @@ import { TypeScriptEngine } from './typescript.js';
 import { PythonEngine } from './python.js';
 import { RustEngine } from './rust.js';
 import { PhpEngine } from './php.js';
-import type { ProjectType } from '../utils/project-detector.js';
+import type { SupportedProjectType } from '../utils/project-detector.js';
 
-/** The project types that map to a real mutation engine (everything but 'unsupported'). */
-export type SupportedProjectType = Exclude<ProjectType, 'unsupported'>;
+/**
+ * Re-exported from the detection leaf so existing `from './registry.js'`
+ * importers keep working. It is *declared* in project-detector.ts so that
+ * `utils/` never has to import from `engines/` — see the note there.
+ */
+export type { SupportedProjectType };
 
 /**
  * Per-language execution metadata. This is the single source of truth for the

@@ -62,6 +62,7 @@ a clear error naming the exact install command.
 Notes:
 
 - In native mode, the tool must be on `PATH` (or, for StrykerJS, resolvable from the target project's `node_modules`), and its language toolchain must be installed.
+- **PHP / Infection:** set `failOnWarning="true"` in your `phpunit.xml`. Infection writes a PHPUnit config per mutant with `stopOnDefect="true"`, so the suite stops as soon as a mutant looks killed — but a PHP warning is a _defect_ without being a _failure_, so under `failOnWarning="false"` a mutant that makes an earlier test warn stops the run with exit 0 and is reported as **survived** before the asserting test runs. Scores are only ever depressed by this, never inflated. Chaos-MCP reads your PHPUnit config and attaches a `fidelityNote` to any PHP result that reports survivors while the setting is off.
 - **Python / cosmic-ray (native mode):** on modern distros a bare `pip install cosmic-ray` is blocked by [PEP 668](https://peps.python.org/pep-0668/) ("externally-managed-environment"); use `pipx install cosmic-ray` or an activated virtualenv. Chaos-MCP generates cosmic-ray's config and runs `baseline → init → exec → dump` in the sandbox. Use `testSelection` and `excludeOperators` to keep large audits tractable.
 - These engines run **inside the sandbox** against a copy of your workspace; Chaos-MCP never installs or modifies anything in your real project.
 
@@ -623,6 +624,35 @@ govern the mutation audit itself.
 ### Enabling `prebuildCommand`
 
 The `prebuildCommand` tool argument runs an arbitrary shell command inside the sandbox, which can reach outside it. It is **disabled by default**. Enable it explicitly with `"allowPrebuild": true` in `chaos-mcp.config.json`, or by setting the `CHAOS_MCP_ALLOW_PREBUILD=1` environment variable. The auto-detected prebuild for Rust (`cargo check`) runs without this flag.
+
+### Auditing workspaces outside the working directory
+
+By default Chaos-MCP only audits files beneath the directory the process was
+launched in: the workspace-root walk stops at `process.cwd()`, and the sandbox
+refuses to copy anything that escapes it. For an MCP server — which is launched
+once with a fixed cwd — that means a server started in project A cannot audit
+project B at all.
+
+Set `CHAOS_ALLOWED_ROOTS` to name additional roots, separated by the platform
+path delimiter (`:` on POSIX, `;` on Windows):
+
+```json
+{
+  "mcpServers": {
+    "chaos-mcp": {
+      "command": "node",
+      "args": ["/path/to/Chaos-MCP/build/index.js"],
+      "env": { "CHAOS_ALLOWED_ROOTS": "/srv/project-b:/srv/project-c" }
+    }
+  }
+}
+```
+
+A workspace is accepted when it is inside the working directory **or** inside
+one of these roots; everything else is still refused. Descendants of a listed
+root are included, siblings and parents are not. When roots nest (a monorepo and
+one of its packages), the innermost match bounds the root walk. Leaving the
+variable unset keeps the cwd-only behaviour exactly as before.
 
 ## Supported Test Runners (Auto-Detected)
 

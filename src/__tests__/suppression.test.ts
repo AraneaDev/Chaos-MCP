@@ -218,6 +218,77 @@ describe('suppression', () => {
     expect(result.mutationScore).toBe('60.00%');
   });
 
+  /**
+   * A non-matching set must leave the score alone, not recompute it. On a run
+   * that produced no mutants at all, recomputing divides by zero and the guard
+   * clamps to 100% — turning "nothing was measured" into a perfect score, the
+   * single most misleading result this tool can report.
+   */
+  it('applySuppressions does not recompute the score of a zero-mutant result', () => {
+    const empty: MutationResult = {
+      target: 'src/a.ts',
+      totalMutants: 0,
+      killed: 0,
+      survived: 0,
+      mutationScore: '0.00%',
+      vulnerabilities: [],
+    };
+
+    const { result, suppressedCount } = applySuppressions(empty, new Set(['1 A']));
+
+    expect(suppressedCount).toBe(0);
+    expect(result.mutationScore).toBe('0.00%');
+  });
+
+  /** An empty set is the same no-op as an undefined one. */
+  it('applySuppressions with an empty set leaves the result untouched', () => {
+    const r = makeResult();
+
+    const { result, suppressedCount } = applySuppressions(r, new Set());
+
+    expect(suppressedCount).toBe(0);
+    expect(result.mutationScore).toBe('60.00%');
+    expect(result.vulnerabilities).toHaveLength(3);
+  });
+
+  /**
+   * Removing keys from a file that has no suppressions at all must be a quiet
+   * no-op. Without the Array.isArray guard the filter runs on `undefined` and
+   * the returned promise rejects — an unsuppress of an already-clean file
+   * would surface as a tool error.
+   */
+  it('removeSuppressions on a file with no entries resolves without touching the file', async () => {
+    await addSuppressions(root, 'src/other.ts', [{ line: 9, mutator: 'Z' }]);
+    const file = join(root, '.chaos-mcp', 'suppressions.json');
+    const before = readFileSync(file, 'utf8');
+
+    await expect(
+      removeSuppressions(root, 'src/absent.ts', [{ line: 1, mutator: 'A' }]),
+    ).resolves.not.toThrow();
+
+    expect(readFileSync(file, 'utf8')).toBe(before);
+  });
+
+  /**
+   * An empty key list short-circuits before the lock, so the file is not even
+   * rewritten. Reserialising it would be harmless today but silently rewrites
+   * a file the caller asked nothing of.
+   */
+  it('removeSuppressions with no keys leaves an existing file byte-identical', async () => {
+    mkdirSync(join(root, '.chaos-mcp'), { recursive: true });
+    const file = join(root, '.chaos-mcp', 'suppressions.json');
+    // Deliberately compact: a rewrite would re-indent it.
+    const before = JSON.stringify({
+      version: 1,
+      entries: { 'src/a.ts': [{ line: 1, mutator: 'A' }] },
+    });
+    writeFileSync(file, before);
+
+    await removeSuppressions(root, 'src/a.ts', []);
+
+    expect(readFileSync(file, 'utf8')).toBe(before);
+  });
+
   // ── addSuppressions Array.isArray guard (L1): a corrupted per-file entry
   //    (non-array) must be treated as empty rather than crashing `.map`. ──
   it('addSuppressions tolerates a corrupted non-array per-file entry', async () => {

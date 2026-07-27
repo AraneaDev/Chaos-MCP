@@ -1,12 +1,4 @@
-import {
-  mkdirSync,
-  mkdtempSync,
-  readdirSync,
-  rmSync,
-  symlinkSync,
-  writeFileSync,
-  type Dirent,
-} from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -729,12 +721,15 @@ describe('execution sessions', () => {
     mkdirSync(join(virtualenv, 'bin'), { recursive: true });
     writeFileSync(join(virtualenv, 'bin', 'project-tool'), '');
     symlinkSync(virtualenv, join(workDir, '.venv'), 'dir');
+    // Partial dirents — only `name`/`isDirectory` are read. Cast through the
+    // mocked function's own return type so this tracks whichever readdirSync
+    // overload vi.mocked resolves to.
     vi.mocked(readdirSync).mockReturnValueOnce([
       { name: 'python3.13', isDirectory: () => true },
       { name: 'python3.12', isDirectory: () => true },
       { name: 'not-python', isDirectory: () => true },
       { name: 'python-file', isDirectory: () => false },
-    ] as Dirent[]);
+    ] as unknown as ReturnType<typeof readdirSync>);
     vi.mocked(runShell)
       .mockResolvedValueOnce(ok('27.0.0'))
       .mockResolvedValueOnce(ok('cid'))

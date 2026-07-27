@@ -1,9 +1,10 @@
 import { cp } from 'fs/promises';
 import { mkdtempSync, symlinkSync, rmSync, existsSync, statSync, readdirSync } from 'fs';
-import { join, resolve, isAbsolute, relative, sep } from 'path';
+import { join, resolve, sep } from 'path';
 import { tmpdir } from 'os';
 import { randomUUID } from 'crypto';
 import { warn } from './logger.js';
+import { ALLOWED_ROOTS_ENV, allowedWorkspaceRoots, isWorkspaceRootAllowed } from './path-safety.js';
 
 /**
  * Registry of active sandbox directories that have not yet been cleaned up.
@@ -65,26 +66,6 @@ function ensureExitHandler(): void {
 }
 
 /**
- * Returns true when `candidate` is `root` itself, or a path strictly inside
- * `root` (no `..` traversal, no absolute escape).
- *
- * Defense-in-depth against path traversal (audit finding C2): even if the
- * handler layer forgets to validate `filePath`, the sandbox refuses to
- * copy a workspace that lies outside the current process working directory.
- */
-function isPathInside(candidate: string, root: string): boolean {
-  const rel = relative(root, candidate);
-  // INSIDE means equal-to (rel === '') or strictly inside (rel === 'foo/…').
-  // A parent ('..'), sibling ('../foo'), or absolute-escape path is rejected.
-  // Note `!rel.startsWith('..')` already covers the bare '..' parent case, so
-  // no separate `rel !== '..'` check is needed (it would be dead code).
-  // (Live-audit L1 fix: previously required `rel !== ''` which blocked the
-  // legitimate case where `workspaceRoot === process.cwd()`, causing audit
-  // calls on the user's own project to fail unconditionally.)
-  return !rel.startsWith('..') && !isAbsolute(rel);
-}
-
-/**
  * Context returned by the sandbox manager.
  * Callers MUST invoke cleanup() in a finally block to avoid leaking temp directories.
  */
@@ -142,6 +123,9 @@ const ALWAYS_EXCLUDE = new Set([
   '.nyc_output',
   '.next',
   'target', // Rust build artifacts (excluded — NOT symlinked; audit H1)
+  // Our own derived output from a previous audit. Copying it in lets a run that
+  // never produced a log read the old one and report it as a fresh result.
+  'chaos-infection-log.json',
 ]);
 
 /**
@@ -347,10 +331,14 @@ export async function createSandbox(
   // the temp dir was created first, so a boundary-guard trip left an empty,
   // untracked directory behind permanently.)
   const absoluteCwd = resolve(process.cwd());
-  if (!isPathInside(absoluteWorkspace, absoluteCwd)) {
+  if (!isWorkspaceRootAllowed(absoluteWorkspace)) {
+    const extra = allowedWorkspaceRoots();
     throw new Error(
       `Refusing to sandbox workspace outside process cwd: ` +
-        `"${absoluteWorkspace}" is not inside "${absoluteCwd}".`,
+        `"${absoluteWorkspace}" is not inside "${absoluteCwd}"` +
+        (extra.length > 0
+          ? ` or any ${ALLOWED_ROOTS_ENV} entry (${extra.join(', ')}).`
+          : `. Set ${ALLOWED_ROOTS_ENV} to audit workspaces outside the working directory.`),
     );
   }
 
@@ -410,6 +398,10 @@ export async function createSandbox(
     // with a confusing "target not found" (Med#7).
     const absoluteTarget = resolve(absoluteWorkspace, targetFile);
 
+    // Heavyweight dirs the filter skipped, at any depth, to be symlinked back in
+    // Step 2. Populated by the filter callback below (which cp calls synchronously).
+    const skippedHeavyDirs = new Set<string>();
+
     // ── Audit C1: async cp releases the event loop during disk I/O. ──
     // The filter callback is synchronous — Node's async fs.cp calls the
     // filter sync per entry and accumulates results internally.
@@ -421,13 +413,25 @@ export async function createSandbox(
 
         const segments = src.split(sep);
         const basename = segments[segments.length - 1] ?? '';
-        if (ALWAYS_EXCLUDE.has(basename)) return false;
         // Symlinked heavyweight dirs (node_modules, .venv, venv, and — except
         // for Composer PHP audits — vendor) are materialised as symlinks in
         // Step 2, so they must never be copied here: a copied dir would make the
         // later symlinkSync fail with EEXIST. Dirs we deliberately COPY (vendor
         // for PHP) are absent from this set and fall through to be copied.
-        if (symlinkDirsSet.has(basename)) return false;
+        //
+        // This matches on a path SEGMENT, so it skips these dirs at every depth.
+        // Record each one: Step 2 used to symlink only the workspace root, so a
+        // workspace layout (npm workspaces, or a PHP project shipping a Node
+        // worker) lost its NESTED dependencies from the sandbox entirely.
+        //
+        // Checked BEFORE ALWAYS_EXCLUDE because node_modules/.venv/venv appear
+        // in both lists; an ALWAYS_EXCLUDE hit first would drop them silently
+        // instead of recording them for re-linking.
+        if (symlinkDirsSet.has(basename)) {
+          skippedHeavyDirs.add(src);
+          return false;
+        }
+        if (ALWAYS_EXCLUDE.has(basename)) return false;
         // Audit finding M6: segment-based matching prevents over-eager substring
         // exclusion. Excludes only when a path segment exactly equals the
         // pattern, not when the pattern is a substring of any path component.
@@ -458,6 +462,14 @@ export async function createSandbox(
       if (existsSync(src)) {
         safeSymlink(src, dst);
       }
+      skippedHeavyDirs.delete(src); // handled above; do not link it twice
+    }
+    // Nested occurrences (e.g. workers/typescript/node_modules). Their parent
+    // directories were copied, so the link destination's parent already exists.
+    for (const src of skippedHeavyDirs) {
+      if (!src.startsWith(absoluteWorkspace + sep)) continue;
+      if (!existsSync(src)) continue;
+      safeSymlink(src, join(sandboxDir, src.slice(absoluteWorkspace.length + 1)));
     }
 
     if (options?.signal?.aborted) throw abortError();

@@ -46,8 +46,39 @@ function startServer(): ChildProcess {
   return child;
 }
 
+// Minimal structural types for the MCP payloads these tests assert on. The
+// responses arrive as untyped JSON, so without these every `result?.x` chain
+// collapses to `{}` and the assertions below stop being type-checked.
+interface JsonSchemaLike {
+  properties?: Record<string, unknown>;
+  additionalProperties?: boolean;
+  required?: string[];
+}
+
+interface ToolDescriptor {
+  name?: string;
+  description?: string;
+  inputSchema?: JsonSchemaLike;
+}
+
+/** Union of the `result` shapes returned by initialize, tools/list and tools/call. */
+interface McpResult {
+  serverInfo?: { name?: string; version?: string };
+  capabilities?: { tools?: unknown };
+  tools?: ToolDescriptor[];
+  isError?: boolean;
+  content?: { type?: string; text?: string }[];
+}
+
+interface JsonRpcResponse {
+  jsonrpc?: string;
+  id?: number | string | null;
+  result?: McpResult;
+  error?: { code: number; message: string; data?: unknown };
+}
+
 /** Read one JSON-RPC response line from stdout. */
-function readResponse(child: ChildProcess, timeoutMs = 5000): Promise<Record<string, unknown>> {
+function readResponse(child: ChildProcess, timeoutMs = 5000): Promise<JsonRpcResponse> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       reject(new Error('Timed out waiting for server response'));
@@ -125,7 +156,7 @@ describe('chaos-mcp integration', () => {
     expect(Array.isArray(response.result?.tools)).toBe(true);
     expect(response.result?.tools).toHaveLength(3);
 
-    const tools = response.result?.tools as Record<string, unknown>[];
+    const tools = response.result?.tools ?? [];
     const toolNames = tools.map((t) => t.name);
     expect(toolNames).toContain('audit_code_resilience');
     expect(toolNames).toContain('triage_test_coverage');
