@@ -401,14 +401,37 @@ function partialCleanNote(result: MutationResult): string {
 }
 
 /**
- * Pick the clean-result sentence: no mutable logic, a partial run, or a genuine
- * all-killed result. Shared so the text report and the payload cannot disagree
- * about which of the three a given result is — only about their own wording for
- * the two cases where the run really did cover the file.
+ * The "nothing survived" sentence for a run that deliberately generated nothing.
+ *
+ * Distinct from both siblings above. `hasNoMutableLogic` covers "we mutated the
+ * whole file and it has no mutable logic"; `partialCleanNote` covers "we started
+ * and stopped early". This is the third shape: a short-circuit that ran ZERO
+ * mutants on purpose — a `diffBase` with no changed lines, or a verify whose
+ * baseline recorded no uncaught mutants. Both set a `scopeNote` saying why, so
+ * this sentence only has to avoid claiming credit and point at it.
+ *
+ * Found by running this tool on itself: the verify short-circuit reported
+ * `total: 0` alongside "the test suite caught every mutation", which is false
+ * for a run in which nothing was ever generated. "Caught every mutation" is only
+ * ever true when at least one mutant actually ran.
+ */
+function noMutantsRanNote(): string {
+  return 'No mutants were run, so this result is not a measurement of the test suite — see the scope note for why.';
+}
+
+/**
+ * Pick the clean-result sentence: no mutable logic, a partial run, a
+ * deliberate no-op, or a genuine all-killed result. Shared so the text report
+ * and the payload cannot disagree about which of the four a given result is —
+ * only about their own wording for the two cases where the run really did
+ * cover the file.
  */
 function cleanNote(result: MutationResult, wording: { noMutants: string; allKilled: string }) {
   if (hasNoMutableLogic(result)) return wording.noMutants;
   if (result.complete === false) return partialCleanNote(result);
+  // Ordered last of the three guards: a zero-mutant result that is neither
+  // "no mutable logic" nor a partial run is a short-circuit that ran nothing.
+  if (result.totalMutants === 0) return noMutantsRanNote();
   return wording.allKilled;
 }
 

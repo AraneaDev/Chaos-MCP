@@ -232,6 +232,64 @@ describe('clean note for a partial (time-budget-truncated) run', () => {
     expect(other.note).not.toContain('the time budget was exhausted');
   });
 
+  // Found by running Chaos-MCP on itself: verifying a runId whose baseline held
+  // no survivors short-circuits without running anything, and the payload said
+  // "the test suite caught every mutation" over `total: 0`. That sentence is
+  // only ever true when at least one mutant actually ran. The scopeNote already
+  // explained the short-circuit; the note must not contradict it.
+  describe('a short-circuit that ran zero mutants', () => {
+    const shortCircuit = (scopeNote: string): MutationResult =>
+      result({
+        totalMutants: 0,
+        killed: 0,
+        survived: 0,
+        vulnerabilities: [],
+        mutationScore: '100.00%',
+        scopeNote,
+      });
+
+    it('does not claim the suite caught every mutation when nothing was run', () => {
+      const payload = buildResultPayload(
+        shortCircuit(
+          'The baseline for src/a.ts recorded no uncaught mutants, so there is nothing to verify; no mutants were run.',
+        ),
+      );
+      expect(payload.note).not.toContain('caught every mutation');
+      expect(payload.note).toContain('No mutants were run');
+      expect(payload.note).toContain('see the scope note');
+    });
+
+    it('applies to the diffBase no-changes short-circuit too', () => {
+      const payload = buildResultPayload(
+        shortCircuit('No changed lines in src/a.ts vs main; nothing to mutate.'),
+      );
+      expect(payload.note).not.toContain('caught every mutation');
+      expect(payload.note).toContain('No mutants were run');
+    });
+
+    it('says the same thing in text output', () => {
+      const text = formatResultAsText(shortCircuit('No changed lines in src/a.ts vs main.'));
+      expect(text).not.toContain('caught every mutation');
+      expect(text).toContain('No mutants were run');
+    });
+
+    it('still prefers the no-mutable-logic wording when that is what a zero means', () => {
+      // A whole-file run that enumerated nothing is a DIFFERENT zero, and
+      // hasNoMutableLogic must keep winning — this guard must not swallow it.
+      const payload = buildResultPayload(
+        result({
+          totalMutants: 0,
+          killed: 0,
+          survived: 0,
+          vulnerabilities: [],
+          scopeKind: 'whole-file',
+        }),
+      );
+      expect(payload.note).toContain('no mutable logic');
+      expect(payload.note).not.toContain('No mutants were run');
+    });
+  });
+
   it('still gives full credit to a run that completed', () => {
     // The unchanged happy path: `complete` absent or true keeps the original
     // wording, so a normal audit reads exactly as it did before.
