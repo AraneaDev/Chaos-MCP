@@ -40,11 +40,27 @@ export function parseBaseline(b: BaselineInput): MutantKey[] {
   // would misdirect it off the loop.
   // Stryker disable next-line ArrayDeclaration: equivalent mutant (see above)
   for (const group of [...(b.survivors ?? []), ...(b.noCoverage ?? [])]) {
-    for (const mutator of Object.keys(group.mutators ?? {})) {
-      const k = keyOf(group.line, mutator);
+    // Not every baseline is a value this process produced: one arrives as a raw
+    // `baseline` tool argument (validated for type, not for element shape) and
+    // another is read back from the on-disk run cache, so an element can be
+    // `null` — a truncated or hand-edited cache entry, or a caller passing
+    // `survivors: [null]`. Dereferencing it threw a raw TypeError out of
+    // `computeScope`, which the handler reported as "Chaos Engine Halted:
+    // Cannot read properties of null" — an internal crash where the intended
+    // answer was the "not found or expired" / bad-argument tool error (audit
+    // M10). The declared type says this cannot happen, hence the widening cast:
+    // the guard exists precisely for the inputs the type system never saw.
+    // A group with no usable line number is skipped for the same reason — it
+    // would key mutants as `"undefined <mutator>"` and corrupt the delta.
+    const g = group as { line?: unknown; mutators?: unknown } | null | undefined;
+    if (g === null || g === undefined || typeof g.line !== 'number') continue;
+    // `mutators` needs no guard of its own: `?? {}` already covers null/absent,
+    // and a non-object value yields no keys.
+    for (const mutator of Object.keys((g.mutators ?? {}) as Record<string, unknown>)) {
+      const k = keyOf(g.line, mutator);
       if (!seen.has(k)) {
         seen.add(k);
-        out.push({ line: group.line, mutator });
+        out.push({ line: g.line, mutator });
       }
     }
   }

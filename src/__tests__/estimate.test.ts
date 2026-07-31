@@ -1,8 +1,21 @@
 import { describe, it, expect, vi } from 'vitest';
 
+// The stub for MutationToolStartupError carries `reason`, because that is what
+// `computeCount` now branches on: only a genuinely missing binary
+// ('NOT_INSTALLED') may degrade to the heuristic. A reason-less stub would make
+// every case here look like the non-recoverable default.
 vi.mock('../utils/exec-classify.js', () => ({
   invokeMutationTool: vi.fn(),
-  MutationToolStartupError: class extends Error {},
+  MutationToolStartupError: class extends Error {
+    constructor(
+      public readonly tool: string,
+      message: string,
+      public readonly reason = 'UNKNOWN',
+    ) {
+      super(message);
+      this.name = 'MutationToolStartupError';
+    }
+  },
 }));
 
 // Partial mock: only `runShell` is stubbed. `ExecFailureError` now lives in
@@ -159,9 +172,15 @@ describe('estimateAudit', () => {
   });
 
   it('falls back to heuristic when cargo-mutants is missing', async () => {
-    // Real constructor: (tool: ExecutableTool, message: string)
+    // Real constructor: (tool: ExecutableTool, message: string, reason).
+    // The reason is now load-bearing — it is the ONLY startup class that may
+    // degrade to an approximate answer instead of failing the call.
     mockInvoke.mockRejectedValueOnce(
-      new MutationToolStartupError('cargo-mutants' as never, 'cargo-mutants not found'),
+      new MutationToolStartupError(
+        'cargo-mutants' as never,
+        'cargo-mutants not found',
+        'NOT_INSTALLED' as never,
+      ),
     );
     const r = await estimateAudit({
       absFile: __filename,
@@ -179,7 +198,11 @@ describe('estimateAudit', () => {
     // downgrade — the tool is not installed — is the actionable half, and only
     // an explicit check keeps it.
     mockInvoke.mockRejectedValueOnce(
-      new MutationToolStartupError('cargo-mutants' as never, 'cargo-mutants not found'),
+      new MutationToolStartupError(
+        'cargo-mutants' as never,
+        'cargo-mutants not found',
+        'NOT_INSTALLED' as never,
+      ),
     );
     const r = await estimateAudit({
       absFile: __filename,
@@ -188,6 +211,64 @@ describe('estimateAudit', () => {
       workDir: '/sandbox',
     });
     expect(r.basis).toContain(' (cargo-mutants not installed)');
+  });
+
+  // ── Only "not installed" may degrade; every other startup class must fail ──
+
+  it.each([
+    ['TIMEOUT', 'cargo-mutants timed out after 60000ms.'],
+    ['OUTPUT_TRUNCATED', 'cargo-mutants produced more output than Chaos-MCP can capture'],
+    ['CRASHED', 'cargo-mutants crashed unexpectedly (signal SIGSEGV)'],
+    ['UNKNOWN', 'something went wrong'],
+  ])(
+    'rethrows a %s startup failure instead of reporting "cargo-mutants not installed"',
+    async (reason, message) => {
+      // This catch used to swallow the WHOLE MutationToolStartupError class and
+      // return normally with '(cargo-mutants not installed)' appended. So a
+      // timed-out `cargo mutants --list`, and output that overflowed the capture
+      // cap, were both reported to the caller as a missing binary — wrapped in a
+      // SUCCESSFUL structuredContent estimate, since estimate-handler's
+      // `isCancel`/error path only runs when something actually throws.
+      mockInvoke.mockRejectedValueOnce(
+        new MutationToolStartupError('cargo-mutants' as never, message, reason as never),
+      );
+
+      await expect(
+        estimateAudit({
+          absFile: __filename,
+          relFile: 'src/x.rs',
+          projectType: 'rust',
+          workDir: '/sandbox',
+        }),
+      ).rejects.toThrow(message);
+    },
+  );
+
+  it('propagates a cancelled cargo-mutants --list rather than returning an estimate', async () => {
+    // The cancellation half of the same finding. `invokeMutationTool` now
+    // rethrows an ABORTED ExecFailureError untouched instead of relabelling it
+    // a signal crash, and `computeCount` — which has no request context and so
+    // cannot consult `ctx.signal.aborted` — must let it out. Previously a
+    // cancelled `estimate_audit` on a .rs file returned a successful heuristic
+    // estimate for work the caller had already abandoned.
+    const aborted = new ExecFailureError(
+      { stdout: '', stderr: '', exit: null, signal: 'SIGKILL', code: 'ABORTED' },
+      'Command was cancelled: cargo',
+    );
+    mockInvoke.mockRejectedValueOnce(aborted);
+
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      estimateAudit({
+        absFile: __filename,
+        relFile: 'src/x.rs',
+        projectType: 'rust',
+        workDir: '/sandbox',
+        signal: controller.signal,
+      }),
+    ).rejects.toBe(aborted);
   });
 
   it('labels the exact rust result with its language and how it was obtained', async () => {
@@ -201,9 +282,24 @@ describe('estimateAudit', () => {
       projectType: 'rust',
       workDir: '/sandbox',
     });
+    // UPDATED (audit: Rust's "exact" count over-claims). The old assertions
+    // pinned `basis: 'cargo-mutants --list'` and
+    // 'Exact mutant count from cargo-mutants --list (no tests were run).' —
+    // a claim the audit does not honour. `cargo mutants --list` enumerates
+    // every GENERATED mutant, including ones that will not compile (routine on
+    // files with generics or trait bounds), whereas `scoreCounts` in
+    // engines/rust.ts computes totalMutants = caught + timeout + missed and
+    // reports the unviable ones separately as `incompetent`. So "exact: 120"
+    // was routinely followed by an audit reporting 88. The COUNT is unchanged —
+    // it is the right input for timing, since an unviable mutant still costs a
+    // compile — only the claim is now accurate about what it counts.
     expect(r.language).toBe('rust');
-    expect(r.basis).toBe('cargo-mutants --list');
-    expect(r.note).toBe('Exact mutant count from cargo-mutants --list (no tests were run).');
+    expect(r.basis).toBe('cargo-mutants --list (generated mutants)');
+    expect(r.note).toContain('GENERATES');
+    expect(r.note).toContain('no tests were run');
+    // The actionable half: the audit's denominator will be smaller.
+    expect(r.note).toContain('incompetent');
+    expect(r.note).toMatch(/audit scores fewer/i);
   });
 
   it('counts entries whose line and column are multi-digit', async () => {
@@ -399,6 +495,58 @@ describe('estimateAudit withTiming', () => {
     expect(command.timingConfidence).toBe('low');
     expect(native.timingConfidence).toBe('medium');
     expect(nonTypeScript.timingConfidence).toBe('medium');
+  });
+
+  // ── The runner the AUDIT resolved wins over the one detection reported ────
+
+  it('projects with the command-runner model when the resolved runner overrides the env', async () => {
+    // Scenario A of the estimate/audit divergence finding: config sets
+    // `"stryker": { "testRunner": "command" }` on a project detected as vitest.
+    // The audit runs the command runner; the estimate compared `env.testRunner`
+    // ('vitest') against 'command', got false, and projected with the NATIVE
+    // constants — perMutantOverheadMs 250 vs 1500, startupMs 5000 vs 10000,
+    // estimateFactor 1.2 vs 1.5. For 200 mutants at a 300ms baseline that is
+    // ~137s projected against ~550s actual: a 4× under-estimate handed to the
+    // caller as `fitsBudget: true` for a run that will blow its budget.
+    mockRunShell.mockResolvedValue({ stdout: '', stderr: '', exit: 0, signal: null } as never);
+
+    const resolved = await estimateAudit({
+      absFile: __filename,
+      relFile: 'src/__tests__/estimate.test.ts',
+      projectType: 'typescript',
+      workDir: '/sandbox',
+      withTiming: true,
+      env: { ...baseEnv(), testRunner: 'vitest', detectedRunner: 'vitest' },
+      testRunner: 'command', // what buildRunOptions resolved from the config file
+      concurrency: 1,
+    });
+
+    expect(resolved.timingConfidence).toBe('low');
+    // And the BASELINE is measured with the command the audit will actually
+    // run, not the native `npx vitest` the detected runner implies.
+    expect(mockRunShell).toHaveBeenLastCalledWith(
+      'npx',
+      ['vitest', 'related', 'src/__tests__/estimate.test.ts', '--run'],
+      expect.objectContaining({ killTree: true }),
+    );
+  });
+
+  it('falls back to env.testRunner when no resolved runner is supplied', async () => {
+    // The other arm: callers without a config (and every direct caller) keep
+    // the previous behaviour exactly.
+    mockRunShell.mockResolvedValue({ stdout: '', stderr: '', exit: 0, signal: null } as never);
+
+    const r = await estimateAudit({
+      absFile: __filename,
+      relFile: 'src/__tests__/estimate.test.ts',
+      projectType: 'typescript',
+      workDir: '/sandbox',
+      withTiming: true,
+      env: { ...baseEnv(), testRunner: 'command', detectedRunner: 'vitest' },
+      concurrency: 1,
+    });
+
+    expect(r.timingConfidence).toBe('low');
   });
 
   it('treats an upper bound exactly equal to the budget as fitting', async () => {

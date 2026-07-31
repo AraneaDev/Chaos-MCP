@@ -72,6 +72,7 @@ import { TypeScriptEngine } from '../engines/typescript.js';
 import { detectEnvironment } from '../utils/project-detector.js';
 import { createSandbox } from '../utils/sandbox.js';
 import { computeChangedRanges } from '../utils/git-diff.js';
+import { ExecFailureError } from '../utils/exec-error.js';
 import type { ToolContext } from '../tool-context.js';
 
 const MockTSEngine = vi.mocked(TypeScriptEngine);
@@ -264,6 +265,58 @@ describe('handleToolCall — Phase 5: progress milestones + cancellation', () =>
 
     expect(response.isError).toBe(true);
     expect((response.content[0] as { text: string }).text).toBe('Operation cancelled.');
+  });
+
+  // ── (b'') Abort DURING the pre-sandbox git calls ─────────────────────────
+
+  it('reports "Operation cancelled." when a cancel lands mid-git during scope resolution', async () => {
+    // `computeScope`'s git calls run BEFORE the sandbox exists, and git-diff.ts
+    // now RE-THROWS a cancel instead of flattening it into `not-a-repo` — so it
+    // arrives at the handler's outer catch. Without the isCancel branch there,
+    // pressing stop was reported as `Chaos Engine Halted: Command was cancelled:
+    // git` (and, before the git-diff split, as "your workspace is not a git work
+    // tree").
+    stubWorkspaceEnv();
+    const controller = new AbortController();
+    mockComputeChangedRanges.mockImplementation(() => {
+      controller.abort();
+      return Promise.reject(
+        new ExecFailureError(
+          { stdout: '', stderr: '', exit: null, signal: null, code: 'ABORTED' },
+          'Command was cancelled: git',
+        ),
+      );
+    });
+
+    const ctx: ToolContext = { signal: controller.signal };
+    const response = await handleToolCall(
+      makeRequest({ filePath: 'src/math.ts', diffBase: 'main' }),
+      undefined,
+      ctx,
+    );
+
+    expect(response.isError).toBe(true);
+    expect((response.content[0] as { text: string }).text).toBe('Operation cancelled.');
+    // The cancel must be caught before any workspace copy is paid for.
+    expect(mockCreateSandbox).not.toHaveBeenCalled();
+  });
+
+  it('still reports a genuine pre-sandbox failure as halted, not as a cancel', async () => {
+    // The other arm of the same branch: an uncancelled throw keeps the generic
+    // engine-halted wording it has always had.
+    stubWorkspaceEnv();
+    mockComputeChangedRanges.mockRejectedValue(new Error('git exploded'));
+
+    const response = await handleToolCall(
+      makeRequest({ filePath: 'src/math.ts', diffBase: 'main' }),
+      undefined,
+      {},
+    );
+
+    expect(response.isError).toBe(true);
+    expect((response.content[0] as { text: string }).text).toBe(
+      'Chaos Engine Halted: git exploded',
+    );
   });
 
   // ── (c) Milestone 4 on no-changes short-circuit path ─────────────────────

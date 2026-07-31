@@ -1,5 +1,5 @@
 import { writeFileSync, existsSync, readFileSync, mkdirSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import {
   BaseEngine,
   RunOptions,
@@ -10,7 +10,7 @@ import {
 } from './base.js';
 import { invokeMutationTool } from '../utils/exec-classify.js';
 import type { ExecFailureError } from '../utils/exec-error.js';
-import { log, isVerbose } from '../utils/logger.js';
+import { log, isVerbose, warn } from '../utils/logger.js';
 import { DEFAULT_TIMEOUT_MS } from '../utils/constants.js';
 
 /** Name of the config we generate when the project ships none. */
@@ -34,11 +34,64 @@ const PHPUNIT_CONFIG_NAMES = [
 /** Sandbox-relative JSON log path we always read results from. */
 const JSON_LOG_NAME = 'chaos-infection-log.json';
 
-/** Top path segment of a workspace-relative file, used as the generated `source.directories` root. */
-export function inferSourceDir(filePath: string): string {
-  const norm = filePath.replace(/\\/g, '/');
-  const slash = norm.indexOf('/');
-  return slash > 0 ? norm.slice(0, slash) : '.';
+/**
+ * Top path segment of the audit target, used as the generated config's
+ * `source.directories` root (hybrid fallback only — a project shipping its own
+ * infection.json keeps it).
+ *
+ * NORMALISE BEFORE SLICING. Taking `indexOf('/')` on the raw path answered `"."`
+ * for two shapes callers actually pass: `./src/Calculator.php` (first slash at
+ * index 1, so the slice is the literal `"."`) and an absolute
+ * `/sandbox/src/Calculator.php` (first slash at index 0, which the `slash > 0`
+ * guard rejects). `"."` is not a harmless default here: it tells Infection the
+ * ENTIRE project tree is mutable source, which pulls in `tests/` and the
+ * `vendor/` that dependency-dirs.ts links into the sandbox — the same
+ * over-broad coverage scope this file diagnoses at
+ * {@link diagnoseInfectionStartupFailure} case (2).
+ *
+ * `assertLogDescribes` already normalised a leading `./` on the very same
+ * input, so before this fix two functions in this file disagreed about what
+ * `./src/X.php` meant.
+ *
+ * Order of preference:
+ *  1. the first segment of the (normalised, cwd-relative) path — `src`;
+ *  2. failing that, the file's OWN directory, which is still narrower than the
+ *     project root — an absolute target outside `cwd` lands here;
+ *  3. `"."` only when there is genuinely nothing better: a root-level file, or
+ *     a directory that is a bare ancestor chain (`../..`), which would be
+ *     BROADER than the project root rather than narrower.
+ *
+ * @param cwd — the directory the generated `infection.json` is written to and
+ *   that Infection resolves `source.directories` against (the sandbox), so an
+ *   absolute target is expressed relative to it.
+ */
+export function inferSourceDir(filePath: string, cwd: string = process.cwd()): string {
+  const toPosix = (p: string): string => p.replace(/\\/g, '/');
+  // Strip any number of leading `./` segments: `./src/X.php` and `././src/X.php`
+  // both denote `src/X.php`.
+  const norm = toPosix(filePath).replace(/^(?:\.\/)+/, '');
+  // Windows drive letters count as absolute too, so `C:/sb/src/X.php` is not
+  // mistaken for a relative path whose first segment is `C:`.
+  const isAbs = /^(?:[A-Za-z]:)?\//.test(norm);
+  const rel = isAbs ? toPosix(relative(toPosix(cwd), norm)) : norm;
+
+  const slash = rel.indexOf('/');
+  const first = slash > 0 ? rel.slice(0, slash) : '';
+  // `..` is an ancestor, not a source root; `.` is the project-root default we
+  // are trying to avoid.
+  if (first !== '' && first !== '.' && first !== '..') return first;
+
+  // Fall back to the file's own directory rather than the project root. A path
+  // with no separator at all (`Calculator.php`) has no directory — `slice` on a
+  // -1 index would silently chop its last character instead.
+  const lastSlash = rel.lastIndexOf('/');
+  const dir = lastSlash > 0 ? rel.slice(0, lastSlash) : lastSlash === 0 ? '/' : '';
+  const usable =
+    dir !== '' &&
+    dir !== '.' &&
+    !/^(?:[A-Za-z]:)?\//.test(dir) && // still absolute → not expressible as a source root
+    dir.split('/').some((seg) => seg !== '..'); // pure `../..` is broader than `.`
+  return usable ? dir : '.';
 }
 
 /** Build a minimal Infection config for a bare PHPUnit project (hybrid fallback). */
@@ -186,28 +239,132 @@ interface InfectionJsonLog {
     escapedCount?: number;
     timeOutCount?: number;
     timedOutCount?: number;
+    /** Counts we do not score from, read only by the totals cross-check below. */
+    notCoveredCount?: number;
+    errorCount?: number;
+    syntaxErrorCount?: number;
+    skippedCount?: number;
+    ignoredCount?: number;
   };
   escaped?: InfectionMutant[];
   killed?: InfectionMutant[];
   timeouted?: InfectionMutant[];
   timedOut?: InfectionMutant[];
+  /** Mutants on lines no test covers — an actionable coverage hole, not a pass. */
+  notCovered?: InfectionMutant[];
+  /** Mutants whose run crashed before producing a pass/fail — unscoreable. */
+  errored?: InfectionMutant[];
 }
 
 /**
- * Parse Infection's `logs.json` output into a MutationResult.
+ * Infection releases whose JSON-log key names this parser was written against.
+ * Named in the "unrecognised log" error so a reader knows what to check.
  *
- * Consistent with the Python/Rust engines: the denominator is `killed + survived`
- * only. `escaped` mutants are the reported survivors (real coverage gaps).
- * Timed-out mutants are counted as killed (the suite detected them by hanging).
- * `notCovered`/`errored` are excluded from the score entirely (missing coverage or
- * a crashed mutation — not a scored pass/fail), mirroring how the Python engine
- * drops `incompetent`.
- *
- * Field names read defensively (stats when present, array lengths as fallback;
- * `timeOutCount`/`timedOutCount` and `timeouted`/`timedOut` both tolerated) so a
- * minor Infection version bump does not silently zero the count. The E2E in
- * Task 4 is the reality check.
+ * The binary is NOT under our control in native mode — `run` takes the audited
+ * project's `vendor/bin/infection`, or a global `infection` from PATH; the
+ * `0.34.0` pin in `containers/php/composer.json` covers container runs only.
  */
+const SUPPORTED_INFECTION_RANGE = '0.27–0.34';
+
+/**
+ * `stats` keys that prove the log is a shape this parser understands. Only keys
+ * we actually READ count — recognising a name we would ignore is not evidence
+ * that the numbers we do read are there.
+ */
+const RECOGNISED_STAT_KEYS = [
+  'totalMutantsCount',
+  'killedCount',
+  'escapedCount',
+  'timeOutCount',
+  'timedOutCount',
+] as const;
+
+/** Result lists this parser knows how to read. */
+const RECOGNISED_MUTANT_LISTS = [
+  'escaped',
+  'killed',
+  'timeouted',
+  'timedOut',
+  'notCovered',
+  'errored',
+] as const;
+
+/** Cap on how many key names an error message quotes back. */
+const MAX_QUOTED_KEYS = 12;
+
+/** Render the keys a rejected log actually carried, for the error message. */
+function describeLogKeys(parsed: unknown): string {
+  if (typeof parsed !== 'object' || parsed === null) {
+    return `a JSON ${parsed === null ? 'null' : typeof parsed}, not an object`;
+  }
+  if (Array.isArray(parsed)) return 'a JSON array, not an object';
+  const quote = (keys: string[]): string =>
+    keys.length > MAX_QUOTED_KEYS
+      ? `${keys.slice(0, MAX_QUOTED_KEYS).join(', ')}, …`
+      : keys.join(', ');
+  const obj = parsed as Record<string, unknown>;
+  const top = Object.keys(obj);
+  const stats = obj.stats;
+  const statKeys =
+    typeof stats === 'object' && stats !== null && !Array.isArray(stats)
+      ? Object.keys(stats as Record<string, unknown>)
+      : null;
+  const topPart = top.length > 0 ? `[${quote(top)}]` : '[] (empty object)';
+  return statKeys === null ? topPart : `${topPart}, stats: [${quote(statKeys)}]`;
+}
+
+/**
+ * Require POSITIVE evidence that this log is one we can score, and return it
+ * narrowed.
+ *
+ * WHY this exists: `JSON.parse` only proves the bytes are syntactically JSON.
+ * Past that, every field read below fails SOFT — `Array.isArray(...) ? ... : []`
+ * and `stats.killedCount ?? …`. A log that parses but names its results
+ * something this parser has never heard of therefore produced killed 0 /
+ * survived 0 / total 0, and `formatMutationScore(0, 0)` turns that into a
+ * confident `"100.00%"` (see base.ts — total 0 → 100% is load-bearing
+ * downstream). Infection killing 40 of 50 mutants would be reported as a clean
+ * file. `assertLogDescribes` cannot catch it either: with no entries there are
+ * no recorded paths, so it returns early by design.
+ *
+ * This is not a hypothetical drift: the scorer below already carries a
+ * workaround for one such rename (`timeOutCount` ⇄ `timedOutCount`), which is
+ * direct evidence that Infection has restructured these keys before.
+ *
+ * Evidence is deliberately strict about emptiness — an empty array is not proof
+ * that the parser understood anything, since `{"stats":{},"escaped":[]}` is
+ * exactly the shape a total rename degrades to. A real Infection run always
+ * emits its `stats` counts (zeroes included), so a genuinely mutant-free file
+ * still passes on `stats` alone.
+ */
+function requireRecognisedLog(parsed: unknown, filePath: string): InfectionJsonLog {
+  const obj =
+    typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : undefined;
+  const stats =
+    obj !== undefined &&
+    typeof obj.stats === 'object' &&
+    obj.stats !== null &&
+    !Array.isArray(obj.stats)
+      ? (obj.stats as Record<string, unknown>)
+      : undefined;
+  const hasStatEvidence =
+    stats !== undefined && RECOGNISED_STAT_KEYS.some((k) => Number.isFinite(stats[k]));
+  const hasListEvidence =
+    obj !== undefined &&
+    RECOGNISED_MUTANT_LISTS.some((k) => Array.isArray(obj[k]) && (obj[k] as unknown[]).length > 0);
+
+  if (hasStatEvidence || hasListEvidence) return obj as InfectionJsonLog;
+
+  throw new Error(
+    `Infection's JSON log has no recognised result keys — Chaos-MCP supports Infection ` +
+      `${SUPPORTED_INFECTION_RANGE}; got keys: ${describeLogKeys(parsed)}. Either the log is not ` +
+      `Infection's (or was truncated mid-write), or this Infection release renamed them. Scoring it ` +
+      `anyway would report ${filePath} as a confident 100.00% for zero mutants actually read.`,
+  );
+}
+
 /**
  * Reject a log that demonstrably describes some other file.
  *
@@ -221,6 +378,13 @@ interface InfectionJsonLog {
  * while the audit target is workspace-relative. Mutants with no recorded path
  * cannot contradict anything, so a log carrying none is left alone rather than
  * made unusable.
+ *
+ * EVERY list the parser consumes is fed in, not just `escaped`/`killed`: a file
+ * with no coverage at all yields a log whose only entries are `notCovered`, and
+ * those now become reported vulnerabilities — so they need the same provenance
+ * check. Feeding more lists in can only ever help a genuine log (the match is
+ * `.some`), while giving the stale-log guard something to work with in cases
+ * where it previously returned early with nothing recorded.
  */
 function assertLogDescribes(filePath: string, mutants: InfectionMutant[]): void {
   const recorded = mutants
@@ -241,21 +405,101 @@ function assertLogDescribes(filePath: string, mutants: InfectionMutant[]): void 
   );
 }
 
+/**
+ * Cross-check what this parser accounted for against Infection's own
+ * `stats.totalMutantsCount`, and `warn()` when they disagree.
+ *
+ * The recognised-keys guard above proves we understood SOMETHING; this proves we
+ * understood all of it. A partial rename — say `escaped` becomes `survived`
+ * while `stats.killedCount` keeps its name — passes the guard and still scores,
+ * because every list read fails soft to `[]`. The one number that notices is
+ * Infection's own total, so the gap between it and the outcomes we could read is
+ * reported rather than silently absorbed into the score.
+ *
+ * `syntaxErrorCount`/`skippedCount`/`ignoredCount` are added to the accounted
+ * side even though nothing is done with them: they are legitimately part of
+ * Infection's total (a project can `ignore` mutators by config), and counting
+ * them keeps the check from crying wolf on a perfectly well-read log.
+ *
+ * A warning, not a throw: the score is still the best reading of what the log
+ * contained, and refusing the whole audit over a totals gap would be a harsher
+ * failure than the unrecognised-log case it descends from.
+ */
+function crossCheckTotals(
+  filePath: string,
+  stats: NonNullable<InfectionJsonLog['stats']>,
+  read: { killed: number; survived: number; noCoverage: number; incompetent: number },
+): void {
+  const reported = stats.totalMutantsCount;
+  if (!Number.isFinite(reported)) return;
+  const declaredButUnscored =
+    (stats.syntaxErrorCount ?? 0) + (stats.skippedCount ?? 0) + (stats.ignoredCount ?? 0);
+  const accounted =
+    read.killed + read.survived + read.noCoverage + read.incompetent + declaredButUnscored;
+  if (accounted === reported) return;
+  warn(
+    `${filePath}: Infection's JSON log reports ${String(reported)} mutant(s) in total but this parser ` +
+      `accounted for ${accounted} (killed ${read.killed}, survived ${read.survived}, ` +
+      `no-coverage ${read.noCoverage}, errored ${read.incompetent}, declared-but-unscored ` +
+      `${declaredButUnscored}). The score covers only the outcomes it could read — a gap usually ` +
+      `means this Infection release renamed a result key (Chaos-MCP supports ` +
+      `${SUPPORTED_INFECTION_RANGE}).`,
+  );
+}
+
+/**
+ * Parse Infection's `logs.json` output into a MutationResult.
+ *
+ * `escaped` mutants are the reported survivors (real coverage gaps). Timed-out
+ * mutants are counted as killed (the suite detected them by hanging).
+ *
+ * The two remaining outcomes are NOT interchangeable, and this parser used to
+ * drop both on the floor — no count, no note, no explanation of why
+ * `totalMutants` was smaller than the run Infection actually did:
+ *
+ *  - `errored` — the mutated code crashed before producing a pass/fail. That is
+ *    exactly `MutationResult.incompetent` as base.ts defines it ("the tool could
+ *    not score … excluded from the denominator"), so it is reported there and
+ *    stays out of the score, mirroring cosmic-ray's `incompetent` and
+ *    cargo-mutants' `unviable`.
+ *  - `notCovered` — no test covers the line. Nothing failed; the suite simply
+ *    never looked. That is an ACTIONABLE COVERAGE HOLE, not an unscoreable
+ *    mutant, and it is precisely what the TypeScript engine reports as Stryker's
+ *    `NoCoverage`: a vulnerability with `kind: 'noCoverage'`, unkilled and
+ *    therefore inside the denominator. Filing it under `incompetent` instead
+ *    would recreate this file's own false-100% failure mode — a PHP file with no
+ *    tests at all has ONLY `notCovered` mutants, so killed 0 / survived 0 /
+ *    total 0 renders as `"100.00%"` for a completely untested file.
+ *
+ * Consequently `vulnerabilities` is survivors + no-coverage while `survived`
+ * counts survivors only, which is the same shape `triage.ts` already derives its
+ * `noCoverage` figure from (`vulnerabilities.length - survived`) and the shape
+ * `applySuppressions` assumes when it subtracts a suppressed mutant from
+ * `totalMutants`.
+ *
+ * Field names read defensively (stats when present, array lengths as fallback;
+ * `timeOutCount`/`timedOutCount` and `timeouted`/`timedOut` both tolerated) so a
+ * minor Infection version bump does not silently zero the count — but only
+ * AFTER {@link requireRecognisedLog} has established that the log is one we
+ * understand at all, because those same fallbacks are what turn a wholesale
+ * rename into a confident 100%.
+ */
 export function parseInfectionJsonLog(logText: string, filePath: string): MutationResult {
-  let parsed: InfectionJsonLog;
+  let raw: unknown;
   try {
-    parsed = JSON.parse(logText) as InfectionJsonLog;
+    raw = JSON.parse(logText);
   } catch {
     throw new Error(
       `Infection produced an unparseable JSON log for ${filePath}. The mutation run likely did not complete ` +
         `(check that the PHPUnit suite runs and a coverage driver — Xdebug or PCOV — is enabled).`,
     );
   }
+  const parsed = requireRecognisedLog(raw, filePath);
 
   const escaped = Array.isArray(parsed.escaped) ? parsed.escaped : [];
   const killedArr = Array.isArray(parsed.killed) ? parsed.killed : [];
-
-  assertLogDescribes(filePath, [...escaped, ...killedArr]);
+  const notCovered = Array.isArray(parsed.notCovered) ? parsed.notCovered : [];
+  const erroredArr = Array.isArray(parsed.errored) ? parsed.errored : [];
 
   const timedOutArr = Array.isArray(parsed.timeouted)
     ? parsed.timeouted
@@ -263,27 +507,57 @@ export function parseInfectionJsonLog(logText: string, filePath: string): Mutati
       ? parsed.timedOut
       : [];
 
+  assertLogDescribes(filePath, [
+    ...escaped,
+    ...killedArr,
+    ...notCovered,
+    ...erroredArr,
+    ...timedOutArr,
+  ]);
+
   // L5: `survived`/`totalMutants` must stay consistent with `vulnerabilities`,
   // which is built only from `escaped`. `escaped.length` is therefore the
   // source of truth — reading `stats.escapedCount` independently could
   // (on a stats/array mismatch from an Infection version skew) report a
   // survivor count and score that contradict the emitted `vulnerabilities`.
+  // The same rule now extends to `notCovered`: its entries are emitted as
+  // no-coverage vulnerabilities, so the array — never `stats.notCoveredCount` —
+  // is what the denominator is built from.
   const stats = parsed.stats ?? {};
   const survived = escaped.length;
+  const noCoverage = notCovered.length;
   const timeouts = stats.timeOutCount ?? stats.timedOutCount ?? timedOutArr.length;
   const killed = (stats.killedCount ?? killedArr.length) + timeouts;
-  const totalMutants = killed + survived;
+  // No-coverage mutants are unkilled and in the denominator (as in the
+  // TypeScript engine); `errored` mutants leave it entirely.
+  const totalMutants = killed + survived + noCoverage;
+  const incompetent = erroredArr.length;
 
-  const vulnerabilities: Vulnerability[] = escaped.map((e) =>
-    // Only Infection's `escaped` list becomes a vulnerability (`kind: 'survived'`);
-    // its `notCovered` mutants are excluded from the result entirely.
-    survivorVulnerability(
-      e.mutator?.originalStartLine ?? 0,
-      e.mutator?.mutatorName ?? 'PHP Mutation Operator',
-      'PHP',
-      { mutated: e.diff ? e.diff.trim() : undefined },
+  const vulnerabilities: Vulnerability[] = [
+    ...escaped.map((e) =>
+      survivorVulnerability(
+        e.mutator?.originalStartLine ?? 0,
+        e.mutator?.mutatorName ?? 'PHP Mutation Operator',
+        'PHP',
+        { mutated: e.diff ? e.diff.trim() : undefined },
+      ),
     ),
-  );
+    // Wording deliberately identical to the TypeScript engine's NoCoverage
+    // sentence: `utils/no-coverage.ts` still falls back to matching the prose
+    // for a `Vulnerability` built without a `kind`.
+    ...notCovered.map((m): Vulnerability => {
+      const vuln: Vulnerability = {
+        line: m.mutator?.originalStartLine ?? 0,
+        mutator: m.mutator?.mutatorName ?? 'PHP Mutation Operator',
+        kind: 'noCoverage',
+        description: `No test reached this line (NoCoverage). Consider adding tests covering this branch.`,
+      };
+      if (m.diff) vuln.mutated = m.diff.trim();
+      return vuln;
+    }),
+  ];
+
+  crossCheckTotals(filePath, stats, { killed, survived, noCoverage, incompetent });
 
   return {
     target: filePath,
@@ -292,6 +566,10 @@ export function parseInfectionJsonLog(logText: string, filePath: string): Mutati
     survived,
     mutationScore: formatMutationScore(killed, totalMutants),
     vulnerabilities,
+    // Absent rather than 0 when nothing errored, matching the Rust engine — a
+    // present-but-zero field reads as "the tool reported this" to consumers
+    // that only check for the key.
+    ...(incompetent > 0 ? { incompetent } : {}),
   };
 }
 
@@ -336,7 +614,9 @@ function prepareInfectionWorkspace(
     try {
       writeFileSync(
         join(cwd, GENERATED_CONFIG_NAME),
-        buildInfectionConfig(inferSourceDir(filePath), JSON_LOG_NAME),
+        // `cwd` is the sandbox: the directory this config is written to, and the
+        // one Infection resolves `source.directories` against.
+        buildInfectionConfig(inferSourceDir(filePath, cwd), JSON_LOG_NAME),
         'utf8',
       );
     } catch (error: unknown) {

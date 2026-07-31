@@ -7,9 +7,23 @@
  * fallback below — into the tool handler.
  */
 
-/** Quote one argument for a POSIX shell command string. */
+/**
+ * Quote one argument for a POSIX shell command string.
+ *
+ * The safe class deliberately excludes `\`. A value matching it is returned
+ * VERBATIM AND UNQUOTED, and unquoted `\` is the POSIX escape character: the
+ * shell eats it and takes the next character literally, so `src/report\name.ts`
+ * reaches vitest as `src/reportname.ts` — a file that does not exist, meaning
+ * zero tests run and every mutant "survives" against a 0% score. A trailing `\`
+ * is worse still: it escapes the separating space and swallows the `--run` that
+ * follows, leaving vitest in watch mode until the audit deadline. Backslash was
+ * originally admitted for Windows separators, but the Windows path never
+ * reaches here — `buildVitestRelatedCommand` returns before calling this on
+ * win32 — so POSIX quoting can be strict at no cost. Anything containing a
+ * backslash now takes the single-quoted branch, which passes it through intact.
+ */
 export function quoteCommandArg(value: string): string {
-  if (/^[A-Za-z0-9_./\\-]+$/.test(value)) return value;
+  if (/^[A-Za-z0-9_./-]+$/.test(value)) return value;
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 

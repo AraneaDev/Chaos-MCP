@@ -1,4 +1,6 @@
+import { existsSync } from 'node:fs';
 import { cpus } from 'node:os';
+import { resolve } from 'node:path';
 import {
   BaseEngine,
   RunOptions,
@@ -27,27 +29,42 @@ export function resolveCargoJobs(concurrency: number | undefined, cpuCount: numb
 }
 
 /**
- * Structured JSON output from `cargo mutants --output`.
+ * Escape a source path for cargo-mutants' `--file` flag, which takes a GLOB
+ * rather than a literal path.
+ *
+ * WHY (audit Med#4): `*`, `?`, `[`, `]`, `{` and `}` are all legal POSIX
+ * filename characters AND glob metacharacters. Passed through verbatim,
+ * `src/parser/token[0].rs` makes `[0]` a character class, so the glob matches
+ * `src/parser/token0.rs` — a DIFFERENT file — or, far more often, nothing at
+ * all. Verified against cargo-mutants 27.1.0: the unescaped pattern really did
+ * list mutants for the wrong file, and `src/does{not}exist.rs` matched nothing
+ * while cargo-mutants still exited 0 ("Found 0 mutants to test"), which is what
+ * used to surface as a serene 100.00%.
+ *
+ * HOW: cargo-mutants matches with globset, whose backslash escape is not usable
+ * here (a backslash is a path separator on Windows). Instead every metacharacter
+ * is wrapped in a single-character class, which always matches that character
+ * literally: `[` becomes `[[]`, `*` becomes `[*]`, and so on. That is the same
+ * transformation `globset::escape` performs, extended with `{`/`}` because
+ * cargo-mutants leaves brace alternation (`{a,b}`) enabled. Each of the six
+ * escapes below was confirmed to select exactly the intended file against real
+ * cargo-mutants 27.1.0.
+ *
+ * Deliberately NOT escaped:
+ *  - `!` — only special immediately after a `[`, and every `[` we emit is itself
+ *    escaped, so a literal `!` can never open a negated class. `[!]` would in
+ *    fact be an unterminated class and fail to compile at all.
+ *  - `\` — the Windows path separator, which must reach cargo-mutants intact.
+ *
+ * Escaping is best-effort by nature (glob dialects differ); the zero-mutant
+ * guard in {@link parseCargoMutantsText} is what stops a miss becoming a false
+ * 100%. Where the two meet: a glob that misses a file which is NOT on disk still
+ * throws, and a glob that somehow misses a file that IS on disk degrades to a
+ * zero-mutant "n/a" result — never to a 100% score — because `hasNoMutableLogic`
+ * (src/format.ts) refuses to render 0/0 as a percentage at all.
  */
-interface CargoMutantsJsonOutput {
-  /** Summary statistics */
-  summary?: {
-    caught?: number;
-    missed?: number;
-    /** Mutants whose test run exceeded the per-mutant timeout — counted as killed. */
-    timeout?: number;
-    /** Mutants that did not compile — excluded from the score, reported as incompetent. */
-    unviable?: number;
-    total?: number;
-  };
-  /** Detailed mutant results */
-  mutants?: {
-    file?: string;
-    line?: number;
-    description?: string;
-    caught?: boolean;
-    status?: string;
-  }[];
+export function escapeCargoFileGlob(filePath: string): string {
+  return filePath.replace(/[*?[\]{}]/g, (c) => `[${c}]`);
 }
 
 /**
@@ -75,8 +92,9 @@ interface CargoSummary {
  *   "47 mutants tested in 30s: 4 missed, 42 caught, 1 unviable"
  *   "13 mutants tested in 14s: 2 missed, 11 caught"
  * (order/set of categories varies; zero-count categories are omitted).
- * Returns null when no summary line is present (e.g. the synthetic fixtures
- * that predate v27's output format), so callers fall back to line-counting.
+ * Returns null when no recognisable summary line is present — callers must then
+ * REFUSE to score the run (see parseCargoMutantsText); there is no sound
+ * fallback, because the printed lines alone under-report the totals.
  */
 function parseCargoSummary(stdout: string): CargoSummary | null {
   const lines = stdout.split('\n');
@@ -84,14 +102,25 @@ function parseCargoSummary(stdout: string): CargoSummary | null {
   for (let i = lines.length - 1; i >= 0; i--) {
     // Match "<n> mutants tested ... : <tail>". "Found N mutants to test" says
     // "to test", not "tested", so it is correctly excluded.
-    const head = lines[i].match(/\bmutants?\s+tested\b[^:]*:(.*)$/i);
+    //
+    // The remainder is captured WITHOUT forbidding a colon before the result
+    // colon (audit Med#5b). The old `[^:]*:` required the duration to be
+    // colon-free, so a run rendered as "in 1:04:" instead of "in 64s:" dropped
+    // the summary entirely and took the (now removed) bogus fallback. We take
+    // the LAST colon on the line as the separator instead: the result list
+    // itself ("4 missed, 42 caught") never contains one, while a clock-style
+    // duration does. A line with no colon at all is still scanned, so a format
+    // that drops the separator degrades to "unrecognised", not to a wrong score.
+    const head = lines[i].match(/\bmutants?\s+tested\b(.*)$/i);
     if (!head) continue;
+    const colon = head[1].lastIndexOf(':');
+    const tail = colon >= 0 ? head[1].slice(colon + 1) : head[1];
 
     const summary: CargoSummary = { caught: 0, missed: 0, unviable: 0, timeout: 0 };
     let matched = false;
     const re = /(\d+)\s+([a-zA-Z]+)/g;
     let g: RegExpExecArray | null;
-    while ((g = re.exec(head[1])) !== null) {
+    while ((g = re.exec(tail)) !== null) {
       const n = parseInt(g[1], 10);
       const label = g[2].toLowerCase();
       if (label.startsWith('caught')) {
@@ -129,10 +158,8 @@ interface ScoredCounts {
  * Turn cargo-mutants' four outcome counts into the scored fields of a
  * {@link MutationResult}.
  *
- * WHY it is shared by BOTH the JSON and the text parser: the same run must not
- * report a different score depending on whether stdout happened to be JSON.
- * The rules encoded here (and previously duplicated, with only a comment to
- * keep them honest) are:
+ * It is the ONLY place a cargo-mutants run is turned into a score, so the rules
+ * below cannot drift between output shapes. They are:
  *  - timeouts count as KILLED — the suite detected the mutant by hanging on it;
  *  - unviable mutants (did not compile) leave the denominator entirely and are
  *    surfaced as `incompetent`, since no test ever exercised them. Reading
@@ -170,6 +197,47 @@ function stripCargoTiming(desc: string): string {
 }
 
 /**
+ * The error raised when cargo-mutants reported no mutants at all for a file that
+ * IS NOT THERE — the target does not exist under the run's working directory
+ * (audit Med#4).
+ *
+ * WHY this is an error and not a score: with zero mutants the scored
+ * denominator is zero, and `formatMutationScore(0, 0)` is `"100.00%"`
+ * (base.ts) — a fully-covered verdict for a file whose mutants were never even
+ * generated. cargo-mutants prints "Found 0 mutants to test" and exits 0 in that
+ * case, so nothing downstream would notice. The commonest cause is a `--file`
+ * glob that matched nothing (see escapeCargoFileGlob), but the guard is
+ * deliberately written against the SYMPTOM so it also catches a mistyped path,
+ * a file outside the cargo workspace, and a module never reached from the crate
+ * root.
+ *
+ * WHY it is gated on the target's existence: "Found 0 mutants to test" + exit 0
+ * is ALSO what cargo-mutants prints for a file it found perfectly well and that
+ * simply has no mutable logic — a `consts.rs`, a `mod.rs` barrel, a file of pure
+ * `pub use` re-exports. Throwing for that shape too is a false alarm, and an
+ * expensive one: `triage_test_coverage` fails its CI gate closed over errored
+ * files (`src/triage.ts` — "N file(s) errored and are not graded, so the gate
+ * fails closed"), so an ordinary constants file in a Rust repo would break the
+ * build. That is the same class of harm as the false 100% this guard removed,
+ * merely pointed the other way. File existence separates the two, and it is a
+ * sound discriminator now that the glob is escaped: a correctly-escaped glob
+ * that fails to match a file which demonstrably exists is not a case real
+ * cargo-mutants produces. A file that exists and yields no mutants returns a
+ * zero-mutant result instead, which `hasNoMutableLogic` (src/format.ts) renders
+ * as "n/a" — explicitly NOT the same claim as proven coverage.
+ */
+function noMutantsError(filePath: string): Error {
+  const glob = escapeCargoFileGlob(filePath);
+  return new Error(
+    `cargo-mutants generated no mutants for "${filePath}", so there is nothing to score. ` +
+      `Chaos-MCP will not report that as 100% — a zero-mutant run is not a covered file. ` +
+      `Check that the \`--file\` glob (${glob}) matches the intended source file, that the path is ` +
+      `inside this cargo workspace, and that the module is reachable from the crate root. ` +
+      `Verify with: cargo mutants --list --file '${glob}'`,
+  );
+}
+
+/**
  * Parse cargo-mutants text output into a MutationResult.
  *
  * cargo-mutants stdout contains survivor lines like:
@@ -177,14 +245,29 @@ function stripCargoTiming(desc: string): string {
  *   "UNCAUGHT src/main.rs:88:5: ..."
  * plus a final summary line ("N mutants tested in Xs: A missed, B caught, ...").
  *
- * Cargo-mutants uses the terms MISSED (survived) and CAUGHT (killed) — but only
- * MISSED lines are printed by default (see parseCargoSummary), so the summary
- * line is preferred for the totals when present.
+ * Cargo-mutants uses the terms MISSED (survived) and CAUGHT (killed), but only
+ * MISSED lines are printed by default (see parseCargoSummary). The printed lines
+ * are therefore the source of SURVIVOR DETAIL only; every number in the score
+ * comes from the summary line, and a run without one is refused outright.
+ *
+ * @param targetExists — whether `filePath` actually resolves to a file under the
+ *   run's working directory, established by {@link RustEngine.run} before the
+ *   tool was invoked. It is passed in rather than stat'ed here so this stays a
+ *   pure, unit-testable function of the tool's output; it is the ONLY thing that
+ *   tells a zero-mutant run that missed its target (an error) apart from one
+ *   that found a file with no mutable logic (not an error). See noMutantsError.
  */
-function parseCargoMutantsText(stdout: string, filePath: string): MutationResult {
+function parseCargoMutantsText(
+  stdout: string,
+  filePath: string,
+  targetExists: boolean,
+): MutationResult {
   const lines = stdout.split('\n').filter((l) => l.trim());
+  // Counts every printed result line, whatever its outcome. It is NOT used for
+  // scoring (see the guards below) — only to tell "cargo-mutants reported on
+  // mutants but we could not read its totals" apart from "cargo-mutants
+  // reported nothing at all", which are different failures with different fixes.
   let lineTotal = 0;
-  let lineKilled = 0;
   const vulnerabilities: MutationResult['vulnerabilities'] = [];
 
   for (const line of lines) {
@@ -193,9 +276,8 @@ function parseCargoMutantsText(stdout: string, filePath: string): MutationResult
     const isMissed = upper.startsWith('MISSED');
     const isCaught = upper.startsWith('CAUGHT');
     const isUncaught = upper.startsWith('UNCAUGHT');
-    // `cargo mutants` text output uses mixed case (`timeout`, `Timeout`),
-    // unlike its JSON output. Normalise to uppercase before matching.
-    // (Live-audit L4 fix.)
+    // `cargo mutants` text output uses mixed case (`timeout`, `Timeout`).
+    // Normalise to uppercase before matching. (Live-audit L4 fix.)
     const isTimeout = upper.startsWith('TIMEOUT');
 
     if (!isMissed && !isCaught && !isUncaught && !isTimeout) continue;
@@ -203,11 +285,10 @@ function parseCargoMutantsText(stdout: string, filePath: string): MutationResult
     lineTotal++;
     // Audit finding H3: TIMEOUT mutants are tests that hung past the per-mutant
     // timeout. They DID detect the mutant (the test suite hung trying to assert
-    // against it), so count them as caught, not skipped.
-    if (isCaught || isTimeout) {
-      lineKilled++;
-      continue;
-    }
+    // against it), so they are killed, not survivors — the summary's `timeout`
+    // bucket is added to `killed` in scoreCounts. Here they only need to be kept
+    // out of the vulnerability list, exactly like CAUGHT.
+    if (isCaught || isTimeout) continue;
 
     // Extract line number and trailing description from
     // "MISSED   src/file.rs:42:9: replace add -> sub with ..." (the description
@@ -219,40 +300,76 @@ function parseCargoMutantsText(stdout: string, filePath: string): MutationResult
     const desc = locMatch && locMatch[2] ? stripCargoTiming(locMatch[2].trim()) : '';
 
     vulnerabilities.push(
-      // Derive a per-mutant label from the description, mirroring the JSON
-      // branch below (H2/I4): two different mutations on the same line must
-      // get distinct `mutator` values, or suppression/verify keys (which are
-      // `keyOf(line, mutator)`) collapse them into one entry.
+      // Derive a per-mutant label from the description (H2/I4): two different
+      // mutations on the same line must get distinct `mutator` values, or
+      // suppression/verify keys (which are `keyOf(line, mutator)`) collapse
+      // them into one entry.
       // cargo-mutants reports caught/missed/unviable/timeout — "missed" is a
       // survivor; it has no separate uncovered-line outcome, hence 'survived'.
       survivorVulnerability(mutantLine, desc || 'Rust Mutation Operator', 'Rust', {
         mutated: desc || undefined,
         // No parseable location: `mutantLine` is the 0 sentinel, and "line 0"
-        // reads as a real location. Render "line unknown" in the sentence,
-        // matching the JSON branch below. The structured `line` stays 0 — the
-        // suppression/verify keys are `keyOf(line, mutator)` and must not move.
+        // reads as a real location. Render "line unknown" in the sentence.
+        // The structured `line` stays 0 — the suppression/verify keys are
+        // `keyOf(line, mutator)` and must not move.
         lineLabel: locMatch ? mutantLine : 'unknown',
       }),
     );
   }
 
-  // Prefer the authoritative summary line over line counts — cargo-mutants only
-  // prints MISSED lines by default, so line-counting alone reports a false 0%.
-  // `scoreCounts` is what keeps unviable mutants out of the denominator (they
-  // were never exercised by a test) and surfaces them via the shared
-  // `incompetent` field instead (base.ts MutationResult contract).
+  // The summary line is the ONLY source of the score (audit Med#5). The ordered
+  // decision point below is where a run that cannot be scored is separated from
+  // one that can:
+  //
+  //  1. Result lines were printed but no summary could be read → ERROR,
+  //     unconditionally. The old code scored those lines directly — but
+  //     cargo-mutants prints only MISSED mutants by default (see
+  //     parseCargoSummary), so a file with 38 caught and 2 missed mutants was
+  //     reported as 2 total / 0 killed / "0.00%", failing the gate on a
+  //     well-tested file. A parsing problem must surface as a parsing problem;
+  //     there is no honest score to be had from these lines. `targetExists` is
+  //     deliberately NOT consulted here: the run demonstrably found the file
+  //     (it reported on its mutants) and we simply cannot read the totals.
+  //  2. Nothing scoreable was reported — no summary AND no result lines, or a
+  //     summary whose every bucket is zero. Both spellings mean the same thing
+  //     ("cargo-mutants tested nothing"), so they share one disposition, which
+  //     turns on whether the target file is actually there:
+  //       • target ABSENT → ERROR (noMutantsError). The `--file` glob matched
+  //         nothing, or matched the wrong thing; 0/0 would format as "100.00%".
+  //       • target PRESENT → a normal zero-mutant result. The file exists and
+  //         genuinely has no mutable logic (constants, a `mod.rs` barrel, pure
+  //         re-exports). `hasNoMutableLogic` in src/format.ts renders that as
+  //         "n/a", NOT as a score — which is only true as long as the result
+  //         carries no `scopeNote`, so this path must never set one.
   const summary = parseCargoSummary(stdout);
-  const scored: ScoredCounts = summary
-    ? scoreCounts(summary)
-    : {
-        // No summary line (pre-v27 output / synthetic fixtures): fall back to
-        // counting the printed result lines. There is no unviable count to
-        // exclude in this path, so nothing leaves the denominator.
-        totalMutants: lineTotal,
-        killed: lineKilled,
-        survived: lineTotal - lineKilled,
-        mutationScore: formatMutationScore(lineKilled, lineTotal),
-      };
+  if (!summary && lineTotal > 0) {
+    throw new Error(
+      `cargo-mutants printed ${lineTotal} result line(s) for "${filePath}" but no recognisable ` +
+        `summary ('N mutants tested: ...'); Chaos-MCP cannot score this run. Counting the printed ` +
+        `lines instead would be wrong: cargo-mutants prints only MISSED mutants by default, so a ` +
+        `well-tested file would score 0.00% and fail the gate. This usually means the run was cut ` +
+        `short (killed, or output truncated) or cargo-mutants changed its output format.`,
+    );
+  }
+
+  // No summary and no result lines is arithmetically the same run as an
+  // all-zero summary, so it is scored through the same path rather than handled
+  // as a separate shape — one place decides what "nothing was tested" means.
+  const counts: CargoSummary = summary ?? { caught: 0, missed: 0, unviable: 0, timeout: 0 };
+  // `scoreCounts` is what keeps unviable mutants out of the denominator (they
+  // were never exercised by a test) and surfaces them via the `incompetent`
+  // field instead (base.ts MutationResult contract).
+  const scored: ScoredCounts = scoreCounts(counts);
+  // Zero SCORED mutants with zero unviable means cargo-mutants tested nothing;
+  // with the file absent, that is a targeting failure and must not be scored.
+  // The unviable-only run (`5 mutants tested: 5 unviable`) is deliberately NOT
+  // an error either way: mutants were generated for the file — so `--file` DID
+  // match — none of them compiled, and `incompetent` says so explicitly on the
+  // result. That exception is why `scored.incompetent === undefined` is part of
+  // the condition and not just `totalMutants === 0`.
+  if (scored.totalMutants === 0 && scored.incompetent === undefined && !targetExists) {
+    throw noMutantsError(filePath);
+  }
 
   return {
     target: filePath,
@@ -263,68 +380,6 @@ function parseCargoMutantsText(stdout: string, filePath: string): MutationResult
     vulnerabilities,
     ...(scored.incompetent !== undefined ? { incompetent: scored.incompetent } : {}),
   };
-}
-
-/**
- * Attempt to parse cargo-mutants output as JSON, falling back to text parsing.
- */
-function parseCargoMutantsOutput(stdout: string, filePath: string): MutationResult {
-  // Try JSON first
-  try {
-    const parsed = JSON.parse(stdout) as CargoMutantsJsonOutput;
-
-    if (parsed.summary && parsed.mutants) {
-      const { caught = 0, missed = 0, timeout = 0, unviable = 0, total } = parsed.summary;
-      // Shared with the text branch, so the same run cannot score differently
-      // depending on whether stdout happened to be JSON.
-      const scored = scoreCounts({ caught, missed, timeout, unviable });
-      // `total` is only consulted to infer unviable when the runner did not
-      // report it explicitly; it is never the denominator. (This branch keeps
-      // its own inference rather than taking `scored.incompetent`, which is the
-      // reported `unviable` alone — the JSON summary is the only place a total
-      // is available to infer from.)
-      const incompetent =
-        unviable || Math.max(0, (total ?? scored.totalMutants) - scored.totalMutants);
-
-      return {
-        target: filePath,
-        totalMutants: scored.totalMutants,
-        killed: scored.killed,
-        survived: scored.survived,
-        mutationScore: scored.mutationScore,
-        vulnerabilities: parsed.mutants
-          .filter(
-            (m) =>
-              !m.caught &&
-              (m.status === 'MISSED' || m.status === 'missed' || m.status === 'UNCAUGHT'),
-          )
-          .map((m) =>
-            survivorVulnerability(
-              m.line ?? 0,
-              // `||` (not `??`) so empty-string descriptions fall back to the default label.
-              m.description || 'Rust Mutation Operator',
-              'Rust',
-              {
-                mutated: m.description || undefined,
-                // A mutant with no reported line renders as "line unknown" in
-                // both branches (the text branch does the same for an
-                // unparseable location); only the sentence changes, the
-                // structured `line` stays the 0 sentinel. An explicitly
-                // reported `line: 0` is left as-is — that is the tool stating a
-                // line, not failing to.
-                lineLabel: m.line ?? 'unknown',
-              },
-            ),
-          ),
-        ...(incompetent > 0 ? { incompetent } : {}),
-      };
-    }
-  } catch {
-    // Not JSON — fall through to text parsing
-  }
-
-  // Fall back to text output
-  return parseCargoMutantsText(stdout, filePath);
 }
 
 /**
@@ -341,15 +396,42 @@ export class RustEngine extends BaseEngine {
     const cwd = options?.workDir ?? process.cwd();
     const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
-    // cargo-mutants `--file` is a glob matched against the source path. Pass the
+    // cargo-mutants `--file` is a GLOB matched against the source path. Pass the
     // full workspace-relative path (Med#9) so the run is scoped to exactly this
-    // file — a bare basename would also match same-named files in other dirs.
+    // file — a bare basename would also match same-named files in other dirs —
+    // and escape it (Med#4) so a metacharacter that is legal in a filename does
+    // not turn the path into a pattern matching some other file, or none.
     const jobs = resolveCargoJobs(options?.concurrency, cpus().length);
-    const args = ['mutants', '--file', filePath];
+    const fileGlob = escapeCargoFileGlob(filePath);
+
+    // Does the target actually exist under the run's working directory? This is
+    // the signal that lets the zero-mutant guard tell "the glob matched nothing"
+    // (an error) from "this file has no mutable logic" (a legitimate zero) —
+    // cargo-mutants prints the identical "Found 0 mutants to test" and exits 0
+    // for both. See noMutantsError for why the distinction matters.
+    //
+    // Checked with the ORIGINAL, UNESCAPED `filePath`: the escaping exists only
+    // to stop the glob engine reinterpreting a metacharacter, whereas a `[` in a
+    // real filename is just a `[` to the filesystem — probing for the escaped
+    // `token[[]0[]].rs` would find nothing and turn every such file into a false
+    // error, exactly the bug Med#4 fixed on the glob side.
+    //
+    // `workDir` is a HOST path in both execution modes (the container session
+    // bind-mounts it to /workspace), so a host-side stat is correct for both.
+    // `resolve` rather than `join` so an absolute `filePath` is probed where it
+    // actually lives instead of being appended to the sandbox root. A stat that
+    // cannot see the file only ever routes us to the pre-existing error path, so
+    // the check can never manufacture a score that was not there before.
+    const targetExists = existsSync(resolve(cwd, filePath));
+
+    const args = ['mutants', '--file', fileGlob];
     if (jobs > 1) args.push('-j', String(jobs));
 
     if (isVerbose()) {
-      log(`RustEngine: cargo mutants --file "${filePath}"${jobs > 1 ? ` -j ${jobs}` : ''}`);
+      // Log the escaped pattern, i.e. the argument cargo-mutants actually
+      // receives — that is the string an operator needs in order to reproduce
+      // the run by hand. It is identical to `filePath` for ordinary paths.
+      log(`RustEngine: cargo mutants --file "${fileGlob}"${jobs > 1 ? ` -j ${jobs}` : ''}`);
     }
 
     let stdout: string;
@@ -394,6 +476,11 @@ export class RustEngine extends BaseEngine {
       log(`cargo-mutants stderr: ${stderr.slice(0, 500)}`);
     }
 
-    return parseCargoMutantsOutput(stdout, filePath);
+    // Text only: `run` never asks for structured output (`--output` writes
+    // `mutants.out/outcomes.json` to DISK; stdout is always human-readable), so
+    // there is nothing to attempt a JSON parse on. The old JSON branch was
+    // unreachable, validated a shape `outcomes.json` does not have anyway, and
+    // cost a throwaway multi-MB `JSON.parse` on every run (audit L7).
+    return parseCargoMutantsText(stdout, filePath, targetExists);
   }
 }

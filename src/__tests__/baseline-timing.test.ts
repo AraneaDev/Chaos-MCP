@@ -146,6 +146,36 @@ describe('resolveBaselineTestCommand', () => {
       ),
     ).toEqual({ command: 'npx', args: ['jest'] });
   });
+  it('prefers an explicitly resolved runner over env.testRunner', () => {
+    // The audit resolves its runner as
+    // `engine config section ?? cfg.testRunner ?? env.testRunner`, so a config
+    // file can turn a detected-vitest project into a command-runner audit.
+    // Reading `env.testRunner` here measured the baseline with the WRONG
+    // command for the run being estimated — `npx vitest` (whole suite, native)
+    // instead of the scoped `vitest related` the command runner uses.
+    expect(
+      resolveBaselineTestCommand(
+        env({ testRunner: 'vitest', detectedRunner: 'vitest' }),
+        'typescript',
+        'src/gate.ts',
+        'command',
+      ),
+    ).toEqual({ command: 'npx', args: ['vitest', 'related', 'src/gate.ts', '--run'] });
+  });
+
+  it('honours a resolved runner that is NOT the command runner over a command-runner env', () => {
+    // The opposite direction of the same override, so the parameter cannot be
+    // ignored in one arm only.
+    expect(
+      resolveBaselineTestCommand(
+        env({ testRunner: 'command', detectedRunner: 'vitest' }),
+        'typescript',
+        'src/gate.ts',
+        'vitest',
+      ),
+    ).toEqual({ command: 'npx', args: ['vitest'] });
+  });
+
   it('resolves node:test to node --test', () => {
     const cmd = resolveBaselineTestCommand(env({ detectedRunner: 'node:test' }), 'typescript');
     expect(cmd).toEqual({ command: 'node', args: ['--test'] });

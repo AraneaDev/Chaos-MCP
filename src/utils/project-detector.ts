@@ -362,6 +362,63 @@ function readTextSafe(filePath: string): string | null {
 }
 
 /**
+ * The `[tool.mutmut]` table header, on a line of its own.
+ *
+ * Anchored (`^…$` with `m`) rather than located with `indexOf('[tool.mutmut]')`,
+ * which matched the literal ANYWHERE — inside a `# see [tool.mutmut] for …`
+ * comment, or inside a string value such as `description = "reads [tool.mutmut]"`.
+ * Either produced a "section" that was really prose, and whatever `runner = "…"`
+ * happened to follow it became a shell command cosmic-ray runs once per mutant.
+ * A trailing `# comment` after the header is tolerated because TOML allows it;
+ * anything else on the line (including a leading `#`) disqualifies the match.
+ */
+const MUTMUT_SECTION_RE = /^[ \t]*\[tool\.mutmut\][ \t]*(?:#.*)?$/m;
+
+/**
+ * The `runner` key inside that table.
+ *
+ * `^\s*` (with `m`) is load-bearing: the previous unanchored `runner\s*=` also
+ * matched every key ENDING in `runner` — `test_runner = "…"`, `custom_runner =
+ * "…"` — and mutmut reads neither. The value is used verbatim as cosmic-ray's
+ * `test-command`, so matching the wrong key shells the wrong string per mutant.
+ */
+const MUTMUT_RUNNER_RE = /^\s*runner\s*=\s*["']([^"']+)["']/m;
+
+/** The start of the NEXT TOML table, used to bound the `[tool.mutmut]` slice. */
+const NEXT_TABLE_RE = /^[ \t]*\[/m;
+
+/**
+ * Extract `[tool.mutmut] runner` from pyproject.toml content, or `null`.
+ *
+ * Deliberately NOT a TOML parser: pulling a parser dependency into the detection
+ * leaf (shared by all four languages) to read one optional key is not worth the
+ * weight, and the anchored regexes above close the two holes that actually
+ * mattered — a header matched inside a comment/string, and a key matched by
+ * suffix. Residual limitation, accepted knowingly: a `[tool.mutmut]` header or a
+ * `runner = "…"` line that appears at the start of a line INSIDE a TOML
+ * multi-line basic string (`"""…"""`) is still matched, because recognising
+ * those requires tracking string state across the whole file. Such content in a
+ * real pyproject.toml would be pathological, and the value it produces is still
+ * gated by `isRepoTestCommandAllowed` in engines/python.ts before it can reach a
+ * shell.
+ *
+ * @internal
+ */
+function readMutmutRunner(pyprojectContent: string): string | null {
+  const header = MUTMUT_SECTION_RE.exec(pyprojectContent);
+  if (header === null) return null;
+
+  // Bound the section at the next table header so a `runner` key belonging to a
+  // LATER table (`[tool.other] runner = "wrong"`) is never picked up.
+  const afterHeader = pyprojectContent.slice(header.index + header[0].length);
+  const nextTable = afterHeader.search(NEXT_TABLE_RE);
+  const section = nextTable === -1 ? afterHeader : afterHeader.slice(0, nextTable);
+
+  const runnerMatch = MUTMUT_RUNNER_RE.exec(section);
+  return runnerMatch === null ? null : runnerMatch[1];
+}
+
+/**
  * Detect the Python test runner from workspace signals.
  *
  * Priority order:
@@ -410,19 +467,8 @@ export function detectPythonTestRunner(workspaceRoot: string): string {
   if (existsSync(join(workspaceRoot, 'noxfile.py'))) return 'pytest';
 
   // ── Priority 5: mutmut config runner override ──
-  if (pyprojectContent) {
-    const sectionIndex = pyprojectContent.indexOf('[tool.mutmut]');
-    if (sectionIndex !== -1) {
-      let nextSectionIndex = pyprojectContent.indexOf('\n[', sectionIndex);
-      if (nextSectionIndex === -1) nextSectionIndex = pyprojectContent.length;
-
-      const mutmutSection = pyprojectContent.slice(sectionIndex, nextSectionIndex);
-      const runnerMatch = mutmutSection.match(/runner\s*=\s*["']([^"']+)["']/);
-      if (runnerMatch) {
-        return runnerMatch[1];
-      }
-    }
-  }
+  const mutmutRunner = pyprojectContent ? readMutmutRunner(pyprojectContent) : null;
+  if (mutmutRunner !== null) return mutmutRunner;
 
   // ── Priority 6: default ──
   return 'pytest';

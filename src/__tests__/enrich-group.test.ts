@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { enrichGroup, MUTATOR_SEMANTICS } from '../enrich.js';
+import { enrichGroup, MUTATOR_SEMANTICS, UNKNOWN_SEMANTIC } from '../enrich.js';
 
 const SRC = [
   'function clamp(a, b) {', // 1
@@ -105,7 +105,62 @@ describe('enrichGroup', () => {
       sourceLines: SRC,
     });
     expect(e.severity).toBe('unknown');
-    expect(e.why).toContain("doesn't expose the operator type");
+    // UPDATED: the copy used to say "this language's mutation tool doesn't
+    // expose the operator type". cosmic-ray DOES expose it (this fixture's name
+    // is simply not one the table maps), as do Stryker and Infection — only
+    // cargo-mutants is genuinely operator-less. The assertion now pins the
+    // truthful wording; the behaviour under test (unknown severity + generic
+    // copy for an unmatched operator) is unchanged.
+    expect(e.why).toContain('could not be matched to a known category');
+  });
+
+  it('classifies a PHP group from its Infection mutator name', () => {
+    // Every PHP mutant used to fall through to `unknown` — no severity, no
+    // why/hint, and a severityFloor that silently hid the whole file.
+    const e = enrichGroup({
+      line: 3,
+      mutators: { GreaterThanOrEqualTo: 1 },
+      projectType: 'php',
+      sourceLines: SRC,
+    });
+    expect(e.severity).toBe(MUTATOR_SEMANTICS.EqualityOperator.severity);
+    expect(e.why).toBe(MUTATOR_SEMANTICS.EqualityOperator.why);
+  });
+
+  it('keeps the highest severity across a mixed PHP group', () => {
+    const e = enrichGroup({
+      line: 3,
+      mutators: { Concat: 1, LogicalAnd: 1 }, // low + high → high wins
+      projectType: 'php',
+    });
+    expect(e.severity).toBe('high');
+    expect(e.why).toBe(MUTATOR_SEMANTICS.LogicalOperator.why);
+  });
+
+  it('reports unknown for a mutator named after an Object.prototype member', () => {
+    // `MUTATOR_SEMANTICS['constructor']` resolves through the prototype chain to
+    // `Object` — truthy, so a `!semantic` guard accepts it, and the group then
+    // ships `severity: undefined`: SEVERITY_RANK[undefined] is undefined, the
+    // sort comparator returns NaN, and JSON.stringify drops severity/why/hint
+    // while the outputSchema declares them present. Only reachable via a custom
+    // Stryker mutator plugin so named, but the same Object.hasOwn guard is
+    // already applied in engines/typescript.ts and utils/config/rules.ts.
+    const e = enrichGroup({ line: 3, mutators: { constructor: 1 }, projectType: 'typescript' });
+    expect(e.severity).toBe('unknown');
+    expect(e.why).toBe(UNKNOWN_SEMANTIC.why);
+    expect(JSON.parse(JSON.stringify(e))).toHaveProperty('severity');
+  });
+
+  it('still classifies real mutators sharing a group with a prototype-chain name', () => {
+    // The guard must `continue`, not abort: a genuine EqualityOperator alongside
+    // the bogus name still decides the group.
+    const e = enrichGroup({
+      line: 3,
+      mutators: { toString: 1, EqualityOperator: 1 },
+      projectType: 'typescript',
+    });
+    expect(e.severity).toBe('high');
+    expect(e.why).toBe(MUTATOR_SEMANTICS.EqualityOperator.why);
   });
 
   it('omits context when sourceLines is absent', () => {

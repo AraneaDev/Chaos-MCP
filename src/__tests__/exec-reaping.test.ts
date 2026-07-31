@@ -108,8 +108,8 @@ describe('process-group reaping', () => {
 
       expect(killProcessesUnder('/tmp/sbx-a')).toBe(1);
 
-      expect(kill).toHaveBeenCalledWith(-5001, 'SIGKILL');
-      expect(kill).not.toHaveBeenCalledWith(-5002, 'SIGKILL');
+      expect(kill).toHaveBeenCalledWith(5001, 'SIGKILL');
+      expect(kill).not.toHaveBeenCalledWith(5002, 'SIGKILL');
       expect(_trackedProcessCount()).toBe(1);
 
       a.finish();
@@ -129,7 +129,7 @@ describe('process-group reaping', () => {
       });
 
       expect(killProcessesUnder('/tmp/sbx-a')).toBe(1);
-      expect(kill).toHaveBeenCalledWith(-5003, 'SIGKILL');
+      expect(kill).toHaveBeenCalledWith(5003, 'SIGKILL');
 
       child.finish();
       await running;
@@ -153,19 +153,20 @@ describe('process-group reaping', () => {
       kill.mockRestore();
     });
 
-    it('falls back to the lone pid when the process group is already gone', async () => {
-      // The group leader can exit before its children, leaving `kill(-pid)` to
-      // fail with ESRCH. The direct pid is the last thing worth trying.
-      const kill = vi.spyOn(process, 'kill').mockImplementation(((target: number) => {
-        if (target < 0) throw new Error('ESRCH');
-        return true;
-      }) as never);
+    it('never signals a negative pid, which would target an unrelated group', async () => {
+      // `killGroup` used to try `process.kill(-pid)` first and RETURN on
+      // success. A child spawned through exec/execFile is never a group leader
+      // (see descendantPids), so the only way that call could succeed was an
+      // unrelated process group whose pgid had been recycled onto our child's
+      // pid — at which point the reap SIGKILLed those processes, dropped the
+      // tracked pid from the registry, and left the engine running.
+      const kill = vi.spyOn(process, 'kill').mockReturnValue(true);
       const child = pendingChild(exec, 5005);
       const running = runShellCommand('stryker run', { cwd: '/tmp/sbx-a', killTree: true });
 
       killProcessesUnder('/tmp/sbx-a');
 
-      expect(kill).toHaveBeenCalledWith(-5005, 'SIGKILL');
+      expect(kill.mock.calls.map((c) => c[0] as number).filter((t) => t < 0)).toEqual([]);
       expect(kill).toHaveBeenCalledWith(5005, 'SIGKILL');
 
       child.finish();
@@ -199,7 +200,7 @@ describe('process-group reaping', () => {
      * died. Every grandchild (a StrykerJS `vitest`, a cargo-mutants `cargo
      * test`) survived. These cases pin the fallback that actually reaches them.
      */
-    it('walks the process tree when the group does not exist', async () => {
+    it('walks the process tree instead of trusting a process group', async () => {
       const killed: number[] = [];
       const kill = vi.spyOn(process, 'kill').mockImplementation(((target: number) => {
         if (target < 0) throw new Error('ESRCH'); // no such group — the real behaviour
@@ -211,9 +212,8 @@ describe('process-group reaping', () => {
 
       killProcessesUnder('/tmp/sbx-a');
 
-      // The group was attempted first, then the direct pid was signalled via the
-      // tree walk rather than being abandoned.
-      expect(kill).toHaveBeenCalledWith(-7001, 'SIGKILL');
+      // The tracked pid is signalled by the tree walk rather than being
+      // abandoned to a group kill that cannot reach it.
       expect(killed).toContain(7001);
 
       child.finish();
@@ -255,8 +255,8 @@ describe('process-group reaping', () => {
 
       expect(killAllTrackedProcesses()).toBe(2);
 
-      expect(kill).toHaveBeenCalledWith(-6001, 'SIGKILL');
-      expect(kill).toHaveBeenCalledWith(-6002, 'SIGKILL');
+      expect(kill).toHaveBeenCalledWith(6001, 'SIGKILL');
+      expect(kill).toHaveBeenCalledWith(6002, 'SIGKILL');
       expect(_trackedProcessCount()).toBe(0);
 
       a.finish();
@@ -270,6 +270,79 @@ describe('process-group reaping', () => {
       expect(killAllTrackedProcesses()).toBe(0);
       expect(kill).not.toHaveBeenCalled();
       kill.mockRestore();
+    });
+  });
+
+  describe('Windows', () => {
+    /**
+     * Tracking used to be gated on `process.platform !== 'win32'`, so the
+     * registry was permanently EMPTY on Windows and both consumers silently
+     * reaped nothing: sandbox teardown deleted the directory while the engine's
+     * grandchildren were still running inside it (and then rmSync failed
+     * EBUSY/EPERM into a swallowing catch, so the sandbox leaked as well), and
+     * the SIGTERM/exit sweep had nothing to sweep. `killProcessTree` did have a
+     * taskkill path, but it is only reachable from the exec failure callback —
+     * never from teardown or shutdown.
+     */
+    it('tracks killTree children and reaps them with taskkill /T', async () => {
+      platform.mockReturnValue('win32');
+      const kill = vi.spyOn(process, 'kill').mockReturnValue(true);
+      vi.mocked(execFile).mockImplementation((() => undefined) as never);
+      const child = pendingChild(exec, 8001);
+      const running = runShellCommand('stryker run', { cwd: '/tmp/sbx-a', killTree: true });
+
+      expect(_trackedProcessCount()).toBe(1);
+
+      expect(killProcessesUnder('/tmp/sbx-a')).toBe(1);
+      expect(execFile).toHaveBeenCalledWith(
+        'taskkill',
+        ['/PID', '8001', '/T', '/F'],
+        { windowsHide: true },
+        expect.any(Function),
+      );
+      // No POSIX signalling on Windows: there are no process groups there and
+      // no `ps` to walk.
+      expect(kill).not.toHaveBeenCalled();
+      expect(_trackedProcessCount()).toBe(0);
+
+      child.finish();
+      await running;
+      kill.mockRestore();
+    });
+
+    it('reaps Windows children on the shutdown sweep as well', async () => {
+      platform.mockReturnValue('win32');
+      vi.mocked(execFile).mockImplementation((() => undefined) as never);
+      const child = pendingChild(exec, 8002);
+      const running = runShellCommand('stryker run', { cwd: '/tmp/sbx-b', killTree: true });
+
+      expect(killAllTrackedProcesses()).toBe(1);
+      expect(execFile).toHaveBeenCalledWith(
+        'taskkill',
+        ['/PID', '8002', '/T', '/F'],
+        { windowsHide: true },
+        expect.any(Function),
+      );
+
+      child.finish();
+      await running;
+    });
+
+    it('survives a taskkill that cannot be spawned at all', async () => {
+      // Best-effort like every other reap path: this runs from teardown and
+      // process-exit handlers, where throwing would strand the rest.
+      platform.mockReturnValue('win32');
+      vi.mocked(execFile).mockImplementation((() => {
+        throw new Error('taskkill unavailable');
+      }) as never);
+      const child = pendingChild(exec, 8003);
+      const running = runShellCommand('stryker run', { cwd: '/tmp/sbx-c', killTree: true });
+
+      expect(() => killProcessesUnder('/tmp/sbx-c')).not.toThrow();
+      expect(_trackedProcessCount()).toBe(0);
+
+      child.finish();
+      await running;
     });
   });
 });

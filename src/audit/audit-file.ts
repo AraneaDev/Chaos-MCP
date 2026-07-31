@@ -80,7 +80,17 @@ export async function auditFile(input: AuditFileInput): Promise<MutationResult> 
   const { targetFile, env, projectType, engine, args, config, workDir, prebuildCmd, lineRanges } =
     input;
   const runOptions = buildRunOptions(args, config, env, workDir, projectType, targetFile);
-  if (lineRanges) runOptions.lineRanges = lineRanges;
+  // `length > 0`, not just truthiness: an EMPTY array is truthy, and every
+  // consumer downstream reads "no ranges" as "the whole file" — StrykerJS's
+  // `buildMutateArg` drops the `:start-end` suffix and hands the engine the
+  // bare path, and `planLineBatches` falls back to one batch spanning the file.
+  // A scoped run whose scope resolved to nothing (a verify against a baseline
+  // with zero survivors) therefore escalated into a WHOLE-FILE mutation run:
+  // the most expensive possible answer to "re-check these specific mutants",
+  // and one that reports unrelated survivors as if they were in scope. `??`
+  // cannot fix this at the call site — `[] ?? x` is `[]` — so the emptiness has
+  // to be decided here (audit High#1 / Fix 1).
+  if (lineRanges && lineRanges.length > 0) runOptions.lineRanges = lineRanges;
   // Python only: when neither the tool args nor the config scoped the suite,
   // default to the target file's own test module(s). cosmic-ray otherwise runs
   // the WHOLE suite per mutant — impractical on real projects, and a single

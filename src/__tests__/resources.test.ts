@@ -31,6 +31,21 @@ describe('resources', () => {
     expect(data.typescript.estimateFidelity).toBe('approx');
   });
 
+  it("qualifies Rust's 'exact' fidelity as a count of GENERATED mutants only", () => {
+    // The bare 'exact' reads as "this is the audit's total". It is not:
+    // cargo-mutants enumerates mutants that fail to compile, and engines/rust.ts
+    // excludes those from `totalMutants` and reports them as `incompetent`.
+    // estimate.ts's basis/note say so; this resource used to promise otherwise.
+    const data = JSON.parse(readResource('chaos://languages').text) as Record<
+      string,
+      { estimateFidelityNote?: string }
+    >;
+    expect(data.rust.estimateFidelityNote).toContain('GENERATES');
+    expect(data.rust.estimateFidelityNote).toContain('incompetent');
+    // Only the qualified claim carries the note; 'approx' needs no caveat.
+    expect(data.typescript.estimateFidelityNote).toBeUndefined();
+  });
+
   it('reports the correct engine display name per language', () => {
     // The doc-facing engine labels are a contract; kills the object-emptied and
     // per-string-literal mutants. Sourced from EngineDescriptor.displayName
@@ -116,7 +131,12 @@ describe('resources', () => {
     expect(d.defaultFileConcurrency).toContain('1–64');
     expect(d.suppressionsPath).toContain('.chaos-mcp/suppressions.json');
     expect(d.defaultSeverityFloor).toContain('"high"|"medium"|"low"');
-    expect(d.mutatorAllowlist).toContain('StrykerJS only');
+    // WAS `toContain('StrykerJS only')`, which pinned the defect: the resource
+    // advertised mutatorAllowlist as a supported StrykerJS key, while
+    // `validateMutatorAllowlistArg` rejects the tool argument on every path and
+    // `run-options.ts` never sources the config key. The entry must now say so.
+    expect(d.mutatorAllowlist).toContain('NOT SUPPORTED');
+    expect(d.mutatorAllowlist).toContain('mutatorDenylist');
   });
 
   it('describes every part of the multi-line container key', () => {

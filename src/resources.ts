@@ -45,6 +45,19 @@ function languagesJson(): string {
       engine: entry.displayName,
       supportsLineScope: entry.supportsLineScope,
       estimateFidelity: key === 'rust' ? 'exact' : 'approx',
+      // `estimateFidelity` mirrors `EstimateResult.fidelity` verbatim so a
+      // client can compare the two, but a bare 'exact' reads as "this is the
+      // audit's total", which it is not: `cargo mutants --list` enumerates
+      // mutants that will not compile, and engines/rust.ts excludes those from
+      // `totalMutants` and reports them as `incompetent`. Qualify it in place
+      // rather than weakening the enum value (estimate.ts:basis/note).
+      ...(key === 'rust'
+        ? {
+            estimateFidelityNote:
+              'Exact for the mutants cargo-mutants --list GENERATES; the audit scores fewer, ' +
+              'excluding unviable ones from its denominator as `incompetent`.',
+          }
+        : {}),
       configKey: entry.configKey,
       autoPrebuild: Boolean(entry.prebuild),
     };
@@ -59,7 +72,15 @@ function configSchemaJson(): string {
     perMutantTimeoutMs: 'integer ms — per-mutant timeout (StrykerJS).',
     testRunner: 'string — test runner override when auto-detection is inconclusive.',
     concurrency: 'integer 1–64 — global worker count for engines that support it (StrykerJS).',
-    mutatorAllowlist: 'string[] — mutator names to include (StrykerJS only).',
+    // Kept (rather than dropped) so an operator who already has the key in a
+    // config learns WHY it does nothing: `validateMutatorAllowlistArg` rejects
+    // the tool argument unconditionally and `run-options.ts` deliberately
+    // refuses to source it from args or config, so advertising it as supported
+    // led callers into a hard error for a key this server recommended. Wording
+    // matches cli.ts's `--mutator-allowlist` help text.
+    mutatorAllowlist:
+      'string[] — NOT SUPPORTED (StrykerJS v9 has no allowlist): ignored here, and rejected with an ' +
+      'error when passed as a tool argument. Use mutatorDenylist.',
     mutatorDenylist: 'string[] — mutator names to skip.',
     defaultMaxSurvivors: 'integer ≥ 1 — cap on reported survivor groups (default 10).',
     defaultSeverityFloor: '"high"|"medium"|"low" — drop survivor groups below this severity.',

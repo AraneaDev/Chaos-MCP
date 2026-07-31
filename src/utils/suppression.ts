@@ -6,8 +6,9 @@
  * `MutationResult` is domain logic over the audit result, not storage, and now
  * lives in `audit/apply-suppressions.ts` — which is what keeps this leaf module
  * from importing up into `format.ts`. It imports `node:crypto` (for the content
- * fingerprint) alongside `node:fs`/`node:path` and nothing else: it must stay a
- * leaf, so it may not import any `src/*.ts` domain module.
+ * fingerprint) alongside `node:fs`/`node:path`, plus `utils/logger.js` — itself
+ * a zero-dependency leaf that only writes to stderr. Nothing else: it must stay
+ * a leaf, so it may not import any `src/*.ts` DOMAIN module.
  *
  * ## Schema v2: content fingerprints
  *
@@ -21,6 +22,85 @@
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join } from 'node:path';
+import { warn } from './logger.js';
+
+/**
+ * The suppressions file exists but cannot be read as a suppressions document.
+ *
+ * Deliberately NOT raised for a missing file: "no suppressions yet" is the
+ * normal state of a fresh workspace and must stay a silent empty default. This
+ * is the other case — a JSON syntax error, `EACCES`, `EISDIR` — where the user
+ * HAS data and we simply cannot see it.
+ *
+ * The distinction is load-bearing because {@link addSuppressions} and
+ * {@link removeSuppressions} are read-modify-WRITE cycles over the whole
+ * document and {@link writeFile} renames over the original with no backup.
+ * Collapsing "unreadable" into "empty" therefore turns the next write into a
+ * silent deletion of every OTHER file's suppressions and every hand-written
+ * `reason` on them. Throwing here is the same fail-safe posture
+ * {@link verifySuppressions} documents for itself: fail toward the VISIBLE
+ * failure, never toward invisible data loss.
+ */
+export class SuppressionFileError extends Error {
+  /** Absolute path of the file that could not be read. */
+  readonly path: string;
+  constructor(path: string, cause: unknown) {
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    super(`Suppression file "${path}" could not be read: ${detail}`);
+    this.name = 'SuppressionFileError';
+    this.path = path;
+    this.cause = cause;
+  }
+}
+
+/**
+ * Normalize a stored suppression key to POSIX separators.
+ *
+ * Backslashes are translated on EVERY platform, not just where `sep` is `\`:
+ * the whole point is that a key WRITTEN on Windows (`src\utils\foo.ts`) must
+ * still resolve when the committed file is READ on Linux CI, where `sep` is
+ * `/` and a platform-gated version would be a no-op. This mirrors the
+ * unconditional normalisation in `triage.ts#toPosix` and `engines/php.ts`, and
+ * carries the same accepted trade: a POSIX filename may legally contain a
+ * backslash, so `weird\a.ts` is misread as a directory boundary. That is worth
+ * it — the alternative is a silent, CI-invisible suppression miss.
+ */
+export function toPortableKey(path: string): string {
+  return path.replace(/\\/g, '/');
+}
+
+/**
+ * The key under which `portable`'s entries are ACTUALLY stored in `entries`.
+ *
+ * Prefers the portable (POSIX) key, but falls back to any legacy key that
+ * differs from it only by separator, so a suppressions file written by an older
+ * Windows client is found — and, on the write paths, migrated — rather than
+ * silently duplicated under a second key.
+ */
+/**
+ * `entries` with `key` removed.
+ *
+ * A rebuild rather than `delete entries[key]`: the lint rule bans a
+ * dynamically computed `delete`, and this is the same idiom the write paths
+ * already use to drop a file left with no suppressions.
+ */
+function withoutKey(
+  entries: Record<string, StoredEntry[]>,
+  key: string,
+): Record<string, StoredEntry[]> {
+  return Object.fromEntries(Object.entries(entries).filter(([file]) => file !== key)) as Record<
+    string,
+    StoredEntry[]
+  >;
+}
+
+function storedKeyFor(entries: Record<string, StoredEntry[]>, portable: string): string {
+  if (Object.hasOwn(entries, portable)) return portable;
+  for (const key of Object.keys(entries)) {
+    if (key !== portable && toPortableKey(key) === portable) return key;
+  }
+  return portable;
+}
 
 /**
  * Per-file mutex for suppression writes (audit H3).
@@ -244,23 +324,36 @@ function filePath(workspaceRoot: string, configPath?: string): string {
   return join(workspaceRoot, '.chaos-mcp', 'suppressions.json');
 }
 
+/**
+ * Read the suppressions document.
+ *
+ * Exactly one error is benign: `ENOENT`. A workspace that has never suppressed
+ * anything has no file, and that must read as an empty document. EVERY other
+ * failure — a `JSON.parse` SyntaxError, `EACCES`, `EISDIR` — means the user has
+ * data we cannot see, and is raised as {@link SuppressionFileError} so the
+ * read-modify-write callers abort instead of "helpfully" rewriting the file
+ * from an empty starting point and destroying every entry in it.
+ */
 function readFile(workspaceRoot: string, configPath?: string): SuppressionFile {
+  const dest = filePath(workspaceRoot, configPath);
+  let raw: SuppressionFile;
   try {
-    const raw = JSON.parse(
-      readFileSync(filePath(workspaceRoot, configPath), 'utf8'),
-    ) as SuppressionFile;
-    if (
-      !raw ||
-      typeof raw !== 'object' ||
-      typeof raw.entries !== 'object' ||
-      raw.entries === null
-    ) {
+    raw = JSON.parse(readFileSync(dest, 'utf8')) as SuppressionFile;
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
       return { version: 1, entries: {} };
     }
-    return { version: raw.version ?? 1, entries: raw.entries };
-  } catch {
+    throw new SuppressionFileError(dest, error);
+  }
+  // A well-formed JSON document whose shape is not ours (`null`, an array, a
+  // scalar, or an object without an `entries` object) is treated as EMPTY, not
+  // as unreadable. It parsed — there is nothing to salvage and no entry to
+  // lose — so overwriting it with a correct document is a repair, not data
+  // loss. Only a file we could not parse at all is protected above.
+  if (!raw || typeof raw !== 'object' || typeof raw.entries !== 'object' || raw.entries === null) {
     return { version: 1, entries: {} };
   }
+  return { version: raw.version ?? 1, entries: raw.entries };
 }
 
 function writeFile(workspaceRoot: string, data: SuppressionFile, configPath?: string): void {
@@ -285,12 +378,31 @@ function writeFile(workspaceRoot: string, data: SuppressionFile, configPath?: st
  *
  * Malformed entries are dropped (they cannot be keyed), a non-array per-file
  * value is skipped, and a file left with no valid entry is omitted entirely.
+ *
+ * Keys are normalised to POSIX separators ({@link toPortableKey}) so a file
+ * written on Windows resolves against the `/`-separated key every other reader
+ * computes. Two stored keys that collapse onto the same portable key are
+ * MERGED (later entry wins per `(line, mutator)`) rather than one silently
+ * shadowing the other.
+ *
+ * This is the READ path used to filter an audit the user explicitly asked for,
+ * so an unreadable file degrades to "no suppressions" instead of failing the
+ * audit — but never silently: {@link SuppressionFileError} is warned to stderr,
+ * because a corrupt file that looks exactly like "nothing suppressed" is how a
+ * whole equivalence argument disappears without a trace.
  */
 export function loadSuppressions(
   workspaceRoot: string,
   configPath?: string,
 ): Map<string, StoredEntry[]> {
-  const data = readFile(workspaceRoot, configPath);
+  let data: SuppressionFile;
+  try {
+    data = readFile(workspaceRoot, configPath);
+  } catch (error: unknown) {
+    if (!(error instanceof SuppressionFileError)) throw error;
+    warn(`${error.message} — continuing as if it recorded no suppressions; none will be applied.`);
+    return new Map<string, StoredEntry[]>();
+  }
   const map = new Map<string, StoredEntry[]>();
   for (const [file, list] of Object.entries(data.entries)) {
     if (!Array.isArray(list)) continue;
@@ -304,7 +416,19 @@ export function loadSuppressions(
       if (typeof e.fingerprint === 'string') entry.fingerprint = e.fingerprint;
       kept.push(entry);
     }
-    if (kept.length > 0) map.set(file, kept);
+    if (kept.length === 0) continue;
+    const key = toPortableKey(file);
+    const existing = map.get(key);
+    if (existing === undefined) {
+      map.set(key, kept);
+      continue;
+    }
+    // Same file reached under two spellings (e.g. a Windows-written
+    // `src\a.ts` alongside a Linux-written `src/a.ts`). Union them by
+    // `(line, mutator)` so neither spelling's entries are dropped.
+    const byKey = new Map(existing.map((e) => [keyOf(e.line, e.mutator), e] as const));
+    for (const e of kept) byKey.set(keyOf(e.line, e.mutator), e);
+    map.set(key, [...byKey.values()]);
   }
   return map;
 }
@@ -350,6 +474,15 @@ function mergeReason(next: string | undefined, previous: string | undefined): st
  * {@link mergeReason}. If the line cannot be read now, any previous fingerprint
  * is dropped rather than kept: an entry we cannot re-verify must not keep
  * applying on the strength of an older check.
+ *
+ * The entry is stored under the POSIX-normalised key so the file stays
+ * portable; a pre-existing legacy key that differs only by separator is
+ * migrated onto it rather than left behind as a duplicate.
+ *
+ * An unreadable suppressions file makes this THROW ({@link SuppressionFileError})
+ * instead of starting from an empty document: `handler.ts` reports it as
+ * "Failed to update suppression list", which is strictly better than a write
+ * that silently drops every other file's entries.
  */
 export function addSuppressions(
   workspaceRoot: string,
@@ -360,9 +493,14 @@ export function addSuppressions(
   if (entries.length === 0) return noopPromise();
   return withWorkspaceLock(workspaceRoot, configPath, () => {
     const data = readFile(workspaceRoot, configPath);
-    const list = Array.isArray(data.entries[relFile])
-      ? data.entries[relFile]
+    const portableKey = toPortableKey(relFile);
+    const legacyKey = storedKeyFor(data.entries, portableKey);
+    const list = Array.isArray(data.entries[legacyKey])
+      ? data.entries[legacyKey]
       : ([] as StoredEntry[]);
+    // `list` is captured above, so dropping the legacy key here migrates the
+    // entries onto the portable key instead of leaving a duplicate behind.
+    if (legacyKey !== portableKey) data.entries = withoutKey(data.entries, legacyKey);
     const indexOfKey = new Map<string, number>();
     list.forEach((e, i) => {
       if (e && typeof e === 'object') indexOfKey.set(keyOf(e.line, e.mutator), i);
@@ -393,12 +531,21 @@ export function addSuppressions(
         list[at] = merged;
       }
     }
-    data.entries[relFile] = list;
+    data.entries[portableKey] = list;
     writeFile(workspaceRoot, data, configPath);
     return summary;
   });
 }
 
+/**
+ * Drop specific `(line, mutator)` entries from one file's suppressions.
+ *
+ * Resolves the file under its portable key, falling back to a legacy key that
+ * differs only by separator so an entry written on Windows can still be
+ * unsuppressed on Linux; survivors are rewritten under the portable key. Like
+ * {@link addSuppressions}, this propagates {@link SuppressionFileError} rather
+ * than rewriting an unreadable document from scratch.
+ */
 export function removeSuppressions(
   workspaceRoot: string,
   relFile: string,
@@ -408,16 +555,18 @@ export function removeSuppressions(
   if (keys.length === 0) return Promise.resolve();
   return withWorkspaceLock(workspaceRoot, configPath, () => {
     const data = readFile(workspaceRoot, configPath);
-    const list = data.entries[relFile];
+    const portableKey = toPortableKey(relFile);
+    const legacyKey = storedKeyFor(data.entries, portableKey);
+    const list = data.entries[legacyKey];
     if (!Array.isArray(list)) return;
     const drop = new Set(keys.map((k) => keyOf(k.line, k.mutator)));
     const kept = list.filter((e) => !drop.has(keyOf(e.line, e.mutator)));
+    if (legacyKey !== portableKey) data.entries = withoutKey(data.entries, legacyKey);
     if (kept.length > 0) {
-      data.entries[relFile] = kept;
+      data.entries[portableKey] = kept;
     } else {
-      data.entries = Object.fromEntries(
-        Object.entries(data.entries).filter(([file]) => file !== relFile),
-      ) as Record<string, StoredEntry[]>;
+      // Last entry gone → the file key goes with it, under either spelling.
+      data.entries = withoutKey(data.entries, portableKey);
     }
     writeFile(workspaceRoot, data, configPath);
   });

@@ -381,12 +381,21 @@ export async function handleToolCall(
       // try/catch keeps mintRunId's old contract intact — it used to swallow a
       // payload-construction failure too, and minting a runId must never cost
       // the caller the audit it asked for.
+      //
+      // `workspaceRoot` stamps the entry's workspace fingerprint (audit M10).
+      // `relFromRoot` alone is a workspace-RELATIVE key, so without it a runId
+      // minted for workspace A's `src/index.ts` satisfied the verify path's
+      // `cached.file === relFile` check while pointed at workspace B's
+      // `src/index.ts` — a different file — and the verify graded B's code
+      // against A's mutants. `audit/scope.ts` now REFUSES an entry that carries
+      // no hash, so omitting this here would break verify-by-runId outright.
       let mintedRunId: string | undefined;
       if (!baselineKeys) {
         try {
           mintedRunId = mintRunId(buildResultPayload(auditResults, {}), relFromRoot, projectType, {
             ttlMs: cfg.runCacheTtlMs,
             max: cfg.runCacheMax,
+            workspaceRoot: env.workspaceRoot,
           });
         } catch {
           mintedRunId = undefined;
@@ -419,6 +428,18 @@ export async function handleToolCall(
       sandbox.cleanup();
     }
   } catch (error: unknown) {
+    // Audit C1 follow-up: cancellation must surface as 'Operation cancelled.' —
+    // never as 'Chaos Engine Halted' — so the caller can reliably branch on the
+    // message; otherwise a deliberate cancel from the MCP client is
+    // indistinguishable from a real engine failure. The reachable path is
+    // `computeScope`, whose git calls run BEFORE the sandbox exists and now
+    // re-throw an abort instead of flattening it into a `DiffResult`; the
+    // engine-run and sandbox cancels are already caught by `runEngine` and
+    // `mapCreateSandboxError` above. Matches estimate-handler.ts and
+    // triage/audit-one.ts, which carry the identical branch.
+    if (isCancel(error, ctx)) {
+      return toolError('Operation cancelled.');
+    }
     const message = error instanceof Error ? error.message : String(error);
     return toolError(`Chaos Engine Halted: ${message}`);
   }

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -10,11 +10,23 @@ import {
   normalizeSourceLine,
   fingerprintOfLine,
   fingerprintSourceLine,
+  toPortableKey,
+  SuppressionFileError,
   _resetWriteQueue,
   _writeQueueSize,
 } from '../utils/suppression.js';
 import { applySuppressions } from '../audit/apply-suppressions.js';
+import { loadVerifiedSuppressions } from '../audit/suppression-io.js';
+import { warn } from '../utils/logger.js';
 import type { MutationResult } from '../engines/base.js';
+
+// `loadSuppressions` degrades an unreadable file to "no suppressions" but must
+// SAY so; the warning is the only signal that separates "corrupt" from
+// "nothing suppressed", so it is asserted rather than left to stderr.
+vi.mock('../utils/logger.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../utils/logger.js')>()),
+  warn: vi.fn(),
+}));
 
 /**
  * The `"<line> <mutator>"` keys stored for one file, in file order.
@@ -33,8 +45,21 @@ function writeSource(root: string, rel: string, lines: string[]): void {
   writeFileSync(join(root, rel), `${lines.join('\n')}\n`, 'utf8');
 }
 
+/** Absolute path of the default suppressions file under a test workspace. */
+function supFile(r: string): string {
+  return join(r, '.chaos-mcp', 'suppressions.json');
+}
+
+/** Write a raw suppressions file (valid or not) at the default location. */
+function writeRawSuppressions(r: string, contents: string): string {
+  mkdirSync(join(r, '.chaos-mcp'), { recursive: true });
+  writeFileSync(supFile(r), contents, 'utf8');
+  return supFile(r);
+}
+
 let root: string;
 beforeEach(() => {
+  vi.mocked(warn).mockClear();
   root = mkdtempSync(join(tmpdir(), 'sup-test-'));
   // Defensive: clear the in-process write-queue so a previous test that leaked
   // (e.g. crashed mid-write) cannot poison this one. The queue is per
@@ -64,12 +89,21 @@ function makeResult(): MutationResult {
 describe('suppression', () => {
   it('missing file → empty map', () => {
     expect(loadSuppressions(root).size).toBe(0);
+    // ENOENT is the ORDINARY state of a fresh workspace, not a fault: it must
+    // not warn, or every first audit would emit a scary line about a file that
+    // is simply not supposed to exist yet.
+    expect(warn).not.toHaveBeenCalled();
   });
 
-  it('corrupt file → empty map, no throw', () => {
-    mkdirSync(join(root, '.chaos-mcp'), { recursive: true });
-    writeFileSync(join(root, '.chaos-mcp', 'suppressions.json'), '{bad');
+  // UPDATED (was 'corrupt file → empty map, no throw'): the empty-map result on
+  // the READ path is unchanged and still pinned, but silence is not. A corrupt
+  // file that reads exactly like "nothing suppressed" is the failure mode being
+  // fixed, so the warning is now part of the contract.
+  it('corrupt file → empty map, no throw, but WARNS', () => {
+    writeRawSuppressions(root, '{bad');
     expect(loadSuppressions(root).size).toBe(0);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(vi.mocked(warn).mock.calls[0][0])).toContain('could not be read');
   });
 
   it('add then load round-trips, deduped', async () => {
@@ -773,5 +807,202 @@ describe('suppression fingerprints (schema v2)', () => {
       expect(verdict.unverified).toBe(1);
       expect(verdict.applied.size).toBe(0);
     });
+  });
+});
+
+/**
+ * An unreadable suppressions file must never be laundered into an empty one.
+ *
+ * `addSuppressions` / `removeSuppressions` are read-modify-WRITE cycles and
+ * `writeFile` renames over the original with no backup, so treating a
+ * SyntaxError/EACCES read as `{ entries: {} }` turns the very next write into a
+ * silent deletion of every other file's suppressions and every hand-written
+ * `reason` on them. The write paths therefore THROW; only the read path used
+ * for filtering degrades, and it warns when it does.
+ */
+describe('suppression file read failures (fail-safe)', () => {
+  it('a missing file is NOT an error on the write path — it is just an empty start', async () => {
+    expect(existsSync(supFile(root))).toBe(false);
+    await expect(
+      addSuppressions(root, 'src/a.ts', [{ line: 1, mutator: 'A' }]),
+    ).resolves.toBeDefined();
+    expect(storedKeys(root, 'src/a.ts')).toEqual(['1 A']);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('malformed JSON makes addSuppressions THROW instead of rewriting the file', async () => {
+    const file = writeRawSuppressions(root, '{"version": 2, "entries": {"src/a.ts": [');
+    const before = readFileSync(file, 'utf8');
+    await expect(addSuppressions(root, 'src/b.ts', [{ line: 1, mutator: 'A' }])).rejects.toThrow(
+      SuppressionFileError,
+    );
+    // The whole point: the user's data is still on disk, untouched, under its
+    // own name — recoverable by hand rather than replaced by a one-entry file.
+    expect(readFileSync(file, 'utf8')).toBe(before);
+  });
+
+  it('malformed JSON makes removeSuppressions THROW instead of rewriting the file', async () => {
+    const file = writeRawSuppressions(root, 'not json at all');
+    const before = readFileSync(file, 'utf8');
+    await expect(removeSuppressions(root, 'src/a.ts', [{ line: 1, mutator: 'A' }])).rejects.toThrow(
+      SuppressionFileError,
+    );
+    expect(readFileSync(file, 'utf8')).toBe(before);
+  });
+
+  it('the thrown error names the file and carries the underlying cause message', async () => {
+    const file = writeRawSuppressions(root, '{bad');
+    const error = await addSuppressions(root, 'src/a.ts', [{ line: 1, mutator: 'A' }]).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(error).toBeInstanceOf(SuppressionFileError);
+    const err = error as SuppressionFileError;
+    expect(err.name).toBe('SuppressionFileError');
+    expect(err.path).toBe(file);
+    // handler.ts renders this verbatim as "Failed to update suppression list: …",
+    // so it has to be actionable on its own.
+    expect(err.message).toContain(file);
+    expect(err.message).toMatch(/JSON|Unexpected|token/i);
+    expect(err.cause).toBeInstanceOf(Error);
+  });
+
+  it('a non-ENOENT fs error (EISDIR) throws too, not just a parse failure', async () => {
+    // The suppressions "file" is a directory: readFileSync fails with EISDIR
+    // (EPERM on some platforms) — the user has no readable data, so the write
+    // must abort exactly as it does for a syntax error.
+    mkdirSync(supFile(root), { recursive: true });
+    await expect(addSuppressions(root, 'src/a.ts', [{ line: 1, mutator: 'A' }])).rejects.toThrow(
+      SuppressionFileError,
+    );
+    expect(() => loadSuppressions(root)).not.toThrow();
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('a well-formed document of the WRONG SHAPE is empty, not unreadable', async () => {
+    // It parsed, so there is no entry to lose and nothing to salvage: this is
+    // the one case that stays a silent empty default and is repaired by the
+    // next write. Pinned separately so the ENOENT/parse split cannot regress
+    // into swallowing this too — or into throwing on it.
+    writeRawSuppressions(root, JSON.stringify({ version: 2, entries: 42 }));
+    expect(loadSuppressions(root).size).toBe(0);
+    expect(warn).not.toHaveBeenCalled();
+    await expect(
+      addSuppressions(root, 'src/a.ts', [{ line: 1, mutator: 'A' }]),
+    ).resolves.toBeDefined();
+    expect(storedKeys(root, 'src/a.ts')).toEqual(['1 A']);
+  });
+
+  it('a valid file still round-trips untouched through a read-modify-write', async () => {
+    await addSuppressions(root, 'src/a.ts', [{ line: 1, mutator: 'A', reason: 'argued' }]);
+    await addSuppressions(root, 'src/b.ts', [{ line: 9, mutator: 'B', reason: 'also argued' }]);
+    // The regression this whole fix exists to prevent: writing to ONE file must
+    // leave every OTHER file's entries — and their reasons — intact.
+    await addSuppressions(root, 'src/c.ts', [{ line: 3, mutator: 'C' }]);
+    const map = loadSuppressions(root);
+    expect([...map.keys()].sort()).toEqual(['src/a.ts', 'src/b.ts', 'src/c.ts']);
+    expect(map.get('src/a.ts')?.[0].reason).toBe('argued');
+    expect(map.get('src/b.ts')?.[0].reason).toBe('also argued');
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('the write queue does not leak an entry when the read throws', async () => {
+    writeRawSuppressions(root, '{bad');
+    await expect(addSuppressions(root, 'src/a.ts', [{ line: 1, mutator: 'A' }])).rejects.toThrow();
+    expect(_writeQueueSize()).toBe(0);
+  });
+});
+
+/**
+ * Portable keys (Med finding: OS-native separators in a committable file).
+ *
+ * `relative()` yields `src\utils\a.ts` on Windows and `src/utils/a.ts` on Linux.
+ * The suppressions file is documented as portable/committable, so a key written
+ * by one machine has to resolve on the other — and the failure when it does not
+ * is SILENT: a missing map key produces an empty verdict, so `drifted` and
+ * `unverified` both stay 0 and nothing reports that anything was skipped.
+ */
+describe('suppression key separators', () => {
+  const SRC = 'src/utils/a.ts';
+  const WIN = 'src\\utils\\a.ts';
+
+  /** A suppressions file whose keys use Windows separators, as committed by a Windows client. */
+  function writeWindowsKeyedFile(fingerprint: string): void {
+    writeRawSuppressions(
+      root,
+      JSON.stringify({
+        version: 2,
+        entries: {
+          [WIN]: [
+            { line: 2, mutator: 'ConditionalExpression', addedAt: 1, reason: 'why', fingerprint },
+          ],
+        },
+      }),
+    );
+  }
+
+  it('toPortableKey rewrites backslashes on EVERY platform, not only on Windows', () => {
+    // Unconditional by design: the key being repaired was written by the OTHER
+    // machine's `sep`, so gating on the local `sep` would make this a no-op on
+    // exactly the Linux CI that has to read it.
+    expect(toPortableKey(WIN)).toBe(SRC);
+    expect(toPortableKey(SRC)).toBe(SRC);
+  });
+
+  it('a backslash-keyed entry resolves under a POSIX lookup', () => {
+    writeWindowsKeyedFile('deadbeefcafe');
+    const map = loadSuppressions(root);
+    expect([...map.keys()]).toEqual([SRC]);
+    expect(map.get(SRC)).toHaveLength(1);
+    expect(map.get(SRC)?.[0].reason).toBe('why');
+  });
+
+  it('a backslash-keyed entry is APPLIED end-to-end via loadVerifiedSuppressions', () => {
+    writeSource(root, SRC, ['const a = 1;', 'if (a > 0) return a;', 'return 0;']);
+    writeWindowsKeyedFile(fingerprintSourceLine(root, SRC, 2) as string);
+    // Before the fix this returned an all-zero verdict: `.get('src/utils/a.ts')`
+    // missed the `src\utils\a.ts` key and the suppression vanished silently.
+    const verdict = loadVerifiedSuppressions(root, SRC, undefined);
+    expect([...verdict.applied]).toEqual(['2 ConditionalExpression']);
+    expect(verdict.drifted).toBe(0);
+    expect(verdict.unverified).toBe(0);
+  });
+
+  it('adding to a legacy backslash key MIGRATES it rather than duplicating it', async () => {
+    writeSource(root, SRC, ['const a = 1;', 'if (a > 0) return a;', 'return 0;']);
+    writeWindowsKeyedFile('stale00000000');
+    await addSuppressions(root, SRC, [{ line: 3, mutator: 'BlockStatement' }]);
+    const raw = JSON.parse(readFileSync(supFile(root), 'utf8')) as {
+      entries: Record<string, unknown[]>;
+    };
+    expect(Object.keys(raw.entries)).toEqual([SRC]);
+    // The pre-existing entry survives the migration — including its reason.
+    expect(storedKeys(root, SRC)).toEqual(['2 ConditionalExpression', '3 BlockStatement']);
+    expect(loadSuppressions(root).get(SRC)?.[0].reason).toBe('why');
+  });
+
+  it('removing from a legacy backslash key finds and drops the entry', async () => {
+    writeWindowsKeyedFile('deadbeefcafe');
+    await removeSuppressions(root, SRC, [{ line: 2, mutator: 'ConditionalExpression' }]);
+    const raw = JSON.parse(readFileSync(supFile(root), 'utf8')) as {
+      entries: Record<string, unknown[]>;
+    };
+    // Last entry gone → the file key goes with it, under EITHER spelling.
+    expect(Object.keys(raw.entries)).toEqual([]);
+  });
+
+  it('merges two spellings of the same file instead of letting one shadow the other', () => {
+    writeRawSuppressions(
+      root,
+      JSON.stringify({
+        version: 2,
+        entries: {
+          [WIN]: [{ line: 2, mutator: 'A', addedAt: 1 }],
+          [SRC]: [{ line: 7, mutator: 'B', addedAt: 1 }],
+        },
+      }),
+    );
+    const entries = loadSuppressions(root).get(SRC);
+    expect(entries?.map((e) => `${e.line} ${e.mutator}`)).toEqual(['2 A', '7 B']);
   });
 });

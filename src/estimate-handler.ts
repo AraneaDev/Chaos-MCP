@@ -12,6 +12,7 @@ import type { ToolContext } from './tool-context.js';
 import { isCancel } from './utils/cancel.js';
 import { DEFAULT_TIMEOUT_MS } from './utils/constants.js';
 import { createExecutionSession } from './utils/execution.js';
+import { buildRunOptions, resolveAuditTimeoutMs } from './audit/run-options.js';
 
 export function resolveEstimateConcurrency(cpuCount: number): number {
   return Math.max(1, Math.min(2, cpuCount - 1));
@@ -119,6 +120,43 @@ export async function handleEstimateCall(
           ? await createExecutionSession(projectType, sandbox.workDir, cfg.container, ctx?.signal)
           : undefined;
       try {
+        // ── Grade the estimate against the budget and the runner the AUDIT
+        //    would actually use, not an estimate-only approximation of them. ──
+        //
+        // Both used to be re-derived here and both diverged from
+        // audit_code_resilience:
+        //
+        //  * budget — this read `cfg.defaultTimeoutMs` only, so a config with
+        //    `"stryker": { "timeoutMs": 900000 }` over a 60s default graded
+        //    `fitsBudget` against 60s and recommended narrowing a run the audit
+        //    would have given 900s. `resolveAuditTimeoutMs` is the audit's own
+        //    resolver (arg → engine section → global default → DEFAULT).
+        //  * runner — estimate.ts compared `env.testRunner` against 'command',
+        //    ignoring the config file, so `"stryker": { "testRunner":
+        //    "command" }` on a vitest project was audited with the command
+        //    runner and estimated with the native constants (~4× low, with
+        //    `fitsBudget: true`).
+        //
+        // The runner comes from `buildRunOptions` — the audit's own resolver —
+        // rather than a local copy of its precedence chain: re-implementing it
+        // here is exactly the drift this finding is about. `buildRunOptions` is
+        // pure precedence logic (audit/run-options.ts), so calling it for one
+        // field costs nothing; `workDir` is only carried on the returned object
+        // and is unused by the estimate.
+        const auditRunOptions = buildRunOptions(
+          args,
+          cfg,
+          env,
+          sandbox?.workDir ?? env.workspaceRoot,
+          projectType,
+          relFile,
+        );
+        // Keep the defensive numeric guard the estimate has always applied:
+        // `resolveAuditTimeoutMs` trusts `cfg.defaultTimeoutMs` verbatim
+        // (the config loader validates it), but this handler is also called
+        // with hand-built configs, and a `0`/`"90000"` budget would make every
+        // estimate report `fitsBudget: false`.
+        const resolvedTimeoutMs = resolveAuditTimeoutMs(args, cfg, projectType);
         const result = await estimateAudit({
           absFile: resolvedFile,
           relFile,
@@ -126,14 +164,26 @@ export async function handleEstimateCall(
           workDir: sandbox?.workDir,
           withTiming,
           env,
+          testRunner: auditRunOptions.testRunner,
           concurrency,
           timeoutMs:
-            typeof cfg.defaultTimeoutMs === 'number' && cfg.defaultTimeoutMs > 0
-              ? cfg.defaultTimeoutMs
+            typeof resolvedTimeoutMs === 'number' && resolvedTimeoutMs > 0
+              ? resolvedTimeoutMs
               : DEFAULT_TIMEOUT_MS,
           signal: ctx?.signal,
           executor,
         });
+
+        // Defensive post-run cancellation check (audit C1 follow-up).
+        //
+        // The catch below is the ONLY place `isCancel` runs, and it is never
+        // entered when `estimateAudit` returns normally — which it can do even
+        // after a cancel, since not every phase throws on abort (the Rust
+        // count path degraded a startup failure to a heuristic result, and a
+        // signal that flips between the last subprocess and here is never
+        // observed at all). Without this, a cancelled `estimate_audit` handed
+        // the caller a successful estimate for work it had already abandoned.
+        if (ctx?.signal?.aborted) return toolError('Operation cancelled.');
 
         return {
           content: [{ type: 'text', text: JSON.stringify(result) }],

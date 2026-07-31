@@ -104,16 +104,61 @@ async function resolveDiffScope(
   if (!ENGINE_REGISTRY[projectType].supportsLineScope) {
     return { scopeNote: 'diff scoping unsupported for this language; whole file' };
   }
-  const ranges = await computeChangedRanges(targetFile, env.workspaceRoot, deps.diffBase, {
+  const diff = await computeChangedRanges(targetFile, env.workspaceRoot, deps.diffBase, {
     signal: deps.ctx?.signal,
     timeoutMs: fileBudgetMs,
   });
-  if (ranges.kind === 'ranges') {
-    return { lineRanges: ranges.ranges, scopeNote: 'scored on changed lines' };
+  switch (diff.kind) {
+    case 'ranges':
+      return { lineRanges: diff.ranges, scopeNote: 'scored on changed lines' };
+    case 'untracked':
+      return { scopeNote: 'untracked; whole file' };
+    case 'git-failed':
+      // The git call never got an ANSWER — a timeout, a missing binary, or an
+      // unclassifiable rejection (utils/git-diff.ts). Before this branch existed
+      // the variant fell out of the bottom of this function with no ranges and
+      // NO note, so the file was mutated WHOLE-FILE and the row's score was
+      // presented as though the sweep had never been diff-scoped at all.
+      //
+      // Degrade-with-a-note, NOT an error row — deliberately different from the
+      // sibling in `audit/scope.ts`, which returns a tool error:
+      //  * There, `diffBase` is the caller's request about THE one file, so
+      //    failing to scope is failing the request, and there is nothing else in
+      //    flight to protect.
+      //  * Here, `diffBase` already did its main job — it SELECTED the file set
+      //    (`listChangedFiles`, which succeeded, or the sweep would have errored
+      //    out before any file was audited). Per-file line scoping is a
+      //    refinement of a score that is still meaningful without it.
+      //  * The dominant cause is our own clamp: `timeoutMs: fileBudgetMs` shrinks
+      //    as the sweep's wall-clock budget drains, so the tail of a long sweep
+      //    is exactly where timeouts appear. Erroring the row would convert
+      //    "running low on time" into a run of empty `errors[]` entries and throw
+      //    away every score the sweep had left to give — for a sweep whose whole
+      //    contract is "a per-file failure is a row, never fatal" (see
+      //    `auditTriageFile`).
+      // What is NOT acceptable is the silent version, so the reason travels onto
+      // the row and the caller can see the number is broader than they asked for.
+      return { scopeNote: `git could not scope this file (${diff.reason}); whole file` };
+    case 'no-changes':
+    case 'not-a-repo':
+    case 'bad-ref':
+      // The file was SELECTED by the same diffBase, so these are rare and say
+      // nothing useful per row: leave it whole-file and unlabelled (unchanged
+      // behaviour). Listed explicitly rather than left to a fallthrough so the
+      // guard below can do its job.
+      return {};
+    default: {
+      // Exhaustiveness guard, mirroring `audit/scope.ts` (audit F15 style):
+      // `diff` narrows to `never` here, so ADDING a DiffResult variant without
+      // handling it above is a COMPILE error. That is not hypothetical — it is
+      // precisely how `git-failed` arrived and silently turned a failed git call
+      // into an unlabelled whole-file row.
+      const unhandled: never = diff;
+      return {
+        scopeNote: `diff scoping returned an unrecognised git result (${JSON.stringify(unhandled)}); whole file`,
+      };
+    }
   }
-  if (ranges.kind === 'untracked') return { scopeNote: 'untracked; whole file' };
-  // no-changes/bad-ref/not-a-repo: leave whole-file (the file was selected, so this is rare)
-  return {};
 }
 
 /** The already-suppression-filtered facts a row is assembled from. */
@@ -121,6 +166,19 @@ interface RowInput {
   file: string;
   result: MutationResult;
   relFromRoot: string;
+  /**
+   * The workspace root `relFromRoot` is relative to (`env.workspaceRoot`).
+   *
+   * Carried on the row input purely so the minted runId can be bound to it
+   * (audit M10). `relFromRoot` is a workspace-RELATIVE key, and until the
+   * fingerprint was stamped alongside it a triage-minted runId for workspace
+   * A's `src/index.ts` satisfied the verify path's `cached.file === relFile`
+   * check while pointed at workspace B's `src/index.ts`. A sweep resolves the
+   * root PER FILE (`detectEnvironment(file)`), so this cannot be hoisted onto
+   * {@link TriageFileDeps}: one sweep can legitimately span several monorepo
+   * package roots.
+   */
+  workspaceRoot: string;
   projectType: SupportedProjectType;
   scopeNote?: string;
   suppressedCount: number;
@@ -172,11 +230,19 @@ function buildTriageRow(input: RowInput, deps: TriageFileDeps): TriageRow {
   // uncapped `{}` build from the enriched one below — reusing that one would
   // cache only `survivorsPerFile` survivors, and a later verify would read the
   // truncated-away ones as fixed.
+  //
+  // `workspaceRoot` binds the entry to the tree it was minted from (audit M10),
+  // exactly as the audit tool's mint site does — the two tools share this cache
+  // and `audit_code_resilience` must be able to verify a triage-minted runId
+  // (the documented cross-tool flow). `audit/scope.ts` now refuses a hash-less
+  // entry, so a row minted without this would hand the caller a runId that no
+  // verify could ever accept.
   let rowRunId: string | undefined;
   try {
     rowRunId = mintRunId(buildResultPayload(result, {}), input.relFromRoot, projectType, {
       ttlMs: deps.cfg.runCacheTtlMs,
       max: deps.cfg.runCacheMax,
+      workspaceRoot: input.workspaceRoot,
     });
   } catch {
     rowRunId = undefined;
@@ -343,6 +409,10 @@ export async function auditTriageFile(
           file,
           result: sup.result,
           relFromRoot,
+          // Same `env` the suppressions, the sandbox and the diff scope were
+          // resolved against, so the minted runId is fingerprinted for the
+          // workspace `relFromRoot` is actually relative to (audit M10).
+          workspaceRoot: env.workspaceRoot,
           projectType,
           scopeNote: scope.scopeNote,
           suppressedCount: sup.suppressedCount,

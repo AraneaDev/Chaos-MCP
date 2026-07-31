@@ -18,6 +18,7 @@ import { resolve } from 'path';
 import { validateMinScore } from './gate.js';
 import { isPathPermitted } from './utils/path-safety.js';
 import { describeBoundary } from './utils/file-path.js';
+import { MAX_TIMEOUT_MS } from './utils/constants.js';
 import type { ToolArgs } from './tool-args-validation.js';
 
 /**
@@ -101,7 +102,17 @@ function validateFileConcurrencyArg(args: ToolArgs): string | null {
   return null;
 }
 
-/** totalTimeoutMs: positive number (the whole-sweep wall-clock budget). */
+/**
+ * totalTimeoutMs: positive number no larger than MAX_TIMEOUT_MS (the whole-sweep
+ * wall-clock budget).
+ *
+ * The upper bound matters as much as the lower one: Node clamps a delay above
+ * the 32-bit maximum to **1 ms**, so an over-large budget aborts the sweep
+ * immediately instead of granting more time (see utils/constants.ts). The
+ * schema declares `maximum`, but the MCP SDK does not validate arguments
+ * against `inputSchema` — nothing enforced it at runtime until here. Matches
+ * the audit tool's rule in `tool-args-validation.ts`.
+ */
 function validateTotalTimeoutMsArg(args: ToolArgs): string | null {
   if (
     args.totalTimeoutMs !== undefined &&
@@ -109,13 +120,19 @@ function validateTotalTimeoutMsArg(args: ToolArgs): string | null {
   ) {
     return 'totalTimeoutMs must be a positive number. Example: 900000.';
   }
+  if (typeof args.totalTimeoutMs === 'number' && args.totalTimeoutMs > MAX_TIMEOUT_MS) {
+    return `totalTimeoutMs must be <= ${MAX_TIMEOUT_MS} (the largest delay a timer accepts; larger values are clamped to 1ms and abort the run immediately). Example: 900000.`;
+  }
   return null;
 }
 
-/** timeoutMs: positive number. Distinct wording from totalTimeoutMs — different budgets. */
+/** timeoutMs: positive number <= MAX_TIMEOUT_MS. Distinct wording from totalTimeoutMs — different budgets. */
 function validateTimeoutMsArg(args: ToolArgs): string | null {
   if (args.timeoutMs !== undefined && (typeof args.timeoutMs !== 'number' || args.timeoutMs <= 0)) {
     return 'timeoutMs must be a positive number. Example: 300000.';
+  }
+  if (typeof args.timeoutMs === 'number' && args.timeoutMs > MAX_TIMEOUT_MS) {
+    return `timeoutMs must be <= ${MAX_TIMEOUT_MS} (the largest delay a timer accepts; larger values are clamped to 1ms and abort the run immediately). Example: 300000.`;
   }
   return null;
 }

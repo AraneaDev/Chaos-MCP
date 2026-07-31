@@ -266,6 +266,19 @@ class ContainerExecutionSession implements ExecutionSession {
     this.disposePromise = undefined;
     this.startPromise = (async () => {
       if (this.signal?.aborted) throw new Error('Container execution cancelled before startup.');
+      // Arm cancellation BEFORE anything is created, not after `start` returns.
+      // `addEventListener('abort', ...)` on an already-aborted signal never
+      // fires, so registering at the end left a window — abort landing between
+      // `start` resolving and the registration — in which the session owned a
+      // RUNNING container and nothing was left that would ever tear it down.
+      // (Both current callers also dispose in a `finally`, which masked it; the
+      // listener is this class's stated cancellation mechanism and must actually
+      // arm.) Registering first is safe because `dispose()` is idempotent — it
+      // latches on `disposePromise` — and removes the container by name when
+      // `containerId` is not set yet, which is exactly the state an abort during
+      // `create` leaves behind.
+      this.abortListener = () => void this.dispose();
+      this.signal?.addEventListener('abort', this.abortListener, { once: true });
       const created = await runShell(this.runtime, this.createArgs(), {
         timeoutMs: this.config.startupTimeoutMs ?? 60_000,
         signal: this.signal,
@@ -277,8 +290,15 @@ class ContainerExecutionSession implements ExecutionSession {
         signal: this.signal,
         killTree: true,
       });
-      this.abortListener = () => void this.dispose();
-      this.signal?.addEventListener('abort', this.abortListener, { once: true });
+      // The listener above may have already fired and disposed a container that
+      // `start` then finished bringing up, and an abort that lands in this exact
+      // turn has no listener left to fire (it was removed by that dispose). Re-check
+      // and tear down explicitly so a cancelled request never leaves the runtime
+      // holding a started container.
+      if (this.signal?.aborted) {
+        await this.dispose();
+        throw new Error('Container execution cancelled during startup.');
+      }
     })();
     try {
       await this.startPromise;

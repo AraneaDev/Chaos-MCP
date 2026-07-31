@@ -256,7 +256,7 @@ Every successful, non-verify `audit_code_resilience` call returns a `runId` (an 
 2. **Fix or add tests.**
 3. **Verify:** `{ "filePath": "src/utils/math.ts", "runId": "a1b2c3d4" }` → reports which previously-surviving mutants are now killed.
 
-`runId` is mutually exclusive with `baseline`, `diffBase`, and `lineScope`. The baseline cache lives in `os.tmpdir()/chaos-mcp-runs/` and is ephemeral (default TTL: 24 h; default max: 200 entries). Passing an unknown or expired `runId` returns an error.
+`runId` is mutually exclusive with `baseline`, `diffBase`, and `lineScope`. The baseline cache lives in `os.tmpdir()/chaos-mcp-runs/<hash-of-server-cwd>/` — partitioned per server working directory, so two checkouts served by two servers never read each other's entries — and is ephemeral (default TTL: 24 h; default max: 200 entries). Passing an unknown or expired `runId` returns an error.
 
 `triage_test_coverage` also mints and returns a `runId` per ranking row, so you can drill into a weak file and immediately verify after fixing its tests.
 
@@ -431,13 +431,13 @@ Additional output fields when `withTiming: true`:
 
 ### Fidelity
 
-| Language                | Fidelity | Basis                                 |
-| ----------------------- | -------- | ------------------------------------- |
-| Rust                    | `exact`  | `cargo-mutants --list` (no tests run) |
-| TypeScript / JavaScript | `approx` | source-parse heuristic                |
-| Python                  | `approx` | source-parse heuristic                |
+| Language                | Fidelity | Basis                                                    |
+| ----------------------- | -------- | -------------------------------------------------------- |
+| Rust                    | `exact`  | `cargo-mutants --list` (generated mutants; no tests run) |
+| TypeScript / JavaScript | `approx` | source-parse heuristic                                   |
+| Python                  | `approx` | source-parse heuristic                                   |
 
-For Rust, the estimate is exact because `cargo mutants --list` enumerates every planned mutant without running tests. For all other languages the count is approximate — a lightweight heuristic over the source AST; the actual audit may differ. Run `audit_code_resilience` for exact results.
+For Rust, the estimate is exact for the mutants `cargo mutants --list` _generates_ without running tests — the audit itself scores fewer, since mutants that fail to compile are excluded from its denominator and reported as `incompetent`. For all other languages the count is approximate — a lightweight heuristic over the source AST; the actual audit may differ. Run `audit_code_resilience` for exact results.
 
 If `cargo-mutants` is not installed, the Rust path falls back to the heuristic and reports `fidelity: "approx"` with a note.
 

@@ -1418,6 +1418,60 @@ describe('cleanupAllSandboxes', () => {
     fresh.cleanupAllSandboxes();
     expect(mockRmSync).not.toHaveBeenCalled();
   });
+
+  it('removes a sandbox whose workspace copy has not finished yet', async () => {
+    // Registration used to happen AFTER `await copyWorkspaceTree(...)` — the
+    // longest phase of provisioning by a wide margin. A SIGTERM landing during
+    // the copy therefore walked a registry that did not contain this directory
+    // and then called process.exit, so createSandbox's `finally` never ran and
+    // the half-copied tree stayed in tmpdir() forever. This pins the fix: the
+    // directory is reachable from cleanupAllSandboxes() the moment mkdtempSync
+    // returns, not once the copy resolves.
+    const dir = '/tmp/chaos-mcp-inflight';
+    armMocks([dir]);
+    const cpDeferred = { resolveIt: (): void => undefined };
+    mockCp.mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => {
+        cpDeferred.resolveIt = resolve;
+      });
+    });
+
+    const fresh = await freshModule();
+    const inFlight = fresh.createSandbox('src/utils/math.ts', TEST_PROJECT);
+
+    // One macrotask is enough for mkdtempSync to have run and for cp() to be
+    // pending — provisioning is now blocked inside Step 1.
+    await new Promise<void>((r) => setImmediate(r));
+    expect(mockCp).toHaveBeenCalled();
+
+    mockRmSync.mockClear();
+    fresh.cleanupAllSandboxes();
+    expect(mockRmSync).toHaveBeenCalledWith(
+      dir,
+      expect.objectContaining({ recursive: true, force: true }),
+    );
+
+    cpDeferred.resolveIt();
+    await inFlight;
+  });
+
+  it('drops a sandbox whose provisioning failed, so it is not reaped twice', async () => {
+    // The `!success` branch removes the directory itself; leaving the entry in
+    // the registry would make a later shutdown re-issue rmSync for a path that
+    // no longer exists (harmless, but it also misreports what the process owns).
+    armMocks(['/tmp/chaos-mcp-a']);
+    // Target missing from the copied tree ⇒ verifyTarget throws ⇒ !success.
+    mockExistsSync.mockReturnValue(false);
+    const fresh = await freshModule();
+
+    await expect(fresh.createSandbox('src/utils/math.ts', TEST_PROJECT)).rejects.toThrow(
+      /was not found in the copied workspace/,
+    );
+
+    mockRmSync.mockClear();
+    fresh.cleanupAllSandboxes();
+    expect(mockRmSync).not.toHaveBeenCalled();
+  });
 });
 
 /**

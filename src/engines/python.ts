@@ -84,6 +84,86 @@ function extractDiffChange(diff: string): { original?: string; mutated?: string 
 }
 
 /**
+ * Thrown when a surviving mutant's work item matches neither cosmic-ray dump
+ * shape Chaos-MCP knows how to read. See {@link readMutationSpec}.
+ */
+export class CosmicRayDumpShapeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'CosmicRayDumpShapeError';
+  }
+}
+
+/** The two per-mutation fields a survivor's location is built from. */
+interface CosmicRayMutationSpec {
+  operator_name?: unknown;
+  start_pos?: unknown;
+}
+
+/**
+ * Read `operator_name` + `start_pos` out of one candidate record, or `undefined`
+ * when it carries neither.
+ *
+ * `undefined` — rather than a `{ line: 0, mutator: 'Mutation' }` default — is
+ * the whole point. Suppression and verify key survivors on `keyOf(line, mutator)`
+ * (`utils/suppression.ts`, `verify.ts`, `audit/apply-suppressions.ts`), so a
+ * placeholder collapses EVERY survivor in the file onto the single key
+ * `"0 Mutation"`: suppressing one silently suppresses all of them, and a verify
+ * re-run reports phantom "now killed" mutants. The killed/survived counts and
+ * the mutation score stay correct throughout (they come only from
+ * `test_outcome`), which is what made the old failure silent as well as
+ * dangerous.
+ *
+ * A record carrying only ONE of the two fields is still returned: the other half
+ * falls back, which loses precision but does not collide across operators/lines
+ * the way a fully-empty record does.
+ */
+function readMutationSpec(source: unknown): { line: number; operator: string } | undefined {
+  if (typeof source !== 'object' || source === null) return undefined;
+  const spec = source as CosmicRayMutationSpec;
+  const operator = typeof spec.operator_name === 'string' ? spec.operator_name : undefined;
+  const line =
+    Array.isArray(spec.start_pos) && typeof spec.start_pos[0] === 'number'
+      ? spec.start_pos[0]
+      : undefined;
+  if (operator === undefined && line === undefined) return undefined;
+  return { line: line ?? 0, operator: operator ?? 'Mutation' };
+}
+
+/**
+ * Locate a survivor's mutation record across cosmic-ray's two work-item shapes.
+ *
+ * cosmic-ray >= 8.4 nests them: `WorkItem { job_id, mutations: MutationSpec[] }`
+ * — the multi-mutation shape that supports higher-order mutation (verified
+ * against the 8.4.6 `work_item.py` this repo pins in
+ * `containers/python/requirements.txt`). Earlier 8.x carried `operator_name` /
+ * `start_pos` FLAT on the WorkItem. The container path is pinned, but NATIVE
+ * mode runs whatever `pipx install cosmic-ray` produced and nothing probes
+ * `cosmic-ray --version`, so both shapes have to be read.
+ *
+ * @throws {CosmicRayDumpShapeError} when neither shape is present.
+ */
+function resolveSurvivorLocation(item: unknown): { line: number; operator: string } {
+  const nested = Array.isArray((item as { mutations?: unknown })?.mutations)
+    ? ((item as { mutations: unknown[] }).mutations[0] as unknown)
+    : undefined;
+  const spec = readMutationSpec(nested) ?? readMutationSpec(item);
+  if (spec) return spec;
+
+  const keys =
+    typeof item === 'object' && item !== null ? Object.keys(item).join(', ') : String(item);
+  throw new CosmicRayDumpShapeError(
+    `cosmic-ray dump shape not recognised — Chaos-MCP supports cosmic-ray >= 8.3; got: ` +
+      `${keys || '(no keys)'}. A surviving mutant's work item carried neither a \`mutations[]\` ` +
+      `entry (cosmic-ray >= 8.4) nor top-level \`operator_name\`/\`start_pos\` (cosmic-ray 8.3), ` +
+      `so its line and operator cannot be identified. Chaos-MCP refuses to substitute a ` +
+      `placeholder here because every survivor would then share one suppression key and ` +
+      `suppressing one would hide them all. Install a supported cosmic-ray ` +
+      `(\`pipx install 'cosmic-ray==8.4.6'\` — the version containers/python pins).`,
+  );
+}
+
+/**
  * Parse cosmic-ray `dump` output (one `[WorkItem, WorkResult]` JSON pair per
  * line) into a MutationResult.
  *
@@ -94,22 +174,29 @@ function extractDiffChange(diff: string): { original?: string; mutated?: string 
  * - `test_outcome: "incompetent"` → the mutation produced uncompilable code; it
  *   is excluded from the denominator (not a real test gap), mirroring how
  *   StrykerJS handles compile errors.
- * - `result === null` → a pending job (exec interrupted); ignored.
+ * - `test_outcome: null` (or anything unrecognised) → UNSCORED. cosmic-ray's
+ *   `WorkResult` carries BOTH `worker_outcome` and `test_outcome`, and the
+ *   latter is `None` whenever the worker never reached a test — most importantly
+ *   for `worker_outcome == "skipped"`, which is exactly what `cr-filter-operators`
+ *   writes for every mutant an `excludeOperators` pattern matched. Counting
+ *   those as merely "completed" made the degenerate-run guard misdiagnose a
+ *   too-broad operator filter as a missing Python interpreter.
+ * - `result === null` → a pending job (exec interrupted); ignored entirely.
  *
- * Returns the result alongside `completed` — the number of mutants that came
- * back with ANY outcome. It is deliberately NOT a field on `MutationResult`
- * (which is the public payload shape): the engine reads it to distinguish
- * "no mutants enumerated" (a genuine 100%) from "mutants ran but none were
- * scorable" (a broken test command). See the degenerate-run guard in
- * {@link PythonEngine.run}.
+ * Returns the result alongside `completed` (mutants that came back with ANY
+ * result) and `unscored`. Neither is a field on `MutationResult` (the public
+ * payload shape): the engine reads them to tell "no mutants enumerated" (a
+ * genuine 100%) from "mutants ran but none were scorable", and to tell WHICH
+ * kind of unscorable. See the degenerate-run guard in {@link PythonEngine.run}.
  */
 export function parseCosmicRayDump(
   dumpText: string,
   filePath: string,
-): { result: MutationResult; completed: number } {
+): { result: MutationResult; completed: number; unscored: number } {
   let killed = 0;
   let survived = 0;
   let incompetent = 0;
+  let unscored = 0;
   let completed = 0;
   const vulnerabilities: Vulnerability[] = [];
 
@@ -123,22 +210,17 @@ export function parseCosmicRayDump(
       continue; // malformed line — skip defensively
     }
     if (!Array.isArray(parsed) || parsed.length < 2) continue;
-    const item = parsed[0] as {
-      mutations?: { operator_name?: string; start_pos?: [number, number] }[];
-    };
-    const result = parsed[1] as { test_outcome?: string; diff?: string } | null;
+    const item: unknown = parsed[0];
+    const result = parsed[1] as { test_outcome?: string | null; diff?: string } | null;
     if (!result) continue; // pending job
     completed++;
 
     const outcome = result.test_outcome;
-    if (outcome === 'incompetent') incompetent++;
     if (outcome === 'killed') {
       killed++;
     } else if (outcome === 'survived') {
       survived++;
-      const m = item?.mutations?.[0] ?? {};
-      const line = Array.isArray(m.start_pos) ? m.start_pos[0] : 0;
-      const operator = m.operator_name ?? 'Mutation';
+      const { line, operator } = resolveSurvivorLocation(item);
       const { original, mutated } = extractDiffChange(result.diff ?? '');
       const vuln: Vulnerability = {
         line,
@@ -151,8 +233,15 @@ export function parseCosmicRayDump(
       if (original !== undefined) vuln.original = original;
       if (mutated !== undefined) vuln.mutated = mutated;
       vulnerabilities.push(vuln);
+    } else if (outcome === 'incompetent') {
+      // Uncompilable mutation — excluded from the denominator, not a test gap.
+      incompetent++;
+    } else {
+      // null / undefined / an outcome from a future cosmic-ray. The worker never
+      // produced a pass/fail, so this mutant is not evidence about the suite in
+      // either direction; it is tracked separately so the engine can say WHY.
+      unscored++;
     }
-    // 'incompetent' (and any other outcome) → excluded from the denominator.
   }
 
   const totalMutants = killed + survived;
@@ -168,30 +257,8 @@ export function parseCosmicRayDump(
       incompetent,
     },
     completed,
+    unscored,
   };
-}
-
-/**
- * Probe which Python interpreter is available on PATH. The result is cached
- * for the lifetime of the engine instance — earlier versions of this code
- * used a module-global cache (`let cachedInterpreter`), but module globals
- * couple tests to one another (a test that runs once with `CHAOS_MCP_PYTHON=x`
- * poisoned the cache for every subsequent test in the same Node process —
- * audit A5).
- *
- * Precedence: the `CHAOS_MCP_PYTHON` env override (deterministic, used by
- * tests) → `python` when it is actually on PATH (back-compat) → `python3`.
- */
-function probePythonInterpreter(): string | undefined {
-  const override = process.env.CHAOS_MCP_PYTHON?.trim();
-  if (override) return override;
-  try {
-    const probe = spawnSync('python', ['--version'], { stdio: 'ignore' });
-    if (!probe.error && probe.status === 0) return 'python';
-  } catch {
-    // fall through to python3
-  }
-  return 'python3';
 }
 
 /**
@@ -202,6 +269,106 @@ function probePythonInterpreter(): string | undefined {
  * arguments, chain commands, or substitute a subshell.
  */
 const BARE_EXECUTABLE_RE = /^[A-Za-z0-9._+-]+$/;
+
+/**
+ * An absolute path to an interpreter, POSIX or Windows. Built from the same
+ * character class as {@link BARE_EXECUTABLE_RE} plus separators, so it inherits
+ * the "no whitespace, no shell metacharacter" property: `/opt/venv/bin/python3.12`
+ * and `C:\Python312\python.exe` pass; `/usr/bin/python; rm -rf /` does not.
+ */
+const ABSOLUTE_INTERPRETER_RE = /^(?:[A-Za-z]:)?[\\/](?:[A-Za-z0-9._+-]+[\\/])*[A-Za-z0-9._+-]+$/;
+
+/** Thrown when `CHAOS_MCP_PYTHON` names something that is not safe to shell. */
+export class PythonInterpreterError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'PythonInterpreterError';
+  }
+}
+
+/**
+ * Argument list that answers "is this interpreter Python 3?" — not merely "does
+ * it start?".
+ *
+ * `--version` exiting 0 proves only that SOMETHING ran. On the distributions
+ * where `/usr/bin/python` is still Python 2 it exits 0 happily, and every mutant
+ * then runs `python -m pytest` under Python 2 against a Python 3 suite: all of
+ * them come back `incompetent`, `totalMutants` is 0, and the degenerate-run
+ * guard blames a missing interpreter while echoing a command that looks correct.
+ * Asserting the major version instead makes the probe answer the question the
+ * caller actually has.
+ */
+const PY3_PROBE_ARGS = ['-c', 'import sys; sys.exit(0 if sys.version_info[0] == 3 else 1)'];
+
+/**
+ * Probe which Python interpreter is available on PATH. The result is cached
+ * for the lifetime of the engine instance — earlier versions of this code
+ * used a module-global cache (`let cachedInterpreter`), but module globals
+ * couple tests to one another (a test that runs once with `CHAOS_MCP_PYTHON=x`
+ * poisoned the cache for every subsequent test in the same Node process —
+ * audit A5).
+ *
+ * Precedence: the `CHAOS_MCP_PYTHON` env override (deterministic, used by
+ * tests) → `python` when it is actually a Python 3 on PATH (back-compat) →
+ * `python3`.
+ *
+ * The override is VALIDATED rather than trusted. Its doc comment used to call it
+ * "deterministic, used by tests", but nothing enforced that: the value is
+ * string-concatenated into `${interpreter} -m pytest -x -q` and written into the
+ * cosmic-ray config as `test-command`, which cosmic-ray executes THROUGH A SHELL
+ * once per mutant. `CHAOS_MCP_PYTHON='python3; curl … | sh #'` therefore ran.
+ * The elaborate {@link isRepoTestCommandAllowed} gate guarded the RUNNER half of
+ * that string and left the INTERPRETER half wide open; this closes it with the
+ * same machinery.
+ *
+ * @throws {PythonInterpreterError} when the override is neither a bare
+ * executable name nor an absolute path.
+ */
+function probePythonInterpreter(): string | undefined {
+  const override = process.env.CHAOS_MCP_PYTHON?.trim();
+  if (override) {
+    if (!BARE_EXECUTABLE_RE.test(override) && !ABSOLUTE_INTERPRETER_RE.test(override)) {
+      throw new PythonInterpreterError(
+        `Refusing to use CHAOS_MCP_PYTHON="${override}" as the Python interpreter. ` +
+          `It is concatenated into cosmic-ray's \`test-command\`, which is executed through a ` +
+          `shell once per mutant, so only a bare executable name ("python3", "python3.12") or an ` +
+          `absolute path with no whitespace or shell metacharacters ("/opt/venv/bin/python3.12") ` +
+          `is accepted. Point it at the interpreter itself, not at a command line.`,
+      );
+    }
+    return override;
+  }
+  try {
+    const probe = spawnSync('python', PY3_PROBE_ARGS, { stdio: 'ignore' });
+    if (!probe.error && probe.status === 0) return 'python';
+  } catch {
+    // fall through to python3
+  }
+  return 'python3';
+}
+
+/**
+ * Human-readable identification of the interpreter, for diagnostics only.
+ *
+ * Called exclusively from the degenerate-run error path (never on the happy
+ * path), because "every mutant was incompetent" is almost always an interpreter
+ * problem and the operator cannot act on a bare name: `python3` resolving to a
+ * 3.7 that pytest refuses to run under looks identical to a correct one in the
+ * error message. `spawnSync` without a shell, on a value that has already passed
+ * {@link BARE_EXECUTABLE_RE}/{@link ABSOLUTE_INTERPRETER_RE}.
+ */
+function describeInterpreter(interpreter: string): string {
+  try {
+    const probe = spawnSync(interpreter, ['--version'], { encoding: 'utf8' });
+    if (probe.error) return `"${interpreter}" (not runnable: ${probe.error.message})`;
+    // Python < 3.4 writes `--version` to stderr; later versions use stdout.
+    const reported = `${probe.stdout ?? ''}${probe.stderr ?? ''}`.trim().split('\n')[0];
+    if (reported) return `"${interpreter}" (${reported})`;
+  } catch {
+    // fall through to the unknown-version form
+  }
+  return `"${interpreter}" (version unavailable)`;
+}
 
 /**
  * Whether a test-runner string sourced from the AUDITED PROJECT may be used as
@@ -230,6 +397,27 @@ export function isRepoTestCommandAllowed(runner: string): boolean {
 /**
  * Resolve the shell test-command cosmic-ray runs per mutant.
  *
+ * Exactly three inputs are treated as "not a project-declared command": absent,
+ * the sentinel `'pytest'`, and the sentinel `'unittest'`. Those are the values
+ * `detectPythonTestRunner` (utils/project-detector.ts) synthesises from
+ * workspace SIGNALS (a
+ * `pytest.ini`, a `conftest.py`, a `tox.ini`) rather than reading out of the
+ * project's files, so they name a runner without carrying a command line.
+ * Everything else is a string the audited repository authored and is subjected
+ * to {@link isRepoTestCommandAllowed}.
+ *
+ * There used to be a fourth case — `!runner.includes('pytest')` — and it was the
+ * bug this doc comment claims the function exists to prevent. Any
+ * pytest-FLAVOURED command (`python -m pytest --no-cov -p no:randomly`, the real
+ * shape of a `[tool.mutmut] runner` key) failed that test, skipped the gate
+ * branch entirely, fell through to the default, and had the project's declared
+ * command THROWN AWAY and replaced by a bare `pytest -x -q`. No throw, no
+ * warning. A project that had deliberately disabled pytest-randomly (order
+ * dependent tests) or pytest-cov (coverage-plugin conflicts) then had those
+ * plugins re-enabled under every per-mutant invocation, and mutants were scored
+ * "killed" by failures that had nothing to do with the mutation. The score was
+ * wrong in both directions and nothing reported it.
+ *
  * Throws when the resolved runner came from the audited project and is not a
  * bare executable name — see {@link isRepoTestCommandAllowed}. Failing loudly
  * beats silently substituting pytest, which would run a different suite than
@@ -237,12 +425,18 @@ export function isRepoTestCommandAllowed(runner: string): boolean {
  */
 export function resolveTestCommand(interpreter: string, options?: RunOptions): string {
   const runner = options?.testRunner;
-  // A custom non-pytest/unittest runner string is used verbatim as the command.
   let base: string;
-  if (runner === 'unittest') base = `${interpreter} -m unittest`;
-  else if (runner && runner !== 'pytest' && !runner.includes('pytest')) {
+  if (runner === 'unittest') {
+    base = `${interpreter} -m unittest`;
+  } else if (!runner || runner === 'pytest') {
+    base = `${interpreter} -m pytest -x -q`;
+  } else {
+    // A custom runner string is used verbatim as the command — after the gate.
     // `testRunnerTrusted` marks a runner that came from the operator's own
-    // config rather than from the workspace scan.
+    // config (`chaos-mcp.config.json`) rather than from the workspace scan; only
+    // the untrusted, workspace-sourced half is gated, so an operator who wrote
+    // `"cosmicray": { "testRunner": "python -m pytest --no-cov" }` still gets
+    // exactly that command. See run-options.ts, which sets the flag.
     if (options?.testRunnerTrusted !== true && !isRepoTestCommandAllowed(runner)) {
       throw new Error(
         `Refusing to run the test command "${runner}" declared by the audited project ` +
@@ -254,7 +448,7 @@ export function resolveTestCommand(interpreter: string, options?: RunOptions): s
       );
     }
     base = runner;
-  } else base = `${interpreter} -m pytest -x -q`;
+  }
 
   const selection = options?.pythonTestSelection;
   if (selection && selection.length > 0) base += ` ${selection.join(' ')}`;
@@ -354,8 +548,27 @@ export class PythonEngine extends BaseEngine {
     // skipped so exec doesn't run them. cosmic-ray has no operator allowlist and
     // no line-scoping, so this is the lever for bounding the mutant count (hence
     // wall-clock) on large files. `cr-filter-operators <session> <config>` ships
-    // with cosmic-ray. Skipped mutants are omitted from `dump`, so they simply
-    // drop out of the score (a scoped audit). Only runs when a list is supplied.
+    // with cosmic-ray. Only runs when a list is supplied.
+    //
+    // A previous comment here claimed "Skipped mutants are omitted from dump, so
+    // they simply drop out of the score". That is FALSE, and it was the premise
+    // the degenerate-run guard below was built on. Verified against the pinned
+    // cosmic-ray 8.4.6 (containers/python/requirements.txt), source + a live
+    // session: `cr-filter-operators` calls
+    // `work_db.set_result(job_id, WorkResult(worker_outcome=SKIPPED))`, which
+    // gives the mutant a RESULT row. `dump` iterates `completed_work_items`
+    // (every work item that HAS a result) and only then the pending ones, so a
+    // filtered mutant is dumped — with `test_outcome: null`, because
+    // `WorkResult.test_outcome` defaults to None and nothing sets it.
+    //
+    // 8.4.6 additionally cannot serialise that record at all: `cli.py`'s
+    // `result_to_dict` does `d["test_outcome"].value` unconditionally and raises
+    // `AttributeError: 'NoneType' object has no attribute 'value'`, so the WHOLE
+    // dump exits 1 as soon as one mutant was filtered. That surfaces as the
+    // dump-step failure below, which is why that message carries an
+    // excludeOperators hint. On builds whose dump does emit the null record,
+    // parseCosmicRayDump counts it as `unscored` and the degenerate-run guard
+    // names the exclude list rather than blaming the interpreter.
     if (options?.pythonExcludeOperators && options.pythonExcludeOperators.length > 0) {
       await this.invoke([sessionPath, configPath], cwd, this.stepBudget(budget, 'filter'), {
         command: 'cr-filter-operators',
@@ -379,34 +592,66 @@ export class PythonEngine extends BaseEngine {
     });
 
     // Step 4: dump — structured JSON results.
+    const filtered = (options?.pythonExcludeOperators?.length ?? 0) > 0;
     const dump = await this.invoke(['dump', sessionPath], cwd, this.stepBudget(budget, 'dump'), {
       onExecFailure: (e) =>
         new Error(
-          `cosmic-ray dump failed (exit ${e.exit}): ${(e.stderr || e.message).slice(0, 500)}`,
+          `cosmic-ray dump failed (exit ${e.exit}): ${(e.stderr || e.message).slice(0, 500)}` +
+            // cosmic-ray 8.4.6's `dump` crashes on any mutant this run's operator
+            // filter skipped (see step 2.5). Without this the operator sees an
+            // opaque AttributeError traceback and no link to the option that
+            // caused it.
+            (filtered
+              ? `. NOTE: this run used "cosmicray": { "excludeOperators": [...] }, and cosmic-ray ` +
+                `8.4.6's \`dump\` raises AttributeError on any mutant the filter marked skipped ` +
+                `(its test_outcome is null). Remove excludeOperators, or use a cosmic-ray whose ` +
+                `dump tolerates a null test_outcome, to get results for this file.`
+              : ''),
         ),
       signal: options?.signal,
       executor: options?.executor,
     });
 
-    const { result, completed } = parseCosmicRayDump(dump.stdout, filePath);
+    const { result, completed, unscored } = parseCosmicRayDump(dump.stdout, filePath);
 
     // Degenerate-run guard. cosmic-ray's `baseline` returns exit 0 even when the
     // test binary is missing or collects nothing, so a broken run reaches here
-    // looking like a clean one: mutants were enumerated and executed, but every
-    // result was `incompetent` (the mutated code never reached a real pass/fail).
-    // parseCosmicRayDump drops `incompetent` from the denominator, which would
-    // otherwise surface as a dangerously misleading `total:0` / `100%` ("caught
-    // every mutation") when in truth NO test ever ran. Detect it — mutants
-    // completed, none were scorable — and fail loudly with the resolved command
-    // so the operator can fix the interpreter / test-command. A genuinely tiny
-    // file with zero enumerated mutants has `completed === 0` and is untouched.
+    // looking like a clean one: mutants were enumerated and executed, but none
+    // of them produced a killed/survived verdict. parseCosmicRayDump drops those
+    // from the denominator, which would otherwise surface as a dangerously
+    // misleading `total:0` / `100%` ("caught every mutation") when in truth NO
+    // test ever ran. A genuinely tiny file with zero enumerated mutants has
+    // `completed === 0` and is untouched.
+    //
+    // The two unscorable outcomes have OPPOSITE causes and must not share a
+    // diagnosis. `incompetent` means the mutated code was executed and the test
+    // command produced no real pass/fail → interpreter/test-command. A null
+    // `test_outcome` means the worker never ran a test at all → almost always
+    // `cr-filter-operators` skipping everything (step 2.5). The guard used to
+    // count both as "completed" and blame the interpreter either way, so a
+    // too-broad `excludeOperators` produced a confidently wrong message that
+    // sent the operator to look at a Python install that was fine.
     if (result.totalMutants === 0 && completed > 0) {
+      // `incompetent` is optional on the public MutationResult shape.
+      const incompetent = result.incompetent ?? 0;
+      if (incompetent > 0) {
+        throw new Error(
+          `cosmic-ray ran ${completed} mutant(s) on ${filePath} but scored none of them — ` +
+            `${incompetent} came back 'incompetent', meaning the test command never ` +
+            `produced a real pass/fail. This usually means the Python interpreter or pytest is ` +
+            `missing, or the test-command is wrong. Resolved interpreter: ` +
+            `${describeInterpreter(interpreter)}. Resolved test-command: "${testCommand}". ` +
+            `Verify it runs the suite from the project root before re-auditing.`,
+        );
+      }
       throw new Error(
         `cosmic-ray ran ${completed} mutant(s) on ${filePath} but scored none of them — ` +
-          `every mutation came back 'incompetent', meaning the test command never produced a ` +
-          `real pass/fail. This usually means the Python interpreter or pytest is missing, or ` +
-          `the test-command is wrong. Resolved test-command: "${testCommand}". ` +
-          `Verify it runs the suite from the project root before re-auditing.`,
+          `${unscored} came back with no test outcome at all, which means no test was ever run ` +
+          `for them (cosmic-ray records those with worker_outcome 'skipped' or 'no-test'). The ` +
+          `usual cause is an operator filter that excluded every mutation: ` +
+          `"cosmicray": { "excludeOperators": [...] }` +
+          (filtered ? ` — this run used ${JSON.stringify(options?.pythonExcludeOperators)}` : '') +
+          `. Narrow the exclude patterns so some operators survive the filter, then re-audit.`,
       );
     }
 

@@ -1,4 +1,8 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { execFileSync } from 'child_process';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join, resolve } from 'path';
 
 // Only the spawn front-end is stubbed. `ExecFailureError` now lives in
 // `exec-error.js` and is imported for real, so `instanceof` narrowing in the
@@ -11,11 +15,25 @@ import { runShell } from '../utils/exec.js';
 import { ExecFailureError } from '../utils/exec-error.js';
 import { parseHunks, computeChangedRanges, listChangedFiles } from '../utils/git-diff.js';
 
+/**
+ * The UNMOCKED spawn front-end, for the fixture-repository suite at the bottom
+ * of this file. Everything else drives `runShell` as a stub; those tests need a
+ * real `git` because the bug they pin is in git's own output, not in ours.
+ */
+const realExec = await vi.importActual<typeof import('../utils/exec.js')>('../utils/exec.js');
+
 const mockRunShell = vi.mocked(runShell);
 const ok = (stdout = '') => ({ stdout, stderr: '', exit: 0, signal: null });
 /** A failed git invocation, built the way `runShell` builds it. */
 const fail = (message: string) =>
   new ExecFailureError({ stdout: '', stderr: message, exit: 1, signal: null }, message);
+/**
+ * A git invocation that never produced an exit code: `runShell` classifies
+ * these by `code` ('ABORTED' | 'TIMEOUT' | 'ENOENT') and leaves `exit` null.
+ * These are exactly the failures a bare `catch` used to report as "not a repo".
+ */
+const failWith = (code: string, message: string) =>
+  new ExecFailureError({ stdout: '', stderr: '', exit: null, signal: null, code }, message);
 
 describe('parseHunks', () => {
   it('parses a single hunk new-side range', () => {
@@ -71,9 +89,84 @@ describe('parseHunks', () => {
 describe('computeChangedRanges', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('returns not-a-repo when rev-parse fails', async () => {
+  it('returns not-a-repo when rev-parse EXITS non-zero', async () => {
+    // A non-zero exit is git answering the question. Every other rejection is
+    // covered by the `git-failed` cases below.
     mockRunShell.mockRejectedValueOnce(fail('not a repo'));
     expect(await computeChangedRanges('a.ts', '/w', 'HEAD')).toEqual({ kind: 'not-a-repo' });
+  });
+
+  /**
+   * `runShell` rejects for four unrelated reasons and the work-tree probe used
+   * to collapse all of them into `not-a-repo`, so an exhausted time budget or a
+   * missing git binary was reported to the user as
+   * `"<dir>" is not a git work tree` — a false claim about their repository
+   * that sent them looking in entirely the wrong place.
+   */
+  it('reports a timed-out work-tree probe as git-failed, not as not-a-repo', async () => {
+    mockRunShell.mockRejectedValueOnce(failWith('TIMEOUT', 'Command timed out after 1ms: git'));
+    expect(await computeChangedRanges('a.ts', '/w', 'HEAD')).toEqual({
+      kind: 'git-failed',
+      reason: 'timeout',
+      message: 'Command timed out after 1ms: git',
+    });
+  });
+
+  it('reports a missing git binary as git-failed/not-installed', async () => {
+    mockRunShell.mockRejectedValueOnce(failWith('ENOENT', 'Command not found: git'));
+    expect(await computeChangedRanges('a.ts', '/w', 'HEAD')).toEqual({
+      kind: 'git-failed',
+      reason: 'not-installed',
+      message: 'Command not found: git',
+    });
+  });
+
+  it('reports an unattributable git failure as git-failed/other', async () => {
+    // No exit code and no recognised errno — e.g. killed by an external signal.
+    mockRunShell.mockRejectedValueOnce(new Error('spawn blew up'));
+    expect(await computeChangedRanges('a.ts', '/w', 'HEAD')).toEqual({
+      kind: 'git-failed',
+      reason: 'other',
+      message: 'spawn blew up',
+    });
+  });
+
+  /**
+   * Cancellation must ESCAPE rather than become a result kind. Every cancel
+   * path in this codebase funnels through `isCancel` so the handlers report the
+   * single string 'Operation cancelled.'; swallowing the abort here made those
+   * branches unreachable and told a user who pressed stop that their repository
+   * was not a git work tree.
+   */
+  it('re-throws a cancellation from the work-tree probe instead of classifying it', async () => {
+    const aborted = failWith('ABORTED', 'Command was cancelled: git');
+    mockRunShell.mockRejectedValueOnce(aborted);
+    await expect(computeChangedRanges('a.ts', '/w', 'HEAD')).rejects.toBe(aborted);
+  });
+
+  it('re-throws a cancellation from the tracked-file probe instead of returning untracked', async () => {
+    const aborted = failWith('ABORTED', 'Command was cancelled: git');
+    mockRunShell.mockResolvedValueOnce(ok('true\n')).mockRejectedValueOnce(aborted);
+    await expect(computeChangedRanges('a.ts', '/w', 'HEAD')).rejects.toBe(aborted);
+  });
+
+  it('re-throws a cancellation from merge-base instead of returning bad-ref', async () => {
+    const aborted = failWith('ABORTED', 'Command was cancelled: git');
+    mockRunShell
+      .mockResolvedValueOnce(ok('true\n'))
+      .mockResolvedValueOnce(ok('a.ts\n'))
+      .mockRejectedValueOnce(aborted);
+    await expect(computeChangedRanges('a.ts', '/w', 'main')).rejects.toBe(aborted);
+  });
+
+  it('re-throws a cancellation from the diff itself instead of returning bad-ref', async () => {
+    const aborted = failWith('ABORTED', 'Command was cancelled: git');
+    mockRunShell
+      .mockResolvedValueOnce(ok('true\n'))
+      .mockResolvedValueOnce(ok('a.ts\n'))
+      .mockResolvedValueOnce(ok('abc123\n'))
+      .mockRejectedValueOnce(aborted);
+    await expect(computeChangedRanges('a.ts', '/w', 'main')).rejects.toBe(aborted);
   });
 
   it('returns untracked when ls-files fails', async () => {
@@ -246,10 +339,55 @@ describe('computeChangedRanges', () => {
 describe('listChangedFiles', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('returns not-a-repo when the work-tree check fails', async () => {
-    mockRunShell.mockRejectedValueOnce(new Error('not a git repo'));
+  it('returns not-a-repo when the work-tree check EXITS non-zero', async () => {
+    mockRunShell.mockRejectedValueOnce(fail('not a git repo'));
     const r = await listChangedFiles('/ws', 'main');
     expect(r).toEqual({ kind: 'not-a-repo' });
+  });
+
+  /**
+   * `ChangedFilesResult` has no `git-failed` variant (adding one would not
+   * type-check in `resolveTriageTargets`, which narrows by elimination), so a
+   * failure that is NOT evidence about the repository escapes with git's own
+   * error instead of being laundered into "not a git work tree".
+   */
+  it('re-throws a timed-out work-tree probe rather than reporting not-a-repo', async () => {
+    const timedOut = failWith('TIMEOUT', 'Command timed out after 1ms: git');
+    mockRunShell.mockRejectedValueOnce(timedOut);
+    await expect(listChangedFiles('/ws', 'main')).rejects.toBe(timedOut);
+  });
+
+  it('re-throws a missing git binary rather than reporting not-a-repo', async () => {
+    const missing = failWith('ENOENT', 'Command not found: git');
+    mockRunShell.mockRejectedValueOnce(missing);
+    await expect(listChangedFiles('/ws', 'main')).rejects.toBe(missing);
+  });
+
+  it('re-throws a cancellation from the work-tree probe', async () => {
+    const aborted = failWith('ABORTED', 'Command was cancelled: git');
+    mockRunShell.mockRejectedValueOnce(aborted);
+    await expect(listChangedFiles('/ws', 'main')).rejects.toBe(aborted);
+  });
+
+  it('re-throws a cancellation from merge-base instead of returning bad-ref', async () => {
+    const aborted = failWith('ABORTED', 'Command was cancelled: git');
+    mockRunShell.mockResolvedValueOnce(ok('true\n')).mockRejectedValueOnce(aborted);
+    await expect(listChangedFiles('/ws', 'main')).rejects.toBe(aborted);
+  });
+
+  /**
+   * Untracked discovery is otherwise best-effort, but a CANCELLED `ls-files`
+   * would silently hand back the tracked half of an abandoned sweep as if it
+   * were the complete answer.
+   */
+  it('re-throws a cancellation from the untracked probe instead of returning a partial list', async () => {
+    const aborted = failWith('ABORTED', 'Command was cancelled: git');
+    mockRunShell
+      .mockResolvedValueOnce(ok('true\n'))
+      .mockResolvedValueOnce(ok('abc123\n'))
+      .mockResolvedValueOnce(ok('src/a.ts\n'))
+      .mockRejectedValueOnce(aborted);
+    await expect(listChangedFiles('/ws', 'main')).rejects.toBe(aborted);
   });
 
   it('returns bad-ref when merge-base fails', async () => {
@@ -356,8 +494,17 @@ describe('listChangedFiles', () => {
     await listChangedFiles('/ws', 'main');
     expect(mockRunShell.mock.calls[0][1]).toEqual(['rev-parse', '--is-inside-work-tree']);
     expect(mockRunShell.mock.calls[1][1]).toEqual(['merge-base', 'main', 'HEAD']);
-    // The diff command must use the TRIMMED merge-base SHA.
-    expect(mockRunShell.mock.calls[2][1]).toEqual(['diff', '--name-only', 'abc123']);
+    // The diff command must use the TRIMMED merge-base SHA, and both of these
+    // flags are load-bearing: `--relative` puts the tracked half of the union in
+    // the SAME base as `ls-files --others` (cwd-relative), and `--diff-filter=d`
+    // keeps files deleted since the base out of the sweep.
+    expect(mockRunShell.mock.calls[2][1]).toEqual([
+      'diff',
+      '--relative',
+      '--diff-filter=d',
+      '--name-only',
+      'abc123',
+    ]);
     expect(mockRunShell.mock.calls[3][1]).toEqual(['ls-files', '--others', '--exclude-standard']);
   });
 
@@ -367,7 +514,14 @@ describe('listChangedFiles', () => {
       .mockResolvedValueOnce(ok('src/a.ts\n')) // diff --cached --name-only
       .mockResolvedValueOnce(ok('')); // ls-files --others
     await listChangedFiles('/ws', 'staged');
-    expect(mockRunShell.mock.calls[1][1]).toEqual(['diff', '--cached', '--name-only']);
+    // The staged form carries the same two flags; `--cached` composes with both.
+    expect(mockRunShell.mock.calls[1][1]).toEqual([
+      'diff',
+      '--cached',
+      '--relative',
+      '--diff-filter=d',
+      '--name-only',
+    ]);
   });
 
   it('does not run the diff command when merge-base fails', async () => {
@@ -396,5 +550,149 @@ describe('listChangedFiles', () => {
       .mockRejectedValueOnce(fail('ls-files blew up')); // ls-files --others
     const r = await listChangedFiles('/ws', 'main');
     expect(r).toEqual({ kind: 'files', files: ['src/a.ts', 'src/b.ts'] });
+  });
+});
+
+/**
+ * Real-git regression fixtures.
+ *
+ * Every test above stubs `runShell`, so they pin the argv we send but say
+ * nothing about the paths git sends back — and the bug this suite exists for
+ * lives entirely in that return value. It is also invisible from a repository
+ * ROOT, which is the only place the mocked tests ever pretended to run: there,
+ * `diff --name-only` (repository-root-relative) and `ls-files --others`
+ * (cwd-relative) happen to agree. Anchor the workspace ONE directory down — the
+ * monorepo layout `anchorToWorkspace` exists to serve — and the two halves of
+ * the union arrive in different bases. That is why a green suite missed it.
+ *
+ * So these drive the REAL `runShell` against a repository built on disk.
+ */
+describe('listChangedFiles against a real repository', () => {
+  let repoRoot: string;
+  let pkg: string;
+
+  /** Run git synchronously for fixture setup (never through the code under test). */
+  const setupGit = (args: string[], cwd: string) =>
+    execFileSync('git', args, { cwd, encoding: 'utf-8', stdio: 'pipe' });
+
+  beforeEach(() => {
+    mockRunShell.mockImplementation(realExec.runShell);
+    // realpath: on macOS `tmpdir()` is a symlink, and git reports the resolved
+    // path, which would make the assertions below compare two different strings.
+    repoRoot = mkdtempSync(join(realpathSync(tmpdir()), 'chaos-git-diff-'));
+    pkg = join(repoRoot, 'pkg');
+    mkdirSync(join(pkg, 'src'), { recursive: true });
+
+    setupGit(['init', '-q', '-b', 'main', '.'], repoRoot);
+    setupGit(['config', 'user.email', 'test@example.com'], repoRoot);
+    setupGit(['config', 'user.name', 'Chaos Test'], repoRoot);
+    setupGit(['config', 'commit.gpgsign', 'false'], repoRoot);
+
+    writeFileSync(join(pkg, 'src', 'a.ts'), 'export const a = 1;\n');
+    writeFileSync(join(pkg, 'src', 'gone.ts'), 'export const gone = 1;\n');
+    // Tracked, but ABOVE the workspace root the sweep is anchored to.
+    writeFileSync(join(repoRoot, 'outside.ts'), 'export const o = 1;\n');
+    setupGit(['add', '-A'], repoRoot);
+    setupGit(['commit', '-qm', 'init'], repoRoot);
+  });
+
+  afterEach(() => {
+    rmSync(repoRoot, { recursive: true, force: true });
+  });
+
+  /**
+   * The headline bug: callers resolve every entry with `resolve(rootCwd, file)`
+   * (triage/discover-targets.ts, triage/audit-one.ts). Without `--relative` the
+   * tracked half came back as `pkg/src/a.ts` and resolved to
+   * `<repo>/pkg/pkg/src/a.ts`, which does not exist — every tracked change
+   * became a "Sandbox provisioning failed" row while the untracked half worked,
+   * so the sweep half-succeeded and read as a flaky engine rather than a bug.
+   */
+  it('reports tracked and untracked paths in the SAME base when the workspace is a subdirectory', async () => {
+    writeFileSync(join(pkg, 'src', 'a.ts'), 'export const a = 2;\n');
+    writeFileSync(join(pkg, 'src', 'new.ts'), 'export const n = 1;\n');
+
+    const r = await listChangedFiles(pkg, 'HEAD');
+
+    expect(r).toEqual({ kind: 'files', files: ['src/a.ts', 'src/new.ts'] });
+    // The contract callers actually depend on: resolving against the workspace
+    // root must land on a file that exists.
+    for (const file of (r as { files: string[] }).files) {
+      expect(existsSync(resolve(pkg, file))).toBe(true);
+    }
+  });
+
+  /**
+   * `--relative` also drops changes above the workspace root. That is correct
+   * and deliberate: they are outside the sweep's boundary and the realpath
+   * check in `resolveTriageTargets` would reject them anyway — but only after
+   * they had been resolved into a path that escapes the workspace.
+   */
+  it('excludes changed files above the workspace root', async () => {
+    writeFileSync(join(repoRoot, 'outside.ts'), 'export const o = 2;\n');
+    writeFileSync(join(pkg, 'src', 'a.ts'), 'export const a = 2;\n');
+
+    const r = await listChangedFiles(pkg, 'HEAD');
+
+    expect(r).toEqual({ kind: 'files', files: ['src/a.ts'] });
+  });
+
+  /**
+   * A path deleted since the base is still "changed" to `--name-only`. It
+   * passed the extension filter and the boundary check, then failed deep in
+   * `createSandbox` with "target file … was not found", inflating
+   * `filesErrored` with files that legitimately no longer exist.
+   */
+  it('omits files deleted since the diff base', async () => {
+    setupGit(['rm', '-q', 'src/gone.ts'], pkg);
+    writeFileSync(join(pkg, 'src', 'a.ts'), 'export const a = 2;\n');
+
+    const r = await listChangedFiles(pkg, 'HEAD');
+
+    expect(r).toEqual({ kind: 'files', files: ['src/a.ts'] });
+  });
+
+  /** Both flags have to compose with the `--cached` (staged) form too. */
+  it('applies the relative base and the deletion filter to the staged base', async () => {
+    writeFileSync(join(pkg, 'src', 'a.ts'), 'export const a = 2;\n');
+    setupGit(['add', 'src/a.ts'], pkg);
+    setupGit(['rm', '-q', 'src/gone.ts'], pkg); // stages a deletion
+
+    const r = await listChangedFiles(pkg, 'staged');
+
+    expect(r).toEqual({ kind: 'files', files: ['src/a.ts'] });
+  });
+
+  /** Sanity: from the repository root the two bases coincide, as they always did. */
+  it('still reports workspace-relative paths when the workspace IS the repository root', async () => {
+    writeFileSync(join(pkg, 'src', 'a.ts'), 'export const a = 2;\n');
+    writeFileSync(join(repoRoot, 'untracked.ts'), 'export const u = 1;\n');
+
+    const r = await listChangedFiles(repoRoot, 'HEAD');
+
+    expect(r).toEqual({ kind: 'files', files: ['pkg/src/a.ts', 'untracked.ts'] });
+  });
+
+  it('returns not-a-repo for a directory that genuinely is not a work tree', async () => {
+    const plain = mkdtempSync(join(realpathSync(tmpdir()), 'chaos-not-git-'));
+    try {
+      expect(await listChangedFiles(plain, 'HEAD')).toEqual({ kind: 'not-a-repo' });
+    } finally {
+      rmSync(plain, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * `computeChangedRanges` is NOT affected by the base mismatch and must not
+   * grow `--relative`: its pathspec after `--` is already cwd-relative, and the
+   * only thing it reads back is the `@@` hunk headers. This pins that it still
+   * finds the changed lines of a file inside a subdirectory workspace.
+   */
+  it('computeChangedRanges still resolves ranges from a subdirectory workspace', async () => {
+    writeFileSync(join(pkg, 'src', 'a.ts'), 'export const a = 1;\nexport const b = 2;\n');
+
+    const r = await computeChangedRanges('src/a.ts', pkg, 'HEAD');
+
+    expect(r).toEqual({ kind: 'ranges', ranges: [{ start: 2, end: 2 }] });
   });
 });

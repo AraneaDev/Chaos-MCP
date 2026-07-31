@@ -44,6 +44,30 @@ describe('parseBaseline', () => {
   it('returns empty for an empty baseline', () => {
     expect(parseBaseline({})).toEqual([]);
   });
+
+  /**
+   * A baseline is not always a value this process produced: one form arrives as
+   * a raw `baseline` tool argument, another is read back from the on-disk run
+   * cache. A null element used to be dereferenced, throwing a TypeError out of
+   * `computeScope` that the handler reported as "Chaos Engine Halted: Cannot
+   * read properties of null" — an internal crash where the caller should have
+   * seen the ordinary "not found or expired" / bad-argument error (audit M10).
+   */
+  it('skips a null group instead of throwing', () => {
+    const b = {
+      survivors: [null, { line: 4, mutators: { M: 1 } }],
+      noCoverage: [undefined],
+    } as unknown as Parameters<typeof parseBaseline>[0];
+    expect(parseBaseline(b)).toEqual([{ line: 4, mutator: 'M' }]);
+  });
+
+  it('skips a group with no usable line number', () => {
+    // Otherwise the mutant is keyed "undefined M" and silently corrupts the delta.
+    const b = {
+      survivors: [{ mutators: { M: 1 } }, { line: '9', mutators: { M: 1 } }],
+    } as unknown as Parameters<typeof parseBaseline>[0];
+    expect(parseBaseline(b)).toEqual([]);
+  });
 });
 
 describe('baselineLines', () => {

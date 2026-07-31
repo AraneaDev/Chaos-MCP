@@ -17,10 +17,18 @@ vi.mock('node:fs', async (importOriginal) => {
   };
 });
 
-import { mkdtempSync, rmSync, writeFileSync, readdirSync, existsSync, renameSync } from 'node:fs';
+import {
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+  readdirSync,
+  existsSync,
+  renameSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { saveRun, loadRun, mintRunId } from '../utils/run-cache.js';
+import { saveRun, loadRun, mintRunId, workspaceFingerprint } from '../utils/run-cache.js';
 import { buildResultPayload } from '../format.js';
 
 let dir: string;
@@ -500,5 +508,131 @@ describe('loadRun — path traversal', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+/**
+ * Audit M10: the cache lived in ONE flat `$TMPDIR/chaos-mcp-runs` shared by
+ * every workspace on the host, and the only thing tying an entry to a tree was
+ * `entry.file` — a workspace-RELATIVE path. A runId minted for workspace A's
+ * `src/index.ts` therefore passed the consumer's `cached.file === relFile`
+ * check while sitting in workspace B, and the verify graded B's file against
+ * A's mutants. Two layers now separate them: the default directory is
+ * partitioned per working directory, and an entry can carry the fingerprint of
+ * the workspace root it was minted for.
+ */
+describe('run-cache — workspace binding', () => {
+  it('fingerprints a root stably, independent of how it was spelled', () => {
+    // `/repo`, `/repo/` and `/repo/.` are the same directory; an entry must not
+    // become unverifiable because two call sites spelled it differently.
+    expect(workspaceFingerprint('/repo')).toBe(workspaceFingerprint('/repo/'));
+    expect(workspaceFingerprint('/repo')).toBe(workspaceFingerprint('/repo/sub/..'));
+    expect(workspaceFingerprint('/repo')).not.toBe(workspaceFingerprint('/other-repo'));
+    expect(workspaceFingerprint('/repo')).toMatch(/^[0-9a-f]{16}$/);
+  });
+
+  it('does not leak the absolute path of the checkout into the entry', () => {
+    // The cache file is world-readable in the system temp directory.
+    const id = saveRun(
+      { file: 'src/a.ts', projectType: 'typescript', survivors: [], noCoverage: [] },
+      { dir, workspaceRoot: '/home/someone/secret-project' },
+    );
+    const raw = readFileSync(join(dir, `${id}.json`), 'utf8');
+    expect(raw).not.toContain('secret-project');
+    expect(loadRun(id, { dir })?.workspaceHash).toBe(
+      workspaceFingerprint('/home/someone/secret-project'),
+    );
+  });
+
+  it('omits the hash when the caller did not identify the workspace', () => {
+    // UPDATED COMMENT (behaviour unchanged): `saveRun` still records nothing
+    // when the caller supplies no root — but the CONSUMER no longer tolerates
+    // it. Both mint sites now pass `workspaceRoot`, and `audit/scope.ts` refuses
+    // a hash-less entry outright. Pinned so the field can never start defaulting
+    // to some placeholder that would be compared against a real root and
+    // silently match (or silently pass the "unknown workspace" gate).
+    const id = saveRun(
+      { file: 'src/a.ts', projectType: 'typescript', survivors: [], noCoverage: [] },
+      { dir },
+    );
+    expect(loadRun(id, { dir })?.workspaceHash).toBeUndefined();
+  });
+
+  it('partitions the DEFAULT cache directory by the server working directory', () => {
+    // No `dir` option here — this is the production path, and the whole point
+    // is that two servers running in two checkouts cannot read each other's
+    // entries even though both audit `src/index.ts`.
+    const rootA = mkdtempSync(join(tmpdir(), 'ws-a-'));
+    const rootB = mkdtempSync(join(tmpdir(), 'ws-b-'));
+    const cwd = vi.spyOn(process, 'cwd');
+    try {
+      cwd.mockReturnValue(rootA);
+      const id = saveRun({
+        file: 'src/index.ts',
+        projectType: 'typescript',
+        survivors: [{ line: 1, mutators: { Cond: 1 } }],
+        noCoverage: [],
+      });
+      expect(loadRun(id)?.file).toBe('src/index.ts'); // same cwd → still a hit
+      cwd.mockReturnValue(rootB);
+      expect(loadRun(id)).toBeUndefined(); // other workspace → invisible
+    } finally {
+      cwd.mockRestore();
+      for (const root of [rootA, rootB]) {
+        rmSync(join(tmpdir(), 'chaos-mcp-runs', workspaceFingerprint(root)), {
+          recursive: true,
+          force: true,
+        });
+        rmSync(root, { recursive: true, force: true });
+      }
+    }
+  });
+});
+
+/**
+ * `loadRun` used to cast whatever it parsed straight to `RunCacheEntry` and
+ * check nothing but `createdAt`. A truncated write or a hand-edited file then
+ * reached `parseBaseline`, where a null group threw a raw TypeError that the
+ * handler reported as "Chaos Engine Halted: Cannot read properties of null" —
+ * an internal crash in place of the intended "not found or expired" (M10).
+ */
+describe('loadRun — entry shape validation', () => {
+  const put = (id: string, entry: unknown) =>
+    writeFileSync(join(dir, `${id}.json`), JSON.stringify(entry));
+  const valid = {
+    runId: 'aaaaaaaa',
+    file: 'src/a.ts',
+    projectType: 'typescript',
+    createdAt: 1000,
+    survivors: [{ line: 1, mutators: { Cond: 1 } }],
+    noCoverage: [],
+  };
+
+  it('accepts the shape saveRun actually writes', () => {
+    put('aaaaaaaa', valid);
+    expect(loadRun('aaaaaaaa', { dir, now: 1000 })?.file).toBe('src/a.ts');
+  });
+
+  it.each([
+    ['a null survivor group', { ...valid, survivors: [null] }],
+    ['a survivor group with no line', { ...valid, survivors: [{ mutators: { C: 1 } }] }],
+    [
+      'a survivor group whose mutators is null',
+      { ...valid, survivors: [{ line: 1, mutators: null }] },
+    ],
+    [
+      'a survivor group whose mutators is an array',
+      { ...valid, survivors: [{ line: 1, mutators: [] }] },
+    ],
+    ['survivors that are not an array', { ...valid, survivors: {} }],
+    ['a missing noCoverage array', { ...valid, noCoverage: undefined }],
+    ['a missing file key', { ...valid, file: undefined }],
+    ['a non-string projectType', { ...valid, projectType: 7 }],
+    ['a non-string workspaceHash', { ...valid, workspaceHash: 7 }],
+    ['a JSON array instead of an object', [valid]],
+    ['a JSON null', null],
+  ])('treats %s as a miss', (_label, entry) => {
+    put('aaaaaaaa', entry);
+    expect(loadRun('aaaaaaaa', { dir, now: 1000 })).toBeUndefined();
   });
 });

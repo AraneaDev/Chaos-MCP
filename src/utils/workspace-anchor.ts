@@ -16,18 +16,37 @@
  * the same one `isPathInside` performs; keeping it inline avoids computing
  * `relative()` twice for a value this function must return anyway.
  */
-import { relative, isAbsolute } from 'node:path';
+import { relative, isAbsolute, sep } from 'node:path';
 
 /** A file expressed both as a workspace-relative key and as an engine target. */
 export interface WorkspaceAnchor {
   /**
-   * `resolvedFile` relative to `workspaceRoot`. The key contract for the run
-   * cache and the suppressions file — audit and triage must agree on it.
+   * `resolvedFile` relative to `workspaceRoot`, with POSIX (`/`) separators.
+   *
+   * The key contract for the run cache and the suppressions file — audit and
+   * triage must agree on it. The separator normalisation is what makes that
+   * agreement hold ACROSS machines: `relative()` returns the platform
+   * separator, so an unnormalised key is `src\utils\foo.ts` on Windows and
+   * `src/utils/foo.ts` on Linux CI. Since the suppressions file is documented
+   * as portable/committable (`audit/suppression-io.ts`), the two would be
+   * written and looked up under different keys, `Map.get` would miss, and
+   * every suppression would stop applying — SILENTLY, because a missing key
+   * yields an empty verdict, so neither `drifted` nor `unverified` increments
+   * to say anything went wrong.
    */
   relFromRoot: string;
   /**
-   * The path to hand the sandbox and the engine: `relFromRoot` when it is a
-   * clean descendant path, else `fallback`.
+   * The path to hand the sandbox and the engine: the workspace-relative path
+   * when it is a clean descendant path, else `fallback`.
+   *
+   * Deliberately keeps the PLATFORM separator rather than reusing the
+   * normalised `relFromRoot`. This value is a real filesystem path — it is
+   * `join`ed/`resolve`d against the sandbox and workspace roots
+   * (`utils/sandbox.ts`) and interpolated into engine CLI arguments (Stryker
+   * `--mutate`, cargo-mutants `--file`, Infection `--filter`, the
+   * `buildVitestRelatedCommand` allowlist) — not a stored key, so it has no
+   * portability requirement and nothing to gain from being rewritten. Only the
+   * key is normalised.
    */
   targetFile: string;
 }
@@ -39,16 +58,23 @@ export interface WorkspaceAnchor {
  * real ancestor of the file — an empty relative path (file *is* the root), a
  * `..` escape, or an absolute result on a different drive. Defensive: in
  * production the workspace-root clamp already guarantees ancestry.
+ *
+ * The containment test and `targetFile` are decided on the RAW, platform-native
+ * relative path; only the returned `relFromRoot` key is normalised to POSIX.
+ * See {@link WorkspaceAnchor} for why the two must not share a separator.
  */
 export function anchorToWorkspace(
   workspaceRoot: string,
   resolvedFile: string,
   fallback: string,
 ): WorkspaceAnchor {
-  const relFromRoot = relative(workspaceRoot, resolvedFile);
+  const native = relative(workspaceRoot, resolvedFile);
   const targetFile =
-    relFromRoot.length > 0 && !relFromRoot.startsWith('..') && !isAbsolute(relFromRoot)
-      ? relFromRoot
-      : fallback;
-  return { relFromRoot, targetFile };
+    native.length > 0 && !native.startsWith('..') && !isAbsolute(native) ? native : fallback;
+  // `native` is produced by `relative()`, so it only ever contains the platform
+  // separator. Splitting on `sep` is therefore exact — unlike an unconditional
+  // backslash replace, it cannot mangle a POSIX filename that legitimately
+  // contains a `\`. (The suppressions READER does replace unconditionally, and
+  // must: it is repairing keys written by another machine's `sep`.)
+  return { relFromRoot: native.split(sep).join('/'), targetFile };
 }

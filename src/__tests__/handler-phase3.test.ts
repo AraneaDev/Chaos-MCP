@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
 import { firstText } from './helpers/content.js';
 import type { CallToolRequest } from '@modelcontextprotocol/sdk/types.js';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { computeVerifyDelta } from '../verify.js';
@@ -49,7 +49,7 @@ import { handleToolCall } from '../index.js';
 import { TypeScriptEngine } from '../engines/typescript.js';
 import { detectEnvironment } from '../utils/project-detector.js';
 import { createSandbox } from '../utils/sandbox.js';
-import { loadRun, saveRun } from '../utils/run-cache.js';
+import { loadRun, saveRun, workspaceFingerprint } from '../utils/run-cache.js';
 import { loadSuppressions, addSuppressions, fingerprintSourceLine } from '../utils/suppression.js';
 import type { MutationResult } from '../engines/base.js';
 
@@ -222,13 +222,93 @@ describe('handleToolCall phase3 wiring', () => {
     expect(cached?.file).toBe('src/math.ts');
   });
 
-  it('does NOT mint a runId on a verify-by-runId run', async () => {
+  /**
+   * Audit M10, mint side. `relFromRoot` is a workspace-RELATIVE key, so without
+   * a workspace fingerprint on the entry a runId minted for workspace A's
+   * `src/math.ts` satisfied the verify path's `cached.file === relFile` check
+   * while pointed at workspace B's `src/math.ts` — a different file — and the
+   * verify reported B's code as "still surviving / now killed" against A's
+   * mutants. `handleToolCall` now passes `env.workspaceRoot` to `mintRunId`.
+   */
+  it('stamps the minted entry with the audited workspace', async () => {
+    stubEngine(resultWithSurvivor());
+    const res = await handleToolCall(makeRequest({ filePath: FILE }), {
+      suppressionsPath: supPath,
+    });
+    const sc = res.structuredContent as Record<string, unknown>;
+    const cached = loadRun(sc.runId as string);
+    expect(cached?.workspaceHash).toBe(workspaceFingerprint(WS));
+  });
+
+  it('accepts its own minted runId back for a verify in the same workspace', async () => {
+    // The round trip the whole feature exists for: mint → verify by id. It has
+    // to pass the file, workspace and projectType gates in one go.
+    stubEngine(resultWithSurvivor());
+    const minted = await handleToolCall(makeRequest({ filePath: FILE }), {
+      suppressionsPath: supPath,
+    });
+    const runId = (minted.structuredContent as Record<string, unknown>).runId as string;
+
+    const run = stubEngine(resultWithSurvivor());
+    const verified = await handleToolCall(makeRequest({ filePath: FILE, runId }), {
+      suppressionsPath: supPath,
+    });
+    expect(verified.isError).toBeUndefined();
+    expect(verified.structuredContent).toMatchObject({ mode: 'verify' });
+    expect(run).toHaveBeenCalledWith(
+      FILE,
+      expect.objectContaining({ lineRanges: [{ start: 7, end: 7 }] }),
+    );
+  });
+
+  it('refuses a runId minted in a DIFFERENT workspace for the same relative path', async () => {
+    // Both workspaces contain `src/math.ts`, so `cached.file === relFile` alone
+    // was satisfied and the verify graded the wrong file's code.
+    const otherWs = mkdtempSync(join(tmpdir(), 'chaos-other-ws-'));
+    const runId = saveRun(
+      {
+        file: FILE,
+        projectType: 'typescript',
+        survivors: [{ line: 7, mutators: { ConditionalExpression: 1 } }],
+        noCoverage: [],
+      },
+      { workspaceRoot: otherWs },
+    );
+    stubEngine(resultWithSurvivor());
+    const res = await handleToolCall(makeRequest({ filePath: FILE, runId }));
+    expect(res.isError).toBe(true);
+    expect(firstText(res)).toContain('different workspace');
+    rmSync(otherWs, { recursive: true, force: true });
+  });
+
+  it('refuses a runId that carries no workspace identity at all', async () => {
+    // A leftover from a pre-M10 server still sitting in the temp directory.
+    // Costs exactly one re-run, and that re-run now mints a stamped entry.
     const runId = saveRun({
-      file: FILE, // workspace-relative key (matches relative(workspaceRoot, resolvedFile))
+      file: FILE,
       projectType: 'typescript',
       survivors: [{ line: 7, mutators: { ConditionalExpression: 1 } }],
       noCoverage: [],
     });
+    stubEngine(resultWithSurvivor());
+    const res = await handleToolCall(makeRequest({ filePath: FILE, runId }));
+    expect(res.isError).toBe(true);
+    expect(firstText(res)).toContain('without a workspace identity');
+  });
+
+  it('does NOT mint a runId on a verify-by-runId run', async () => {
+    const runId = saveRun(
+      {
+        file: FILE, // workspace-relative key (matches relative(workspaceRoot, resolvedFile))
+        projectType: 'typescript',
+        survivors: [{ line: 7, mutators: { ConditionalExpression: 1 } }],
+        noCoverage: [],
+      },
+      // Stamps the workspace fingerprint, exactly as handleToolCall's own mint
+      // site now does (audit M10). An entry with no workspace identity is
+      // refused by computeScope, so a hand-built one has to carry it too.
+      { workspaceRoot: WS },
+    );
     const run = stubEngine(resultWithSurvivor());
     const res = await handleToolCall(makeRequest({ filePath: FILE, runId }));
     expect(res.isError).toBeUndefined();
@@ -250,12 +330,16 @@ describe('handleToolCall phase3 wiring', () => {
   });
 
   it('rejects a runId whose cached file does not match the target', async () => {
-    const runId = saveRun({
-      file: 'src/other.ts', // a different workspace-relative file than the target
-      projectType: 'typescript',
-      survivors: [{ line: 1, mutators: { Cond: 1 } }],
-      noCoverage: [],
-    });
+    const runId = saveRun(
+      {
+        file: 'src/other.ts', // a different workspace-relative file than the target
+        projectType: 'typescript',
+        survivors: [{ line: 1, mutators: { Cond: 1 } }],
+        noCoverage: [],
+      },
+      // Right workspace, wrong file — so the file check is the one under test.
+      { workspaceRoot: WS },
+    );
     stubEngine(cleanResult());
     const res = await handleToolCall(makeRequest({ filePath: FILE, runId }));
     expect(res.isError).toBe(true);
@@ -375,15 +459,18 @@ describe('handleToolCall phase3 wiring', () => {
     // the entire result — this catches misimplementations that filter neither, only
     // baseline, or only re-run.
     await addSuppressions(WS, FILE, [{ line: 7, mutator: 'ConditionalExpression' }], supPath);
-    const runId = saveRun({
-      file: FILE,
-      projectType: 'typescript',
-      survivors: [
-        { line: 7, mutators: { ConditionalExpression: 1 } },
-        { line: 8, mutators: { ArithmeticOperator: 1 } },
-      ],
-      noCoverage: [],
-    });
+    const runId = saveRun(
+      {
+        file: FILE,
+        projectType: 'typescript',
+        survivors: [
+          { line: 7, mutators: { ConditionalExpression: 1 } },
+          { line: 8, mutators: { ArithmeticOperator: 1 } },
+        ],
+        noCoverage: [],
+      },
+      { workspaceRoot: WS }, // stamped, as the real mint site now does (M10)
+    );
     stubEngine(resultWithTwoSurvivors()); // re-run still surfaces both survivors
     const res = await handleToolCall(makeRequest({ filePath: FILE, runId }), {
       suppressionsPath: supPath,

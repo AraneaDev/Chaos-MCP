@@ -2,9 +2,12 @@ import { describe, it, expect } from 'vitest';
 import {
   formatResultAsText,
   formatResultAsJson,
+  buildResultPayload,
   hasNoMutableLogic,
   displayMutationScore,
+  type ResultPayload,
 } from '../format.js';
+import { evaluateGate } from '../gate.js';
 import type { MutationResult } from '../engines/base.js';
 
 type Vuln = MutationResult['vulnerabilities'][number];
@@ -118,23 +121,276 @@ describe('formatResultAsText — no-coverage section', () => {
     // Audit M6: the JSON path attaches this via enrichNote, and text users got
     // nothing — so a severityFloor that silently did nothing looked like a
     // floor that found nothing to hide.
+    //
+    // UPDATED: this test used to hand `formatResultAsText` a `floorIgnoredNote`
+    // option and assert it was echoed. NO production caller ever set that field
+    // — audit-output.ts never passed it — so the test was the only thing keeping
+    // it alive while `prepareGroups` computed the real wording into
+    // `prepared.enrichNote` and the text path threw it away. The field is gone;
+    // the test now drives the note the way a real caller does (a severityFloor
+    // with enrichment off) and asserts the SHARED wording reaches text output.
     const text = formatResultAsText(
       result({ vulnerabilities: [vuln(1, 'StringLiteral')] }),
       undefined,
-      {
-        floorIgnoredNote: 'severityFloor ignored: enrichment is disabled.',
-      },
+      { severityFloor: 'high' },
     );
-    expect(text).toContain('severityFloor ignored: enrichment is disabled.');
+    expect(text).toContain(
+      'severityFloor was ignored: it requires enrichment (severity classification), which is off for this run.',
+    );
     expect(
       formatResultAsText(result({ vulnerabilities: [vuln(1, 'StringLiteral')] })),
-    ).not.toContain('severityFloor ignored');
+    ).not.toContain('severityFloor was ignored');
+  });
+
+  it('uses the same floor-ignored wording in text and JSON', () => {
+    // One computation, two renderings: the whole point of dropping the
+    // caller-supplied note. If these ever diverge the note has been forked again.
+    const r = result({ vulnerabilities: [vuln(1, 'StringLiteral')] });
+    const text = formatResultAsText(r, undefined, { severityFloor: 'high' });
+    const json = JSON.parse(
+      JSON.stringify(buildResultPayload(r, { severityFloor: 'high' })),
+    ) as ResultPayload;
+    expect(json.enrichNote).toBeDefined();
+    expect(text).toContain(json.enrichNote as string);
+  });
+
+  it('surfaces the unclassified-mutants advisory in text output too', () => {
+    // The other thing `prepared.enrichNote` carries. Text output dropped it
+    // entirely, so a report full of `[unknown]` severities never said why.
+    const text = formatResultAsText(result({ vulnerabilities: [vuln(1, 'SomeFutureMutator')] }), {
+      projectType: 'typescript',
+    });
+    expect(text).toContain('could not be classified');
+  });
+});
+
+describe('unclassified-mutant advisory wording', () => {
+  const unknownMutant = (projectType: 'rust' | 'php' | 'python' | 'typescript') =>
+    buildResultPayload(result({ vulnerabilities: [vuln(1, 'Totally Unmapped Operator')] }), {
+      enrich: { projectType },
+    }).enrichNote ?? '';
+
+  it('blames the tool only for cargo-mutants, which really does hide the operator', () => {
+    expect(unknownMutant('rust')).toContain('cargo-mutants reports a free-text description');
+  });
+
+  it('does not tell a php/python/typescript caller their tool is operator-less', () => {
+    // Infection, cosmic-ray and StrykerJS all report an operator name and the
+    // engines store it, so "this language's mutation tool doesn't expose
+    // per-mutant operator detail" was simply false — it sent a PHP user looking
+    // for a better mutation tool when the gap was a missing lookup table here.
+    for (const projectType of ['php', 'python', 'typescript'] as const) {
+      const note = unknownMutant(projectType);
+      expect(note).not.toContain("doesn't expose");
+      expect(note).toContain('is not one this server maps to a severity category');
+      expect(note).toContain(projectType);
+    }
+  });
+});
+
+describe('clean note for a partial (time-budget-truncated) run', () => {
+  const cleanPartial = (overrides: Partial<MutationResult> = {}) =>
+    result({
+      survived: 0,
+      killed: 12,
+      totalMutants: 12,
+      vulnerabilities: [],
+      complete: false,
+      batchesCompleted: 2,
+      batchesPlanned: 7,
+      stoppedReason: 'time_budget_exhausted',
+      ...overrides,
+    });
+
+  it('does not claim the suite caught every mutation when batches were skipped', () => {
+    // The consumer half of the zero-batch finding: a run that stopped early
+    // scored only the batches that finished, so "the test suite caught every
+    // mutation" claims full credit for a file that was merely sampled.
+    const payload = buildResultPayload(cleanPartial());
+    expect(payload.note).not.toContain('caught every mutation');
+    expect(payload.note).toContain('the 2 of 7 batches that completed');
+    expect(payload.note).toContain('unknown, not killed');
+  });
+
+  it('says the same thing in text output', () => {
+    // Text and JSON must not disagree about whether a file is clean.
+    const text = formatResultAsText(cleanPartial());
+    expect(text).not.toContain('your tests caught all mutations');
+    expect(text).toContain('the 2 of 7 batches that completed');
+  });
+
+  it('degrades gracefully when the batch counts are absent', () => {
+    const payload = buildResultPayload(
+      cleanPartial({ batchesCompleted: undefined, batchesPlanned: undefined }),
+    );
+    expect(payload.note).toContain('the part of this file that was measured');
+  });
+
+  it('names the time budget only when that is why it stopped', () => {
+    const other = buildResultPayload(cleanPartial({ stoppedReason: undefined }));
+    expect(other.note).toContain('the run stopped before the rest could run');
+    expect(other.note).not.toContain('the time budget was exhausted');
+  });
+
+  it('still gives full credit to a run that completed', () => {
+    // The unchanged happy path: `complete` absent or true keeps the original
+    // wording, so a normal audit reads exactly as it did before.
+    expect(buildResultPayload(result({ survived: 0, killed: 10, vulnerabilities: [] })).note).toBe(
+      CLEAN_NOTE,
+    );
+    expect(
+      buildResultPayload(result({ survived: 0, killed: 10, vulnerabilities: [], complete: true }))
+        .note,
+    ).toBe(CLEAN_NOTE);
+  });
+});
+
+describe('enrichment reads the uncapped change set', () => {
+  it('classifies a Rust group from a change beyond the display cap', () => {
+    // `changes` is capped to 3 entries + a "…N more" sentinel for display. Rust
+    // severity is derived from the change TEXT alone (cargo-mutants exposes no
+    // operator name), so enriching from the capped list means an operator that
+    // appears only in change #4 can never decide its own severity — and the
+    // logical-first rule ordering exists precisely so `&&` outranks the rest.
+    const r = result({
+      vulnerabilities: [
+        { line: 7, mutator: 'replace a', description: 'survived', mutated: 'replace a with 1' },
+        { line: 7, mutator: 'replace b', description: 'survived', mutated: 'replace b with 2' },
+        { line: 7, mutator: 'replace c', description: 'survived', mutated: 'replace c with 3' },
+        {
+          line: 7,
+          mutator: 'replace d',
+          description: 'survived',
+          mutated: 'replace x && y with x || y',
+        },
+      ],
+    });
+    const payload = buildResultPayload(r, { enrich: { projectType: 'rust' } });
+    const group = payload.survivors[0] as { severity?: string; changes?: string[] };
+    expect(group.severity).toBe('high');
+    expect(payload.summary.worstSeverity).toBe('high');
+    // …while the DISPLAY list is still capped exactly as before.
+    expect(group.changes).toEqual([
+      'replace a with 1',
+      'replace b with 2',
+      'replace c with 3',
+      '…1 more',
+    ]);
+  });
+
+  it('leaves a within-cap group classified exactly as before', () => {
+    const r = result({
+      vulnerabilities: [
+        { line: 7, mutator: 'replace >', description: 'survived', mutated: 'replace > with >=' },
+      ],
+    });
+    const group = buildResultPayload(r, { enrich: { projectType: 'rust' } }).survivors[0] as {
+      severity?: string;
+      changes?: string[];
+    };
+    expect(group.severity).toBe('high');
+    expect(group.changes).toEqual(['replace > with >=']);
+  });
+});
+
+describe('gate verdict in text output', () => {
+  // buildResultPayload computed `payload.gate` and it reached structuredContent,
+  // but formatResultAsText never mentioned the threshold, the verdict, or the
+  // failing state — a human or agent reading only the text block saw a clean
+  // report for a FAILING gate. Driven by the same GateResult the payload uses.
+  it('renders a failing gate with the threshold and the score', () => {
+    const text = formatResultAsText(result({ mutationScore: '61.54%' }), undefined, {
+      gate: evaluateGate('61.54%', 80),
+    });
+    expect(text).toContain('Gate: FAILED (minScore 80) — score 61.54% is below the threshold.');
+  });
+
+  it('renders a passing gate', () => {
+    const text = formatResultAsText(result({ mutationScore: '92.00%' }), undefined, {
+      gate: evaluateGate('92.00%', 80),
+    });
+    expect(text).toContain('Gate: passed (minScore 80)');
+    expect(text).not.toContain('FAILED');
+  });
+
+  it('explains a gate that failed because the audit was incomplete', () => {
+    // evaluateGate fails closed on a partial run: the score is not below the
+    // threshold, it is not gradable at all, and the line must say so rather than
+    // accuse the code of a low score it never had.
+    const text = formatResultAsText(
+      result({ mutationScore: '100.00%', complete: false }),
+      undefined,
+      { gate: evaluateGate('100.00%', 80, false) },
+    );
+    expect(text).toContain('Gate: FAILED (minScore 80) — the audit did not complete');
+  });
+
+  it('says nothing about a gate when no minScore was requested', () => {
+    expect(formatResultAsText(result())).not.toContain('Gate:');
   });
 });
 
 describe('hasNoMutableLogic', () => {
   it('is true only for a zero-mutant result carrying no scope note', () => {
     expect(hasNoMutableLogic(result({ totalMutants: 0 }))).toBe(true);
+  });
+
+  it('is true for a whole-file zero even when the run carried a scope note', () => {
+    // The bug this replaced: `!result.scopeNote` inferred the answer from
+    // free-text prose, and every BATCHED TypeScript run stamps a scopeNote — so
+    // a whole-file audit of a large file stopped qualifying and a logic-free
+    // file went back to reporting "100.00%". scopeKind is the engine's
+    // structural answer and outranks the prose.
+    expect(
+      hasNoMutableLogic(
+        result({ totalMutants: 0, scopeKind: 'whole-file', scopeNote: 'mutated in 4 batches' }),
+      ),
+    ).toBe(true);
+  });
+
+  it('is false for a scoped zero, which only proves the RANGE was empty', () => {
+    // lineScope/lineRanges restricted what was enumerated; zero there says
+    // nothing about the rest of the file.
+    expect(hasNoMutableLogic(result({ totalMutants: 0, scopeKind: 'scoped' }))).toBe(false);
+    // …and stays false even with no scopeNote to fall back on, i.e. scopeKind
+    // decides on its own rather than deferring to the legacy prose check.
+    expect(
+      hasNoMutableLogic(result({ totalMutants: 0, scopeKind: 'scoped', scopeNote: undefined })),
+    ).toBe(false);
+  });
+
+  it('is false for a partial run, whose zero covers only the batches that ran', () => {
+    // `complete === false` means a time-budgeted batch loop returned early. The
+    // batches that never ran were never enumerated, so "this file has no mutable
+    // logic" is a claim about code nobody looked at. scopeKind describes what
+    // was REQUESTED; complete describes what was DELIVERED, and the verdict
+    // needs both.
+    expect(
+      hasNoMutableLogic(result({ totalMutants: 0, scopeKind: 'whole-file', complete: false })),
+    ).toBe(false);
+    // …and the score it falls back to must still not be the bare "100.00%"
+    // formatMutationScore(0, 0) produces: an empty denominator is not a perfect
+    // kill rate, whichever reason left it empty.
+    expect(
+      displayMutationScore(
+        result({
+          totalMutants: 0,
+          killed: 0,
+          mutationScore: '100.00%',
+          scopeKind: 'whole-file',
+          complete: false,
+        }),
+      ),
+    ).toBe('n/a');
+  });
+
+  it('is unaffected by an explicitly complete run', () => {
+    // `complete !== false`, not `=== true`: engines with no batching concept
+    // leave the field undefined and must behave exactly as before.
+    expect(
+      hasNoMutableLogic(result({ totalMutants: 0, scopeKind: 'whole-file', complete: true })),
+    ).toBe(true);
+    expect(hasNoMutableLogic(result({ totalMutants: 0, complete: true }))).toBe(true);
   });
 
   it('is false as soon as a single mutant was enumerated', () => {

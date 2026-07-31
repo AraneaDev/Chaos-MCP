@@ -73,6 +73,39 @@ describe('validateFilePath', () => {
     expect(errorText(validateFilePath(unlisted))).toContain(OUTSIDE);
   });
 
+  // ─── Comma rejection ─────────────────────────────────────────────────────
+
+  /**
+   * StrykerJS splits `--mutate` on commas and Infection splits `--filter` the
+   * same way, so a comma in the path becomes two globs that match nothing: the
+   * engine mutates zero files, exits 0, and the empty report is scored 100.00%.
+   * A silent perfect score for an unread file is worse than a rejection.
+   */
+  it('rejects a filePath containing a comma', () => {
+    const message = errorText(validateFilePath('src/pricing/tax,vat.ts'));
+    expect(message).toContain('must not contain a comma');
+    expect(message).toContain('src/pricing/tax,vat.ts');
+  });
+
+  it('rejects a comma anywhere in the path, including a parent directory', () => {
+    expect(errorText(validateFilePath('src/a,b/math.ts'))).toContain('must not contain a comma');
+  });
+
+  it('keeps the C2 boundary rejection ahead of the comma rejection', () => {
+    // An out-of-bounds path must read as out-of-bounds even when it also has a
+    // comma — otherwise a probe outside the workspace gets a naming complaint.
+    Reflect.deleteProperty(process.env, ALLOWED_ROOTS_ENV);
+    expect(errorText(validateFilePath('../../etc/pass,wd'))).toContain(
+      'must resolve within the workspace',
+    );
+  });
+
+  it('still accepts an ordinary comma-free path', () => {
+    expect(accepted(validateFilePath('src/utils/math.ts')).resolvedFile).toBe(
+      join(CWD, 'src/utils/math.ts'),
+    );
+  });
+
   it('produces a well-formed text content block once an MCP caller wraps it', () => {
     // MCP clients dispatch on `type`; a blank one renders as an unknown block
     // and the rejection reason never reaches the caller. The validator no longer

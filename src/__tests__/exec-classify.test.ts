@@ -66,6 +66,82 @@ describe('invokeMutationTool', () => {
     });
   });
 
+  // ── Cancellation must survive the classification ladder ───────────────────
+
+  it('rethrows an ABORTED failure untouched instead of relabelling it a crash', async () => {
+    // classifyChildError (utils/exec-error.ts) sets `code: 'ABORTED'` BEFORE
+    // its own ENOENT/timeout/signal branches precisely so a deliberate cancel
+    // is never mislabelled, and documents that callers key on that code
+    // (audit M5). An aborted child is killed by a signal, so before this branch
+    // existed it arrived here with `signal` set and `exit === null`, fell into
+    // the signal branch, and came back out as
+    // "cargo-mutants crashed unexpectedly (signal SIGKILL)" — with the marker
+    // `isCancel` needs destroyed. estimate.ts's computeCount has no request
+    // context to rescue it, so a cancelled Rust estimate returned success.
+    const abortedError = new ExecFailureError(
+      { stdout: '', stderr: '', exit: null, signal: 'SIGKILL', code: 'ABORTED' },
+      'Command was cancelled: cargo',
+    );
+    mockRunShell.mockRejectedValue(abortedError);
+
+    await expect(invokeMutationTool('cargo-mutants', 'cargo', ['mutants'])).rejects.toBe(
+      abortedError,
+    );
+    expect(abortedError).not.toBeInstanceOf(MutationToolStartupError);
+    expect(abortedError.code).toBe('ABORTED');
+  });
+
+  it('keeps ABORTED ahead of the TIMEOUT and ENOENT branches', async () => {
+    // The ordering is the whole point: a cancel that also looks like a timeout
+    // (Node kills the child, so `killed`/`signal` are set) must still read as a
+    // cancel. Pin it by handing the ladder a shape that would otherwise match
+    // the signal branch and asserting nothing was wrapped.
+    const abortedLikeTimeout = new ExecFailureError(
+      { stdout: 'partial', stderr: 'interrupted', exit: null, signal: 'SIGTERM', code: 'ABORTED' },
+      'Command was cancelled: stryker',
+    );
+    mockRunShell.mockRejectedValue(abortedLikeTimeout);
+
+    await expect(
+      invokeMutationTool('StrykerJS', 'stryker', ['run'], { timeoutMs: 1000 }),
+    ).rejects.toBe(abortedLikeTimeout);
+  });
+
+  // ── The machine-readable reason discriminator ─────────────────────────────
+
+  it('labels each startup failure with a machine-readable reason', async () => {
+    // The four cases used to be distinguishable only by prose, which is why
+    // estimate.ts collapsed all of them into "cargo-mutants not installed".
+    // `reason` is what callers branch on now.
+    const cases: { code: string | undefined; signal: NodeJS.Signals | null; reason: string }[] = [
+      { code: 'ENOENT', signal: null, reason: 'NOT_INSTALLED' },
+      { code: 'OUTPUT_TRUNCATED', signal: null, reason: 'OUTPUT_TRUNCATED' },
+      { code: 'TIMEOUT', signal: 'SIGTERM', reason: 'TIMEOUT' },
+      { code: undefined, signal: 'SIGSEGV', reason: 'CRASHED' },
+    ];
+
+    for (const c of cases) {
+      mockRunShell.mockRejectedValueOnce(
+        new ExecFailureError(
+          { stdout: '', stderr: '', exit: null, signal: c.signal, code: c.code },
+          'failed',
+        ),
+      );
+      const err = await invokeMutationTool('cargo-mutants', 'cargo', []).catch(
+        (e: unknown) => e as MutationToolStartupError,
+      );
+      expect(err).toBeInstanceOf(MutationToolStartupError);
+      expect((err as MutationToolStartupError).reason).toBe(c.reason);
+    }
+  });
+
+  it('defaults reason to UNKNOWN, which no caller treats as recoverable', () => {
+    // A hand-built instance (test doubles, future call sites) must not inherit
+    // the most permissive label by omission.
+    const err = new MutationToolStartupError('cargo-mutants', 'something went wrong');
+    expect(err.reason).toBe('UNKNOWN');
+  });
+
   it('throws MutationToolStartupError with install hint on ENOENT', async () => {
     const enoentError = new ExecFailureError(
       { stdout: '', stderr: '', exit: null, signal: null, code: 'ENOENT' },

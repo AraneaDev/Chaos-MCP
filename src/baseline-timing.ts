@@ -13,11 +13,22 @@ export interface BaselineCommand {
  * Best-effort resolution of a one-shot test-suite command per language, used to
  * measure a baseline run time for `estimate_audit --withTiming`. Returns
  * undefined when no sensible default applies (caller omits timing).
+ *
+ * @param testRunner - The runner the AUDIT resolved for this target (engine
+ *   config section → global config → detected env; see `buildRunOptions`).
+ *   Passed EXPLICITLY rather than substituted into a copy of `env` so this
+ *   function keeps one obvious source for the value and callers cannot pass a
+ *   half-real environment; `env` still supplies `detectedRunner`, which is the
+ *   detection signal and is genuinely environmental. Defaults to
+ *   `env.testRunner`, preserving the behaviour of every existing call site.
+ *   Measuring against `env.testRunner` when config overrode it made the
+ *   baseline the wrong command for the run being estimated.
  */
 export function resolveBaselineTestCommand(
   env: EnvironmentInfo,
   projectType: SupportedProjectType,
   relFile?: string,
+  testRunner: string = env.testRunner,
 ): BaselineCommand | undefined {
   switch (projectType) {
     case 'rust':
@@ -30,7 +41,7 @@ export function resolveBaselineTestCommand(
     }
     case 'typescript': {
       const runner = env.detectedRunner || 'npm';
-      if (env.testRunner === 'command' && runner === 'vitest' && relFile) {
+      if (testRunner === 'command' && runner === 'vitest' && relFile) {
         return { command: 'npx', args: ['vitest', 'related', relFile, '--run'] };
       }
       if (runner === 'npm' || runner === 'yarn' || runner === 'pnpm') {

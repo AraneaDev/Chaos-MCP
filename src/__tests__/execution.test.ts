@@ -733,6 +733,65 @@ describe('execution sessions', () => {
     expect(removeListener).toHaveBeenCalledWith('abort', expect.any(Function));
   });
 
+  it('arms the abort listener BEFORE the container is created', async () => {
+    // `addEventListener('abort', ...)` on an already-aborted signal never fires,
+    // so a listener registered at the END of startup covers none of startup —
+    // and startup is where the container comes into existence.
+    const controller = new AbortController();
+    const addListener = vi.spyOn(controller.signal, 'addEventListener');
+    let armedBeforeCreate = false;
+    vi.mocked(runShell)
+      .mockResolvedValueOnce(ok('27.0.0'))
+      .mockImplementationOnce(async () => {
+        armedBeforeCreate = addListener.mock.calls.length > 0;
+        return ok('cid');
+      })
+      .mockResolvedValue(ok());
+    const session = await createExecutionSession(
+      'rust',
+      '/tmp/work',
+      { mode: 'container' },
+      controller.signal,
+    );
+
+    await session.run('cargo', ['check']);
+
+    expect(armedBeforeCreate).toBe(true);
+    // Still exactly one listener for the one container that was provisioned.
+    expect(addListener).toHaveBeenCalledTimes(1);
+  });
+
+  it('removes the container when the abort lands as `start` resolves', async () => {
+    // The window the late registration left open: the request is cancelled
+    // after `start` returns but before anything is listening. The listener that
+    // was supposed to tear the container down was attached to a signal that had
+    // already fired, so it never ran and the session held a RUNNING container
+    // with no remaining teardown path of its own. The post-start re-check closes
+    // it.
+    const controller = new AbortController();
+    vi.mocked(runShell)
+      .mockResolvedValueOnce(ok('27.0.0'))
+      .mockResolvedValueOnce(ok('cid'))
+      .mockImplementationOnce(async () => {
+        controller.abort();
+        return ok();
+      })
+      .mockResolvedValue(ok());
+    const session = await createExecutionSession(
+      'rust',
+      '/tmp/work',
+      { mode: 'container' },
+      controller.signal,
+    );
+
+    await expect(session.run('cargo', ['check'])).rejects.toThrow('cancelled during startup');
+
+    const removals = vi.mocked(runShell).mock.calls.filter((call) => call[1]?.[0] === 'rm');
+    expect(removals.map((call) => call[1])).toEqual([['rm', '-f', 'cid']]);
+    // Cancelled during startup means no work was ever dispatched into it.
+    expect(vi.mocked(runShell).mock.calls.some((call) => call[1]?.[0] === 'exec')).toBe(false);
+  });
+
   it('does not forward the host environment wholesale into containers', async () => {
     vi.mocked(runShell)
       .mockResolvedValueOnce(ok('27.0.0'))

@@ -80,7 +80,15 @@ function runChild(
       // `killTree` is the caller asking for tree semantics; see
       // ACTIVE_PROCESS_GROUPS in process-reaper.ts for why grandchildren need
       // this at all.
-      if (killTree && process.platform !== 'win32') trackProcessGroup(childRef.current, cwd);
+      //
+      // Tracked on EVERY platform. This used to be gated on
+      // `platform !== 'win32'` by analogy with the `detached` option below —
+      // but `detached` is a spawn flag (on Windows it opens a new console),
+      // whereas tracking is just a registry entry. Gating it left the registry
+      // permanently empty on Windows, so sandbox teardown's "kill first, delete
+      // second" invariant and the shutdown-time sweep both reaped nothing there.
+      // `killGroup` reaps Windows pids with `taskkill /T`.
+      if (killTree) trackProcessGroup(childRef.current, cwd);
       stopTreeCleanup = installProcessTreeCleanup(childRef.current, killTree, timeoutMs, signal);
     }
   });

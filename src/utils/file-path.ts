@@ -46,6 +46,11 @@ export type FilePathValidation =
  * Order of rejections (stable across callers):
  *   1. Missing / non-string / empty
  *   2. Escapes the current process cwd (C2)
+ *   3. Contains a comma (unscopeable by the mutation engines)
+ *
+ * The comma check runs last of the three so the C2 security boundary keeps the
+ * first word: an out-of-bounds path must read as out-of-bounds, not as a naming
+ * complaint. Everything in-bounds then still has to be expressible to an engine.
  */
 export function validateFilePath(rawFilePath: unknown, argName = 'filePath'): FilePathValidation {
   if (typeof rawFilePath !== 'string' || rawFilePath.length === 0) {
@@ -61,6 +66,22 @@ export function validateFilePath(rawFilePath: unknown, argName = 'filePath'): Fi
     return {
       ok: false,
       message: `Error: ${argName} must resolve within the workspace (${describeBoundary(rootCwd)}); received "${rawFilePath}".`,
+    };
+  }
+
+  // ── 3. A comma cannot be scoped to one file by any engine we drive. ──
+  // StrykerJS registers `-m, --mutate` with a comma splitter, and Infection's
+  // `--filter` is likewise a comma-separated list, so `src/tax,vat.ts` is split
+  // into two globs that match nothing: Stryker mutates zero files, exits 0, and
+  // an empty report scores 100.00% — a clean bill of health for a file that was
+  // never opened. Reject it here rather than let a silent pass reach the user.
+  if (rawFilePath.includes(',')) {
+    return {
+      ok: false,
+      message:
+        `Error: ${argName} must not contain a comma — StrykerJS and Infection take ` +
+        `comma-separated file lists, so a comma in the path cannot be scoped to one ` +
+        `file. Rename the file. Received "${rawFilePath}".`,
     };
   }
 

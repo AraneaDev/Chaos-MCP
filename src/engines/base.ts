@@ -63,6 +63,34 @@ export interface MutationResult {
    */
   fidelityNote?: string;
   /**
+   * How much of the target file this run actually enumerated mutants for.
+   *
+   * WHY this is a STRUCTURAL field: `hasNoMutableLogic` (format.ts) used to
+   * decide "this file has no testable logic" from `totalMutants === 0 &&
+   * !scopeNote` — i.e. from the ABSENCE of a free-text sentence. Every batched
+   * command-runner run sets a `scopeNote` ("Completed N bounded mutation
+   * batches."), and the TypeScript engine batches any file over 120 lines by
+   * default, so a genuinely-no-mutable-logic file scored a bogus "100.00%"
+   * instead of "n/a" purely because prose happened to be present.
+   *
+   * Semantics — this describes the REQUESTED scope, not how much of it
+   * completed:
+   *  - `'whole-file'` — mutants were enumerated across the entire file, so a
+   *    `totalMutants === 0` IS evidence that the file has no mutable logic.
+   *  - `'scoped'` — the run was deliberately restricted to `lineScope` /
+   *    `lineRanges`, so a `totalMutants === 0` only means "nothing mutable in
+   *    the requested range".
+   *  - `undefined` — the engine never enumerated mutants (e.g. a dry-run-only
+   *    run). Consumers must NOT infer "no mutable logic" from a zero here.
+   *
+   * A batched whole-file run is `'whole-file'` even though each individual
+   * batch is line-scoped, and consumers must additionally honour
+   * {@link MutationResult.complete}: a `'whole-file'` run that stopped early
+   * (`complete === false`) covered only the batches it finished, so its zero is
+   * not conclusive either.
+   */
+  scopeKind?: 'whole-file' | 'scoped';
+  /**
    * Mutants the tool could not score because the mutated code failed before a
    * real pass/fail (cosmic-ray `incompetent`, Stryker compile errors). Excluded
    * from the denominator. A non-zero value with `totalMutants === 0` means the

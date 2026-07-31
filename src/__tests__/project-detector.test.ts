@@ -1436,6 +1436,70 @@ describe('project-detector mutation hardening (priority short-circuits + regex)'
     expect(detectPythonTestRunner('/workspace')).toBe('pytest');
   });
 
+  // ── The runner key must be matched by NAME, not by suffix ──
+  // The old `runner\s*=` was unanchored, so any key ENDING in `runner` matched.
+  // Whatever it captured became cosmic-ray's `test-command`, shelled once per
+  // mutant — from a key mutmut never reads.
+  it.each([
+    ['test_runner', '[tool.mutmut]\ntest_runner = "WRONG"\n'],
+    ['custom_runner', '[tool.mutmut]\ncustom_runner = "WRONG"\n'],
+    ['pre_runner', '[tool.mutmut]\npre_runner = "WRONG"\n'],
+  ])('does not treat the %s key as the mutmut runner', (_name, content) => {
+    serve({ files: { 'pyproject.toml': content } });
+    expect(detectPythonTestRunner('/workspace')).toBe('pytest');
+  });
+
+  it('still finds the real runner key alongside a suffix-matching neighbour', () => {
+    // The anchor must exclude the decoy without also excluding the real key.
+    serve({
+      files: { 'pyproject.toml': '[tool.mutmut]\ntest_runner = "WRONG"\nrunner = "right"\n' },
+    });
+    expect(detectPythonTestRunner('/workspace')).toBe('right');
+  });
+
+  // ── The section header must be a real TOML table header ──
+  it('ignores a [tool.mutmut] mentioned in a comment', () => {
+    // `indexOf('[tool.mutmut]')` matched the literal anywhere, so this comment
+    // opened a "section" whose first `runner = …` line became a shell command.
+    serve({
+      files: {
+        'pyproject.toml': '# migrate the old [tool.mutmut] block\n[tool.other]\nrunner = "WRONG"\n',
+      },
+    });
+    expect(detectPythonTestRunner('/workspace')).toBe('pytest');
+  });
+
+  it('ignores a [tool.mutmut] that appears inside a string value', () => {
+    serve({
+      files: {
+        'pyproject.toml':
+          '[project]\ndescription = "drop-in for [tool.mutmut] users"\nrunner = "WRONG"\n',
+      },
+    });
+    expect(detectPythonTestRunner('/workspace')).toBe('pytest');
+  });
+
+  it('accepts a real header carrying a trailing TOML comment', () => {
+    // Anchoring must not become so strict that a legal header stops matching.
+    serve({ files: { 'pyproject.toml': '[tool.mutmut]  # legacy config\nrunner = "nose2"\n' } });
+    expect(detectPythonTestRunner('/workspace')).toBe('nose2');
+  });
+
+  it('accepts a real header that is indented', () => {
+    serve({ files: { 'pyproject.toml': '  [tool.mutmut]\n  runner = "ward"\n' } });
+    expect(detectPythonTestRunner('/workspace')).toBe('ward');
+  });
+
+  it('prefers the real header when a commented mention precedes it', () => {
+    serve({
+      files: {
+        'pyproject.toml':
+          '# see [tool.mutmut] below\n[tool.other]\nrunner = "WRONG"\n\n[tool.mutmut]\nrunner = "right"\n',
+      },
+    });
+    expect(detectPythonTestRunner('/workspace')).toBe('right');
+  });
+
   // ── detectEnvironment: workspaceRoot for unsupported files is resolve('.') ──
   it('resolves the unsupported workspaceRoot to the current directory', () => {
     const env = detectEnvironment('notes.md');

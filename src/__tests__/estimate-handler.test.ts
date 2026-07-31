@@ -358,6 +358,43 @@ describe('handleEstimateCall', () => {
     expect(text(res)).toBe('Operation cancelled.');
   });
 
+  it('reports a cancel that lands on a NON-throwing path as cancelled', async () => {
+    // The catch-side `isCancel` is only reachable when something throws, and
+    // estimateAudit has non-throwing paths that survive an abort — the Rust
+    // count degraded a startup failure to a heuristic result and returned
+    // normally, and a signal flipped between the last subprocess and the return
+    // is never observed at all. Without a post-run check the caller got a
+    // successful structuredContent estimate (isError unset) for cancelled work,
+    // which is indistinguishable from a completed one.
+    const controller = new AbortController();
+    mockEstimateAudit.mockImplementationOnce(async () => {
+      controller.abort(); // cancel lands mid-flight; nothing throws
+      return approxResult;
+    });
+
+    const res = await handleEstimateCall(req({ filePath: 'src/math.ts' }), undefined, {
+      signal: controller.signal,
+    });
+
+    expect(res.isError).toBe(true);
+    expect(text(res)).toBe('Operation cancelled.');
+    expect(res.structuredContent).toBeUndefined();
+  });
+
+  it('still returns the estimate when the signal was never aborted', async () => {
+    // The other arm of the post-run guard: an ordinary run must not be
+    // mistaken for a cancelled one.
+    const controller = new AbortController();
+    mockEstimateAudit.mockResolvedValue(approxResult);
+
+    const res = await handleEstimateCall(req({ filePath: 'src/math.ts' }), undefined, {
+      signal: controller.signal,
+    });
+
+    expect(res.isError).toBeUndefined();
+    expect((res.structuredContent as Record<string, unknown>).mutants).toBe(12);
+  });
+
   it('reports a genuine engine failure as halted, not as a cancel', async () => {
     // The other arm of the same branch: without it, forcing isCancel to false
     // is invisible because no test distinguishes the two messages.
@@ -475,6 +512,74 @@ describe('handleEstimateCall', () => {
       defaultTimeoutMs: 'soon' as never,
     });
     expect(mockEstimateAudit).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 300_000 }));
+  });
+
+  // ── The budget must be the one the AUDIT would use (audit finding: the
+  //    estimate graded fitsBudget against a different number) ────────────────
+
+  it('prefers the engine-section timeoutMs over defaultTimeoutMs, as the audit does', async () => {
+    // Scenario B: `"stryker": { "timeoutMs": 900000 }` with a 60s global
+    // default. audit_code_resilience resolves 900s (resolveAuditTimeoutMs:
+    // arg → engine section → global default). The estimate read only
+    // `cfg.defaultTimeoutMs`, so it graded `fitsBudget` against 60s and
+    // recommended narrowing a run that would have fit comfortably.
+    mockEstimateAudit.mockResolvedValue(approxResult);
+
+    await handleEstimateCall(req({ filePath: 'src/math.ts' }), {
+      defaultTimeoutMs: 60_000,
+      stryker: { timeoutMs: 900_000 },
+    });
+
+    expect(mockEstimateAudit).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 900_000 }));
+  });
+
+  it('ignores another engine section when resolving the budget', async () => {
+    // The section must match the engine that would run: a TypeScript target
+    // must not inherit the Rust budget.
+    mockEstimateAudit.mockResolvedValue(approxResult);
+
+    await handleEstimateCall(req({ filePath: 'src/math.ts' }), {
+      defaultTimeoutMs: 60_000,
+      rust: { timeoutMs: 900_000 },
+    });
+
+    expect(mockEstimateAudit).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 60_000 }));
+  });
+
+  // ── The runner must be resolved the same way the audit resolves it ────────
+
+  it('passes the config-resolved test runner, not the detected one', async () => {
+    // Scenario A: the project detects as vitest but config pins the Stryker
+    // command runner. The audit obeys the config; the estimate used to compare
+    // `env.testRunner` and so projected with the native constants — a ~4×
+    // under-estimate reported as fitting the budget.
+    mockEstimateAudit.mockResolvedValue(approxResult);
+
+    await handleEstimateCall(req({ filePath: 'src/math.ts', withTiming: true }), {
+      stryker: { testRunner: 'command' },
+    });
+
+    expect(mockEstimateAudit).toHaveBeenCalledWith(
+      expect.objectContaining({ testRunner: 'command' }),
+    );
+  });
+
+  it('falls back to the detected runner when no config overrides it', async () => {
+    mockEstimateAudit.mockResolvedValue(approxResult);
+
+    await handleEstimateCall(req({ filePath: 'src/math.ts', withTiming: true }));
+
+    expect(mockEstimateAudit).toHaveBeenCalledWith(
+      expect.objectContaining({ testRunner: 'vitest' }),
+    );
+  });
+
+  it('uses the global config testRunner over detection when no engine section applies', async () => {
+    mockEstimateAudit.mockResolvedValue(approxResult);
+
+    await handleEstimateCall(req({ filePath: 'src/math.ts' }), { testRunner: 'jest' });
+
+    expect(mockEstimateAudit).toHaveBeenCalledWith(expect.objectContaining({ testRunner: 'jest' }));
   });
 
   it('rejects a NUMERIC STRING defaultTimeoutMs rather than passing it through', async () => {

@@ -764,6 +764,20 @@ export async function createSandbox(
   // macOS/Linux, TEMP/TMP on Windows). Previously hard-coded to '/tmp'.
   const sandboxDir = mkdtempSync(join(tmpdir(), `chaos-mcp-${id}`));
 
+  // Register for cleanup the instant the directory exists, NOT after
+  // provisioning succeeds.
+  //
+  // ACTIVE_SANDBOXES is the only thing cleanupAllSandboxes() walks, and that is
+  // what the exit/SIGTERM/SIGINT/SIGHUP/SIGQUIT handlers above — and
+  // installShutdownHandlers' `.finally` in src/index.ts — run on their way out.
+  // Registering AFTER the copy meant a signal arriving during Step 1 (by far the
+  // longest phase: a full workspace tree copy, seconds on a large repo) cleaned
+  // a set that did not contain this directory and then called process.exit, so
+  // the `finally` below never ran and the half-copied tree leaked into tmpdir()
+  // permanently. Registration is a Set.add and every cleanup path is idempotent,
+  // so paying it up front costs nothing.
+  ACTIVE_SANDBOXES.add(sandboxDir);
+
   let success = false;
   try {
     // ── Step 1: Copy workspace tree (exclude heavyweight / generated dirs) ──
@@ -783,7 +797,6 @@ export async function createSandbox(
     verifyTarget(sandboxDir, targetFile, absoluteWorkspace);
 
     success = true;
-    ACTIVE_SANDBOXES.add(sandboxDir);
     return { workDir: sandboxDir, targetFile, cleanup: makeCleanup(sandboxDir) };
   } finally {
     if (!success) {
@@ -792,6 +805,10 @@ export async function createSandbox(
       } catch {
         // Best-effort cleanup
       }
+      // Deregister only once the directory is gone, so a signal racing this
+      // branch still finds the sandbox in the registry and removes it. A second
+      // rmSync on an already-removed path is a no-op under `force: true`.
+      ACTIVE_SANDBOXES.delete(sandboxDir);
     }
   }
 }

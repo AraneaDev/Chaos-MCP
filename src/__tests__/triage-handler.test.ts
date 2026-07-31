@@ -6,6 +6,7 @@ import type { MutationResult } from '../engines/base.js';
 // prelude it belongs to (Finding 3 decomposition); the import follows it there.
 import { resolveStrykerConcurrency } from '../triage-args-validation.js';
 import { ALLOWED_ROOTS_ENV } from '../utils/path-safety.js';
+import { ExecFailureError } from '../utils/exec-error.js';
 
 vi.mock('../triage.js', async () => {
   const actual = await vi.importActual<typeof import('../triage.js')>('../triage.js');
@@ -57,7 +58,8 @@ import { detectEnvironment } from '../utils/project-detector.js';
 import { auditFile } from '../audit/audit-file.js';
 import { listChangedFiles, computeChangedRanges } from '../utils/git-diff.js';
 import { loadSuppressions, fingerprintSourceLine, type StoredEntry } from '../utils/suppression.js';
-import { mintRunId } from '../utils/run-cache.js';
+import { mintRunId, loadRun, workspaceFingerprint } from '../utils/run-cache.js';
+import { computeScope } from '../audit/scope.js';
 import { createSandbox } from '../utils/sandbox.js';
 import { handleTriageCall } from '../triage-handler.js';
 
@@ -459,6 +461,64 @@ describe('handleTriageCall', () => {
       expect(Object.keys(payload.ranking[0])).not.toContain('scopeNote');
     });
 
+    /**
+     * `DiffResult` gained `git-failed` (timeout / not-installed / other) when
+     * `not-a-repo` was narrowed to a genuine non-zero rev-parse exit. The
+     * per-file switch here had no case for it and no default, so a timed-out or
+     * missing git fell straight through to `{}` — the file was mutated
+     * WHOLE-FILE and its score was presented as if the sweep had never been
+     * diff-scoped. Quieter than the old "not a git work tree" lie, still wrong.
+     */
+    it.each(['timeout', 'not-installed', 'other'] as const)(
+      'labels the row when git could not scope the file (%s) instead of silently going whole-file',
+      async (reason) => {
+        mockListChangedFiles.mockResolvedValue({ kind: 'files', files: ['a.ts'] });
+        mockDiscoverChanged.mockReturnValue({ files: ['a.ts'], discovered: 1, skipped: 0 });
+        mockComputeChangedRanges.mockResolvedValue({
+          kind: 'git-failed',
+          reason,
+          message: 'git said no',
+        });
+        mockAuditFile.mockResolvedValue(mrOf({}));
+
+        const res = await handleTriageCall(req({ diffBase: 'HEAD' }));
+        const payload = JSON.parse(txt(res)) as { ranking: { scopeNote?: string }[] };
+
+        expect(payload.ranking[0].scopeNote).toBe(
+          `git could not scope this file (${reason}); whole file`,
+        );
+      },
+    );
+
+    it('still scores the file — a git failure degrades the row, it does not error it', async () => {
+      // Deliberately unlike the single-file audit path (audit/scope.ts), which
+      // returns a tool error. A sweep has other files to get through, the file
+      // set was already chosen by a `listChangedFiles` that SUCCEEDED, and the
+      // dominant cause is our own shrinking per-file clamp — so erroring the row
+      // would turn "running low on budget" into a run of empty error entries.
+      mockListChangedFiles.mockResolvedValue({ kind: 'files', files: ['a.ts', 'b.ts'] });
+      mockDiscoverChanged.mockReturnValue({ files: ['a.ts', 'b.ts'], discovered: 2, skipped: 0 });
+      mockComputeChangedRanges.mockResolvedValue({
+        kind: 'git-failed',
+        reason: 'timeout',
+        message: 'git said no',
+      });
+      mockAuditFile.mockResolvedValue(mrOf({}));
+
+      const res = await handleTriageCall(req({ diffBase: 'HEAD' }));
+      const payload = JSON.parse(txt(res)) as {
+        ranking: { mutationScore: string }[];
+        errors?: unknown[];
+      };
+
+      expect(res.isError).toBeUndefined();
+      expect(payload.ranking).toHaveLength(2);
+      expect(payload.ranking[0].mutationScore).toBe('80.00%');
+      expect(payload.errors ?? []).toEqual([]);
+      // Whole-file: no line scope reached the engine.
+      expect(mockAuditFile.mock.calls[0][0].lineRanges).toBeUndefined();
+    });
+
     it('reports a diffBase that git cannot resolve', async () => {
       mockListChangedFiles.mockResolvedValue({ kind: 'bad-ref', ref: 'nope' });
 
@@ -466,6 +526,72 @@ describe('handleTriageCall', () => {
 
       expect(res.isError).toBe(true);
       expect(txt(res)).toBe('diffBase "nope" could not be resolved as a git ref.');
+    });
+  });
+
+  describe('a git call that never answered', () => {
+    /**
+     * `listChangedFiles` re-throws timeout / ENOENT / other failures instead of
+     * flattening them into `not-a-repo`. Nothing in the sweep may escape as a
+     * raw rejection: the MCP SDK would turn it into a JSON-RPC protocol error
+     * rather than the `isError` tool result every other failure here uses.
+     */
+    const failWith = (code: string, message: string) =>
+      new ExecFailureError({ stdout: '', stderr: '', exit: null, signal: null, code }, message);
+
+    it('reports a missing git binary as a tool error, not a protocol error', async () => {
+      mockListChangedFiles.mockRejectedValue(failWith('ENOENT', 'Command not found: git'));
+
+      const res = await handleTriageCall(req({ diffBase: 'main' }));
+
+      expect(res.isError).toBe(true);
+      expect(txt(res)).toContain('(not-installed)');
+      expect(txt(res)).toContain('Command not found: git');
+      expect(mockAuditFile).not.toHaveBeenCalled();
+    });
+
+    it('reports a git timeout as a timeout rather than a broken workspace', async () => {
+      mockListChangedFiles.mockRejectedValue(
+        failWith('TIMEOUT', 'Command timed out after 15000ms: git'),
+      );
+
+      const res = await handleTriageCall(req({ diffBase: 'main' }));
+
+      expect(res.isError).toBe(true);
+      expect(txt(res)).toContain('(timeout)');
+      expect(txt(res)).not.toContain('not a git work tree');
+    });
+
+    it('reports a cancel landing mid-git as "Operation cancelled."', async () => {
+      // The cancel is re-thrown all the way out of `listChangedFiles`; the
+      // handler's catch is the only thing between it and the SDK.
+      const controller = new AbortController();
+      mockListChangedFiles.mockImplementation(() => {
+        controller.abort();
+        return Promise.reject(failWith('ABORTED', 'Command was cancelled: git'));
+      });
+
+      const res = await handleTriageCall(req({ diffBase: 'main' }), undefined, {
+        signal: controller.signal,
+      });
+
+      expect(res.isError).toBe(true);
+      expect(txt(res)).toBe('Operation cancelled.');
+    });
+
+    it('wraps any other escaped failure in the shared halted message', async () => {
+      // Target selection is not the only thing that can throw; the handler-wide
+      // catch is what stops ANY of it reaching the SDK as a protocol error.
+      mockListChangedFiles.mockResolvedValue({ kind: 'files', files: ['a.ts'] });
+      mockDiscoverChanged.mockImplementation(() => {
+        throw new Error('boom');
+      });
+
+      const res = await handleTriageCall(req({ diffBase: 'main' }));
+
+      expect(res.isError).toBe(true);
+      expect(txt(res)).toBe('Chaos Engine Halted: boom');
+      expect(res.content).toHaveLength(1);
     });
   });
 
@@ -751,6 +877,71 @@ describe('handleTriageCall', () => {
       const row = (JSON.parse(txt(res)) as { ranking: { runId?: string }[] }).ranking[0];
 
       expect(row.runId).toMatch(/^[0-9a-f]{8}$/);
+    });
+
+    /**
+     * Audit M10, triage mint side. The row's key is `relFromRoot` — a
+     * workspace-RELATIVE path — so an unstamped triage entry for workspace A's
+     * `a.ts` verified happily against workspace B's `a.ts`. The sweep resolves
+     * `env` PER FILE, so the root has to travel with the row (RowInput), not
+     * with the sweep.
+     */
+    it('stamps the row entry with the workspace the file was audited in', async () => {
+      mockDiscover.mockReturnValue({ files: ['a.ts'], discovered: 1, skipped: 0 });
+      mockAuditFile.mockResolvedValue(mrOf({}));
+
+      const res = await handleTriageCall(req({ paths: ['src'] }));
+      const row = (JSON.parse(txt(res)) as { ranking: { runId: string }[] }).ranking[0];
+
+      expect(loadRun(row.runId)?.workspaceHash).toBe(workspaceFingerprint(tsEnv.workspaceRoot));
+    });
+
+    it('mints a row runId the AUDIT tool will accept (the documented cross-tool flow)', async () => {
+      // `harden_file` hands a triage row's runId straight to
+      // `audit_code_resilience`, so the entry has to satisfy that tool's three
+      // gates at once: same relative file, same project type, and — since this
+      // change — a workspace fingerprint that is present AND matches. Exercised
+      // through `computeScope`, which is the gate itself; going through
+      // handleToolCall would need a second engine stub to observe the same fact.
+      mockDiscover.mockReturnValue({ files: ['a.ts'], discovered: 1, skipped: 0 });
+      mockAuditFile.mockResolvedValue(
+        mrOf({
+          survived: 1,
+          vulnerabilities: [{ line: 4, mutator: 'ConditionalExpression', description: 'x' }],
+        }),
+      );
+
+      const res = await handleTriageCall(req({ paths: ['src'] }));
+      const row = (JSON.parse(txt(res)) as { ranking: { runId: string }[] }).ranking[0];
+
+      const resolved = await computeScope(
+        { runId: row.runId },
+        'a.ts',
+        tsEnv,
+        'typescript',
+        {},
+        'a.ts',
+      );
+      expect(resolved).toMatchObject({ kind: 'scope', diffRanges: [{ start: 4, end: 4 }] });
+    });
+
+    it('stamps the FILE’s workspace root, not the sweep’s working directory', async () => {
+      // Why the root travels on `RowInput` rather than on `TriageFileDeps`: the
+      // sweep resolves `detectEnvironment` PER FILE, so one sweep launched from
+      // a monorepo root can legitimately span several package roots. Hoisting it
+      // onto the sweep would stamp every row with rootCwd, and every one of
+      // those ids would then be refused by a verify run in the package it
+      // actually audited.
+      const pkgRoot = join(process.cwd(), 'packages', 'app');
+      mockDetectEnv.mockReturnValue({ ...tsEnv, workspaceRoot: pkgRoot });
+      mockDiscover.mockReturnValue({ files: ['a.ts'], discovered: 1, skipped: 0 });
+      mockAuditFile.mockResolvedValue(mrOf({}));
+
+      const res = await handleTriageCall(req({ paths: ['src'] }));
+      const row = (JSON.parse(txt(res)) as { ranking: { runId: string }[] }).ranking[0];
+
+      expect(loadRun(row.runId)?.workspaceHash).toBe(workspaceFingerprint(pkgRoot));
+      expect(loadRun(row.runId)?.workspaceHash).not.toBe(workspaceFingerprint(process.cwd()));
     });
   });
 
@@ -1093,6 +1284,41 @@ describe('handleTriageCall minScore gate', () => {
     expect(json.gate.passed).toBe(false);
     expect(json.gate.failingFiles).toContain('a.ts');
     expect(json.ranking[0].passed).toBe(false);
+  });
+
+  it('renders the gate verdict in the TEXT output and still does not set isError', async () => {
+    // Audit M-gateText: the text renderer never received the gate, so
+    // `outputFormat: 'text'` + `minScore` returned a plain leaderboard with no
+    // sign that a gate had been requested or that it had failed — turning a
+    // rendering choice into a feature toggle.
+    //
+    // `isError` stays UNSET on purpose. Both tools' input schemas promise it:
+    // tool-schema.ts documents this tool's minScore as "the result reports
+    // gate.passed=false and lists the failing files. Never causes an error", and
+    // the audit tool's as "(never an error)". Every other `isError: true` here
+    // means the sweep could not be performed — not that it ran and scored badly.
+    mockDiscover.mockReturnValue({ files: ['a.ts'], discovered: 1, skipped: 0 });
+    mockAuditFile.mockResolvedValue(mrOf({ mutationScore: '50.00%', survived: 5 }));
+    const res = await handleTriageCall(req({ paths: ['src'], minScore: 80, outputFormat: 'text' }));
+    expect(res.isError).toBeUndefined();
+    const lines = txt(res).split('\n');
+    expect(lines[0]).toBe('Gate: FAILED (minScore 80) — 1 file(s) below threshold: a.ts');
+    expect(() => JSON.parse(txt(res))).toThrow(); // proves it is text, not JSON
+    // Text and structuredContent must agree about the verdict.
+    expect((res.structuredContent as { gate: { passed: boolean } } | undefined)?.gate.passed).toBe(
+      false,
+    );
+  });
+
+  it('announces a passing gate in the text output too', async () => {
+    // A gate that passed is still information the caller asked for by supplying
+    // minScore; staying silent leaves "was a gate even applied?" unanswerable
+    // from the text block.
+    mockDiscover.mockReturnValue({ files: ['a.ts'], discovered: 1, skipped: 0 });
+    mockAuditFile.mockResolvedValue(mrOf({ mutationScore: '95.00%', survived: 1 }));
+    const res = await handleTriageCall(req({ paths: ['src'], minScore: 80, outputFormat: 'text' }));
+    expect(res.isError).toBeUndefined();
+    expect(txt(res).split('\n')[0]).toBe('Gate: passed (minScore 80)');
   });
 
   it('passes minScore to the empty-result early return', async () => {

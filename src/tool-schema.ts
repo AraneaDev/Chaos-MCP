@@ -309,6 +309,13 @@ export const TOOL_DEFINITION = {
       survivorsFiltered: { type: 'integer' },
       noCoverageFiltered: { type: 'integer' },
       scopeNote: { type: 'string' },
+      // Advisory that the RUN may misreport (a misconfiguration in the audited
+      // project), as opposed to `scopeNote`, which explains what was mutated.
+      // Produced by `buildResultPayload` from `MutationResult.fidelityNote`
+      // (see the PHPUnit phantom-survivor warning in engines/php.ts); it was
+      // missing here, so a client binding fields from this schema never
+      // surfaced the warning at all.
+      fidelityNote: { type: 'string' },
       enrichNote: { type: 'string' },
       runId: { type: 'string' },
       suppressedCount: { type: 'integer' },
@@ -517,7 +524,8 @@ export const ESTIMATE_TOOL_DEFINITION = {
   name: 'estimate_audit',
   description:
     'Cheap pre-flight estimate of how big/long auditing a file will be, WITHOUT running the full ' +
-    'mutation test cycle. Returns an approximate mutant count (exact for Rust via cargo-mutants --list; ' +
+    'mutation test cycle. Returns an approximate mutant count (for Rust, an exact count of the mutants ' +
+    'cargo-mutants --list GENERATES — the audit scores fewer, excluding unviable ones as `incompetent`; ' +
     'a source heuristic for TS/JS/Python/PHP, labeled fidelity:"approx"). Set withTiming:true to also ' +
     'run the test suite once and estimate wall-clock time. Use this before audit_code_resilience to ' +
     'decide whether to audit now, scope down, or skip.',

@@ -11,6 +11,9 @@ vi.mock('../utils/exec-classify.js', async () => {
 vi.mock('../utils/logger.js', () => ({
   log: vi.fn(),
   isVerbose: vi.fn(() => false),
+  // `warn` is always-on (it does not check verbose), so the totals cross-check
+  // in parseInfectionJsonLog would write to the runner's stderr unmocked.
+  warn: vi.fn(),
 }));
 
 vi.mock('fs', async () => {
@@ -161,15 +164,50 @@ describe('inferSourceDir', () => {
     expect(inferSourceDir('Calculator.php')).toBe('.');
   });
   it('returns "." for a leading-slash path rather than an empty source directory', () => {
-    // The `slash > 0` guard, not `>= 0`: a path starting with a separator has
-    // its first slash at index 0, and slicing there yields '' — which would be
-    // written into the generated config as `source.directories: [""]` and make
-    // Infection mutate nothing. Normalized backslashes take the same path.
+    // A path starting with a separator has no usable first segment, and an empty
+    // one would be written into the generated config as
+    // `source.directories: [""]`, making Infection mutate nothing. Its own
+    // directory is the filesystem root, which is not a source root either, so
+    // "." is the honest answer here. Normalized backslashes take the same path.
     expect(inferSourceDir('/Calculator.php')).toBe('.');
     expect(inferSourceDir('\\Calculator.php')).toBe('.');
   });
   it('normalizes backslash separators to forward slashes', () => {
     expect(inferSourceDir('src\\Domain\\Calculator.php')).toBe('src');
+  });
+
+  it('strips a leading "./" instead of reporting the whole project tree', () => {
+    // `./src/Calculator.php` has its first slash at index 1, so the raw
+    // first-segment slice was the literal "." — which tells Infection to treat
+    // the ENTIRE project (vendor/, tests/ and all) as mutable source. The
+    // provenance check in this same file already normalised a leading "./", so
+    // the two functions used to disagree about the same input.
+    expect(inferSourceDir('./src/Calculator.php')).toBe('src');
+    expect(inferSourceDir('.\\src\\Calculator.php')).toBe('src');
+    expect(inferSourceDir('././app/Service/Math.php')).toBe('app');
+  });
+
+  it('makes an absolute target relative to the directory Infection runs in', () => {
+    // The sandbox path shape: the config is written to `cwd`, so the source root
+    // must be expressed relative to it — not collapsed to "." because the first
+    // slash sits at index 0.
+    expect(inferSourceDir('/sb/src/Calculator.php', '/sb')).toBe('src');
+    expect(inferSourceDir('/sb/app/Service/Math.php', '/sb')).toBe('app');
+  });
+
+  it("falls back to the file's own directory when it lies outside cwd", () => {
+    // Nothing can be named as a top-level source directory here, but the file's
+    // own directory is still far narrower than the project root — and "." is
+    // exactly the over-broad scope that drags vendor/ and tests/ into the run.
+    expect(inferSourceDir('/opt/other/src/Calculator.php', '/sb')).toBe('../opt/other/src');
+    expect(inferSourceDir('/sb/../lib/Calculator.php', '/sb')).toBe('../lib');
+  });
+
+  it('never returns a bare ancestor chain, which would be broader than "."', () => {
+    // `/Calculator.php` relative to `/sb/deep` is `../../Calculator.php`; its
+    // directory is `../..`, an ancestor of the project root. Falling back to
+    // that would widen the mutation scope rather than narrow it.
+    expect(inferSourceDir('/Calculator.php', '/sb/deep')).toBe('.');
   });
 });
 
@@ -288,26 +326,187 @@ describe('parseInfectionJsonLog', () => {
     expect(() => parseInfectionJsonLog(log, 'src/Calculator.php')).not.toThrow();
   });
 
-  it('excludes notCovered/errored from the denominator', () => {
+  // ───────────────────────────────────────────────────────────────────────────
+  // notCovered / errored. Both used to vanish from the result entirely — no
+  // count, no note, nothing explaining why `totalMutants` was smaller than the
+  // run Infection actually performed. They are NOT the same outcome and are not
+  // reported the same way: see the parser's doc comment.
+  // ───────────────────────────────────────────────────────────────────────────
+  it('reports notCovered mutants as no-coverage vulnerabilities inside the denominator', () => {
+    // UPDATED (audit FIX 2): this case previously asserted totalMutants 2 —
+    // notCovered silently dropped. `notCovered` means "no test covers this
+    // line": nothing failed, the suite never looked. That is the same outcome
+    // the TypeScript engine reports as Stryker `NoCoverage` — an actionable hole
+    // that is unkilled and therefore inside the denominator — not an
+    // "unscoreable" mutant.
     const log = JSON.stringify({
       stats: { killedCount: 1, escapedCount: 1 },
       escaped: [{ mutator: { mutatorName: 'Plus', originalStartLine: 3 } }],
       killed: [{}],
-      notCovered: [{}, {}],
+      notCovered: [
+        { mutator: { mutatorName: 'Minus', originalStartLine: 7 }, diff: '  - $a - $b\n' },
+        { mutator: { mutatorName: 'Identical', originalStartLine: 9 } },
+      ],
       errored: [{}],
     });
     const r = parseInfectionJsonLog(log, 'src/X.php');
     expect(r.killed).toBe(1);
-    expect(r.survived).toBe(1);
-    expect(r.totalMutants).toBe(2); // notCovered + errored NOT counted
-    expect(r.mutationScore).toBe('50.00%');
+    expect(r.survived).toBe(1); // survivors only — notCovered is not a survivor
+    expect(r.totalMutants).toBe(4); // 1 killed + 1 escaped + 2 notCovered; errored excluded
+    expect(r.mutationScore).toBe('25.00%');
+    // `triage.ts` derives its noCoverage figure as vulnerabilities.length - survived.
+    expect(r.vulnerabilities).toHaveLength(3);
+    expect(r.vulnerabilities.filter((v) => v.kind === 'noCoverage')).toHaveLength(2);
+    const nc = r.vulnerabilities.find((v) => v.line === 7);
+    expect(nc).toMatchObject({ kind: 'noCoverage', mutator: 'Minus', mutated: '- $a - $b' });
+    expect(nc?.description).toMatch(/no test reached/i);
   });
 
-  it('returns a clean 100% when there are zero scored mutants', () => {
-    const r = parseInfectionJsonLog(JSON.stringify({ stats: {}, escaped: [] }), 'src/X.php');
+  it('counts errored mutants as incompetent and keeps them out of the score', () => {
+    // base.ts defines `incompetent` as mutants the tool could not score because
+    // the mutated code failed before a real pass/fail — exactly Infection's
+    // `errored`. format.ts already renders it; it simply never fired for PHP.
+    const log = JSON.stringify({
+      stats: { killedCount: 2 },
+      escaped: [],
+      killed: [{}, {}],
+      errored: [{}, {}, {}],
+    });
+    const r = parseInfectionJsonLog(log, 'src/X.php');
+    expect(r.incompetent).toBe(3);
+    expect(r.totalMutants).toBe(2);
+    expect(r.mutationScore).toBe('100.00%');
+  });
+
+  it('omits incompetent entirely when nothing errored', () => {
+    // Present-but-zero reads as "the tool reported this" to consumers that only
+    // check for the key (format.ts guards on `> 0`, but the payload shape is
+    // user-visible). Matches the Rust engine's conditional spread.
+    const r = parseInfectionJsonLog(SAMPLE_LOG, 'src/Calculator.php');
+    expect(Object.keys(r)).not.toContain('incompetent');
+  });
+
+  it('checks notCovered mutants against the audited file too (stale-log provenance)', () => {
+    // notCovered entries are now REPORTED, so they need the same provenance
+    // guard as escaped/killed. A stale log whose only entries are another file's
+    // uncovered mutants would otherwise be published as this file's coverage holes.
+    const log = JSON.stringify({
+      stats: { killedCount: 0 },
+      escaped: [],
+      killed: [],
+      notCovered: [{ mutator: { mutatorName: 'Plus', originalFilePath: '/sb/src/Other.php' } }],
+    });
+    expect(() => parseInfectionJsonLog(log, 'src/Calculator.php')).toThrow(/different file/i);
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Schema drift. `JSON.parse` proves only that the bytes are JSON; every field
+  // read past it fails SOFT, so a log whose result keys this parser has never
+  // heard of scored killed 0 / survived 0 / total 0 — which formatMutationScore
+  // renders as a confident "100.00%".
+  // ───────────────────────────────────────────────────────────────────────────
+  it('refuses a log with no recognised result keys instead of scoring it 100%', () => {
+    // UPDATED (audit FIX 1): this case previously asserted the defect —
+    // `{"stats":{},"escaped":[]}` → totalMutants 0, "100.00%". Empty stats plus
+    // empty arrays is exactly what a wholesale key rename degrades to, and a
+    // real Infection run always emits its stats counts, so it cannot be
+    // mistaken for a genuinely mutant-free file.
+    expect(() =>
+      parseInfectionJsonLog(JSON.stringify({ stats: {}, escaped: [] }), 'src/X.php'),
+    ).toThrow(/no recognised result keys/);
+  });
+
+  it('names the supported Infection range and the keys it actually got', () => {
+    // A plausible future rename: the same data under names this parser cannot
+    // read. Without the guard it scores 100.00% for a file with 50 survivors.
+    const renamed = JSON.stringify({
+      summary: { totalCount: 50, detectedCount: 10 },
+      survivors: [{ mutator: { mutatorName: 'Plus', originalStartLine: 3 } }],
+    });
+    expect(() => parseInfectionJsonLog(renamed, 'src/X.php')).toThrow(/0\.27–0\.34/);
+    expect(() => parseInfectionJsonLog(renamed, 'src/X.php')).toThrow(/summary, survivors/);
+  });
+
+  it.each([
+    ['a JSON null', 'null'],
+    ['a JSON array', '[]'],
+    ['a bare number', '42'],
+    ['an empty object', '{}'],
+  ])('refuses %s rather than reading fields off it', (_label, text) => {
+    // `JSON.parse('null')` used to reach `parsed.escaped` and throw a raw
+    // TypeError; the others scored a silent 100%.
+    expect(() => parseInfectionJsonLog(text, 'src/X.php')).toThrow(/no recognised result keys/);
+  });
+
+  it('accepts a genuinely mutant-free run reported through stats alone', () => {
+    // The honest zero: Infection ran, found nothing to mutate, and said so with
+    // its own counts. That must still score (total 0 → "100.00%"), or a file of
+    // pure constants becomes an audit failure.
+    const log = JSON.stringify({
+      stats: { totalMutantsCount: 0, killedCount: 0, escapedCount: 0, timeOutCount: 0 },
+      escaped: [],
+      killed: [],
+    });
+    const r = parseInfectionJsonLog(log, 'src/X.php');
     expect(r.totalMutants).toBe(0);
     expect(r.mutationScore).toBe('100.00%');
     expect(r.vulnerabilities).toEqual([]);
+  });
+
+  it('accepts a log carrying only mutant lists, with no stats block at all', () => {
+    const log = JSON.stringify({ escaped: [{ mutator: { originalStartLine: 2 } }], killed: [{}] });
+    expect(parseInfectionJsonLog(log, 'src/X.php').totalMutants).toBe(2);
+  });
+
+  it('warns when Infection’s own total disagrees with what the parser read', async () => {
+    // The partial rename the recognised-keys guard cannot see: `stats` is
+    // intact, so the log looks understood, but the survivor list moved to a name
+    // we do not read and its 6 mutants vanish from the score.
+    const { warn } = await import('../utils/logger.js');
+    vi.mocked(warn).mockClear();
+    const log = JSON.stringify({
+      stats: { totalMutantsCount: 10, killedCount: 4 },
+      killed: [{}, {}, {}, {}],
+      survivedMutants: [{}, {}, {}, {}, {}, {}],
+    });
+    const r = parseInfectionJsonLog(log, 'src/X.php');
+    expect(r.mutationScore).toBe('100.00%'); // still the best reading of what was there…
+    expect(vi.mocked(warn)).toHaveBeenCalledWith(
+      expect.stringContaining('reports 10 mutant(s) in total but this parser accounted for 4'),
+    );
+  });
+
+  it('does not warn when the totals reconcile, including declared-but-unscored mutants', async () => {
+    // `ignored`/`skipped`/`syntaxError` mutants are legitimately part of
+    // Infection's total; counting them keeps the check from crying wolf on a
+    // perfectly well-read log.
+    const { warn } = await import('../utils/logger.js');
+    vi.mocked(warn).mockClear();
+    const log = JSON.stringify({
+      stats: {
+        totalMutantsCount: 8,
+        killedCount: 3,
+        escapedCount: 1,
+        timeOutCount: 1,
+        ignoredCount: 2,
+        skippedCount: 1,
+      },
+      escaped: [{ mutator: { originalStartLine: 5 } }],
+      killed: [{}, {}, {}],
+      timeouted: [{}],
+    });
+    parseInfectionJsonLog(log, 'src/X.php');
+    expect(vi.mocked(warn)).not.toHaveBeenCalled();
+  });
+
+  it('does not warn when the log carries no total to check against', async () => {
+    const { warn } = await import('../utils/logger.js');
+    vi.mocked(warn).mockClear();
+    parseInfectionJsonLog(
+      JSON.stringify({ stats: { killedCount: 1 }, escaped: [], killed: [{}] }),
+      'src/X.php',
+    );
+    expect(vi.mocked(warn)).not.toHaveBeenCalled();
   });
 
   it('throws on an unparseable (corrupt) JSON log rather than reporting a false 100%', () => {

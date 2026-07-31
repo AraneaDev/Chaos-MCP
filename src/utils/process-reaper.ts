@@ -25,6 +25,11 @@ import { resolve, sep } from 'path';
  * `vitest` worker outlived the StrykerJS run that started it by 20 hours.
  * Walking `ps` is the portable way to reach grandchildren without rewriting the
  * capture/timeout/maxBuffer semantics of exec().
+ *
+ * This is also why no reaping path here attempts a group kill any more: a call
+ * that can only fail is dead code, and on the rare occasion it did NOT fail it
+ * was signalling somebody else's process group (a pgid recycled onto our child's
+ * pid) instead of our own tree.
  */
 function descendantPids(root: number): number[] {
   const children = new Map<number, number[]>();
@@ -73,30 +78,43 @@ function killPid(pid: number): void {
   }
 }
 
+/**
+ * Windows has no process groups and no `ps`, so `taskkill /T` is the whole tree
+ * walk: it terminates the pid and every process it spawned. Shared by the
+ * in-flight failure path ({@link killProcessTree}) and the teardown/shutdown
+ * path ({@link killGroup}) so the two cannot drift — the second one used to have
+ * no Windows branch at all, which left sandbox cleanup deleting a directory out
+ * from under a live engine.
+ *
+ * Fire-and-forget: nothing is left to await the result on the paths that call
+ * this, and `execFile` itself can throw synchronously if the binary cannot be
+ * spawned at all.
+ */
+function taskkillTree(pid: number): void {
+  try {
+    execFile('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true }, () => undefined);
+  } catch {
+    // Fall through to whatever direct termination the caller can still do.
+  }
+}
+
 /** Best-effort termination of a subprocess and all of its descendants. */
 export function killProcessTree(child: ChildProcess | undefined, detachedGroup: boolean): void {
   // Stryker disable next-line ConditionalExpression: continuing with an absent child is observably the same because both best-effort kill attempts are caught.
   if (!child?.pid) return;
   if (process.platform === 'win32') {
-    try {
-      execFile(
-        'taskkill',
-        ['/PID', String(child.pid), '/T', '/F'],
-        { windowsHide: true },
-        () => undefined,
-      );
-    } catch {
-      // Fall through to direct-child termination.
-    }
+    taskkillTree(child.pid);
   }
   if (detachedGroup && process.platform !== 'win32') {
-    try {
-      process.kill(-child.pid, 'SIGKILL');
-      return;
-    } catch {
-      // Expected: exec()/execFile() drop `detached`, so there is no such group.
-      // Fall through to the descendant walk, which does not depend on grouping.
-    }
+    // No `process.kill(-pid)` here, deliberately. See {@link descendantPids}:
+    // exec()/execFile() DISCARD `detached`, so a child spawned through this
+    // module is never a group leader and `-child.pid` never names its own
+    // group. A SUCCESSFUL group kill therefore had exactly one meaning — some
+    // UNRELATED group happened to carry a pgid equal to our child's pid — and
+    // the code then returned on that success, skipping both the descendant walk
+    // and the direct kill. The engine this call exists to terminate survived,
+    // and somebody else's processes died in its place. The descendant walk
+    // reaches everything the group kill was ever meant to reach.
     for (const pid of descendantPids(child.pid)) killPid(pid);
   }
   try {
@@ -127,6 +145,16 @@ export function killProcessTree(child: ChildProcess | undefined, detachedGroup: 
  * Only `killTree` spawns are tracked — that flag is how a caller states it owns
  * a whole tool invocation rather than a single process. Callers that manage a
  * child's lifetime themselves are left alone.
+ *
+ * Tracking is platform-independent even though the reaping mechanism is not.
+ * Registration used to be gated on `platform !== 'win32'`, which left this map
+ * permanently empty on Windows and quietly turned BOTH consumers into no-ops:
+ * `makeCleanup` in utils/sandbox.ts reaped nothing before removing the sandbox
+ * (the exact "delete the directory out from under a live vitest" failure
+ * described above, made worse on Windows because rmSync over open handles then
+ * fails EBUSY into a swallowing catch and the sandbox leaks too), and
+ * `killAllTrackedProcesses` on SIGTERM/exit reaped nothing at all.
+ * {@link killGroup} carries the platform difference instead.
  */
 const ACTIVE_PROCESS_GROUPS = new Map<number, string>();
 
@@ -143,16 +171,20 @@ export function untrackProcessGroup(child: ChildProcess | undefined): void {
 /**
  * SIGKILL a tracked child and everything below it.
  *
- * Tries the process group first (correct when the child really is a group
- * leader), then walks the descendant tree — see {@link descendantPids} for why
- * the group almost never exists for children spawned by this module.
+ * Windows takes `taskkill /T`; there are no process groups there and no `ps` to
+ * walk, and without this branch a tracked pid was dropped from the registry
+ * having never been signalled.
+ *
+ * POSIX walks the descendant tree, deepest-first, then kills the child itself.
+ * It does NOT attempt `process.kill(-pid)`: see {@link descendantPids} — the
+ * children this module spawns are never group leaders, so that call could only
+ * ever succeed by hitting an unrelated group, and it used to `return` on that
+ * success and abandon the tracked pid entirely.
  */
 function killGroup(pid: number): void {
-  try {
-    process.kill(-pid, 'SIGKILL');
+  if (process.platform === 'win32') {
+    taskkillTree(pid);
     return;
-  } catch {
-    // No such group — fall through to the tree walk.
   }
   for (const descendant of descendantPids(pid)) killPid(descendant);
   killPid(pid);

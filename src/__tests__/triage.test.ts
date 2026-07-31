@@ -13,6 +13,7 @@ import {
   formatTriageAsText,
   buildTriagePayload,
   type TriageRow,
+  type TriageError,
 } from '../triage.js';
 import { supportedSourceExtensions } from '../utils/project-detector.js';
 
@@ -25,6 +26,29 @@ const mr = (over: Partial<MutationResult>): MutationResult => ({
   vulnerabilities: [],
   ...over,
 });
+
+/**
+ * Text-render helper keeping the loose-argument call style these tests were
+ * written with.
+ *
+ * `formatTriageAsText` now takes the whole `TriagePayload` instead of six
+ * positional arguments: the old signature had no way to express the gate
+ * verdict, so `outputFormat: 'text'` silently dropped it (audit M-gateText).
+ * Routing through `buildTriagePayload` is also what the handler does, so these
+ * assertions now cover the real production path rather than a parallel one.
+ */
+const textOf = (
+  rows: TriageRow[],
+  errors: TriageError[] = [],
+  discovered = rows.length,
+  skipped = 0,
+  scopeNote?: string,
+  unaudited: string[] = [],
+  minScore?: number,
+): string =>
+  formatTriageAsText(
+    buildTriagePayload(rows, errors, discovered, skipped, scopeNote, minScore, unaudited),
+  );
 
 describe('isSupportedSourceFile', () => {
   it('accepts supported extensions', () => {
@@ -212,7 +236,7 @@ describe('formatTriageAsText', () => {
     const rows = rankResults([
       { file: 'a.ts', result: mr({ mutationScore: '50.00%', survived: 5 }) },
     ]);
-    const text = formatTriageAsText(rows, [{ file: 'b.ts', error: 'boom' }], 2, 0);
+    const text = textOf(rows, [{ file: 'b.ts', error: 'boom' }], 2, 0);
     expect(text).toContain('Chaos-MCP Triage');
     expect(text).toContain('a.ts');
     expect(text).toContain('50.00%');
@@ -226,7 +250,7 @@ describe('formatTriageAsText', () => {
   it('appends a skipped count when skipped > 0', () => {
     // Kills: ConditionalExpression/EqualityOperator on `skipped > 0` (line 160).
     const rows = rankResults([{ file: 'a.ts', result: mr({}) }]);
-    const text = formatTriageAsText(rows, [], 3, 2);
+    const text = textOf(rows, [], 3, 2);
     expect(text).toContain('(2 skipped)');
   });
 
@@ -234,14 +258,14 @@ describe('formatTriageAsText', () => {
     // Companion assertion for the skipped > 0 branch. Pin the exact header line
     // so the empty ternary branch (line 160) can't smuggle in extra text.
     const rows = rankResults([{ file: 'a.ts', result: mr({}) }]);
-    const text = formatTriageAsText(rows, [], 1, 0);
+    const text = textOf(rows, [], 1, 0);
     expect(text).not.toContain('skipped');
     expect(text.split('\n')[0]).toBe('Chaos-MCP Triage: 1 of 1 files audited');
   });
 
   it('shows no-source-files message when discovered = 0', () => {
     // Kills: no-coverage on else-if (discovered === 0) block (line 167).
-    const text = formatTriageAsText([], [], 0, 0);
+    const text = textOf([], [], 0, 0);
     expect(text).toContain('No supported source files');
     expect(text).not.toContain('Weakest first');
   });
@@ -249,7 +273,7 @@ describe('formatTriageAsText', () => {
   it('shows a diff-mode empty message when scopeNote is set and discovered = 0', () => {
     // Kills the `scopeNote ?` ternary in the empty-discovery branch: the diff-mode
     // note must differ from the paths-mode one so they can be distinguished.
-    const text = formatTriageAsText([], [], 0, 0, 'Scoped to files changed vs main.');
+    const text = textOf([], [], 0, 0, 'Scoped to files changed vs main.');
     expect(text).toContain('diff base');
     expect(text).not.toContain('given paths');
   });
@@ -258,10 +282,10 @@ describe('formatTriageAsText', () => {
     // The truthiness guard is all that stops `lines.push(undefined)` — which
     // `join('\n')` renders as a literal "undefined" line in the report.
     const rows = rankResults([{ file: 'a.ts', result: mr({}) }]);
-    const scoped = formatTriageAsText(rows, [], 1, 0, 'Scoped to files changed vs main.');
+    const scoped = textOf(rows, [], 1, 0, 'Scoped to files changed vs main.');
     expect(scoped.split('\n')[1]).toBe('Scoped to files changed vs main.');
 
-    const plain = formatTriageAsText(rows, [], 1, 0);
+    const plain = textOf(rows, [], 1, 0);
     expect(plain).not.toContain('undefined');
     expect(plain.split('\n')[1]).toBe('Weakest first (score  survived/total  file):');
   });
@@ -289,7 +313,7 @@ describe('formatTriageAsText', () => {
       survived: 1,
       noCoverage: 0,
     };
-    const text = formatTriageAsText([partialRow, completeRow], [], 2, 0);
+    const text = textOf([partialRow, completeRow], [], 2, 0);
     const line = (file: string) => text.split('\n').find((l) => l.includes(file)) ?? '';
     expect(line('partial.ts')).toBe('  80.00%  2/10  partial.ts  (partial: 2/5 batches)');
     // Exact, not `not.toContain('partial')`: the empty else-branch must append
@@ -310,21 +334,145 @@ describe('formatTriageAsText', () => {
       noCoverage: 0,
       complete: false as const,
     };
-    expect(formatTriageAsText([row], [], 1, 0)).toContain('(partial: ?/? batches)');
+    expect(textOf([row], [], 1, 0)).toContain('(partial: ?/? batches)');
   });
 
   it('omits the unaudited section when nothing was left unaudited', () => {
     const rows = rankResults([{ file: 'a.ts', result: mr({}) }]);
-    expect(formatTriageAsText(rows, [], 1, 0)).not.toContain('Not audited');
+    expect(textOf(rows, [], 1, 0)).not.toContain('Not audited');
   });
 
   it('shows no ranking header or errors section when rows and errors are empty but files were discovered', () => {
     // Kills: ConditionalExpression on `rows.length > 0` (line 162) and
     // `errors.length > 0` (line 170).
-    const text = formatTriageAsText([], [], 2, 0);
+    const text = textOf([], [], 2, 0);
     expect(text).not.toContain('Weakest first');
     expect(text).not.toContain('Errors:');
     expect(text).not.toContain('No supported source files');
+  });
+});
+
+/**
+ * Audit M-gateText: `buildTriagePayload` computed `gate` (and, after Wave 1, its
+ * `reason` and `notGraded` counts) and `structuredContent` carried all of it —
+ * but the TEXT renderer never mentioned the threshold, the verdict, or the
+ * failing files. A caller who passed `outputFormat: 'text'` alongside `minScore`
+ * got an ordinary weakest-first table back with no indication that a gate had
+ * been requested, let alone that it had FAILED. `outputFormat` is a rendering
+ * choice, not a feature toggle.
+ *
+ * The verdict is rendered on the FIRST line, above the banner and the table: a
+ * sweep ranks up to 25 files, and a verdict below that table is one a human
+ * scrolling — or an agent reading a truncated content block — can miss.
+ */
+describe('formatTriageAsText — gate verdict', () => {
+  const row = (file: string, mutationScore: string): TriageRow => ({
+    file,
+    mutationScore,
+    total: 10,
+    killed: 8,
+    survived: 2,
+    noCoverage: 0,
+  });
+
+  it('renders nothing about a gate when no minScore was supplied', () => {
+    // The no-gate output must stay byte-identical to the pre-fix rendering:
+    // adding an unconditional "Gate:" line would be its own defect.
+    const text = textOf([row('a.ts', '50.00%')], [], 1, 0);
+    expect(text).not.toContain('Gate');
+    expect(text.split('\n')[0]).toBe('Chaos-MCP Triage: 1 of 1 files audited');
+  });
+
+  it('announces a passing gate with its threshold', () => {
+    const text = textOf([row('a.ts', '90.00%')], [], 1, 0, undefined, [], 80);
+    expect(text.split('\n')[0]).toBe('Gate: passed (minScore 80)');
+  });
+
+  it('puts a FAILED verdict on the first line, with the threshold and the failing files', () => {
+    const rows = [row('a.ts', '50.00%'), row('b.ts', '60.00%')];
+    const text = textOf(rows, [], 2, 0, undefined, [], 80);
+    expect(text.split('\n')[0]).toBe(
+      'Gate: FAILED (minScore 80) — 2 file(s) below threshold: a.ts, b.ts',
+    );
+    // Above the banner AND above the table: the point of the fix is that it
+    // cannot be buried under a long leaderboard.
+    expect(text.indexOf('Gate: FAILED')).toBeLessThan(text.indexOf('Chaos-MCP Triage'));
+    expect(text.indexOf('Gate: FAILED')).toBeLessThan(text.indexOf('Weakest first'));
+  });
+
+  it('distinguishes "not graded" from "below threshold" when every score passed', () => {
+    // Wave 1's fail-closed rule: errored / never-audited files fail the gate even
+    // though no score is under the threshold. Without the "0 below threshold"
+    // clause that verdict reads as a bug in the gate rather than as an
+    // incomplete sweep.
+    const text = textOf(
+      [row('a.ts', '100.00%')],
+      [{ file: 'b.ts', error: 'boom' }],
+      3,
+      0,
+      undefined,
+      ['c.ts'],
+      80,
+    );
+    expect(text.split('\n')[0]).toBe(
+      'Gate: FAILED (minScore 80) — 0 below threshold, but 2 file(s) were not graded ' +
+        '(1 errored, 1 unaudited)',
+    );
+  });
+
+  it('reports the ungraded count alongside failing scores when both are present', () => {
+    // `below_threshold` wins the headline (it is the actionable cause) but the
+    // ungraded files must not vanish from the line — they are the other half of
+    // why CI is red.
+    const text = textOf(
+      [row('a.ts', '10.00%')],
+      [{ file: 'b.ts', error: 'boom' }],
+      2,
+      0,
+      undefined,
+      [],
+      80,
+    );
+    expect(text.split('\n')[0]).toBe(
+      'Gate: FAILED (minScore 80) — 1 file(s) below threshold: a.ts; ' +
+        '1 file(s) were not graded (1 errored, 0 unaudited)',
+    );
+  });
+
+  it('omits the ungraded clause entirely when every selected file was graded', () => {
+    // Companion to the test above: the empty branch must contribute NOTHING, or
+    // every failing gate carries a noisy "0 file(s) were not graded" tail.
+    const text = textOf([row('a.ts', '10.00%')], [], 1, 0, undefined, [], 80);
+    expect(text.split('\n')[0]).toBe(
+      'Gate: FAILED (minScore 80) — 1 file(s) below threshold: a.ts',
+    );
+  });
+
+  it('caps the inline failing-file list and says how many more there are', () => {
+    // A default sweep is 25 files; an all-failing run would otherwise emit one
+    // unreadable 25-name line. The overflow is still in gate.failingFiles and in
+    // the table below.
+    const rows = Array.from({ length: 12 }, (_, i) => row(`f${i}.ts`, '10.00%'));
+    const text = textOf(rows, [], 12, 0, undefined, [], 80);
+    const first = text.split('\n')[0];
+    expect(first).toContain('12 file(s) below threshold');
+    expect(first).toContain('+2 more');
+    // failingFiles is sorted lexicographically, so the two dropped names are
+    // f8/f9 (f10 and f11 sort before f2).
+    expect(first).not.toContain('f8.ts');
+    expect(first).not.toContain('f9.ts');
+    expect(first).toContain('f0.ts');
+  });
+
+  it('renders the same verdict the JSON payload carries', () => {
+    // The renderer must PROJECT the payload's gate, never recompute it — that is
+    // how text and JSON are kept from disagreeing about whether CI should be red.
+    const payload = buildTriagePayload([row('a.ts', '50.00%')], [], 1, 0, undefined, 80);
+    const text = formatTriageAsText(payload);
+    expect(payload.gate?.passed).toBe(false);
+    expect(text).toContain('FAILED');
+    expect(text).toContain(String(payload.gate?.minScore));
+    for (const f of payload.gate?.failingFiles ?? []) expect(text).toContain(f);
   });
 });
 
@@ -410,6 +558,36 @@ describe('discoverFiles ignores build/output/test directories', () => {
   });
 });
 
+describe('discoverFiles ignores third-party dependency directories', () => {
+  let root: string;
+  // Every one of these sorts BEFORE "src/", so before they were ignored a
+  // maxFiles cap could be spent entirely on vendored code and rank none of the
+  // caller's own files.
+  const VENDORED = ['vendor', 'target', '.venv', 'venv', 'env', '__pycache__', '.tox', 'out'];
+  beforeAll(() => {
+    root = mkdtempSync(join(tmpdir(), 'chaos-triage-vendor-'));
+    mkdirSync(join(root, 'src'));
+    writeFileSync(join(root, 'src', 'app.py'), '');
+    for (const d of VENDORED) {
+      mkdirSync(join(root, d));
+      writeFileSync(join(root, d, 'dep.py'), '');
+    }
+  });
+  afterAll(() => rmSync(root, { recursive: true, force: true }));
+
+  it('discovers only the caller source file, never a vendored one', () => {
+    const { files, discovered } = discoverFiles(['.'], root, 25);
+    expect(files).toEqual(['src/app.py']);
+    expect(discovered).toBe(1);
+  });
+
+  it('does not fill the maxFiles budget with vendored files', () => {
+    // With a cap of 1 and lexicographic sorting, ".tox/dep.py" would win over
+    // "src/app.py" if these directories were still walked.
+    expect(discoverFiles(['.'], root, 1).files).toEqual(['src/app.py']);
+  });
+});
+
 describe('discoverFiles skips non-file directory entries', () => {
   let root: string;
   beforeAll(() => {
@@ -484,6 +662,42 @@ describe('discoverChangedFiles', () => {
     // `src/uti` must not match `src/util/b.ts` — the `/` in the prefix check is
     // what stops a partial segment from matching.
     expect(discoverChangedFiles(changed, ['src/uti'], 25).files).toEqual([]);
+  });
+
+  it('accepts a "./"-prefixed path, exactly as the non-diff branch does', () => {
+    // `discoverFiles` resolves paths against the workspace root, so "./src"
+    // works there. Here the raw string was compared against git's "src/foo.ts"
+    // and matched nothing — the sweep reported "no changed files found" with
+    // full confidence. Both spellings must select the same files.
+    const root = process.cwd();
+    expect(discoverChangedFiles(changed, ['./src'], 25, root).files).toEqual([
+      'src/a.ts',
+      'src/util/b.ts',
+    ]);
+    expect(discoverChangedFiles(changed, ['src/'], 25, root).files).toEqual([
+      'src/a.ts',
+      'src/util/b.ts',
+    ]);
+    expect(discoverChangedFiles(changed, ['./src/util/'], 25, root).files).toEqual([
+      'src/util/b.ts',
+    ]);
+  });
+
+  it('treats an absolute path inside the workspace as its relative form', () => {
+    const root = process.cwd();
+    expect(discoverChangedFiles(changed, [join(root, 'src', 'util')], 25, root).files).toEqual([
+      'src/util/b.ts',
+    ]);
+  });
+
+  it('treats "." as the workspace root, matching everything', () => {
+    // "." normalises to the empty relative path; that must read as "no filter"
+    // rather than as a path nothing can start with.
+    expect(discoverChangedFiles(changed, ['.'], 25, process.cwd()).files).toEqual([
+      'pkg/c.rs',
+      'src/a.ts',
+      'src/util/b.ts',
+    ]);
   });
 });
 
@@ -562,7 +776,13 @@ describe('buildTriagePayload gate computation', () => {
       { file: 'b.ts', mutationScore: '50.00%', total: 10, killed: 5, survived: 5, noCoverage: 0 },
     ];
     const payload = buildTriagePayload(rows, [], 2, 0, undefined, 80);
-    expect(payload.gate).toEqual({ minScore: 80, passed: false, failingFiles: ['b.ts'] });
+    expect(payload.gate).toEqual({
+      minScore: 80,
+      passed: false,
+      failingFiles: ['b.ts'],
+      reason: 'below_threshold',
+      notGraded: { errored: 0, unaudited: 0 },
+    });
     expect(payload.ranking.find((r) => r.file === 'a.ts')?.passed).toBe(true);
     expect(payload.ranking.find((r) => r.file === 'b.ts')?.passed).toBe(false);
   });
@@ -584,7 +804,15 @@ describe('buildTriagePayload gate computation', () => {
       { file: 'b.ts', mutationScore: '85.00%', total: 10, killed: 8, survived: 2, noCoverage: 0 },
     ];
     const payload = buildTriagePayload(rows, [], 2, 0, undefined, 80);
-    expect(payload.gate).toEqual({ minScore: 80, passed: true, failingFiles: [] });
+    expect(payload.gate).toEqual({
+      minScore: 80,
+      passed: true,
+      failingFiles: [],
+      notGraded: { errored: 0, unaudited: 0 },
+    });
+    // `reason` is absent, not present-and-undefined: the payload is returned as
+    // structuredContent, where the two are different shapes.
+    expect(Object.keys(payload.gate ?? {})).not.toContain('reason');
     expect(payload.ranking.every((r) => r.passed === true)).toBe(true);
   });
 
@@ -611,9 +839,71 @@ describe('buildTriagePayload gate computation', () => {
     );
     expect(payload.note).toContain('errored');
     expect(payload.note).toContain('1');
-    // Errored files must NOT flip the gate — only ranked rows are graded.
-    expect(payload.gate?.passed).toBe(true);
+    // An errored file was never measured, so the sweep is incomplete and the
+    // gate fails closed — but the file is not listed as failing a threshold it
+    // was never graded against.
+    expect(payload.gate?.passed).toBe(false);
     expect(payload.gate?.failingFiles).not.toContain('b.ts');
+  });
+});
+
+/**
+ * The gate is what a CI step keys on, so it must describe the WHOLE sweep.
+ * `rows` covers only the files that produced a score; grading on that subset
+ * alone let a run go green while files errored or were never audited at all.
+ */
+describe('buildTriagePayload gate fails closed over ungraded files', () => {
+  const passing = (file: string): TriageRow => ({
+    file,
+    mutationScore: '90.00%',
+    total: 10,
+    killed: 9,
+    survived: 1,
+    noCoverage: 0,
+  });
+
+  it('fails the gate when a file was never audited, even though every graded row passed', () => {
+    const p = buildTriagePayload([passing('a.ts')], [], 2, 0, undefined, 80, ['b.ts']);
+    expect(p.gate?.passed).toBe(false);
+    expect(p.gate?.reason).toBe('files_not_graded');
+    expect(p.gate?.notGraded).toEqual({ errored: 0, unaudited: 1 });
+    // The unaudited file failed no threshold — it has no score at all.
+    expect(p.gate?.failingFiles).toEqual([]);
+    expect(p.note).toContain('never audited');
+  });
+
+  it('fails the gate when a file errored, even though every graded row passed', () => {
+    const p = buildTriagePayload(
+      [passing('a.ts')],
+      [{ file: 'b.ts', error: 'boom' }],
+      2,
+      0,
+      undefined,
+      80,
+    );
+    expect(p.gate?.passed).toBe(false);
+    expect(p.gate?.reason).toBe('files_not_graded');
+    expect(p.gate?.notGraded).toEqual({ errored: 1, unaudited: 0 });
+    expect(p.gate?.failingFiles).toEqual([]);
+  });
+
+  it('passes the gate only when every discovered file was audited and met the threshold', () => {
+    const p = buildTriagePayload([passing('a.ts'), passing('b.ts')], [], 2, 0, undefined, 80);
+    expect(p.gate?.passed).toBe(true);
+    expect(p.gate?.reason).toBeUndefined();
+    expect(p.gate?.notGraded).toEqual({ errored: 0, unaudited: 0 });
+  });
+
+  it('reports below_threshold rather than files_not_graded when both are true', () => {
+    // A real failing score is the more actionable of the two reasons.
+    const rows = [
+      { file: 'a.ts', mutationScore: '10.00%', total: 10, killed: 1, survived: 9, noCoverage: 0 },
+    ];
+    const p = buildTriagePayload(rows, [{ file: 'b.ts', error: 'boom' }], 3, 0, undefined, 80, [
+      'c.ts',
+    ]);
+    expect(p.gate?.reason).toBe('below_threshold');
+    expect(p.gate?.notGraded).toEqual({ errored: 1, unaudited: 1 });
   });
 });
 
@@ -704,7 +994,7 @@ describe('buildTriagePayload — partial and unaudited files', () => {
   });
 
   it('marks a partial row inline in the text output', () => {
-    const text = formatTriageAsText(
+    const text = textOf(
       [row({ complete: false, batchesCompleted: 2, batchesPlanned: 7 })],
       [],
       1,
@@ -714,7 +1004,7 @@ describe('buildTriagePayload — partial and unaudited files', () => {
   });
 
   it('lists unaudited files in the text output', () => {
-    const text = formatTriageAsText([row()], [], 2, 0, undefined, ['src/b.ts']);
+    const text = textOf([row()], [], 2, 0, undefined, ['src/b.ts']);
     expect(text).toContain('Not audited');
     expect(text).toContain('src/b.ts');
   });

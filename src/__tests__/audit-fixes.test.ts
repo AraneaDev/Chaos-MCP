@@ -14,6 +14,7 @@ import {
   readdirSync,
   rmSync,
   existsSync,
+  statSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -357,13 +358,34 @@ describe('repo-declared Python test command', () => {
     );
   });
 
-  it('treats a runner that merely CONTAINS pytest as the pytest path', () => {
-    // `runner !== 'pytest' && !runner.includes('pytest')` — both halves exist so
-    // that `python -m pytest` and friends are recognised rather than being run
-    // verbatim as an untrusted project command.
-    expect(resolveTestCommand('python3', { testRunner: 'python -m pytest' })).toBe(
-      'python3 -m pytest -x -q',
+  it('gates a pytest-FLAVOURED project command instead of substituting bare pytest', () => {
+    // UPDATED. This test previously asserted the opposite — that
+    // `python -m pytest` resolved to `python3 -m pytest -x -q` — and named the
+    // `!runner.includes('pytest')` clause as deliberate. It was not: that clause
+    // was the bug. Any pytest-flavoured project command failed it, skipped the
+    // gate branch, fell through to the default, and had the project's declared
+    // command silently DISCARDED. `[tool.mutmut] runner = "python -m pytest
+    // --no-cov -p no:randomly"` — a project that switched those plugins off
+    // because its tests are order-dependent and its coverage plugin conflicts —
+    // then ran WITH them under every per-mutant invocation, so mutants were
+    // scored killed by failures unrelated to the mutation. Neither the throw nor
+    // a warning fired, and the resulting score was wrong in both directions.
+    //
+    // The command is project-declared and carries arguments, so it now takes the
+    // documented route: refuse, and name the two opt-ins.
+    expect(() => resolveTestCommand('python3', { testRunner: 'python -m pytest' })).toThrow(
+      /Refusing to run the test command "python -m pytest"/,
     );
+    // The operator's own config is still honoured verbatim — the gate only
+    // applies to strings scanned out of the audited workspace.
+    expect(
+      resolveTestCommand('python3', {
+        testRunner: 'python -m pytest --no-cov -p no:randomly',
+        testRunnerTrusted: true,
+      }),
+    ).toBe('python -m pytest --no-cov -p no:randomly');
+    // The bare `pytest` sentinel is a detection RESULT, not a project command,
+    // so it keeps taking the interpreter-prefixed default path.
     expect(resolveTestCommand('python3', { testRunner: 'pytest' })).toBe('python3 -m pytest -x -q');
   });
 
@@ -469,10 +491,11 @@ describe('incremental cache', () => {
   });
 
   it('leaves no temporary file behind after a successful harvest', () => {
-    // The harvest writes through a `<cachePath>.<pid>.tmp` staging file so a
-    // crash mid-copy cannot leave a half-written entry that the next run would
-    // seed from. That staging file must always be cleaned up — otherwise every
-    // audit leaks one into the cache directory.
+    // The harvest writes through a `<cachePath>.<pid>.<uuid>.tmp` staging file
+    // and renames it into place, so a crash mid-copy cannot leave a half-written
+    // entry that the next run would seed from. The rename consumes the staging
+    // file, and the belt-and-braces rmSync must not leave one behind either —
+    // otherwise every audit leaks one into the cache directory.
     const cacheDir = tempDir('chaos-inc-cache-');
     const sandbox = tempDir('chaos-sandbox-');
     const cachePath = join(cacheDir, 'entry.json');
@@ -482,6 +505,27 @@ describe('incremental cache', () => {
 
     expect(existsSync(cachePath)).toBe(true);
     expect(readdirSync(cacheDir).filter((n) => n.endsWith('.tmp'))).toEqual([]);
+  });
+
+  it('replaces an existing entry atomically instead of writing through it', () => {
+    // The publish step used to be a second copyFileSync, which opens the LIVE
+    // cache file, truncates it and streams into it. A crash, SIGKILL or ENOSPC
+    // part-way through leaves the torn file that seedIncrementalFile would hand
+    // to Stryker on the next run. A rename swaps a new inode into place, so a
+    // reader either sees the whole old entry or the whole new one — never a
+    // prefix of either. Comparing inodes is how those two are told apart: an
+    // in-place copy keeps the destination inode, a rename does not.
+    const cacheDir = tempDir('chaos-inc-cache-');
+    const sandbox = tempDir('chaos-sandbox-');
+    const cachePath = join(cacheDir, 'entry.json');
+    writeFileSync(cachePath, '{"schemaVersion":"0"}', 'utf8');
+    const before = statSync(cachePath).ino;
+
+    writeFileSync(join(sandbox, INCREMENTAL_FILE_NAME), '{"schemaVersion":"1"}', 'utf8');
+    harvestIncrementalFile(cachePath, sandbox);
+
+    expect(readFileSync(cachePath, 'utf8')).toBe('{"schemaVersion":"1"}');
+    expect(statSync(cachePath).ino).not.toBe(before);
   });
 });
 

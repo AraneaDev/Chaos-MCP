@@ -292,6 +292,28 @@ describe('buildRunOptions', () => {
     }
   });
 
+  /**
+   * An unquoted `\` is the POSIX escape character, so returning a backslashed
+   * path verbatim silently rewrites it: `src/report\name.ts` reaches vitest as
+   * `src/reportname.ts` (no such file → zero tests → every mutant survives at
+   * 0%), and a TRAILING `\` escapes the separating space and swallows `--run`,
+   * leaving vitest in watch mode until the deadline. Quoting is the only safe
+   * treatment. The Windows separator case never reaches quoteCommandArg —
+   * buildVitestRelatedCommand returns early on win32.
+   */
+  it('quotes rather than passes through a POSIX target containing a backslash', () => {
+    expect(quoteCommandArg('src/report\\name.ts')).toBe("'src/report\\name.ts'");
+    expect(quoteCommandArg('src/foo\\nbar.ts')).toBe("'src/foo\\nbar.ts'");
+    expect(quoteCommandArg('src/app.ts\\')).toBe("'src/app.ts\\'");
+    expect(quoteCommandArg('src/app\nname.ts')).toBe("'src/app\nname.ts'");
+  });
+
+  it('leaves an ordinary POSIX path unquoted', () => {
+    // The common case must not regress into needless quoting.
+    expect(quoteCommandArg('src/utils/math-helpers_2.ts')).toBe('src/utils/math-helpers_2.ts');
+    expect(quoteCommandArg('./src/app.ts')).toBe('./src/app.ts');
+  });
+
   it('does not invent a scoped command for native or non-Vitest runners', () => {
     expect(
       buildRunOptions(

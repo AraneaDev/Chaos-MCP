@@ -6,6 +6,7 @@ import {
 } from '../tool-schema.js';
 import { supportedSourceExtensions } from '../utils/project-detector.js';
 import { ENGINE_REGISTRY } from '../engines/registry.js';
+import type { ResultPayload } from '../format.js';
 
 describe('TOOL_DEFINITION contract', () => {
   it('exposes the audit_code_resilience tool with an object input schema', () => {
@@ -449,6 +450,107 @@ describe('schema structural invariants', () => {
     expect(inputRoots.map(([name, root]) => [name, root.additionalProperties, root.type])).toEqual(
       inputRoots.map(([name]) => [name, false, 'object']),
     );
+  });
+});
+
+/**
+ * `structuredContent` is assembled BY HAND in `format.ts` (`ResultPayload` +
+ * `buildResultPayload`) and described BY HAND in this file's `outputSchema`.
+ * Nothing links the two, and they have now drifted twice: the partial-audit
+ * fields (`complete`/`batchesCompleted`/`batchesPlanned`/`stoppedReason`) and
+ * `fidelityNote`, the PHPUnit phantom-survivor advisory, which was produced for
+ * releases without ever being declared — so an MCP client generating types or
+ * binding fields from the schema silently never surfaced it.
+ *
+ * These cases are that link. `PAYLOAD_FIELDS` below is typed
+ * `Record<keyof ResultPayload, true>`, so adding a field to the interface
+ * without listing it here is a COMPILE error under `tsc -p tsconfig.tests.json`
+ * — and every listed field is then required to exist in the schema. The reverse
+ * direction catches a schema field that nothing produces.
+ */
+describe('audit outputSchema ↔ ResultPayload parity', () => {
+  const PAYLOAD_FIELDS: Record<keyof ResultPayload, true> = {
+    target: true,
+    mutationScore: true,
+    summary: true,
+    survivors: true,
+    noCoverage: true,
+    suggestedTestFile: true,
+    ignoredOptions: true,
+    survivorsTruncated: true,
+    noCoverageTruncated: true,
+    survivorsFiltered: true,
+    noCoverageFiltered: true,
+    scopeNote: true,
+    fidelityNote: true,
+    enrichNote: true,
+    note: true,
+    runId: true,
+    suppressedCount: true,
+    driftedSuppressions: true,
+    unverifiedSuppressions: true,
+    gate: true,
+    incompetent: true,
+    complete: true,
+    batchesCompleted: true,
+    batchesPlanned: true,
+    stoppedReason: true,
+  };
+
+  /**
+   * Schema properties with no `ResultPayload` counterpart BY DESIGN: a verify
+   * run returns a different shape (built in `audit/audit-output.ts`, rendered by
+   * `verify.ts`), which the schema's `oneOf` discriminates from the audit
+   * report. Everything outside this list must have a producer.
+   */
+  const VERIFY_ONLY_FIELDS = [
+    'mode',
+    'baselineTotal',
+    'killedCount',
+    'nowKilled',
+    'stillSurviving',
+    'newSurvivors',
+  ];
+
+  const SCHEMA_PROPS = (TOOL_DEFINITION.outputSchema?.properties ?? {}) as Record<string, unknown>;
+
+  it('declares every ResultPayload field in the outputSchema', () => {
+    const undeclared = Object.keys(PAYLOAD_FIELDS).filter((field) => !(field in SCHEMA_PROPS));
+    expect(undeclared).toEqual([]);
+  });
+
+  it('declares no outputSchema field that nothing produces', () => {
+    const orphaned = Object.keys(SCHEMA_PROPS).filter(
+      (field) => !(field in PAYLOAD_FIELDS) && !VERIFY_ONLY_FIELDS.includes(field),
+    );
+    expect(orphaned).toEqual([]);
+  });
+
+  it('types every optional advisory note as a string', () => {
+    // The three note fields are the ones that drift: they are conditionally
+    // assigned (`if (result.x) payload.x = result.x`), so no fixture that omits
+    // them notices a missing or mistyped declaration.
+    for (const note of ['scopeNote', 'fidelityNote', 'enrichNote', 'note']) {
+      expect(SCHEMA_PROPS[note]).toEqual({ type: 'string' });
+    }
+  });
+
+  it('requires only fields the payload always populates', () => {
+    // `buildResultPayload` unconditionally sets these; everything else is
+    // conditional, so requiring it would reject a legitimate response.
+    const oneOf =
+      (TOOL_DEFINITION.outputSchema as { oneOf?: { required: string[] }[] }).oneOf ?? [];
+    expect(oneOf[0].required).toEqual([
+      'target',
+      'mutationScore',
+      'summary',
+      'survivors',
+      'noCoverage',
+      'note',
+    ]);
+    for (const field of oneOf[0].required) {
+      expect(PAYLOAD_FIELDS[field as keyof ResultPayload]).toBe(true);
+    }
   });
 });
 

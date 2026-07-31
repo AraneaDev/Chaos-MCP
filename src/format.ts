@@ -20,20 +20,73 @@ export interface EnrichContext {
 }
 
 /**
- * A result with zero enumerated mutants and no scope note has no mutable logic:
- * its "100%" score would misread as proven coverage. Both `audit_code_resilience`
- * and `triage_test_coverage` must substitute "n/a" and flag the row so a file with
- * no testable logic is not ranked as "safest" indistinguishably from a genuinely
- * perfect kill rate (audit M3). A scopeNote-carrying zero (e.g. a diff no-change)
- * is a real scoped run and is left as-is.
+ * Does a zero-mutant result prove the file has no mutable logic?
+ *
+ * Why it matters (audit M3): a 0/0 run scores "100.00%", which reads as proven
+ * coverage. Both `audit_code_resilience` and `triage_test_coverage` substitute
+ * "n/a" and flag the row so a file with no testable logic is not ranked as
+ * "safest" indistinguishably from a genuinely perfect kill rate.
+ *
+ * Three conjuncts, each rejecting a different way a zero can lie:
+ *
+ * 1. `totalMutants === 0` — the obvious one. One enumerated mutant means real
+ *    logic, and the file keeps its own score.
+ *
+ * 2. `scopeKind === 'whole-file'` — the run must have enumerated across the
+ *    WHOLE file. This used to be spelled `!result.scopeNote`, i.e. inferred from
+ *    the absence of free-text prose, and batching broke it: every batched TS run
+ *    stamps a scopeNote, so whole-file audits of large files stopped qualifying
+ *    (and, worse, the check was decided by wording rather than by scope).
+ *    `scopeKind` is the engine's structural answer — `'scoped'` means only a
+ *    lineScope/lineRange was enumerated, so a zero there means "nothing in that
+ *    range", not "nothing in the file"; `undefined` means the engine never
+ *    enumerated at all (a dry run), which proves nothing either.
+ *
+ * 3. `complete !== false` — the run must not have stopped early. `complete` is
+ *    false when a time-budgeted batch loop returned only the batches it
+ *    finished. Such a run enumerated the batches it got to and no more, so a
+ *    zero across them says nothing about the batches that never ran: the file
+ *    may be full of mutable logic sitting in an unexecuted batch. Conjunct 2
+ *    describes what was REQUESTED, conjunct 3 what was DELIVERED, and only both
+ *    together license the claim "this file has no mutable logic". `!== false`
+ *    (not `=== true`) because `complete` is optional: engines with no batching
+ *    concept leave it undefined and must keep behaving as before.
+ *
+ * TRANSITIONAL: conjunct 2 accepts `scopeKind === undefined` as long as the
+ * result carries no `scopeNote`. Only the TypeScript engine emits `scopeKind`
+ * today; the Python, Rust and PHP engines do not, and demanding it outright
+ * would silently un-fix audit M3 for three of the four languages — a Rust
+ * constants file would go straight back to reporting "100.00%". The `!scopeNote`
+ * fallback is exactly the old predicate, and it still excludes the one
+ * non-enumerating run that exists: StrykerJS `dryRun` is the only producer of a
+ * `scopeKind`-less zero-with-no-enumeration, and `dryRunResult` always sets a
+ * scopeNote. Delete the fallback once every engine sets `scopeKind`.
  */
 export function hasNoMutableLogic(result: MutationResult): boolean {
-  return result.totalMutants === 0 && !result.scopeNote;
+  if (result.totalMutants !== 0) return false;
+  if (result.complete === false) return false;
+  if (result.scopeKind === 'whole-file') return true;
+  if (result.scopeKind === 'scoped') return false;
+  return !result.scopeNote;
 }
 
-/** Display score for a result: "n/a" when it has no mutable logic, else the raw score. */
+/**
+ * Display score for a result: "n/a" when the number would lie, else the raw score.
+ *
+ * Two ways it lies, both ending in an empty denominator that
+ * {@link formatMutationScore} renders as "100.00%":
+ *  - the file has no mutable logic at all (see {@link hasNoMutableLogic});
+ *  - the run stopped early AND the batches that did run enumerated nothing.
+ *    That is not "no mutable logic" — `hasNoMutableLogic` correctly refuses it,
+ *    because the unrun batches were never looked at — but it is not a perfect
+ *    kill rate either, and 0/0 has no percentage to report. Without this second
+ *    clause the honesty fix in `hasNoMutableLogic` would hand such a run the
+ *    bare "100.00%" it used to be protected from.
+ */
 export function displayMutationScore(result: MutationResult): string {
-  return hasNoMutableLogic(result) ? 'n/a' : result.mutationScore;
+  if (hasNoMutableLogic(result)) return 'n/a';
+  if (result.totalMutants === 0 && result.complete === false) return 'n/a';
+  return result.mutationScore;
 }
 
 /** Max distinct change-strings shown per line group before truncation. */
@@ -71,21 +124,44 @@ function capChanges(set: Set<string>): string[] | undefined {
   return shown;
 }
 
+/**
+ * Line groups for rendering, plus the UNCAPPED change strings behind them.
+ *
+ * The two are separated because they serve different consumers (audit: severity
+ * derived from a capped change string). `LineGroup.changes` is a DISPLAY field:
+ * capped at CHANGES_CAP with a "…N more" sentinel so a hot line doesn't flood
+ * the report. Enrichment, however, treats change text as EVIDENCE — for Rust it
+ * is the only evidence there is, since cargo-mutants exposes no operator name
+ * and `canonicalizeMutator` matches the description alone. Feeding it the capped
+ * list means a mutant whose `&&` lands in change #4 cannot influence its own
+ * severity, and `RUST_DESCRIPTION_RULES` is ordered logical-first precisely so
+ * that `&&`/`||` outranks a stray operator character. So: enrich from
+ * `uncapped`, render from `groups`.
+ */
+interface CompactedGroups {
+  groups: LineGroup[];
+  /** line → every distinct change string seen on it, before the display cap. */
+  uncapped: Map<number, string[]>;
+}
+
 /** Group accumulated line entries into sorted {line, mutators, changes?} groups. */
-function groupByLine(byLine: Map<number, LineAcc>): LineGroup[] {
-  return [...byLine.entries()]
+function groupByLine(byLine: Map<number, LineAcc>): CompactedGroups {
+  const uncapped = new Map<number, string[]>();
+  const groups = [...byLine.entries()]
     .sort((a, b) => a[0] - b[0])
     .map(([line, acc]) => {
       const group: LineGroup = { line, mutators: acc.mutators };
+      if (acc.changes.size > 0) uncapped.set(line, [...acc.changes]);
       const changes = capChanges(acc.changes);
       if (changes) group.changes = changes;
       return group;
     });
+  return { groups, uncapped };
 }
 
 function compactSurvivors(result: MutationResult): {
-  survivors: LineGroup[];
-  noCoverage: LineGroup[];
+  survivors: CompactedGroups;
+  noCoverage: CompactedGroups;
 } {
   const survivorsByLine = new Map<number, LineAcc>();
   const noCoverageByLine = new Map<number, LineAcc>();
@@ -131,13 +207,18 @@ export type EnrichedGroup = LineGroup & Enrichment;
 function enrichGroups(
   groups: LineGroup[],
   enrich: EnrichContext,
+  uncapped: Map<number, string[]>,
 ): { groups: EnrichedGroup[]; worst: Severity; hasUnknown: boolean } {
   const enriched: EnrichedGroup[] = groups.map((g) => ({
     ...g,
     ...enrichGroup({
       line: g.line,
+      // The UNCAPPED change set, not `g.changes`: severity must be decided on
+      // all the evidence, not on the first CHANGES_CAP entries plus a "…N more"
+      // sentinel that no rule can match. Falls back to the display list only if
+      // a caller ever builds groups without going through `compactSurvivors`.
+      changes: uncapped.get(g.line) ?? g.changes,
       mutators: g.mutators,
-      changes: g.changes,
       projectType: enrich.projectType,
       sourceLines: enrich.sourceLines,
     }),
@@ -207,6 +288,26 @@ export interface PreparedGroups {
   enrichNote?: string;
 }
 
+/**
+ * Explain, per language, why some mutants came back with severity "unknown".
+ *
+ * The single note this replaced claimed for EVERY language that "this language's
+ * mutation tool doesn't expose per-mutant operator detail". That is true of
+ * cargo-mutants alone, which reports a free-text description and no operator
+ * field. StrykerJS, cosmic-ray and Infection all name the operator, and the
+ * engines store it — so an "unknown" from those three means the name is not one
+ * this server's tables map, which is a gap here and not a limitation of the
+ * caller's tooling. The old wording sent a PHP user off to look for a better
+ * mutation tool when every PHP mutant was unknown for want of a lookup table
+ * (audit: PHP severities all `unknown` under a factually false note).
+ */
+function unclassifiedNote(projectType: SupportedProjectType): string {
+  if (projectType === 'rust') {
+    return 'some mutants could not be classified — cargo-mutants reports a free-text description rather than a per-mutant operator, and this one carried no recognizable operator (severity reported as "unknown").';
+  }
+  return `some mutants could not be classified — their ${projectType} operator name is not one this server maps to a severity category (severity reported as "unknown"). The line still deserves a look; only its risk ranking is missing.`;
+}
+
 export interface PrepareGroupsOpts {
   enrich?: EnrichContext;
   maxSurvivors?: number;
@@ -226,8 +327,8 @@ export interface PrepareGroupsOpts {
  */
 function prepareGroups(result: MutationResult, opts: PrepareGroupsOpts): PreparedGroups {
   const compact = compactSurvivors(result);
-  let survivors: LineGroup[] = compact.survivors;
-  let noCoverage: LineGroup[] = compact.noCoverage;
+  let survivors: LineGroup[] = compact.survivors.groups;
+  let noCoverage: LineGroup[] = compact.noCoverage.groups;
   const clean = survivors.length === 0 && noCoverage.length === 0;
 
   const { enrich } = opts;
@@ -235,8 +336,8 @@ function prepareGroups(result: MutationResult, opts: PrepareGroupsOpts): Prepare
   let worstSeverity: Severity | undefined;
   let enrichNote: string | undefined;
   if (enrich) {
-    const s = enrichGroups(survivors, enrich);
-    const n = enrichGroups(noCoverage, enrich);
+    const s = enrichGroups(survivors, enrich, compact.survivors.uncapped);
+    const n = enrichGroups(noCoverage, enrich, compact.noCoverage.uncapped);
     survivors = s.groups;
     noCoverage = n.groups;
     if (survivors.length > 0 || noCoverage.length > 0) {
@@ -246,8 +347,7 @@ function prepareGroups(result: MutationResult, opts: PrepareGroupsOpts): Prepare
       worstSeverity = candidates.reduce((a, b) => (SEVERITY_RANK[a] >= SEVERITY_RANK[b] ? a : b));
     }
     if (s.hasUnknown || n.hasUnknown) {
-      enrichNote =
-        'some mutants could not be classified — this language\'s mutation tool doesn\'t expose per-mutant operator detail (severity reported as "unknown").';
+      enrichNote = unclassifiedNote(enrich.projectType);
     }
   }
 
@@ -275,6 +375,58 @@ function prepareGroups(result: MutationResult, opts: PrepareGroupsOpts): Prepare
   if (worstSeverity) prepared.worstSeverity = worstSeverity;
   if (enrichNote) prepared.enrichNote = enrichNote;
   return prepared;
+}
+
+/**
+ * The "nothing survived" sentence for a run that stopped early.
+ *
+ * A partial run scores only the batches that finished. Saying "the test suite
+ * caught every mutation" there claims full credit for a file that was merely
+ * SAMPLED: the mutants in the batches that never ran are unknown, not killed,
+ * and a reader who takes the sentence at face value stops testing a file that
+ * was never fully measured. The producer half of this finding makes `runBatched`
+ * throw when ZERO batches complete; this is the consumer half, for the runs that
+ * completed some but not all of them. Wording states only what was measured.
+ */
+function partialCleanNote(result: MutationResult): string {
+  const measured =
+    result.batchesCompleted !== undefined && result.batchesPlanned !== undefined
+      ? `the ${result.batchesCompleted} of ${result.batchesPlanned} batches that completed`
+      : 'the part of this file that was measured';
+  const why =
+    result.stoppedReason === 'time_budget_exhausted'
+      ? 'the time budget was exhausted before the rest could run'
+      : 'the run stopped before the rest could run';
+  return `No surviving mutants in ${measured} — ${why}, so the mutants that were never generated are unknown, not killed. Re-run with a larger time budget for a verdict on the whole file.`;
+}
+
+/**
+ * Pick the clean-result sentence: no mutable logic, a partial run, or a genuine
+ * all-killed result. Shared so the text report and the payload cannot disagree
+ * about which of the three a given result is — only about their own wording for
+ * the two cases where the run really did cover the file.
+ */
+function cleanNote(result: MutationResult, wording: { noMutants: string; allKilled: string }) {
+  if (hasNoMutableLogic(result)) return wording.noMutants;
+  if (result.complete === false) return partialCleanNote(result);
+  return wording.allKilled;
+}
+
+/**
+ * Render a gate verdict as a single report line.
+ *
+ * Text output computed and then dropped the gate entirely: `buildResultPayload`
+ * puts it in `structuredContent`, but a caller reading only the text block saw a
+ * report identical to a passing one and no `isError` either — a failing CI gate
+ * that looks clean. Driven by the SAME {@link GateResult} the payload carries so
+ * the two renderings cannot diverge.
+ */
+function formatGateLine(gate: GateResult, displayedScore: string): string {
+  if (gate.passed) return `Gate: passed (minScore ${gate.minScore})`;
+  if (gate.reason === 'partial_audit') {
+    return `Gate: FAILED (minScore ${gate.minScore}) — the audit did not complete, so ${displayedScore} describes only part of the file and cannot be graded.`;
+  }
+  return `Gate: FAILED (minScore ${gate.minScore}) — score ${displayedScore} is below the threshold.`;
 }
 
 /**
@@ -311,34 +463,43 @@ export function formatResultAsText(
   opts: {
     maxSurvivors?: number;
     severityFloor?: Severity;
-    /** When the caller asked for severityFloor without enrichment (M6). */
-    floorIgnoredNote?: string;
     /** Suppressions rejected because their fingerprint no longer matches. */
     driftedSuppressions?: number;
     /** Suppressions rejected because they carry no fingerprint (v1 data). */
     unverifiedSuppressions?: number;
+    /**
+     * The gate verdict for this run, when the caller passed `minScore`. Must be
+     * the same {@link GateResult} the payload carries — pass `evaluateGate`'s
+     * result, do not re-derive one.
+     */
+    gate?: GateResult;
   } = {},
 ): string {
-  // The text path ignores `prepared.worstSeverity` (a payload-only field) and
-  // `prepared.enrichNote` (the payload's self-computed wording); the caller
-  // hands text its own `floorIgnoredNote` instead. Everything else — the group
-  // pipeline and its truncation/filter counts — is identical to the payload's.
+  // The text path ignores `prepared.worstSeverity` (a payload-only field) but
+  // now emits `prepared.enrichNote`, the same wording the payload uses. It
+  // previously took a `floorIgnoredNote` from the caller instead — a field NO
+  // production caller ever set, so the note `prepareGroups` had already computed
+  // was discarded here and never re-supplied, leaving text users with nothing
+  // (audit M6, whose "fixed" comment was describing a path that did not run).
+  // Everything else — the group pipeline and its truncation/filter counts — is
+  // identical to the payload's.
   const prepared = prepareGroups(result, {
     enrich,
     maxSurvivors: opts.maxSurvivors,
     severityFloor: opts.severityFloor,
   });
   const { survivors, noCoverage } = prepared;
-  // A file with zero enumerated mutants AND no scope note has no mutable logic
-  // (only constants, type hints, or straight delegation). Reporting "100%" there
-  // reads as proven coverage when nothing was actually tested — show "n/a".
-  // A scopeNote (e.g. diff "no changed lines") is a different, already-explained
-  // zero, so leave it untouched.
-  const noMutants = hasNoMutableLogic(result);
+  // Rendered through the shared `displayMutationScore` rather than re-deciding
+  // "n/a" here: a file with zero enumerated mutants has no percentage to report
+  // and "100%" would read as proven coverage (audit M3).
+  const displayedScore = displayMutationScore(result);
   const lines: string[] = [
     `Chaos-MCP Audit Report: ${result.target}`,
-    `Mutation score: ${noMutants ? 'n/a' : result.mutationScore} (${result.killed}/${result.totalMutants} killed, ${result.survived} survived)`,
+    `Mutation score: ${displayedScore} (${result.killed}/${result.totalMutants} killed, ${result.survived} survived)`,
   ];
+  // Directly under the score, because a FAILED gate reframes every number above
+  // and below it. Text output used to omit the verdict entirely.
+  if (opts.gate) lines.push(formatGateLine(opts.gate, displayedScore));
   if (result.scopeNote) lines.push(`Scope: ${result.scopeNote}`);
   if (result.fidelityNote) lines.push(`Warning: ${result.fidelityNote}`);
   // Surface unscoreable mutants in text format too (audit L6) so a caller
@@ -348,11 +509,11 @@ export function formatResultAsText(
       `Note: ${result.incompetent} mutant(s) excluded as incompetent (mutated code never produced a real pass/fail).`,
     );
   }
-  // If the caller asked for severityFloor but enrichment data is missing,
-  // surface the floor-ignored note here as well — the JSON path already
-  // attaches it via enrichNote, but text users got nothing (audit M6).
-  if (opts.floorIgnoredNote) {
-    lines.push(opts.floorIgnoredNote);
+  // The enrichment advisory: either "some mutants could not be classified" or
+  // "severityFloor was ignored". One computation in `prepareGroups` now feeds
+  // both output formats, so text and JSON say the same thing (audit M6).
+  if (prepared.enrichNote) {
+    lines.push(prepared.enrichNote);
   }
   // Suppressions that were NOT applied. Emitted BEFORE the clean/early-return
   // branch: a file can come back clean and still be carrying stale suppressions,
@@ -364,9 +525,11 @@ export function formatResultAsText(
 
   if (prepared.clean) {
     lines.push(
-      noMutants
-        ? 'No mutants generated — this file has no mutable logic, so mutation testing is not meaningful here (this is not the same as proven coverage).'
-        : 'No surviving mutants — your tests caught all mutations.',
+      cleanNote(result, {
+        noMutants:
+          'No mutants generated — this file has no mutable logic, so mutation testing is not meaningful here (this is not the same as proven coverage).',
+        allKilled: 'No surviving mutants — your tests caught all mutations.',
+      }),
     );
     return lines.join('\n');
   }
@@ -482,21 +645,22 @@ export function buildResultPayload(
   };
   if (prepared.worstSeverity) summary.worstSeverity = prepared.worstSeverity;
 
-  // Zero enumerated mutants and no scope note ⇒ no mutable logic; "100%" would
-  // misread as proven coverage. Surface "n/a" + an honest note instead
-  // (evaluateGate treats a non-numeric score as passing, so gates are
-  // unaffected). A scopeNote-carrying zero (e.g. diff no-change) is left as-is.
-  const noMutants = hasNoMutableLogic(result);
+  // A zero-mutant run has no percentage to report; "100%" would misread as
+  // proven coverage, so `displayMutationScore` substitutes "n/a" and the note
+  // below explains which kind of zero it was (`evaluateGate` treats a
+  // non-numeric score as passing, so gates are unaffected).
   const payload: ResultPayload = {
     target: result.target,
-    mutationScore: noMutants ? 'n/a' : result.mutationScore,
+    mutationScore: displayMutationScore(result),
     summary,
     survivors,
     noCoverage,
     note: clean
-      ? noMutants
-        ? 'No mutants generated — this file has no mutable logic, so mutation testing is not meaningful here (not the same as proven coverage).'
-        : 'No surviving mutants — the test suite caught every mutation.'
+      ? cleanNote(result, {
+          noMutants:
+            'No mutants generated — this file has no mutable logic, so mutation testing is not meaningful here (not the same as proven coverage).',
+          allKilled: 'No surviving mutants — the test suite caught every mutation.',
+        })
       : hasChanges
         ? `${baseNote} changes = sampled original→mutated edits for that line (capped).`
         : baseNote,

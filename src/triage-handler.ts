@@ -29,6 +29,7 @@ import {
   resolveStrykerConcurrency,
 } from './triage-args-validation.js';
 import { resolveTriageTargets } from './triage/discover-targets.js';
+import { isCancel } from './utils/cancel.js';
 import { auditTriageFile, type TriageFileDeps } from './triage/audit-one.js';
 import { AuditDeadline } from './utils/deadline.js';
 
@@ -89,115 +90,150 @@ export async function handleTriageCall(
   const argError = validateTriageArgs(args);
   if (argError) return argError;
 
-  const rootCwd = resolve(process.cwd());
-  const paths = hasTriagePaths(args) ? (args.paths as string[]) : undefined;
-  const diffBase = hasTriageDiffBase(args) ? (args.diffBase as string) : undefined;
-  const minScore = typeof args.minScore === 'number' ? args.minScore : undefined;
-  const maxFiles =
-    args.maxFiles !== undefined
-      ? (args.maxFiles as number)
-      : (cfg.defaultMaxFiles ?? DEFAULT_MAX_FILES);
-  const outputFormat = args.outputFormat === 'text' ? 'text' : 'json';
+  try {
+    const rootCwd = resolve(process.cwd());
+    const paths = hasTriagePaths(args) ? (args.paths as string[]) : undefined;
+    const diffBase = hasTriageDiffBase(args) ? (args.diffBase as string) : undefined;
+    const minScore = typeof args.minScore === 'number' ? args.minScore : undefined;
+    const maxFiles =
+      args.maxFiles !== undefined
+        ? (args.maxFiles as number)
+        : (cfg.defaultMaxFiles ?? DEFAULT_MAX_FILES);
+    const outputFormat = args.outputFormat === 'text' ? 'text' : 'json';
 
-  const cpuCount = cpus().length;
-  const poolSize =
-    typeof args.fileConcurrency === 'number' && Number.isInteger(args.fileConcurrency)
-      ? (args.fileConcurrency as number)
-      : (cfg.defaultFileConcurrency ?? Math.max(1, Math.min(4, cpuCount - 1)));
-  const survivorsPerFile =
-    typeof args.survivorsPerFile === 'number' && Number.isInteger(args.survivorsPerFile)
-      ? (args.survivorsPerFile as number)
-      : 0;
+    const cpuCount = cpus().length;
+    const poolSize =
+      typeof args.fileConcurrency === 'number' && Number.isInteger(args.fileConcurrency)
+        ? (args.fileConcurrency as number)
+        : (cfg.defaultFileConcurrency ?? Math.max(1, Math.min(4, cpuCount - 1)));
+    const survivorsPerFile =
+      typeof args.survivorsPerFile === 'number' && Number.isInteger(args.survivorsPerFile)
+        ? (args.survivorsPerFile as number)
+        : 0;
 
-  // One wall-clock budget for the WHOLE sweep. `timeoutMs` is per file, so
-  // without this a default triage could run maxFiles × timeoutMs (25 × 5 min)
-  // — long past any MCP client's own request timeout, at which point the work
-  // is orphaned and nothing is returned. Files that never start are reported as
-  // unaudited rather than silently omitted.
-  const deadline = new AuditDeadline(
-    typeof args.totalTimeoutMs === 'number' ? args.totalTimeoutMs : DEFAULT_TOTAL_TIMEOUT_MS,
-  );
+    // One wall-clock budget for the WHOLE sweep. `timeoutMs` is per file, so
+    // without this a default triage could run maxFiles × timeoutMs (25 × 5 min)
+    // — long past any MCP client's own request timeout, at which point the work
+    // is orphaned and nothing is returned. Files that never start are reported as
+    // unaudited rather than silently omitted.
+    const deadline = new AuditDeadline(
+      typeof args.totalTimeoutMs === 'number' ? args.totalTimeoutMs : DEFAULT_TOTAL_TIMEOUT_MS,
+    );
 
-  // Early abort before hitting the network (git) or filesystem (discovery). (Task 6)
-  if (ctx?.signal?.aborted) return triageError('Operation cancelled.');
+    // Early abort before hitting the network (git) or filesystem (discovery). (Task 6)
+    if (ctx?.signal?.aborted) return triageError('Operation cancelled.');
 
-  const targets = await resolveTriageTargets({
-    rootCwd,
-    paths,
-    diffBase,
-    maxFiles,
-    deadline,
-    cleanupReserveMs: TRIAGE_CLEANUP_RESERVE_MS,
-    signal: ctx?.signal,
-  });
-  if (targets.kind === 'error') return triageError(targets.message);
-  const { files, discovered, skipped, scopeNote } = targets;
+    const targets = await resolveTriageTargets({
+      rootCwd,
+      paths,
+      diffBase,
+      maxFiles,
+      deadline,
+      cleanupReserveMs: TRIAGE_CLEANUP_RESERVE_MS,
+      signal: ctx?.signal,
+    });
+    if (targets.kind === 'error') return triageError(targets.message);
+    const { files, discovered, skipped, scopeNote } = targets;
 
-  if (files.length === 0) {
-    return triageResult([], [], [], discovered, skipped, scopeNote, minScore, outputFormat);
-  }
-
-  // Per-file progress tracking (Task 6). Single-threaded JS: `++done` over the
-  // concurrent pool is race-free (completions arrive one event-loop turn at a time).
-  let done = 0;
-  const total = files.length;
-
-  const deps: TriageFileDeps = {
-    rootCwd,
-    cfg,
-    args,
-    diffBase,
-    strykerConcurrency: resolveStrykerConcurrency(poolSize, cpuCount),
-    survivorsPerFile,
-    suppressionCache: new Map(),
-    deadline,
-    cleanupReserveMs: TRIAGE_CLEANUP_RESERVE_MS,
-    ctx,
-    onProgress: () => ctx?.reportProgress?.(++done, total, `audited ${done}/${total}`),
-  };
-
-  // Second abort check: skip the pool entirely if already cancelled before we start.
-  // (Task 6 — mirrors the pre-discovery check above.)
-  if (ctx?.signal?.aborted) return triageError('Operation cancelled.');
-
-  const outcomes = await mapPool(files, poolSize, (file) => auditTriageFile(file, deps));
-  const auditedRows: TriageRow[] = [];
-  const errors: TriageError[] = [];
-  const unaudited: string[] = [];
-  for (const o of outcomes) {
-    if (o instanceof Error) {
-      // Safety-net slot from mapPool — auditTriageFile never throws, but guard defensively.
-      errors.push({ file: '(unknown)', error: o.message });
-      continue;
+    if (files.length === 0) {
+      return triageResult([], [], [], discovered, skipped, scopeNote, minScore, outputFormat);
     }
-    if ('unaudited' in o) {
-      unaudited.push(o.unaudited);
-    } else if ('error' in o) {
-      errors.push(o.error);
-    } else {
-      auditedRows.push(o.row);
-    }
-  }
 
-  const ranking = auditedRows.slice().sort(compareTriageRows);
-  return triageResult(
-    ranking,
-    errors,
-    unaudited.sort(),
-    discovered,
-    skipped,
-    scopeNote,
-    minScore,
-    outputFormat,
-  );
+    // Per-file progress tracking (Task 6). Single-threaded JS: `++done` over the
+    // concurrent pool is race-free (completions arrive one event-loop turn at a time).
+    let done = 0;
+    const total = files.length;
+
+    const deps: TriageFileDeps = {
+      rootCwd,
+      cfg,
+      args,
+      diffBase,
+      strykerConcurrency: resolveStrykerConcurrency(poolSize, cpuCount),
+      survivorsPerFile,
+      suppressionCache: new Map(),
+      deadline,
+      cleanupReserveMs: TRIAGE_CLEANUP_RESERVE_MS,
+      ctx,
+      onProgress: () => ctx?.reportProgress?.(++done, total, `audited ${done}/${total}`),
+    };
+
+    // Second abort check: skip the pool entirely if already cancelled before we start.
+    // (Task 6 — mirrors the pre-discovery check above.)
+    if (ctx?.signal?.aborted) return triageError('Operation cancelled.');
+
+    const outcomes = await mapPool(files, poolSize, (file) => auditTriageFile(file, deps));
+    const auditedRows: TriageRow[] = [];
+    const errors: TriageError[] = [];
+    const unaudited: string[] = [];
+    for (const o of outcomes) {
+      if (o instanceof Error) {
+        // Safety-net slot from mapPool — auditTriageFile never throws, but guard defensively.
+        errors.push({ file: '(unknown)', error: o.message });
+        continue;
+      }
+      if ('unaudited' in o) {
+        unaudited.push(o.unaudited);
+      } else if ('error' in o) {
+        errors.push(o.error);
+      } else {
+        auditedRows.push(o.row);
+      }
+    }
+
+    const ranking = auditedRows.slice().sort(compareTriageRows);
+    return triageResult(
+      ranking,
+      errors,
+      unaudited.sort(),
+      discovered,
+      skipped,
+      scopeNote,
+      minScore,
+      outputFormat,
+    );
+  } catch (error: unknown) {
+    // Nothing inside a sweep is allowed to escape as a raw rejection: the MCP
+    // SDK turns a thrown error into a JSON-RPC protocol error, which is a
+    // DIFFERENT shape from the `isError` tool result every other failure here
+    // uses, and the caller loses the ranking's error channel entirely. The
+    // reachable path is `resolveTriageTargets`, whose `listChangedFiles` call
+    // re-throws a cancel — and a timeout / missing `git` binary — rather than
+    // libelling the workspace as "not a git work tree" (utils/git-diff.ts);
+    // per-file failures are already collected by `auditTriageFile`.
+    //
+    // Audit C1 follow-up: a cancel keeps the one string every abort path in
+    // this codebase reports, so a deliberate stop never reads as an engine
+    // failure. Same branch, same wording as handler.ts and estimate-handler.ts.
+    if (isCancel(error, ctx)) {
+      return triageError('Operation cancelled.');
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    return triageError(`Chaos Engine Halted: ${message}`);
+  }
 }
 
 /**
- * Render the sweep's outcome in the requested format, with `structuredContent`
- * and the JSON text block both driven by the same payload.
+ * Render the sweep's outcome in the requested format, with `structuredContent`,
+ * the JSON text block and the TEXT block all driven by the same payload.
  *
- * `unaudited` is passed to the text renderer as-is and to the payload sorted by
- * the caller — the empty-discovery path has neither, so it passes `[]`.
+ * The text renderer used to receive the raw ranking/errors/counts instead of the
+ * payload, which meant it could not see `payload.gate` — so `outputFormat:
+ * 'text'` silently dropped the gate verdict and behaved like a feature toggle
+ * rather than a rendering choice (audit M-gateText). One payload, three
+ * projections: they cannot disagree.
+ *
+ * A FAILING GATE DELIBERATELY DOES NOT SET `isError`. Both tools promise this in
+ * their input schemas — `tool-schema.ts` documents the audit tool's minScore as
+ * "the result reports gate.passed=false (never an error)" and the triage tool's
+ * as "the result reports gate.passed=false and lists the failing files. Never
+ * causes an error." Flipping `isError` would also throw away the ranking's error
+ * channel semantics: every other `isError: true` here means the sweep could not
+ * be performed, not that it was performed and the code scored badly. The gate
+ * verdict is instead made unmissable in the text block itself (first line).
+ *
+ * `unaudited` is sorted by the caller — the empty-discovery path has none, so it
+ * passes `[]`.
  */
 function triageResult(
   ranking: TriageRow[],
@@ -218,10 +254,7 @@ function triageResult(
     minScore,
     unaudited,
   );
-  const text =
-    outputFormat === 'text'
-      ? formatTriageAsText(ranking, errors, discovered, skipped, scopeNote, unaudited)
-      : JSON.stringify(payload);
+  const text = outputFormat === 'text' ? formatTriageAsText(payload) : JSON.stringify(payload);
   return {
     content: [{ type: 'text', text }],
     structuredContent: payload as unknown as Record<string, unknown>,

@@ -75,7 +75,16 @@ export function getPrompt(name: string, args: Record<string, string>): PromptRes
     case 'harden_file': {
       const filePath = requireArg(args, 'filePath');
       return {
-        description: `Harden ${filePath} against surviving mutants.`,
+        // CONSTANT, never interpolated. `description` is the prompt's TITLE, and
+        // MCP clients surface it to the model alongside the messages — so an
+        // interpolated value reached the model OUTSIDE the `quoteUserValue`
+        // fence, which is precisely what this module's header forbids
+        // (`requireArg` only checks non-emptiness, so a value carrying newlines
+        // and "ignore previous instructions" passed straight through). The
+        // fenced copy in `messages` already carries the value, so the title has
+        // nothing to add — and a constant cannot be got wrong the way a
+        // sanitiser can.
+        description: 'Harden the caller-supplied file against surviving mutants.',
         messages: userMessage(
           [
             'Harden the test coverage of the caller-supplied target file using Chaos-MCP.',
@@ -93,7 +102,9 @@ export function getPrompt(name: string, args: Record<string, string>): PromptRes
     case 'triage_changes': {
       const diffBase = requireArg(args, 'diffBase');
       return {
-        description: `Triage files changed vs ${diffBase}.`,
+        // CONSTANT for the same reason as harden_file's above: the git ref is
+        // caller-supplied data and only belongs inside the fenced block.
+        description: 'Triage the files changed vs the caller-supplied git ref.',
         messages: userMessage(
           [
             'Find the weakest test coverage among files changed versus the caller-supplied git ref.',

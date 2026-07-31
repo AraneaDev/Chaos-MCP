@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import {
   BaseEngine,
@@ -9,7 +9,7 @@ import {
 } from './base.js';
 import { ExecFailureError } from '../utils/exec-error.js';
 import { invokeMutationTool, MutationToolStartupError } from '../utils/exec-classify.js';
-import { log, isVerbose } from '../utils/logger.js';
+import { log, warn, isVerbose } from '../utils/logger.js';
 import { DEFAULT_TIMEOUT_MS } from '../utils/constants.js';
 import {
   INCREMENTAL_FILE_NAME,
@@ -20,6 +20,21 @@ import {
 /**
  * Path (relative to the Stryker working directory) where the JSON reporter
  * writes its output.
+ *
+ * This is NOT merely where we look — it is pinned into the generated Stryker
+ * overlay config as `jsonReporter.fileName` on every run (see
+ * {@link writeStrykerRuntimeConfig}). `jsonReporter.fileName` is a first-class,
+ * user-settable Stryker option (node_modules/@stryker-mutator/core/dist/src/
+ * reporters/json-reporter.js resolves `this.options.jsonReporter.fileName`), and
+ * the overlay faithfully carries the project's own config forward — so without
+ * the pin a project shipping `jsonReporter: { fileName: 'artifacts/…' }` made a
+ * fully successful run report "Stryker JSON report not found at …" (audit E).
+ *
+ * It cannot be pinned on the CLI: StrykerJS 9.6.1 declares no
+ * `--jsonReporter.fileName` option (only `--dashboard.*` is special-cased in
+ * stryker-cli.js), and Commander rejects the run outright with
+ * `error: unknown option '--jsonReporter.fileName'`. The config overlay is the
+ * only mechanism.
  */
 const STRIKER_JSON_REPORT = 'reports/mutation/mutation.json';
 const CHAOS_STRYKER_CONFIG = '.chaos-mcp.stryker.config.mjs';
@@ -75,11 +90,20 @@ export function planLineBatches(
   return batches;
 }
 
+/**
+ * Fold the per-batch results of a bounded command-runner run into one result.
+ *
+ * @param scopeKind — the REQUESTED scope of the whole batched run, not of an
+ *   individual batch: every batch is line-scoped by construction, but a run that
+ *   plans batches across the entire file is still `'whole-file'`. See the
+ *   {@link MutationResult.scopeKind} doc in `engines/base.ts`.
+ */
 export function mergeBatchResults(
   filePath: string,
   results: MutationResult[],
   planned: number,
   complete: boolean,
+  scopeKind: 'whole-file' | 'scoped' = 'whole-file',
 ): MutationResult {
   const totalMutants = results.reduce((sum, result) => sum + result.totalMutants, 0);
   const killed = results.reduce((sum, result) => sum + result.killed, 0);
@@ -98,6 +122,7 @@ export function mergeBatchResults(
     batchesCompleted: results.length,
     batchesPlanned: planned,
     stoppedReason: complete ? undefined : 'time_budget_exhausted',
+    scopeKind,
     scopeNote: complete
       ? `Completed ${planned} bounded mutation batches.`
       : `Partial audit: completed ${results.length} of ${planned} bounded mutation batches before the time budget was exhausted.`,
@@ -148,16 +173,56 @@ interface StrykerMutantRecord {
     start: { line: number; column: number };
     end: { line: number; column: number };
   };
-  status:
-    | 'Killed'
-    | 'Survived'
-    | 'NoCoverage'
-    | 'CompileError'
-    | 'RuntimeError'
-    | 'Timeout'
-    | 'Ignored';
+  /**
+   * Deliberately `string`, not a closed union of the statuses we know about.
+   * `parseReport` reaches this shape through an UNCHECKED `JSON.parse(...) as
+   * StrykerJsonReport` cast of a file produced by a separately-versioned schema
+   * package (mutation-testing-report-schema), so a union here would be a
+   * compile-time fiction. `mutation-testing-report-schema@3.7.3` already
+   * declares a `"Pending"` status this engine has never handled. The three sets
+   * below are the real classifier, and anything they do not recognise is
+   * reported rather than silently absorbed.
+   */
+  status: string;
   statusReason?: string;
 }
+
+/**
+ * Mutant statuses that are SCORED: they form the denominator, and
+ * `Killed`/`Timeout` also form the numerator (a timeout means the mutant was
+ * detected — it made the suite hang).
+ *
+ * This is an ALLOW-list on purpose. It used to be a deny-list (`status !==
+ * 'CompileError' && !== 'RuntimeError' && !== 'Ignored'`), which meant any status
+ * Stryker's schema gains later — `Pending` exists in the schema package today —
+ * would land in the denominator as "valid but neither killed nor survived",
+ * inflating it and silently lowering every score with no warning at all.
+ */
+const SCORED_STATUSES: ReadonlySet<string> = new Set([
+  'Killed',
+  'Survived',
+  'NoCoverage',
+  'Timeout',
+]);
+
+/**
+ * Statuses where the mutated code never produced a real pass/fail: it failed to
+ * compile, or blew up before the suite could judge it. Excluded from the
+ * denominator (they would penalise a score for a fault of the mutant, not the
+ * tests) but counted into `MutationResult.incompetent`, which `engines/base.ts`
+ * documents as covering exactly "Stryker compile errors". Without that count a
+ * file where 40 of 100 mutants fail to compile reported a total of 60 with no
+ * explanation of where the other 40 went (gap audit I3).
+ */
+const INCOMPETENT_STATUSES: ReadonlySet<string> = new Set(['CompileError', 'RuntimeError']);
+
+/**
+ * Statuses excluded on purpose by configuration (`mutator.excludedMutations`,
+ * `// Stryker disable` comments). Kept SEPARATE from `incompetent`: nothing
+ * failed, the operator asked for these not to run, so reporting them as
+ * unscoreable failures would be misleading. They are silently dropped.
+ */
+const EXCLUDED_STATUSES: ReadonlySet<string> = new Set(['Ignored']);
 
 /**
  * Slice the original source span a mutant replaced, from the report's embedded
@@ -216,80 +281,52 @@ function buildMutateArg(filePath: string, ranges?: { start: number; end: number 
 }
 
 /**
- * Build a StrykerJS v9 config file in the sandbox working directory when
- * mutator configuration (denylist) is specified.
+ * Write the Stryker overlay config every run is launched with.
  *
- * StrykerJS v9 removed the `--mutators` CLI flag from v8. Mutator
- * configuration is now done exclusively via `stryker.config.json`, whose
- * schema exposes exclusions as `mutator.excludedMutations` (an array of
- * mutator names). There is NO top-level `mutators` option — earlier
- * Chaos-MCP versions wrote a `mutators: { Name: false }` map that Stryker
- * silently ignored, so the denylist had no effect; any such legacy map found
- * in an existing config is migrated into `excludedMutations` and dropped.
+ * The overlay inlines (for JSON) or imports (for the JS family) the project's
+ * own config and layers Chaos-MCP's runtime-only settings on top. It is written
+ * solely inside the disposable outer sandbox and selected explicitly as
+ * Stryker's `configFile` argument, so the user's real config is never modified.
  *
- * **allowlist is not supported:** the config model can only exclude mutators;
- * there is no way to express "only these N mutators" without knowing the
- * complete list of all mutator names. Users who need an allowlist should
- * create their own `stryker.config.json`.
+ * ── Why the overlay is now UNCONDITIONAL ──
+ * It used to be written only for scoped command-runner runs; a denylist-only run
+ * instead merged `mutator.excludedMutations` in place into `stryker.config.json`.
+ * Two verified defects came out of that (both against @stryker-mutator/core@9.6.1):
  *
- * Mutator names remain PascalCase as in v8 (e.g. "ConditionalExpression",
- * "ArithmeticOperator"). Stryker validates them at runtime.
- */
-function writeStrykerMutatorConfig(cwd: string, denylist: string[]): void {
-  const configPath = join(cwd, 'stryker.config.json');
-
-  // Merge into any existing config rather than overwriting it. A blind write
-  // would discard the project's own stryker.config.json (testRunner, mutate
-  // globs, reporters, thresholds, plugins), silently running mutation under
-  // different settings than the user configured (audit Med#4).
-  let config: Record<string, unknown> = {};
-  if (existsSync(configPath)) {
-    try {
-      const parsed = JSON.parse(readFileSync(configPath, 'utf-8')) as unknown;
-      if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        config = parsed as Record<string, unknown>;
-      }
-    } catch {
-      // Unreadable / invalid existing config — fall back to a fresh object.
-    }
-  }
-
-  const mutatorSection =
-    config.mutator !== null && typeof config.mutator === 'object' && !Array.isArray(config.mutator)
-      ? (config.mutator as Record<string, unknown>)
-      : {};
-  const excluded = Array.isArray(mutatorSection.excludedMutations)
-    ? (mutatorSection.excludedMutations as unknown[]).filter(
-        (v): v is string => typeof v === 'string',
-      )
-    : [];
-
-  // Migrate the legacy `mutators: { Name: false }` map (never a valid Stryker
-  // option) into excludedMutations, then drop the invalid key.
-  if (config.mutators !== null && typeof config.mutators === 'object') {
-    for (const [name, enabled] of Object.entries(config.mutators as Record<string, unknown>)) {
-      if (enabled === false) excluded.push(name);
-    }
-  }
-  delete config.mutators;
-
-  mutatorSection.excludedMutations = [...new Set([...excluded, ...denylist])];
-  config.mutator = mutatorSection;
-
-  writeFileSync(configPath, JSON.stringify(config), 'utf-8');
-}
-
-/**
- * Write an explicit Stryker overlay config for runtime-only settings.
+ *  1. **The denylist landed in a file Stryker never read.** `SUPPORTED_CONFIG_FILE_NAMES`
+ *     (config/config-file-formats.js) is ordered `stryker.conf.json`,
+ *     `stryker.conf.js`, `stryker.conf.mjs`, `stryker.conf.cjs`,
+ *     `stryker.config.json`, … and `ConfigReader.findConfigFile` returns the
+ *     FIRST that exists. `stryker.config.json` is 5th — so a project shipping the
+ *     (very common) `stryker.conf.json` or `stryker.conf.mjs` had every
+ *     denylisted mutator run anyway, silently. A JS-family config also cannot be
+ *     merged into textually at all; only the overlay can express it.
+ *  2. **The JSON report path was not pinned.** See {@link STRIKER_JSON_REPORT}.
  *
- * The overlay imports (or inlines, for JSON) the project's existing config and
- * changes only the command-runner and mutator-exclusion fields Chaos-MCP owns.
- * This is written solely inside the disposable outer sandbox and selected
- * explicitly on the Stryker CLI, so the user's real config is never modified.
+ * Both are structural properties of "the config Stryker actually loads", so the
+ * fix is to stop guessing and always hand Stryker a config we composed from the
+ * one it *would* have discovered — {@link STRYKER_CONFIG_NAMES} is that same
+ * ordered list.
+ *
+ * ── Mutator denylist semantics ──
+ * StrykerJS v9 removed the v8 `--mutators` CLI flag; exclusions are expressed
+ * only as `mutator.excludedMutations` (an array of PascalCase mutator names,
+ * validated by Stryker at runtime). There is NO top-level `mutators` option —
+ * earlier Chaos-MCP versions wrote a `mutators: { Name: false }` map that Stryker
+ * silently ignored, so any such legacy map found in the project's config is
+ * migrated into `excludedMutations` and the invalid key dropped. An allowlist is
+ * not expressible; see {@link prepareStrykerConfig}.
+ *
+ * @param command — the command-runner command for a scoped `command`-runner run.
+ *   `undefined` for every other run, which leaves the project's own
+ *   `testRunner`/`coverageAnalysis`/`commandRunner` settings untouched — an
+ *   overlay written for a native runner (vitest, jest, …) must not force the
+ *   command runner on it.
+ * @returns the overlay filename, to be passed as Stryker's `configFile` argument.
  */
 export function writeStrykerRuntimeConfig(
   cwd: string,
-  command: string,
+  command: string | undefined,
   denylist: string[],
 ): string {
   const existingName = STRYKER_CONFIG_NAMES.find((name) => existsSync(join(cwd, name)));
@@ -310,6 +347,17 @@ export function writeStrykerRuntimeConfig(
       'const base = importedConfig ?? {};';
   }
 
+  // Only a scoped command-runner run overrides the runner. Emitting these for a
+  // native-runner run would silently switch the project onto `command` (and turn
+  // coverage analysis off) with no command to run.
+  const commandRunnerSection =
+    command === undefined
+      ? ''
+      : `  testRunner: 'command',
+  coverageAnalysis: 'off',
+  commandRunner: { ...(base.commandRunner ?? {}), command: ${JSON.stringify(command)} },
+`;
+
   const source = `${baseDeclaration}
 const legacyExcluded = Object.entries(base.mutators ?? {})
   .filter(([, enabled]) => enabled === false)
@@ -320,9 +368,7 @@ const existingExcluded = Array.isArray(base.mutator?.excludedMutations)
 const { mutators: _legacyMutators, ...withoutLegacyMutators } = base;
 export default {
   ...withoutLegacyMutators,
-  testRunner: 'command',
-  coverageAnalysis: 'off',
-  commandRunner: { ...(base.commandRunner ?? {}), command: ${JSON.stringify(command)} },
+${commandRunnerSection}  jsonReporter: { ...(base.jsonReporter ?? {}), fileName: ${JSON.stringify(STRIKER_JSON_REPORT)} },
   mutator: {
     ...(base.mutator ?? {}),
     excludedMutations: [...new Set([
@@ -377,19 +423,23 @@ const STRYKER_RUNNER_PLUGINS: Record<string, string> = {
 /**
  * Materialise the Stryker configuration a run needs, inside the sandbox `cwd`.
  *
- * The two branches are mutually exclusive and mirror what StrykerJS v9 can
- * express: a command-runner run gets an explicit overlay config (returned, so
- * the caller selects it on the CLI); a plain denylist run mutates the sandbox
- * `stryker.config.json` in place and Stryker discovers it itself.
+ * ALWAYS returns an overlay filename: Stryker must never be left to its own
+ * config discovery, because two settings Chaos-MCP depends on are otherwise at
+ * the audited project's mercy — where the JSON report is written
+ * (`jsonReporter.fileName`) and whether the mutator denylist is honoured at all
+ * (which of the sixteen `stryker.conf|config.{json,js,mjs,cjs}` names Stryker
+ * picks). See {@link writeStrykerRuntimeConfig} for the verified evidence.
  *
- * @returns the runtime-config filename to pass on the CLI, or `undefined` when
- *   the run uses Stryker's own config discovery.
+ * The overlay is composed FROM the project's own config, so this pins those two
+ * settings without discarding anything the project configured.
+ *
+ * @returns the runtime-config filename to pass as Stryker's `configFile` argument.
  * @throws when a `mutatorAllowlist` is requested — v9 cannot express one.
  */
-export function prepareStrykerConfig(cwd: string, options?: RunOptions): string | undefined {
-  // StrykerJS v9 removed the `--mutators` CLI flag. We express denylists by
-  // writing mutator.excludedMutations into the sandbox stryker.config.json.
-  // Allowlists are not supported without a full config.
+export function prepareStrykerConfig(cwd: string, options?: RunOptions): string {
+  // The config model can only EXCLUDE mutators; there is no way to express
+  // "only these N" without enumerating every mutator name Stryker ships. Fail
+  // loudly rather than running an unrestricted mutation set the caller did not ask for.
   if (options?.mutatorAllowlist && options.mutatorAllowlist.length > 0) {
     throw new Error(
       'mutatorAllowlist is not supported in StrykerJS v9. ' +
@@ -397,17 +447,13 @@ export function prepareStrykerConfig(cwd: string, options?: RunOptions): string 
         `Requested allowlist: ${options.mutatorAllowlist.join(', ')}`,
     );
   }
-  if (resolveRunner(options) === 'command' && options?.commandRunnerCommand) {
-    return writeStrykerRuntimeConfig(
-      cwd,
-      options.commandRunnerCommand,
-      options.mutatorDenylist ?? [],
-    );
-  }
-  if (options?.mutatorDenylist && options.mutatorDenylist.length > 0) {
-    writeStrykerMutatorConfig(cwd, options.mutatorDenylist);
-  }
-  return undefined;
+  // Only a scoped command-runner run overrides the runner; every other run keeps
+  // the project's own (see the `command` parameter of writeStrykerRuntimeConfig).
+  const command =
+    resolveRunner(options) === 'command' && options?.commandRunnerCommand
+      ? options.commandRunnerCommand
+      : undefined;
+  return writeStrykerRuntimeConfig(cwd, command, options?.mutatorDenylist ?? []);
 }
 
 /**
@@ -419,7 +465,15 @@ export function prepareStrykerConfig(cwd: string, options?: RunOptions): string 
  * @param resolvedRunner — see {@link resolveRunner}.
  * @param mutateArg — the `--mutate` value from {@link buildMutateArg}.
  * @param runtimeConfig — the overlay config filename from
- *   {@link prepareStrykerConfig}, or `undefined` for Stryker's own discovery.
+ *   {@link prepareStrykerConfig}. Every real run now passes one; `undefined`
+ *   (falling back to Stryker's own config discovery) remains accepted so the
+ *   argv matrix stays assertable in isolation.
+ *
+ * NOTE there is deliberately no `--jsonReporter.fileName` here even though the
+ * report path must be pinned: StrykerJS 9.6.1 declares no such CLI option
+ * (stryker-cli.js special-cases only `--dashboard.*`) and Commander aborts the
+ * run with `error: unknown option '--jsonReporter.fileName'`. It is pinned in
+ * the overlay config instead — see {@link STRIKER_JSON_REPORT}.
  */
 export function buildStrykerArgs(
   resolvedRunner: string,
@@ -493,15 +547,25 @@ export function buildStrykerArgs(
 /**
  * Interpret a failed StrykerJS invocation.
  *
- * Returns normally for the one recoverable case — a non-zero exit that Stryker
- * uses to signal "mutants survived" (exit 2 and friends), where the JSON report
- * still exists and the caller should go on and parse it. Every other case
- * throws.
+ * Returns normally for the recoverable cases — a non-zero exit where the JSON
+ * report was still written and the caller should go on and parse it. Every other
+ * case throws.
  *
  * The branches are ordered most-specific-first and that order is load-bearing:
  * it decides which message a user sees.
+ *
+ * @param reportExists — whether this run's JSON report is on disk. The caller
+ *   computes it (so this function stays free of filesystem access and its whole
+ *   decision matrix is assertable from plain arguments), and it is only sound
+ *   because `runOnce` deletes any pre-existing report BEFORE launching Stryker —
+ *   otherwise a stale report from a previous batch would make a genuine config
+ *   error look recoverable.
  */
-export function classifyStrykerFailure(error: unknown, filePath: string): void {
+export function classifyStrykerFailure(
+  error: unknown,
+  filePath: string,
+  reportExists: boolean,
+): void {
   // Startup-class failures (not-installed / timeout / signal crash) are
   // wrapped in MutationToolStartupError by the helper. Surface verbatim.
   if (error instanceof MutationToolStartupError) {
@@ -528,26 +592,46 @@ export function classifyStrykerFailure(error: unknown, filePath: string): void {
     throw new Error(`Stryker execution failed: ${String(error)}`);
   }
 
-  // Stryker-specific exit code semantics:
-  //   1 = configuration error or internal exception (real failure)
-  //   2 = mutation score threshold not reached (expected when mutants survive)
+  // ── Stryker exit-code semantics, verified against @stryker-mutator/core@9.6.1 ──
+  // Exit code 1 is OVERLOADED. It is both the generic failure code AND the code
+  // Stryker deliberately sets for "mutation score below thresholds.break":
+  // `MutationTestReportHelper.determineExitCode()` calls `objectUtils.setExitCode(1)`
+  // on that branch (dist/src/reporters/mutation-test-report-helper.js:114-122),
+  // and `grep -rn "setExitCode" dist/src/` has exactly that one call site.
+  //
+  // There is NO exit code 2 anywhere in Stryker. This code used to comment that
+  // "2 = threshold not reached" and treat every exit 1 as a config error, so any
+  // audited project with the standard CI gate `thresholds: { break: 80 }` had a
+  // completely successful run reported as
+  // `StrykerJS configuration or internal error (exit 1):` with an EMPTY message
+  // (`--logLevel off` leaves stderr blank) and its whole survivor report thrown away.
+  //
+  // The report's presence is what separates the two meanings, and the ordering
+  // makes that safe: `reportAll` calls `onMutationTestReportReady` (:105) before
+  // `determineExitCode` (:112), and `JsonReporter.wrapUp()` awaits the file
+  // write — so on the threshold-break path the JSON report IS already on disk.
   if (error.exit === 1) {
-    // A dry run that executes zero tests is almost always "nothing covers
-    // this file", not a broken config — say so instead of dumping the raw
-    // Stryker stack trace.
+    // Checked FIRST: a dry run that executes zero tests is almost always
+    // "nothing covers this file", not a broken config — say so instead of
+    // dumping the raw Stryker stack trace. This is a real failure even though a
+    // report from an earlier phase could conceivably exist.
     if (error.stderr?.includes('No tests were executed')) {
       throw new Error(
         `StrykerJS ran zero tests in its dry run — no tests in this project appear to cover ${filePath}. ` +
           'Add a test file exercising it, or check the test runner configuration if tests exist.',
       );
     }
-    throw new Error(
-      `StrykerJS configuration or internal error (exit 1): ${error.stderr?.slice(0, 500) || error.message}`,
-    );
+    if (!reportExists) {
+      throw new Error(
+        `StrykerJS configuration or internal error (exit 1): ${error.stderr?.slice(0, 500) || error.message}`,
+      );
+    }
+    // Report on disk → the run completed and exit 1 means the score is under the
+    // project's own `thresholds.break`. Fall through to parseReport.
   }
 
-  // exit 2 (threshold not met) or other non-zero → expected, parse the report.
-  // Capture stderr for diagnostics in case the report is missing.
+  // Recoverable non-zero exit → parse the report.
+  // Capture stderr for diagnostics in case the report is missing after all.
   if (isVerbose() && error.stderr) {
     log(`StrykerJS exited ${error.exit} (expected): ${error.stderr.slice(0, 500)}`);
   }
@@ -559,6 +643,11 @@ export function classifyStrykerFailure(error: unknown, filePath: string): void {
  * StrykerJS performs only the initial test run and never generates mutants or
  * writes reports/mutation/mutation.json, so this shape is deliberately distinct
  * from a scored run: no mutants, and a non-numeric `mutationScore`.
+ *
+ * `scopeKind` is deliberately LEFT UNSET. The field answers "does
+ * `totalMutants === 0` prove this file has no mutable logic?", and a dry run
+ * never asked the question — it enumerated nothing anywhere. `undefined` is the
+ * honest third state; consumers must not read a zero here as proven coverage.
  */
 export function dryRunResult(filePath: string): MutationResult {
   return {
@@ -696,11 +785,34 @@ export class TypeScriptEngine extends BaseEngine {
     }
 
     if (completed.length === 0 && firstTimeout) throw firstTimeout;
+    // A run that measured NOTHING has no score to report. `mergeBatchResults`
+    // reduces over an empty array to totalMutants 0 / killed 0, and
+    // `formatMutationScore(0, 0)` is '100.00%' by the documented
+    // zero-denominator convention — so returning here reported a flawless audit
+    // for a run in which not one mutant was ever generated.
+    //
+    // This is reachable without any timeout at all: `reserveEngineBudget`
+    // (handler.ts) admits any remaining budget >= 1000ms, so with >= 2 batches
+    // and ~1s left the very first `batchBudget` is ~500ms, below
+    // MIN_BATCH_BUDGET_MS, and the loop breaks before invoking Stryker once —
+    // leaving `firstTimeout` undefined and the guard above unarmed.
+    if (completed.length === 0) {
+      throw new Error(
+        `Time budget exhausted before any mutation batch could run for ${filePath} ` +
+          `(0 of ${batches.length} planned batches completed). No mutants were generated, so there is no ` +
+          'score to report — raise timeoutMs or narrow the audit scope.',
+      );
+    }
     return mergeBatchResults(
       filePath,
       completed,
       batches.length,
       completed.length === batches.length,
+      // The batches together span whatever was REQUESTED: the whole file when no
+      // line scope was given, otherwise only the caller's ranges. Each individual
+      // batch is line-scoped, but that is an implementation detail of batching
+      // and must not make a whole-file audit look like a partial one.
+      options.lineRanges?.length || options.lineScope ? 'scoped' : 'whole-file',
     );
   }
 
@@ -714,6 +826,29 @@ export class TypeScriptEngine extends BaseEngine {
     const mutateArg = buildMutateArg(filePath, effectiveRanges);
     const runtimeConfig = prepareStrykerConfig(cwd, options);
     const args = buildStrykerArgs(resolvedRunner, mutateArg, runtimeConfig, options);
+
+    // ── Reset the JSON report so a read below can only be THIS invocation's ──
+    // The report path is fixed, and `parseReport` guards it with nothing but
+    // `existsSync`, which cannot tell this run's output from:
+    //   * the previous BATCH's output — `runBatched` calls `runOnce` N times
+    //     against the same cwd, so a batch that exits without rewriting the file
+    //     would have the prior batch's report re-parsed, and `mergeBatchResults`
+    //     SUMS totals and CONCATENATES vulnerabilities: double-counted mutants
+    //     and duplicate (line, mutator) entries that then collide as
+    //     suppression/verify keys; or
+    //   * a report the audited workspace shipped — `ALWAYS_EXCLUDE`
+    //     (utils/sandbox.ts) does not exclude `reports/`, so a project that has
+    //     run Stryker itself copies its own mutation.json into the sandbox.
+    // Deleting first makes a missing report afterwards an honest error.
+    // The PHP engine defends against exactly this (engines/php.ts, `rmSync` of
+    // the Infection log before the run).
+    const reportPath = join(cwd, STRIKER_JSON_REPORT);
+    try {
+      rmSync(reportPath, { force: true });
+    } catch {
+      // Best-effort: an undeletable stale report is no worse than today's
+      // behaviour, and every other guard here still applies.
+    }
 
     // Incremental state is seeded from / harvested to a host-side cache around
     // the run — without that the sandbox teardown discards Stryker's
@@ -734,9 +869,11 @@ export class TypeScriptEngine extends BaseEngine {
         executor: options?.executor,
       });
     } catch (error: unknown) {
-      // Throws for every failure except the expected non-zero "mutants
-      // survived" exit, which falls through to parseReport.
-      classifyStrykerFailure(error, filePath);
+      // Throws for every failure except the recoverable non-zero exits (mutants
+      // survived / score under `thresholds.break`), which fall through to
+      // parseReport. The report-existence check is sound only because the stale
+      // report was removed above, before Stryker was launched.
+      classifyStrykerFailure(error, filePath, existsSync(reportPath));
     }
 
     // Preserve the incremental state before the caller tears the sandbox down.
@@ -751,16 +888,23 @@ export class TypeScriptEngine extends BaseEngine {
     if (options?.dryRun) return dryRunResult(filePath);
 
     // ── Parse the JSON report ──
-    return this.parseReport(cwd, filePath);
+    return this.parseReport(cwd, filePath, effectiveRanges ? 'scoped' : 'whole-file');
   }
 
   /**
    * Read and parse the Stryker JSON report from the filesystem.
    * Extracted as a separate method for testability.
    *
+   * @param scopeKind — whether the run this report came from enumerated the
+   *   whole file or only the caller's line ranges. Defaults to `'whole-file'`,
+   *   which is what a bare `parseReport(workDir, filePath)` describes.
    * @internal
    */
-  parseReport(workDir: string, filePath: string): MutationResult {
+  parseReport(
+    workDir: string,
+    filePath: string,
+    scopeKind: 'whole-file' | 'scoped' = 'whole-file',
+  ): MutationResult {
     const reportPath = join(workDir, STRIKER_JSON_REPORT);
     if (!existsSync(reportPath)) {
       throw new Error(
@@ -781,13 +925,38 @@ export class TypeScriptEngine extends BaseEngine {
     // so we can slice the original span it replaced.
     const { mutants, sourceById } = collectMutants(raw);
 
-    // Filter out invalid mutants (CompileError / RuntimeError) — they are
-    // not testable and shouldn't penalise the mutation score. `Ignored`
-    // mutants (e.g. excluded via mutator.excludedMutations) are reported by
-    // Stryker but never run, so they leave the denominator too.
-    const validMutants = mutants.filter(
-      (m) => m.status !== 'CompileError' && m.status !== 'RuntimeError' && m.status !== 'Ignored',
-    );
+    // ── Classify every mutant by an ALLOW-list of statuses ──
+    // Scored mutants form the denominator; CompileError/RuntimeError become
+    // `incompetent`; `Ignored` is dropped silently; anything else is schema
+    // drift and is reported rather than quietly inflating the denominator.
+    // See SCORED_STATUSES / INCOMPETENT_STATUSES / EXCLUDED_STATUSES above.
+    const validMutants = mutants.filter((m) => SCORED_STATUSES.has(m.status));
+    const incompetent = mutants.filter((m) => INCOMPETENT_STATUSES.has(m.status)).length;
+
+    const unrecognised = new Map<string, number>();
+    for (const m of mutants) {
+      if (
+        SCORED_STATUSES.has(m.status) ||
+        INCOMPETENT_STATUSES.has(m.status) ||
+        EXCLUDED_STATUSES.has(m.status)
+      ) {
+        continue;
+      }
+      unrecognised.set(m.status, (unrecognised.get(m.status) ?? 0) + 1);
+    }
+    if (unrecognised.size > 0) {
+      // Warned unconditionally (not behind isVerbose): an unhandled status means
+      // this engine's view of the report schema has drifted from the tool's, and
+      // the resulting score silently omits those mutants. Once per run, naming
+      // each status and its count.
+      const summary = [...unrecognised].map(([status, count]) => `${status} (${count})`).join(', ');
+      warn(
+        `parseReport: ${unrecognised.size} unrecognised Stryker mutant status(es) in the report for ` +
+          `${filePath}: ${summary}. They are excluded from the mutation score — this engine's status ` +
+          'list may be out of date with the installed StrykerJS.',
+      );
+    }
+
     const totalMutants = validMutants.length;
     // Timeouts count as killed — the mutant was detected by causing the test suite to hang.
     const killed = validMutants.filter(
@@ -816,6 +985,8 @@ export class TypeScriptEngine extends BaseEngine {
       survived,
       mutationScore,
       vulnerabilities,
+      incompetent: incompetent > 0 ? incompetent : undefined,
+      scopeKind,
     };
   }
 }

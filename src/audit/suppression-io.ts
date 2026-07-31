@@ -18,6 +18,7 @@ import {
   addSuppressions,
   removeSuppressions,
   verifySuppressions,
+  toPortableKey,
   type AddSuppressionsResult,
   type SuppressionVerdict,
 } from '../utils/suppression.js';
@@ -70,15 +71,19 @@ export async function applySuppressionArgs(
  * Verification happens here — one source read for the one file being audited —
  * rather than inside `loadSuppressions`, which would otherwise read every
  * suppressed file in the workspace on every single audit.
+ *
+ * The lookup goes through `toPortableKey` because `loadSuppressions` keys its
+ * map by the POSIX form. `anchorToWorkspace` already hands us a normalised
+ * `relFromRoot`, so this is idempotent for the real call sites — it is here so
+ * a caller that computes its own `relative()` cannot reintroduce the
+ * backslash-key miss, which fails silently (a missing key is an EMPTY verdict:
+ * zero applied, zero drifted, zero unverified, no signal at all).
  */
 export function loadVerifiedSuppressions(
   wsRoot: string,
   relFromRoot: string,
   supPath: string | undefined,
 ): SuppressionVerdict {
-  return verifySuppressions(
-    wsRoot,
-    relFromRoot,
-    loadSuppressions(wsRoot, supPath).get(relFromRoot),
-  );
+  const key = toPortableKey(relFromRoot);
+  return verifySuppressions(wsRoot, relFromRoot, loadSuppressions(wsRoot, supPath).get(key));
 }
