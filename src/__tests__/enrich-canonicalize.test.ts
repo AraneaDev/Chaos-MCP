@@ -63,6 +63,34 @@ describe('canonicalizeMutator', () => {
     );
   });
 
+  it('does not apply the Python rules to a non-Python engine', () => {
+    // `TrueValue` is a real Infection (PHP) mutator name, and it matches the
+    // Python `/True|False|Boolean/i` rule. The cosmic-ray rules are name-based
+    // and only authoritative for cosmic-ray; letting them run for another
+    // engine invents a confident category — and its severity — out of a name
+    // collision. PHP must report `unknown` rather than guess.
+    expect(canonicalizeMutator('TrueValue', 'php')).toBe('unknown');
+    expect(canonicalizeMutator('ReplaceComparisonOperator_Lt_LtE', 'php')).toBe('unknown');
+    // Rust with no change text must not fall through to the name rules either.
+    expect(canonicalizeMutator('ReplaceBinaryOperator_Add_Sub', 'rust')).toBe('unknown');
+  });
+
+  it('separates the tokens either side of a stripped Rust arrow', () => {
+    // The arrow strip exists so `-` and `>` cannot trigger the arithmetic or
+    // equality rules — but it must leave a SEPARATOR behind. Replacing `->`
+    // with nothing fuses the return type onto the preceding identifier, so
+    // `get_flag->true` becomes `get_flagtrue` and the `\btrue\b` rule stops
+    // matching: a boolean-literal mutant is then reported as `unknown`, with no
+    // severity and no hint.
+    expect(
+      canonicalizeMutator(
+        'replace get_flag',
+        'rust',
+        'replace get_flag->true with Default::default()',
+      ),
+    ).toBe('BooleanLiteral');
+  });
+
   it('returns unknown for Rust when changeText is absent (no throw)', () => {
     // The `&& changeText` guard short-circuits before the .replace() call; a
     // Rust target with no description must degrade to unknown, not crash.

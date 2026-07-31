@@ -4,6 +4,7 @@ import {
   ALLOWED_ROOTS_ENV,
   allowedWorkspaceRoots,
   isPathInside,
+  isPathPermitted,
   isWorkspaceRootAllowed,
   workspaceRootBoundary,
 } from '../utils/path-safety.js';
@@ -123,5 +124,34 @@ describe('workspaceRootBoundary', () => {
   it('falls back to the working directory when no root matches', () => {
     process.env[ALLOWED_ROOTS_ENV] = OUTSIDE;
     expect(workspaceRootBoundary(resolve(CWD, '..', 'unlisted-project'))).toBe(CWD);
+  });
+});
+
+describe('isPathPermitted', () => {
+  it('accepts a file inside the working directory', () => {
+    Reflect.deleteProperty(process.env, ALLOWED_ROOTS_ENV);
+    expect(isPathPermitted(join(CWD, 'src', 'enrich.ts'))).toBe(true);
+  });
+
+  it('rejects a file outside every permitted root', () => {
+    Reflect.deleteProperty(process.env, ALLOWED_ROOTS_ENV);
+    expect(isPathPermitted(join(OUTSIDE, 'src', 'enrich.ts'))).toBe(false);
+  });
+
+  it('accepts a file inside a configured root', () => {
+    // The `.some(...)` fallback is the whole point of the opt-in: without it,
+    // CHAOS_ALLOWED_ROOTS is unreachable because handlers reject the path
+    // before the sandbox ever sees it.
+    process.env[ALLOWED_ROOTS_ENV] = OUTSIDE;
+    expect(isPathPermitted(join(OUTSIDE_CHILD, 'enrich.ts'))).toBe(true);
+  });
+
+  it('grants exactly the same boundary as isWorkspaceRootAllowed', () => {
+    // The two names exist for readability at their call sites (a file vs a
+    // root); they must never drift into two different security boundaries.
+    process.env[ALLOWED_ROOTS_ENV] = OUTSIDE;
+    for (const candidate of [CWD, join(CWD, 'src'), OUTSIDE, OUTSIDE_CHILD, resolve(CWD, '..')]) {
+      expect(isPathPermitted(candidate)).toBe(isWorkspaceRootAllowed(candidate));
+    }
   });
 });

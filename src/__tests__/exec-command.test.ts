@@ -17,11 +17,12 @@ vi.mock('child_process', async (importOriginal) => {
 // Mock logger for verbose tests
 vi.mock('../utils/logger.js', () => ({
   log: vi.fn(),
-  isVerbose: vi.fn().mockReturnValue(false),
+  isVerbose: vi.fn(() => false),
 }));
 
 import { exec } from 'child_process';
-import { runShellCommand, ExecFailureError } from '../utils/exec.js';
+import { runShellCommand } from '../utils/exec.js';
+import { ExecFailureError } from '../utils/exec-error.js';
 
 // `exec` is overloaded, so the stubs below are cast with `as never` to pick a
 // callable shape. That cast strips the contextual types off the parameters, so

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import type { MockInstance } from 'vitest';
 import { mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -94,7 +95,31 @@ vi.mock('../prompts.js', () => ({
   })),
 }));
 
-import { startServer, APP_VERSION } from '../index.js';
+// Partial mock: the real implementations still run (the shutdown path must
+// genuinely clean sandboxes up), but wrapping them makes the handoff assertable
+// — the sandbox module exposes no getter for its signal-exit flag.
+vi.mock('../utils/sandbox.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../utils/sandbox.js')>();
+  return {
+    ...actual,
+    setSandboxSignalExit: vi.fn(actual.setSandboxSignalExit),
+    cleanupAllSandboxes: vi.fn(actual.cleanupAllSandboxes),
+  };
+});
+
+import { startServer, APP_VERSION, installShutdownHandlers } from '../index.js';
+import { setSandboxSignalExit, cleanupAllSandboxes } from '../utils/sandbox.js';
+
+const mockSetSandboxSignalExit = vi.mocked(setSandboxSignalExit);
+const mockCleanupAllSandboxes = vi.mocked(cleanupAllSandboxes);
+
+/**
+ * These tests drive the server in-process, so it must not claim the worker's
+ * signal handlers: real handlers left armed here fire when vitest tears the
+ * worker down, running a shutdown (and a process.exit) after the environment
+ * is gone. A real server takes the default.
+ */
+const NO_SIGNAL_HANDLERS = { installShutdownHandlers: false } as const;
 import {
   TOOL_DEFINITION,
   TRIAGE_TOOL_DEFINITION,
@@ -113,8 +138,31 @@ describe('startServer', () => {
     sdk.connect.mockResolvedValue(undefined);
   });
 
+  it('installs signal handlers by default, and skips them only when told to', async () => {
+    // Every other case here passes NO_SIGNAL_HANDLERS so the vitest worker keeps
+    // its own handlers — which means nothing exercises the DEFAULT, the one a
+    // real server takes. Calling with no options object at all also covers the
+    // optional chain: `options.installShutdownHandlers` on undefined throws.
+    const seen: string[] = [];
+    const onSpy = vi.spyOn(process, 'on').mockImplementation(((event: string) => {
+      seen.push(event);
+      return process;
+    }) as never);
+    try {
+      await startServer();
+      expect(seen).toContain('SIGTERM');
+      expect(seen).toContain('SIGINT');
+
+      seen.length = 0;
+      await startServer(undefined, { installShutdownHandlers: false });
+      expect(seen).not.toContain('SIGTERM');
+    } finally {
+      onSpy.mockRestore();
+    }
+  });
+
   it('constructs the MCP server with the chaos-mcp name and synced version', async () => {
-    await startServer();
+    await startServer(undefined, NO_SIGNAL_HANDLERS);
     expect(sdk.serverCtor).toHaveBeenCalledWith(
       { name: 'chaos-mcp', version: APP_VERSION },
       { capabilities: { tools: {}, resources: {}, prompts: {} } },
@@ -122,7 +170,7 @@ describe('startServer', () => {
   });
 
   it('registers the tools/list handler returning all three tool definitions', async () => {
-    await startServer();
+    await startServer(undefined, NO_SIGNAL_HANDLERS);
     const handler = sdk.setRequestHandler.mock.calls.find(
       (c) => c[0] === ListToolsRequestSchema,
     )?.[1];
@@ -135,7 +183,7 @@ describe('startServer', () => {
 
   it('registers the tools/call handler delegating to handleToolCall with the config and ctx', async () => {
     const config = { defaultTimeoutMs: 4242 };
-    await startServer(config);
+    await startServer(config, NO_SIGNAL_HANDLERS);
     const handler = sdk.setRequestHandler.mock.calls.find(
       (c) => c[0] === CallToolRequestSchema,
     )?.[1];
@@ -150,7 +198,7 @@ describe('startServer', () => {
 
   it('routes triage_test_coverage to handleTriageCall with the config and ctx', async () => {
     const config = { defaultMaxFiles: 7 };
-    await startServer(config);
+    await startServer(config, NO_SIGNAL_HANDLERS);
     const handler = sdk.setRequestHandler.mock.calls.find(
       (c) => c[0] === CallToolRequestSchema,
     )?.[1];
@@ -165,7 +213,7 @@ describe('startServer', () => {
 
   it('routes estimate_audit to handleEstimateCall with the config and ctx', async () => {
     const config = { defaultTimeoutMs: 30_000 };
-    await startServer(config);
+    await startServer(config, NO_SIGNAL_HANDLERS);
     const handler = sdk.setRequestHandler.mock.calls.find(
       (c) => c[0] === CallToolRequestSchema,
     )?.[1];
@@ -180,7 +228,7 @@ describe('startServer', () => {
   });
 
   it('registers the resources/list handler returning all three resources', async () => {
-    await startServer();
+    await startServer(undefined, NO_SIGNAL_HANDLERS);
     const handler = sdk.setRequestHandler.mock.calls.find(
       (c) => c[0] === ListResourcesRequestSchema,
     )?.[1];
@@ -190,7 +238,7 @@ describe('startServer', () => {
   });
 
   it('registers the resources/read handler returning contents for a known URI', async () => {
-    await startServer();
+    await startServer(undefined, NO_SIGNAL_HANDLERS);
     const handler = sdk.setRequestHandler.mock.calls.find(
       (c) => c[0] === ReadResourceRequestSchema,
     )?.[1];
@@ -202,7 +250,7 @@ describe('startServer', () => {
   });
 
   it('registers the prompts/list handler returning all two prompts', async () => {
-    await startServer();
+    await startServer(undefined, NO_SIGNAL_HANDLERS);
     const handler = sdk.setRequestHandler.mock.calls.find(
       (c) => c[0] === ListPromptsRequestSchema,
     )?.[1];
@@ -212,7 +260,7 @@ describe('startServer', () => {
   });
 
   it('registers the prompts/get handler delegating to getPrompt', async () => {
-    await startServer();
+    await startServer(undefined, NO_SIGNAL_HANDLERS);
     const handler = sdk.setRequestHandler.mock.calls.find(
       (c) => c[0] === GetPromptRequestSchema,
     )?.[1];
@@ -224,7 +272,7 @@ describe('startServer', () => {
   });
 
   it('connects the server over a stdio transport', async () => {
-    await startServer();
+    await startServer(undefined, NO_SIGNAL_HANDLERS);
     expect(sdk.transportCtor).toHaveBeenCalledTimes(1);
     expect(sdk.connect).toHaveBeenCalledTimes(1);
   });
@@ -279,5 +327,119 @@ describe('direct-run guard (isDirectRun)', () => {
     writeFileSync(unrelated, '');
     const indirect = await loadIndexWith(unrelated);
     expect(vi.mocked(indirect)).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The sandbox module registers signal handlers so temp directories are never
+ * leaked, and those used to call `process.exit` themselves — which tore the
+ * stdio transport down mid-write and dropped whatever JSON-RPC response was in
+ * flight, because nothing got a chance to close it. Shutdown belongs to
+ * whoever owns the process, so the server claims it: close the transport, then
+ * remove the sandboxes, then exit.
+ */
+describe('installShutdownHandlers', () => {
+  const signals = ['SIGHUP', 'SIGINT', 'SIGQUIT', 'SIGTERM'] as const;
+  let registered: Partial<Record<string, () => void>>;
+  let exitSpy: MockInstance<typeof process.exit>;
+
+  beforeEach(() => {
+    registered = {};
+    vi.spyOn(process, 'on').mockImplementation(((event: string, handler: () => void) => {
+      if ((signals as readonly string[]).includes(event)) registered[event] = handler;
+      return process;
+    }) as never);
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    // Hand signal-driven exit back to the sandbox module for other tests.
+    setSandboxSignalExit(true);
+  });
+
+  it('registers a handler for every termination signal', () => {
+    installShutdownHandlers({ close: () => Promise.resolve() });
+    for (const signal of signals) expect(registered[signal]).toBeTypeOf('function');
+  });
+
+  it('closes the transport before removing sandboxes and exiting', async () => {
+    const order: string[] = [];
+    const close = vi.fn(() => {
+      order.push('close');
+      return Promise.resolve();
+    });
+    installShutdownHandlers({ close });
+    registered.SIGTERM?.();
+    await vi.waitFor(() => expect(exitSpy).toHaveBeenCalled());
+    expect(order).toEqual(['close']);
+    // 128 + 15 for SIGTERM, so a signal kill is not reported as a clean exit.
+    expect(exitSpy).toHaveBeenCalledWith(143);
+  });
+
+  it('exits with the conventional code for each signal', async () => {
+    installShutdownHandlers({ close: () => Promise.resolve() });
+    for (const [signal, code] of [
+      ['SIGHUP', 129],
+      ['SIGINT', 130],
+      ['SIGQUIT', 131],
+    ] as const) {
+      exitSpy.mockClear();
+      // Re-register so the once-only `shuttingDown` latch does not swallow it.
+      installShutdownHandlers({ close: () => Promise.resolve() });
+      registered[signal]?.();
+      await vi.waitFor(() => expect(exitSpy).toHaveBeenCalledWith(code));
+    }
+  });
+
+  it('still exits when the transport close rejects', async () => {
+    installShutdownHandlers({ close: () => Promise.reject(new Error('socket gone')) });
+    registered.SIGTERM?.();
+    await vi.waitFor(() => expect(exitSpy).toHaveBeenCalledWith(143));
+  });
+
+  it('takes signal-driven exit away from the sandbox module', async () => {
+    // The sandbox module registers its own signal handlers and, by default,
+    // calls process.exit from them. Left enabled, it races this handler to the
+    // exit and the transport is torn down mid-write, losing any in-flight
+    // JSON-RPC response — the exact bug this handoff exists to prevent.
+    mockSetSandboxSignalExit.mockClear();
+    installShutdownHandlers({ close: () => Promise.resolve() });
+    expect(mockSetSandboxSignalExit).toHaveBeenCalledWith(false);
+  });
+
+  it('removes sandboxes on the way out', async () => {
+    mockCleanupAllSandboxes.mockClear();
+    installShutdownHandlers({ close: () => Promise.resolve() });
+    registered.SIGTERM?.();
+    await vi.waitFor(() => expect(exitSpy).toHaveBeenCalled());
+    expect(mockCleanupAllSandboxes).toHaveBeenCalled();
+  });
+
+  it('exits on the failsafe timer when close() never settles', async () => {
+    // A wedged transport must not keep the process alive forever. Nothing else
+    // here can see the failsafe: every other case resolves or rejects close(),
+    // so the timer is always cleared before it can fire.
+    vi.useFakeTimers();
+    try {
+      installShutdownHandlers({ close: () => new Promise<void>(() => undefined) });
+      registered.SIGTERM?.();
+      expect(exitSpy).not.toHaveBeenCalled();
+
+      vi.advanceTimersByTime(2_000);
+
+      expect(exitSpy).toHaveBeenCalledWith(143);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('ignores a second signal so a double Ctrl-C cannot re-enter shutdown', async () => {
+    const close = vi.fn(() => Promise.resolve());
+    installShutdownHandlers({ close });
+    registered.SIGINT?.();
+    registered.SIGINT?.();
+    await vi.waitFor(() => expect(exitSpy).toHaveBeenCalled());
+    expect(close).toHaveBeenCalledTimes(1);
   });
 });

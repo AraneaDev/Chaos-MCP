@@ -1,5 +1,11 @@
 import { cpus } from 'node:os';
-import { BaseEngine, RunOptions, MutationResult, Vulnerability } from './base.js';
+import {
+  BaseEngine,
+  RunOptions,
+  MutationResult,
+  formatMutationScore,
+  survivorVulnerability,
+} from './base.js';
 import { invokeMutationTool } from '../utils/exec-classify.js';
 import { log, isVerbose } from '../utils/logger.js';
 import { DEFAULT_TIMEOUT_MS } from '../utils/constants.js';
@@ -28,6 +34,10 @@ interface CargoMutantsJsonOutput {
   summary?: {
     caught?: number;
     missed?: number;
+    /** Mutants whose test run exceeded the per-mutant timeout — counted as killed. */
+    timeout?: number;
+    /** Mutants that did not compile — excluded from the score, reported as incompetent. */
+    unviable?: number;
     total?: number;
   };
   /** Detailed mutant results */
@@ -104,6 +114,50 @@ function parseCargoSummary(stdout: string): CargoSummary | null {
 }
 
 /**
+ * The scored view of one set of cargo-mutants outcome counts.
+ */
+interface ScoredCounts {
+  totalMutants: number;
+  killed: number;
+  survived: number;
+  mutationScore: string;
+  /** Only present when non-zero, matching the `MutationResult` spread below. */
+  incompetent?: number;
+}
+
+/**
+ * Turn cargo-mutants' four outcome counts into the scored fields of a
+ * {@link MutationResult}.
+ *
+ * WHY it is shared by BOTH the JSON and the text parser: the same run must not
+ * report a different score depending on whether stdout happened to be JSON.
+ * The rules encoded here (and previously duplicated, with only a comment to
+ * keep them honest) are:
+ *  - timeouts count as KILLED — the suite detected the mutant by hanging on it;
+ *  - unviable mutants (did not compile) leave the denominator entirely and are
+ *    surfaced as `incompetent`, since no test ever exercised them. Reading
+ *    cargo's own `summary.total` did neither: it includes unviable mutants,
+ *    deflating the score against mutants that were never run.
+ */
+function scoreCounts(counts: {
+  caught: number;
+  missed: number;
+  timeout: number;
+  unviable: number;
+}): ScoredCounts {
+  const killed = counts.caught + counts.timeout;
+  const survived = counts.missed;
+  const totalMutants = killed + survived;
+  return {
+    totalMutants,
+    killed,
+    survived,
+    mutationScore: formatMutationScore(killed, totalMutants),
+    ...(counts.unviable > 0 ? { incompetent: counts.unviable } : {}),
+  };
+}
+
+/**
  * Strip cargo-mutants' trailing " in <build> build + <test> test" timing suffix
  * from a mutant description. WHY: the timing varies run-to-run ("in 0s build +
  * 0s test" vs "in 8s build + 2s test"), so leaving it in the `mutator` label
@@ -164,52 +218,50 @@ function parseCargoMutantsText(stdout: string, filePath: string): MutationResult
     const mutantLine = locMatch ? parseInt(locMatch[1], 10) : 0;
     const desc = locMatch && locMatch[2] ? stripCargoTiming(locMatch[2].trim()) : '';
 
-    const vuln: Vulnerability = {
-      line: mutantLine,
+    vulnerabilities.push(
       // Derive a per-mutant label from the description, mirroring the JSON
       // branch below (H2/I4): two different mutations on the same line must
       // get distinct `mutator` values, or suppression/verify keys (which are
       // `keyOf(line, mutator)`) collapse them into one entry.
-      mutator: desc || 'Rust Mutation Operator',
-      description: `Mutation survived at line ${mutantLine}. The Rust test suite did not catch this change.`,
-    };
-    if (desc) vuln.mutated = desc;
-    vulnerabilities.push(vuln);
+      // cargo-mutants reports caught/missed/unviable/timeout — "missed" is a
+      // survivor; it has no separate uncovered-line outcome, hence 'survived'.
+      survivorVulnerability(mutantLine, desc || 'Rust Mutation Operator', 'Rust', {
+        mutated: desc || undefined,
+        // No parseable location: `mutantLine` is the 0 sentinel, and "line 0"
+        // reads as a real location. Render "line unknown" in the sentence,
+        // matching the JSON branch below. The structured `line` stays 0 — the
+        // suppression/verify keys are `keyOf(line, mutator)` and must not move.
+        lineLabel: locMatch ? mutantLine : 'unknown',
+      }),
+    );
   }
 
   // Prefer the authoritative summary line over line counts — cargo-mutants only
   // prints MISSED lines by default, so line-counting alone reports a false 0%.
-  // Unviable mutants (did not compile) are excluded from the denominator, since
-  // they were never actually exercised by a test.
+  // `scoreCounts` is what keeps unviable mutants out of the denominator (they
+  // were never exercised by a test) and surfaces them via the shared
+  // `incompetent` field instead (base.ts MutationResult contract).
   const summary = parseCargoSummary(stdout);
-  let total: number;
-  let killed: number;
-  let survived: number;
-  // Unviable mutants (did not compile) are excluded from the denominator above;
-  // surface them via the shared `incompetent` field so callers can see how many
-  // mutants were skipped (base.ts MutationResult contract).
-  let incompetent = 0;
-  if (summary) {
-    killed = summary.caught + summary.timeout;
-    survived = summary.missed;
-    total = killed + survived;
-    incompetent = summary.unviable;
-  } else {
-    total = lineTotal;
-    killed = lineKilled;
-    survived = total - killed;
-  }
-
-  const score = total > 0 ? ((killed / total) * 100).toFixed(2) : '100.00';
+  const scored: ScoredCounts = summary
+    ? scoreCounts(summary)
+    : {
+        // No summary line (pre-v27 output / synthetic fixtures): fall back to
+        // counting the printed result lines. There is no unviable count to
+        // exclude in this path, so nothing leaves the denominator.
+        totalMutants: lineTotal,
+        killed: lineKilled,
+        survived: lineTotal - lineKilled,
+        mutationScore: formatMutationScore(lineKilled, lineTotal),
+      };
 
   return {
     target: filePath,
-    totalMutants: total,
-    killed,
-    survived,
-    mutationScore: `${score}%`,
+    totalMutants: scored.totalMutants,
+    killed: scored.killed,
+    survived: scored.survived,
+    mutationScore: scored.mutationScore,
     vulnerabilities,
-    ...(incompetent > 0 ? { incompetent } : {}),
+    ...(scored.incompetent !== undefined ? { incompetent: scored.incompetent } : {}),
   };
 }
 
@@ -222,30 +274,49 @@ function parseCargoMutantsOutput(stdout: string, filePath: string): MutationResu
     const parsed = JSON.parse(stdout) as CargoMutantsJsonOutput;
 
     if (parsed.summary && parsed.mutants) {
-      const { caught = 0, missed = 0, total = caught + missed } = parsed.summary;
+      const { caught = 0, missed = 0, timeout = 0, unviable = 0, total } = parsed.summary;
+      // Shared with the text branch, so the same run cannot score differently
+      // depending on whether stdout happened to be JSON.
+      const scored = scoreCounts({ caught, missed, timeout, unviable });
+      // `total` is only consulted to infer unviable when the runner did not
+      // report it explicitly; it is never the denominator. (This branch keeps
+      // its own inference rather than taking `scored.incompetent`, which is the
+      // reported `unviable` alone — the JSON summary is the only place a total
+      // is available to infer from.)
+      const incompetent =
+        unviable || Math.max(0, (total ?? scored.totalMutants) - scored.totalMutants);
 
       return {
         target: filePath,
-        totalMutants: total,
-        killed: caught,
-        survived: missed,
-        mutationScore: `${total > 0 ? ((caught / total) * 100).toFixed(2) : '100.00'}%`,
+        totalMutants: scored.totalMutants,
+        killed: scored.killed,
+        survived: scored.survived,
+        mutationScore: scored.mutationScore,
         vulnerabilities: parsed.mutants
           .filter(
             (m) =>
               !m.caught &&
               (m.status === 'MISSED' || m.status === 'missed' || m.status === 'UNCAUGHT'),
           )
-          .map((m) => {
-            const vuln: Vulnerability = {
-              line: m.line ?? 0,
+          .map((m) =>
+            survivorVulnerability(
+              m.line ?? 0,
               // `||` (not `??`) so empty-string descriptions fall back to the default label.
-              mutator: m.description || 'Rust Mutation Operator',
-              description: `Mutation survived at line ${m.line ?? 'unknown'}. The Rust test suite did not catch this change.`,
-            };
-            if (m.description) vuln.mutated = m.description;
-            return vuln;
-          }),
+              m.description || 'Rust Mutation Operator',
+              'Rust',
+              {
+                mutated: m.description || undefined,
+                // A mutant with no reported line renders as "line unknown" in
+                // both branches (the text branch does the same for an
+                // unparseable location); only the sentence changes, the
+                // structured `line` stays the 0 sentinel. An explicitly
+                // reported `line: 0` is left as-is — that is the tool stating a
+                // line, not failing to.
+                lineLabel: m.line ?? 'unknown',
+              },
+            ),
+          ),
+        ...(incompetent > 0 ? { incompetent } : {}),
       };
     }
   } catch {
@@ -305,7 +376,12 @@ export class RustEngine extends BaseEngine {
       stdout = execErr.stdout;
       stderr = execErr.stderr;
 
-      if (!stdout) {
+      // Whitespace-only stdout (e.g. a lone "\n" flushed before the run died)
+      // carries no mutants either, but is truthy — a bare `!stdout` check would
+      // let it through to the text parser and report a useless zero-mutant
+      // result instead of the accurate "baseline test suite failed" diagnosis.
+      // `!stdout ||` guards the case where stdout is absent entirely.
+      if (!stdout || !stdout.trim()) {
         throw new Error(
           `cargo-mutants failed (exit ${execErr.exit}) with no parseable output. ` +
             `This usually means the baseline test suite itself failed \u2014 run \`cargo test\` and fix those first. ` +

@@ -20,6 +20,22 @@ export type ProjectType = 'typescript' | 'python' | 'rust' | 'php' | 'unsupporte
 export type SupportedProjectType = Exclude<ProjectType, 'unsupported'>;
 
 /**
+ * Compile-time exhaustiveness guard for {@link SupportedProjectType} switches.
+ *
+ * Call it from a `default:` clause whose subject has been narrowed to `never`.
+ * Adding a member to {@link ProjectType} then turns every unhandled switch into
+ * a COMPILE error instead of a silent fallback (audit F15: seven of the eleven
+ * sites a new language touches failed silently).
+ *
+ * Deliberately a no-op at runtime, NOT a throw: the call sites it guards all
+ * have a safe fallback value today, and turning a silent fallback into a
+ * runtime crash would change behaviour. The value is the compile error.
+ */
+export function assertNeverProjectType(value: never): void {
+  void value;
+}
+
+/**
  * Structured environment information resolved from workspace signals.
  * Carries everything the mutation engines need to configure themselves.
  */
@@ -74,8 +90,14 @@ export function detectProjectType(filePath: string): ProjectType {
   // already recognises vitest.config.mts/.mjs, so source files in those forms
   // must be auditable rather than reported as unsupported. Extensions are
   // mutually exclusive, so iteration order over LANGUAGE_DETECTORS is moot.
+  //
+  // Lowercased first: on the case-insensitive filesystems where `Main.RS` or
+  // `Foo.PHP` are ordinary filenames, they are still Rust and PHP, and
+  // reporting "Extension unsupported" for a file that plainly has a supported
+  // extension is a confusing way to say so.
+  const normalised = filePath.toLowerCase();
   for (const type of LANGUAGE_DETECTOR_TYPES) {
-    if (LANGUAGE_DETECTORS[type].matches(filePath)) return type;
+    if (LANGUAGE_DETECTORS[type].matches(normalised)) return type;
   }
   return 'unsupported';
 }
@@ -535,6 +557,26 @@ export function detectRawPhpRunner(workspaceRoot: string): string {
 interface LanguageDetector {
   /** True when the target file belongs to this language (by extension). */
   matches: (filePath: string) => boolean;
+  /**
+   * Source-file extensions this language owns, most idiomatic first, lowercase
+   * and dot-prefixed. Single source of truth for every "which files can be
+   * audited" list in the codebase — triage discovery
+   * ({@link supportedSourceExtensions}) and the MCP tool-schema prose both
+   * derive from it, so a new language cannot ship with triage silently unable
+   * to discover its files.
+   *
+   * Intentionally NOT the same predicate as {@link LanguageDetector.matches}:
+   * `matches` is deliberately wider for TypeScript (it also accepts `.mjs`,
+   * `.cjs`, `.mts`, `.cts`), and narrowing it to this list would change which
+   * files detect as a supported project. This list is the discovery/prose set.
+   */
+  extensions: readonly string[];
+  /**
+   * The subset of {@link LanguageDetector.extensions} used in space-constrained
+   * prose (schema descriptions that name a few representative extensions rather
+   * than enumerating variant forms). Defaults to `extensions` when omitted.
+   */
+  primaryExtensions?: readonly string[];
   /** Root-marker files used to resolve the workspace root. */
   markers: readonly string[];
   /** Stryker/mutmut-compatible test-runner detection. */
@@ -548,12 +590,15 @@ interface LanguageDetector {
 const LANGUAGE_DETECTORS: Record<SupportedProjectType, LanguageDetector> = {
   typescript: {
     matches: (p) => /\.(c|m)?[jt]sx?$/.test(p),
+    extensions: ['.ts', '.js', '.tsx', '.jsx'],
+    primaryExtensions: ['.ts', '.js'],
     markers: JS_ROOT_MARKERS,
     testRunner: detectJsTestRunner,
     rawRunner: detectRawJsRunner,
   },
   python: {
     matches: (p) => p.endsWith('.py'),
+    extensions: ['.py'],
     markers: PY_ROOT_MARKERS,
     testRunner: detectPythonTestRunner,
     rawRunner: detectRawPythonRunner,
@@ -561,12 +606,14 @@ const LANGUAGE_DETECTORS: Record<SupportedProjectType, LanguageDetector> = {
   },
   rust: {
     matches: (p) => p.endsWith('.rs'),
+    extensions: ['.rs'],
     markers: RUST_ROOT_MARKERS,
     testRunner: detectRustTestRunner,
     rawRunner: detectRawRustRunner,
   },
   php: {
     matches: (p) => p.endsWith('.php'),
+    extensions: ['.php'],
     markers: PHP_ROOT_MARKERS,
     testRunner: detectPhpTestRunner,
     rawRunner: detectRawPhpRunner,
@@ -575,6 +622,34 @@ const LANGUAGE_DETECTORS: Record<SupportedProjectType, LanguageDetector> = {
 
 /** Detection order — preserves the original typescript→python→rust sequence. */
 const LANGUAGE_DETECTOR_TYPES = Object.keys(LANGUAGE_DETECTORS) as SupportedProjectType[];
+
+/**
+ * Every auditable source-file extension, deduped, in detection order
+ * (typescript → python → rust → php). Derived from {@link LANGUAGE_DETECTORS},
+ * so adding a language to that registry automatically widens triage discovery
+ * and the tool-schema prose instead of leaving them silently stale.
+ *
+ * Lowercase and dot-prefixed; callers comparing real paths should lowercase the
+ * path first (see `triage.ts`).
+ */
+export function supportedSourceExtensions(): string[] {
+  return [...new Set(LANGUAGE_DETECTOR_TYPES.flatMap((t) => LANGUAGE_DETECTORS[t].extensions))];
+}
+
+/**
+ * The representative subset of {@link supportedSourceExtensions} — variant
+ * forms (`.tsx`/`.jsx`) collapsed away — for prose that names a few extensions
+ * rather than enumerating all of them.
+ */
+export function primarySourceExtensions(): string[] {
+  return [
+    ...new Set(
+      LANGUAGE_DETECTOR_TYPES.flatMap(
+        (t) => LANGUAGE_DETECTORS[t].primaryExtensions ?? LANGUAGE_DETECTORS[t].extensions,
+      ),
+    ),
+  ];
+}
 
 // ─── Main detection entry point ──────────────────────────────────────────────
 

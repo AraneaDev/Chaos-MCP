@@ -18,6 +18,39 @@ export type DiffResult =
 const GIT_TIMEOUT_MS = 15_000;
 
 /**
+ * Per-call controls shared by the git helpers.
+ *
+ * These run BEFORE the sandbox is provisioned, so without them a cancelled
+ * request kept up to four sequential 15-second git calls running with nothing
+ * left to receive the result, and none of that time was charged against the
+ * audit's wall-clock budget. `timeoutMs` lets the caller clamp them to whatever
+ * remains of that budget.
+ */
+export interface GitOptions {
+  /** Forwarded to the git subprocess so a cancel kills it in flight. */
+  signal?: AbortSignal;
+  /** Upper bound per git call; clamped to {@link GIT_TIMEOUT_MS}. */
+  timeoutMs?: number;
+}
+
+/** Build the read-only git runner for one workspace, honouring caller controls. */
+function gitRunner(workspaceRoot: string, options?: GitOptions) {
+  // `Math.max(1, …)` keeps an exhausted budget from being passed through as a
+  // zero/negative timeout, which Node reads as "no timeout at all".
+  const timeoutMs =
+    options?.timeoutMs === undefined
+      ? GIT_TIMEOUT_MS
+      : Math.max(1, Math.min(GIT_TIMEOUT_MS, options.timeoutMs));
+  return (args: string[]) =>
+    runShell('git', args, {
+      cwd: workspaceRoot,
+      timeoutMs,
+      signal: options?.signal,
+      killTree: true,
+    });
+}
+
+/**
  * Parse unified-diff hunk headers (`@@ -a,b +c,d @@`) into NEW-side line ranges.
  * We mutate current file content, so the new side (`+c,d`) is what matters.
  * A hunk whose new-count is 0 (pure deletion) contributes no mutable lines.
@@ -44,9 +77,9 @@ export async function computeChangedRanges(
   relFilePath: string,
   workspaceRoot: string,
   diffBase: string,
+  options?: GitOptions,
 ): Promise<DiffResult> {
-  const git = (args: string[]) =>
-    runShell('git', args, { cwd: workspaceRoot, timeoutMs: GIT_TIMEOUT_MS });
+  const git = gitRunner(workspaceRoot, options);
 
   // 1. Must be a git work tree.
   try {
@@ -105,9 +138,9 @@ export type ChangedFilesResult =
 export async function listChangedFiles(
   workspaceRoot: string,
   diffBase: string,
+  options?: GitOptions,
 ): Promise<ChangedFilesResult> {
-  const git = (args: string[]) =>
-    runShell('git', args, { cwd: workspaceRoot, timeoutMs: GIT_TIMEOUT_MS });
+  const git = gitRunner(workspaceRoot, options);
 
   try {
     await git(['rev-parse', '--is-inside-work-tree']);

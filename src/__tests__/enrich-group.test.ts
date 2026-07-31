@@ -22,6 +22,22 @@ describe('enrichGroup', () => {
     expect(e.hint).toBe(MUTATOR_SEMANTICS.EqualityOperator.hint);
   });
 
+  it('joins multiple change strings with a separator, not end to end', () => {
+    // The Rust categoriser reads the joined change text, and its rules use word
+    // boundaries. Concatenating the entries with no separator fuses the tail of
+    // one onto the head of the next — `…with bar` + `true` becomes `bartrue` —
+    // and a boolean-literal mutant silently degrades to `unknown`: no severity,
+    // no why, no hint for the caller to act on.
+    const e = enrichGroup({
+      line: 3,
+      mutators: { replace_flag: 1 },
+      changes: ['replace foo with bar', 'true'],
+      projectType: 'rust',
+    });
+    expect(e.severity).toBe(MUTATOR_SEMANTICS.BooleanLiteral.severity);
+    expect(e.why).toBe(MUTATOR_SEMANTICS.BooleanLiteral.why);
+  });
+
   it('keeps the highest severity even when the high mutator is listed first', () => {
     // Order-independence: with the high mutator FIRST, a lower one must not
     // overwrite it. Guards the `rank > best.rank` comparison against being

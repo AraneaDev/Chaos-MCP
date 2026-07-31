@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 
 export interface RunCacheEntry {
   runId: string;
@@ -116,10 +116,76 @@ export function saveRun(
   return runId;
 }
 
+/**
+ * The parts of a built result payload a cached run is keyed by.
+ *
+ * Declared structurally rather than imported as `format.js#ResultPayload` on
+ * purpose: `utils/` is the leaf layer, and a value import of `format.js` (a
+ * domain module that itself pulls in `enrich`, `gate` and `engines/base`) was
+ * the last edge pointing back up from it — exactly the shape that would let a
+ * `format.ts ↔ utils/*` cycle form. `ResultPayload` satisfies this interface,
+ * so callers pass `buildResultPayload(result, {})` straight in.
+ */
+export interface RunCachePayload {
+  survivors: { line: number; mutators: Record<string, number> }[];
+  noCoverage: { line: number; mutators: Record<string, number> }[];
+}
+
+/**
+ * Mint a runId for a finished mutation run so the caller can verify it later by
+ * id, without re-auditing.
+ *
+ * `audit_code_resilience` and `triage_test_coverage` minted this identically —
+ * same compact payload, same `{ line, mutators }` projection over both group
+ * arrays, same non-fatal `catch` — from two copies that could drift into
+ * writing different cache entries for the same file. One copy lives here, next
+ * to {@link saveRun}, so both tools cache the same shape.
+ *
+ * `file` MUST be the workspace-relative path (`relFromRoot`): it is the key the
+ * verify-by-runId check and triage both look the run up by.
+ *
+ * `payload` is the already-compacted result (`buildResultPayload(result, {})`),
+ * built by the caller — see {@link RunCachePayload} for why it is not built
+ * here. Callers must pass an UNCAPPED, UNFILTERED payload (`{}` opts): a
+ * `maxSurvivors`-truncated one would cache fewer survivors than the run found
+ * and a later verify would read the missing ones as fixed.
+ *
+ * A cache failure is non-fatal by design — the runId is a convenience for a
+ * follow-up verify, and losing it must not cost the caller the audit they asked
+ * for — so this returns `undefined` rather than throwing.
+ */
+export function mintRunId(
+  payload: RunCachePayload,
+  file: string,
+  projectType: string,
+  opts?: RunCacheOptions,
+): string | undefined {
+  try {
+    return saveRun(
+      {
+        file,
+        projectType,
+        survivors: payload.survivors.map((g) => ({ line: g.line, mutators: g.mutators })),
+        noCoverage: payload.noCoverage.map((g) => ({ line: g.line, mutators: g.mutators })),
+      },
+      opts,
+    );
+  } catch {
+    return undefined; // cache failure is non-fatal; omit runId
+  }
+}
+
 export function loadRun(runId: string, opts?: RunCacheOptions): RunCacheEntry | undefined {
   const dir = cacheDir(opts);
   const ttlMs = opts?.ttlMs ?? DEFAULT_TTL_MS;
   const now = opts?.now ?? Date.now();
+  // Defense in depth against path traversal: `runId` reaches this function from
+  // a tool argument and is interpolated into a filename, so an id containing
+  // path separators or `..` would read a JSON file anywhere on disk. The tool
+  // validator already pins the minted 8-hex shape; this second check means the
+  // cache cannot be turned into a file-read primitive even by a caller that
+  // bypasses it (a direct API consumer, or a future handler that forgets).
+  if (basename(runId) !== runId || runId.length === 0) return undefined;
   const file = join(dir, `${runId}.json`);
   try {
     statSync(file);

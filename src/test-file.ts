@@ -1,6 +1,6 @@
 import { existsSync, readdirSync } from 'fs';
 import { join, dirname, basename, extname, relative, sep } from 'path';
-import type { SupportedProjectType } from './engines/registry.js';
+import { assertNeverProjectType, type SupportedProjectType } from './utils/project-detector.js';
 
 /**
  * Candidate test-file paths (workspace-root-relative) for a target, in priority
@@ -38,8 +38,14 @@ function candidates(targetFile: string, projectType: SupportedProjectType): stri
         j('tests', `${base}Test.php`),
       ];
     }
-    default:
+    default: {
+      // Exhaustiveness guard, not a runtime check: `projectType` is narrowed to
+      // `never` here, so adding a SupportedProjectType without a case above is a
+      // COMPILE error rather than a silently blank "would create" hint (F15).
+      // The fallback below is retained and stays unreachable for the declared union.
+      assertNeverProjectType(projectType);
       return [];
+    }
   }
 }
 

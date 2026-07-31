@@ -8,6 +8,14 @@ vi.mock('fs', () => ({
 
 import { existsSync, readFileSync } from 'fs';
 import { loadConfig, validateConfig } from '../utils/config-loader.js';
+import {
+  ENGINE_CONFIG_SECTIONS,
+  KNOWN_COSMICRAY_KEYS,
+  KNOWN_INFECTION_KEYS,
+  KNOWN_RUST_KEYS,
+  KNOWN_STRYKER_KEYS,
+} from '../utils/config/rules.js';
+import { MAX_TIMEOUT_MS } from '../utils/constants.js';
 
 const mockExistsSync = vi.mocked(existsSync);
 const mockReadFileSync = vi.mocked(readFileSync);
@@ -871,6 +879,71 @@ describe('config-loader mutation hardening', () => {
 
   // ── KNOWN_*_KEYS inventories (a deleted key would make a real field "unknown") ──
 
+  it.each([
+    ['defaultTimeoutMs', 1000],
+    ['defaultMaxFiles', 25],
+    ['defaultMaxSurvivors', 10],
+    ['defaultSeverityFloor', 'high'],
+    ['defaultFileConcurrency', 4],
+    ['testRunner', 'vitest'],
+    ['concurrency', 4],
+    ['mutatorAllowlist', ['a']],
+    ['mutatorDenylist', ['b']],
+    ['perMutantTimeoutMs', 5000],
+    ['allowPrebuild', true],
+    ['suppressionsPath', '.chaos-mcp/suppressions.json'],
+    ['runCacheTtlMs', 1000],
+    ['runCacheMax', 10],
+    ['stryker', { timeoutMs: 1 }],
+    ['cosmicray', { timeoutMs: 1 }],
+    ['rust', { timeoutMs: 1 }],
+    ['infection', { timeoutMs: 1 }],
+    ['container', { mode: 'native' }],
+  ])('recognises the top-level key %s on its own', (key, value) => {
+    // One key per case, so a missing entry in KNOWN_KEYS names the exact key
+    // rather than failing a grab-bag. The failure mode this guards against is
+    // quiet: an unrecognised key is IGNORED, so the operator's setting silently
+    // does nothing and the only clue is this warning.
+    setConfig({ [key]: value });
+    const { warnings } = validateConfig('/tmp/config.json');
+    expect(warnings.filter((w) => w.includes('Unknown config key'))).toEqual([]);
+  });
+
+  it.each([
+    ['mode', 'native'],
+    ['runtime', 'docker'],
+    ['network', 'none'],
+    ['cpus', 2],
+    ['memoryMb', 1024],
+    ['pidsLimit', 128],
+    ['startupTimeoutMs', 60_000],
+    ['tmpfsSizeMb', 2048],
+    ['images', { typescript: 'img' }],
+  ])('recognises the container key %s on its own', (key, value) => {
+    setConfig({ container: { [key]: value } });
+    const { warnings } = validateConfig('/tmp/config.json');
+    expect(warnings.filter((w) => w.includes('Unknown'))).toEqual([]);
+  });
+
+  it.each([
+    ['timeoutMs', 1000],
+    ['threads', '4'],
+    ['testFrameworkOptions', '--testsuite=unit'],
+  ])('recognises the infection key %s on its own', (key, value) => {
+    setConfig({ infection: { [key]: value } });
+    const { warnings } = validateConfig('/tmp/config.json');
+    expect(warnings.filter((w) => w.includes('Unknown'))).toEqual([]);
+  });
+
+  it.each([['typescript'], ['python'], ['rust'], ['php']])(
+    'recognises the container image key %s on its own',
+    (language) => {
+      setConfig({ container: { images: { [language]: 'ghcr.io/example/img:1' } } });
+      const { warnings } = validateConfig('/tmp/config.json');
+      expect(warnings.filter((w) => w.includes('Unknown'))).toEqual([]);
+    },
+  );
+
   it('accepts every known top-level key without an "Unknown config key" warning', () => {
     setConfig({
       defaultTimeoutMs: 1000,
@@ -1378,6 +1451,9 @@ describe('container execution config', () => {
     ['memoryMb', 1],
     ['pidsLimit', 1],
     ['startupTimeoutMs', 1],
+    // The container root filesystem is read-only, so /tmp holds every
+    // toolchain cache; its size is configurable for that reason.
+    ['tmpfsSizeMb', 1],
   ] as const)('loads isolated positive %s boundary', (key, value) => {
     setContainer({ [key]: value });
     expect(loadConfig('/tmp/config.json').container).toEqual({ [key]: value });
@@ -1410,6 +1486,8 @@ describe('container execution config', () => {
     ['pidsLimit', 1.5, 'container.pidsLimit must be a positive integer.'],
     ['startupTimeoutMs', 0, 'container.startupTimeoutMs must be a positive integer.'],
     ['startupTimeoutMs', 1.5, 'container.startupTimeoutMs must be a positive integer.'],
+    ['tmpfsSizeMb', 0, 'container.tmpfsSizeMb must be a positive integer.'],
+    ['tmpfsSizeMb', 1.5, 'container.tmpfsSizeMb must be a positive integer.'],
     ['images', null, 'container.images must be an object.'],
     ['images', [], 'container.images must be an object.'],
     ['images', 'image', 'container.images must be an object.'],
@@ -1504,5 +1582,248 @@ describe('container execution config', () => {
       images: { rust: 'local/rust:test' },
     });
     expect(warnings).toEqual([]);
+  });
+});
+
+/**
+ * Timeout ceiling. A config timeout larger than `MAX_TIMEOUT_MS` reaches
+ * `setTimeout`, is clamped to 1 ms and aborts the run instantly — so a typo like
+ * `3000000000` used to kill every audit while `--validate-config` said nothing.
+ * `tool-args-validation.ts` already rejects that for tool arguments; these pin
+ * the same ceiling on the config file, on both the parse and the warn side.
+ */
+describe('config timeout ceiling', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockExistsSync.mockReturnValue(true);
+  });
+
+  function setConfig(obj: unknown): void {
+    mockReadFileSync.mockReturnValue(JSON.stringify(obj));
+  }
+
+  const overCap = MAX_TIMEOUT_MS + 1;
+  const capNote = `(the largest delay a timer accepts; larger values are clamped to 1ms and abort the run immediately)`;
+
+  it.each(['defaultTimeoutMs', 'perMutantTimeoutMs'] as const)(
+    'accepts %s exactly at the cap and warns above it',
+    (key) => {
+      setConfig({ [key]: MAX_TIMEOUT_MS });
+      expect(loadConfig('/tmp/config.json')[key]).toBe(MAX_TIMEOUT_MS);
+      expect(validateConfig('/tmp/config.json').warnings).toEqual([]);
+
+      setConfig({ [key]: overCap });
+      expect(loadConfig('/tmp/config.json')[key]).toBeUndefined();
+      expect(validateConfig('/tmp/config.json').warnings).toEqual([
+        `${key} must be <= ${MAX_TIMEOUT_MS} ${capNote}, got ${overCap}.`,
+      ]);
+    },
+  );
+
+  it.each(['stryker', 'cosmicray', 'rust', 'infection'] as const)(
+    'drops an over-cap %s.timeoutMs and says why',
+    (section) => {
+      setConfig({ [section]: { timeoutMs: MAX_TIMEOUT_MS } });
+      expect(loadConfig('/tmp/config.json')[section]?.timeoutMs).toBe(MAX_TIMEOUT_MS);
+
+      setConfig({ [section]: { timeoutMs: overCap } });
+      expect(loadConfig('/tmp/config.json')[section]).toBeUndefined();
+      expect(validateConfig('/tmp/config.json').warnings).toContain(
+        `"${section}.timeoutMs" must be <= ${MAX_TIMEOUT_MS} ${capNote}, got ${overCap} — will be ignored.`,
+      );
+    },
+  );
+
+  it('caps stryker.perMutantTimeoutMs too', () => {
+    setConfig({ stryker: { perMutantTimeoutMs: overCap } });
+    expect(loadConfig('/tmp/config.json').stryker).toBeUndefined();
+    expect(validateConfig('/tmp/config.json').warnings).toContain(
+      `"stryker.perMutantTimeoutMs" must be <= ${MAX_TIMEOUT_MS} ${capNote}, got ${overCap} — will be ignored.`,
+    );
+  });
+
+  it('rejects an Infinity timeout (JSON allows 1e400)', () => {
+    // JSON.parse turns any overflowing literal into Infinity, which passed the
+    // old `> 0` test and then clamped to 1 ms at the timer.
+    mockReadFileSync.mockReturnValue('{"defaultTimeoutMs": 1e400}');
+    expect(loadConfig('/tmp/config.json').defaultTimeoutMs).toBeUndefined();
+    expect(validateConfig('/tmp/config.json').warnings).toEqual([
+      `defaultTimeoutMs must be <= ${MAX_TIMEOUT_MS} ${capNote}, got Infinity.`,
+    ]);
+  });
+});
+
+/**
+ * The parser and the validator now walk ONE rule table, so they cannot disagree
+ * about whether a value is acceptable. This pins the direction that matters to
+ * the operator: nothing may be warned about AND kept — a warning must always
+ * describe a field that really was dropped.
+ */
+describe('parse and validate agree', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockExistsSync.mockReturnValue(true);
+  });
+
+  const REJECTED: [string, unknown][] = [
+    ['defaultTimeoutMs', 'soon'],
+    ['defaultTimeoutMs', MAX_TIMEOUT_MS + 1],
+    ['defaultMaxSurvivors', 0],
+    ['defaultSeverityFloor', 'critical'],
+    ['defaultFileConcurrency', 65],
+    ['testRunner', 42],
+    ['concurrency', 1.5],
+    ['perMutantTimeoutMs', null],
+    ['allowPrebuild', 'yes'],
+    ['suppressionsPath', '   '],
+    ['runCacheTtlMs', 0],
+    ['runCacheMax', -1],
+    // Previously silent (see "silently-dropped global fields now warn" below).
+    ['defaultMaxFiles', 'ten'],
+    ['defaultMaxFiles', -1],
+    ['mutatorAllowlist', 'ConditionalExpression'],
+    ['mutatorDenylist', 42],
+  ];
+
+  it.each(REJECTED)('never warns about %s while still keeping it', (key, value) => {
+    mockReadFileSync.mockReturnValue(JSON.stringify({ [key]: value }));
+    const { config, warnings } = validateConfig('/tmp/config.json');
+    expect(warnings.some((w) => w.startsWith(`${key} `))).toBe(true);
+    expect(config).not.toHaveProperty(key);
+    expect(loadConfig('/tmp/config.json')).not.toHaveProperty(key);
+  });
+});
+
+/**
+ * Three global fields the parser dropped in TOTAL silence: `defaultMaxFiles`
+ * (never validated at all — no type warning and no unknown-key warning either)
+ * and the two mutator lists (a non-array dropped whole, a stray non-string entry
+ * filtered out of a list the operator typed by hand). `--validate-config` now
+ * says so. The rest of the historical gaps are deliberately left silent, because
+ * `--strict` exits 2 on warnings and they are edge inputs rather than a key the
+ * operator explicitly wrote being discarded.
+ */
+describe('silently-dropped global fields now warn', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockExistsSync.mockReturnValue(true);
+  });
+
+  function setConfig(obj: unknown): void {
+    mockReadFileSync.mockReturnValue(JSON.stringify(obj));
+  }
+
+  it.each([
+    ['ten', 'defaultMaxFiles must be an integer >= 1, got string.'],
+    [-1, 'defaultMaxFiles must be an integer >= 1, got -1.'],
+    [0, 'defaultMaxFiles must be an integer >= 1, got 0.'],
+    [2.5, 'defaultMaxFiles must be an integer >= 1, got 2.5.'],
+  ])('warns about defaultMaxFiles: %p', (value, message) => {
+    setConfig({ defaultMaxFiles: value });
+    expect(validateConfig('/tmp/config.json').warnings).toEqual([message]);
+    expect(loadConfig('/tmp/config.json').defaultMaxFiles).toBeUndefined();
+  });
+
+  it.each(['mutatorAllowlist', 'mutatorDenylist'] as const)('warns about a non-array %s', (key) => {
+    setConfig({ [key]: 'ConditionalExpression' });
+    expect(validateConfig('/tmp/config.json').warnings).toEqual([
+      `${key} must be an array of strings, got string.`,
+    ]);
+    expect(loadConfig('/tmp/config.json')[key]).toBeUndefined();
+  });
+
+  it.each(['mutatorAllowlist', 'mutatorDenylist'] as const)(
+    'warns about non-string entries in %s while still keeping the strings',
+    (key) => {
+      setConfig({ [key]: ['ConditionalExpression', 42, null] });
+      expect(validateConfig('/tmp/config.json').warnings).toEqual([
+        `${key} must be an array of strings, got array with invalid entries.`,
+      ]);
+      // The parser is unchanged: the valid entries survive the filter as before.
+      expect(loadConfig('/tmp/config.json')[key]).toEqual(['ConditionalExpression']);
+    },
+  );
+
+  // ── The parser's accept set is untouched: valid values still parse, silently. ──
+
+  it('parses valid defaultMaxFiles and mutator lists without any warning', () => {
+    setConfig({
+      defaultMaxFiles: 25,
+      mutatorAllowlist: ['ConditionalExpression', 'ArithmeticOperator'],
+      mutatorDenylist: ['StringLiteral'],
+    });
+    const { config, warnings } = validateConfig('/tmp/config.json');
+    expect(warnings).toEqual([]);
+    expect(config.defaultMaxFiles).toBe(25);
+    expect(config.mutatorAllowlist).toEqual(['ConditionalExpression', 'ArithmeticOperator']);
+    expect(config.mutatorDenylist).toEqual(['StringLiteral']);
+  });
+
+  it('stays silent for defaultMaxFiles at its lower boundary and for empty lists', () => {
+    setConfig({ defaultMaxFiles: 1, mutatorAllowlist: [], mutatorDenylist: [] });
+    const { config, warnings } = validateConfig('/tmp/config.json');
+    expect(warnings).toEqual([]);
+    expect(config.defaultMaxFiles).toBe(1);
+    expect(config.mutatorAllowlist).toEqual([]);
+    expect(config.mutatorDenylist).toEqual([]);
+  });
+
+  // ── The nine gaps that stay open must STAY open (a new warning here is a
+  //    `--validate-config --strict` exit 2 for an existing user). ──
+
+  it.each([
+    [{ defaultTimeoutMs: -1 }],
+    [{ perMutantTimeoutMs: 0 }],
+    [{ testRunner: '' }],
+    [{ stryker: { timeoutMs: 1000, testRunner: '' } }],
+    [{ infection: { timeoutMs: 1000, testFrameworkOptions: '' } }],
+    [{ cosmicray: { timeoutMs: 1000, testSelection: [] } }],
+    [{ cosmicray: { timeoutMs: 1000, excludeOperators: [] } }],
+    [{ stryker: { timeoutMs: 1000, mutatorAllowlist: [] } }],
+    [{ stryker: { timeoutMs: 1000, mutatorDenylist: [] } }],
+  ])('leaves the historical gap %j silent', (raw) => {
+    setConfig(raw);
+    expect(validateConfig('/tmp/config.json').warnings).toEqual([]);
+  });
+});
+
+/**
+ * The engine section list is derived from a `Record<EngineConfigKey, …>`, so a
+ * fifth engine cannot be added to the union without a compile error here. The
+ * derivation must still hand back the four sections in their historical order,
+ * because warning order follows it.
+ */
+describe('ENGINE_CONFIG_SECTIONS', () => {
+  it('lists every engine section exactly once, in the historical order', () => {
+    expect(ENGINE_CONFIG_SECTIONS.map((section) => section.key)).toEqual([
+      'stryker',
+      'cosmicray',
+      'rust',
+      'infection',
+    ]);
+  });
+
+  it('wires each section to its own known-key inventory', () => {
+    const byKey = new Map(ENGINE_CONFIG_SECTIONS.map((s) => [s.key, s.knownKeys]));
+    expect(byKey.get('stryker')).toBe(KNOWN_STRYKER_KEYS);
+    expect(byKey.get('cosmicray')).toBe(KNOWN_COSMICRAY_KEYS);
+    expect(byKey.get('rust')).toBe(KNOWN_RUST_KEYS);
+    expect(byKey.get('infection')).toBe(KNOWN_INFECTION_KEYS);
+  });
+
+  it('reports engine-section warnings in that same order', () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue(
+      JSON.stringify({
+        infection: { timeoutMs: 'x' },
+        rust: { timeoutMs: 'x' },
+        cosmicray: { timeoutMs: 'x' },
+        stryker: { timeoutMs: 'x' },
+      }),
+    );
+    const sections = validateConfig('/tmp/config.json')
+      .warnings.filter((w) => w.includes('.timeoutMs'))
+      .map((w) => w.slice(1, w.indexOf('.')));
+    expect(sections).toEqual(['stryker', 'cosmicray', 'rust', 'infection']);
   });
 });

@@ -20,7 +20,8 @@ vi.mock('node:fs', async (importOriginal) => {
 import { mkdtempSync, rmSync, writeFileSync, readdirSync, existsSync, renameSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { saveRun, loadRun } from '../utils/run-cache.js';
+import { saveRun, loadRun, mintRunId } from '../utils/run-cache.js';
+import { buildResultPayload } from '../format.js';
 
 let dir: string;
 beforeEach(() => {
@@ -231,6 +232,52 @@ describe('run-cache', () => {
     expect(existsSync(join(dir, 'liveaaaa3.json'))).toBe(true);
   });
 
+  it('counts an exactly-at-TTL entry as live, so the max-trim can evict it', () => {
+    // The TTL pass keeps an entry whose age is exactly the TTL (`> ttl` is
+    // false), so the live filter MUST use `<=` to match. With `<` the boundary
+    // entry is retained on disk yet excluded from the live set: the trim then
+    // computes one deletion too few and the cache ends up over `max` — the two
+    // halves of the eviction disagreeing about the same entry.
+    const put = (id: string, createdAt: number) =>
+      writeFileSync(
+        join(dir, `${id}.json`),
+        JSON.stringify({
+          runId: id,
+          file: id,
+          projectType: 't',
+          createdAt,
+          survivors: [],
+          noCoverage: [],
+        }),
+      );
+    put('boundary1', 4900); // age exactly 100 == ttl
+    put('liveaaaa1', 4950);
+    put('liveaaaa2', 4960);
+    saveRun(
+      { file: 'new', projectType: 't', survivors: [], noCoverage: [] },
+      { dir, ttlMs: 100, max: 2, now: 5000 },
+    );
+    expect(jsonCount()).toBe(2);
+    expect(existsSync(join(dir, 'boundary1.json'))).toBe(false); // oldest live → trimmed
+    expect(existsSync(join(dir, 'liveaaaa2.json'))).toBe(true);
+  });
+
+  it('still writes the new entry when the cache directory cannot be listed', () => {
+    // Eviction is best-effort housekeeping; a directory that cannot be read
+    // must degrade to "evict nothing", not take the save down with it. Without
+    // the `return []`, the undefined name list is iterated and throws a
+    // TypeError straight out of saveRun.
+    vi.mocked(readdirSync).mockImplementationOnce(() => {
+      throw new Error('EACCES: permission denied, scandir');
+    });
+    const id = saveRun(
+      { file: 'src/a.ts', projectType: 'typescript', survivors: [], noCoverage: [] },
+      { dir },
+    );
+    expect(id).toMatch(/^[0-9a-f]{8}$/);
+    expect(loadRun(id, { dir })?.file).toBe('src/a.ts');
+  });
+
   /**
    * Eviction order must not depend on the order the directory happens to be
    * read in. It used to: `listEntries` returned entries in readdir order, and
@@ -339,3 +386,119 @@ describe('run-cache', () => {
 });
 
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+/**
+ * `mintRunId` was duplicated verbatim in handler.ts and triage-handler.ts (same
+ * compact payload, same projection, same non-fatal catch) before it moved here.
+ * These cover the shared contract both tools now depend on.
+ */
+describe('mintRunId', () => {
+  // mintRunId now takes the already-compacted payload: `buildResultPayload` is
+  // a domain-layer (format.ts) function and run-cache.ts is a leaf util, so the
+  // caller builds it. Built here through the real builder so these still pin
+  // the MutationResult → cache-entry projection end to end.
+  const payload = buildResultPayload(
+    {
+      target: 'src/a.ts',
+      totalMutants: 2,
+      killed: 1,
+      survived: 1,
+      mutationScore: '50.00%',
+      vulnerabilities: [{ line: 10, mutator: 'ConditionalExpression', description: 'survived' }],
+    },
+    {},
+  );
+
+  it('caches the run under the workspace-relative key and returns its id', () => {
+    const id = mintRunId(payload, 'src/a.ts', 'typescript', { dir });
+    expect(id).toMatch(/^[0-9a-f]{8}$/);
+    const entry = loadRun(id as string, { dir });
+    expect(entry?.file).toBe('src/a.ts');
+    expect(entry?.projectType).toBe('typescript');
+    expect(entry?.survivors).toEqual([{ line: 10, mutators: { ConditionalExpression: 1 } }]);
+    expect(entry?.noCoverage).toEqual([]);
+  });
+
+  it('returns undefined instead of throwing when the cache cannot be written', () => {
+    // A cache failure is non-fatal by design: the caller loses the runId, not
+    // the audit it asked for.
+    vi.mocked(renameSync).mockImplementationOnce(() => {
+      throw new Error('simulated ENOSPC on rename');
+    });
+    expect(mintRunId(payload, 'src/a.ts', 'typescript', { dir })).toBeUndefined();
+  });
+});
+
+/**
+ * `runId` arrives as a tool argument and is interpolated straight into a
+ * filename. Before this guard, `loadRun('../../secrets/creds')` read and parsed
+ * an arbitrary JSON file anywhere on disk — reproduced against the built module
+ * during the audit that added these tests.
+ */
+describe('loadRun — path traversal', () => {
+  it('refuses an id containing a path separator', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'chaos-traversal-'));
+    const outside = mkdtempSync(join(tmpdir(), 'chaos-secret-'));
+    try {
+      writeFileSync(
+        join(outside, 'creds.json'),
+        JSON.stringify({
+          runId: 'x',
+          file: 'SECRET',
+          projectType: 'typescript',
+          createdAt: Date.now(),
+          survivors: [],
+          noCoverage: [],
+        }),
+        'utf8',
+      );
+      const traversal = `../${outside.split('/').pop() ?? ''}/creds`;
+      expect(loadRun(traversal, { dir })).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses "..", which would resolve to the cache directory itself', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'chaos-traversal-'));
+    try {
+      expect(loadRun('..', { dir })).toBeUndefined();
+      expect(loadRun('.', { dir })).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses an empty id, which would read a bare ".json" file', () => {
+    // `basename('') === ''`, so the separator check alone lets an empty id
+    // through and the lookup becomes `join(dir, '.json')` — a dotfile an
+    // attacker (or a stray tool) could plant in the shared cache directory.
+    // The explicit length guard is the only thing that stops it.
+    writeFileSync(
+      join(dir, '.json'),
+      JSON.stringify({
+        runId: 'planted',
+        file: 'planted.ts',
+        projectType: 't',
+        createdAt: Date.now(),
+        survivors: [],
+        noCoverage: [],
+      }),
+    );
+    expect(loadRun('', { dir })).toBeUndefined();
+  });
+
+  it('still loads a legitimately minted id', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'chaos-traversal-'));
+    try {
+      const id = saveRun(
+        { file: 'src/a.ts', projectType: 'typescript', survivors: [], noCoverage: [] },
+        { dir },
+      );
+      expect(loadRun(id, { dir })?.file).toBe('src/a.ts');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

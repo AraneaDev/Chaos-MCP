@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { invokeMutationTool, MutationToolStartupError } from '../utils/exec-classify.js';
-import { ExecFailureError } from '../utils/exec.js';
+import { ExecFailureError } from '../utils/exec-error.js';
 
 // Mock runShell from exec.js
 vi.mock('../utils/exec.js', async () => {

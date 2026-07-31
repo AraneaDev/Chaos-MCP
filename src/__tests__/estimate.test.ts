@@ -5,12 +5,18 @@ vi.mock('../utils/exec-classify.js', () => ({
   MutationToolStartupError: class extends Error {},
 }));
 
-vi.mock('../utils/exec.js', () => ({
+// Partial mock: only `runShell` is stubbed. `ExecFailureError` now lives in
+// `exec-error.js`, which is left unmocked, so `isCancel` (imported by
+// estimate.ts) still narrows with `instanceof` against the same class these
+// tests construct.
+vi.mock('../utils/exec.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../utils/exec.js')>()),
   runShell: vi.fn(),
 }));
 
 import { invokeMutationTool, MutationToolStartupError } from '../utils/exec-classify.js';
 import { runShell } from '../utils/exec.js';
+import { ExecFailureError } from '../utils/exec-error.js';
 import { estimateAudit, estimateNeedsSandbox } from '../estimate.js';
 import { projectTimingRange } from '../baseline-timing.js';
 import type { EnvironmentInfo } from '../utils/project-detector.js';
@@ -47,6 +53,45 @@ describe('estimateAudit', () => {
     expect(r.language).toBe('typescript');
     expect(r.mutants).toBeGreaterThan(0);
     expect(r.basis).toMatch(/heuristic/);
+  });
+
+  it('reports zero mutants instead of crashing when the source cannot be read', async () => {
+    // A missing or unreadable file must degrade to "nothing to estimate" — this
+    // is a cheap pre-flight, so it must never be the thing that fails the call.
+    const r = await estimateAudit({
+      absFile: '/nonexistent/does-not-exist.ts',
+      relFile: 'does-not-exist.ts',
+      projectType: 'typescript',
+    });
+    expect(r.mutants).toBe(0);
+    expect(r.basis).toBe('source heuristic: 0 constructs');
+  });
+
+  it('states the construct count as its basis, with nothing appended', async () => {
+    // `basis` is what the caller reads to judge whether the number is
+    // trustworthy. The default empty `basisSuffix` is only visible here — the
+    // rust/no-sandbox paths always pass a suffix, so nothing else pins it.
+    const r = await estimateAudit({
+      absFile: __filename,
+      relFile: 'src/__tests__/estimate.test.ts',
+      projectType: 'typescript',
+    });
+    expect(r.basis).toMatch(/^source heuristic: \d+ constructs$/);
+  });
+
+  it('labels the heuristic as approximate and points at the exact tool', async () => {
+    // Both halves of the note are concatenated; blanking either leaves a
+    // still-plausible sentence that either drops the "this is an estimate"
+    // caveat or the instruction for getting a real number.
+    const r = await estimateAudit({
+      absFile: __filename,
+      relFile: 'src/__tests__/estimate.test.ts',
+      projectType: 'typescript',
+    });
+    expect(r.note).toBe(
+      'Approximate mutant count from a source-parse heuristic; the real audit may differ. ' +
+        'Run audit_code_resilience for exact results.',
+    );
   });
 
   it('uses cargo-mutants --list for rust (exact)', async () => {
@@ -128,6 +173,60 @@ describe('estimateAudit', () => {
     expect(r.basis).toMatch(/not installed|heuristic/);
   });
 
+  it('says WHY it fell back to the heuristic when cargo-mutants is missing', async () => {
+    // The `/not installed|heuristic/` assertion above passes on a blank suffix,
+    // because the heuristic basis already says "heuristic". The reason for the
+    // downgrade — the tool is not installed — is the actionable half, and only
+    // an explicit check keeps it.
+    mockInvoke.mockRejectedValueOnce(
+      new MutationToolStartupError('cargo-mutants' as never, 'cargo-mutants not found'),
+    );
+    const r = await estimateAudit({
+      absFile: __filename,
+      relFile: 'src/x.rs',
+      projectType: 'rust',
+      workDir: '/sandbox',
+    });
+    expect(r.basis).toContain(' (cargo-mutants not installed)');
+  });
+
+  it('labels the exact rust result with its language and how it was obtained', async () => {
+    mockInvoke.mockResolvedValueOnce({
+      stdout: 'src/lib.rs:1:1: replace foo -> bar\n',
+      stderr: '',
+    } as never);
+    const r = await estimateAudit({
+      absFile: '/ws/src/lib.rs',
+      relFile: 'src/lib.rs',
+      projectType: 'rust',
+      workDir: '/sandbox',
+    });
+    expect(r.language).toBe('rust');
+    expect(r.basis).toBe('cargo-mutants --list');
+    expect(r.note).toBe('Exact mutant count from cargo-mutants --list (no tests were run).');
+  });
+
+  it('counts entries whose line and column are multi-digit', async () => {
+    // The `:\d+:\d+:` shape must accept real coordinates, not just the
+    // single-digit ones every other fixture here uses. If either `+` is lost the
+    // pattern matches nothing, the count silently falls back to "every non-empty
+    // line", and the summary line is reported as a third mutant — an "exact"
+    // answer that is wrong.
+    mockInvoke.mockResolvedValueOnce({
+      stdout:
+        'src/lib.rs:12:34: replace foo -> bar\nsrc/lib.rs:567:8: replace a + b with a - b\nFound 2 mutants in 1 file.\n',
+      stderr: '',
+    } as never);
+    const r = await estimateAudit({
+      absFile: '/ws/src/lib.rs',
+      relFile: 'src/lib.rs',
+      projectType: 'rust',
+      workDir: '/sandbox',
+    });
+    expect(r.fidelity).toBe('exact');
+    expect(r.mutants).toBe(2);
+  });
+
   it('falls back to heuristic when rust has no workDir (defensive path)', async () => {
     const r = await estimateAudit({
       absFile: __filename,
@@ -164,6 +263,23 @@ describe('estimateAudit', () => {
       workDir: '/sandbox',
     });
     expect(r.fidelity).toBe('exact');
+    expect(r.mutants).toBe(2);
+  });
+
+  it('does not count a whitespace-only line as a mutant in the fallback path', async () => {
+    // The fallback counts every non-empty line, so the `.trim()` is what makes
+    // "non-empty" mean "has content". Without it an indented blank line — which
+    // cargo-mutants emits between sections — inflates an "exact" count.
+    mockInvoke.mockResolvedValueOnce({
+      stdout: 'some line\n   \nanother line\n',
+      stderr: '',
+    } as never);
+    const r = await estimateAudit({
+      absFile: '/ws/src/lib.rs',
+      relFile: 'src/lib.rs',
+      projectType: 'rust',
+      workDir: '/sandbox',
+    });
     expect(r.mutants).toBe(2);
   });
 
@@ -341,6 +457,88 @@ describe('estimateAudit withTiming', () => {
     expect(r.estimatedMs).toBeUndefined();
     expect(r.concurrency).toBeUndefined();
     expect(r.note).toContain('timing unavailable');
+  });
+
+  it('propagates cancellation from the baseline run instead of reporting success', async () => {
+    // The best-effort catch around the baseline run exists to tolerate a failing
+    // or slow test suite — NOT to hide a deliberate abort. Swallowing an
+    // ABORTED ExecFailureError here made handleEstimateCall's `isCancel` branch
+    // unreachable for the timing phase, so a client that cancelled mid-baseline
+    // was handed a successful EstimateResult (isError unset) for cancelled work.
+    const aborted = new ExecFailureError(
+      { stdout: '', stderr: '', exit: null, signal: 'SIGTERM', code: 'ABORTED' },
+      'Command aborted',
+    );
+    mockRunShell.mockRejectedValueOnce(aborted);
+
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      estimateAudit({
+        absFile: __filename,
+        relFile: 'src/__tests__/estimate.test.ts',
+        projectType: 'typescript',
+        workDir: '/sandbox',
+        withTiming: true,
+        env: baseEnv(),
+        signal: controller.signal,
+      }),
+    ).rejects.toBe(aborted);
+  });
+
+  it('propagates an AbortError from the container executor baseline run', async () => {
+    // Same contract on the container path, and via the other cancellation shape
+    // (`name === 'AbortError'`) rather than an ExecFailureError code.
+    const abortError = Object.assign(new Error('The operation was aborted'), {
+      name: 'AbortError',
+    });
+    const executor = {
+      kind: 'container' as const,
+      workDir: '/sandbox',
+      run: vi.fn().mockRejectedValue(abortError),
+      runCommand: vi.fn(),
+      dispose: vi.fn(),
+    };
+
+    // This file shares one module-level runShell mock across tests, so clear the
+    // call log before asserting the executor path bypassed it.
+    mockRunShell.mockClear();
+    await expect(
+      estimateAudit({
+        absFile: __filename,
+        relFile: 'src/__tests__/estimate.test.ts',
+        projectType: 'typescript',
+        workDir: '/sandbox',
+        withTiming: true,
+        env: baseEnv(),
+        executor,
+      }),
+    ).rejects.toBe(abortError);
+    expect(executor.run).toHaveBeenCalledTimes(1);
+    expect(mockRunShell).not.toHaveBeenCalled();
+  });
+
+  it('still swallows a non-cancellation baseline failure (the other arm)', async () => {
+    // Guards the `if (isCancel(err)) throw err` guard from being inverted or
+    // removed: an ordinary suite failure must STILL degrade to a note, not throw.
+    mockRunShell.mockRejectedValueOnce(
+      new ExecFailureError(
+        { stdout: '', stderr: '', exit: 1, signal: null, code: undefined },
+        'tests failed',
+      ),
+    );
+
+    const r = await estimateAudit({
+      absFile: __filename,
+      relFile: 'src/__tests__/estimate.test.ts',
+      projectType: 'typescript',
+      workDir: '/sandbox',
+      withTiming: true,
+      env: baseEnv(),
+    });
+    expect(r.note).toContain('timing unavailable');
+    expect(r.baselineMs).toBeUndefined();
   });
 
   it('reports timing unavailable when no baseline command resolves for the project type', async () => {

@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { formatResultAsText, formatResultAsJson } from '../format.js';
+import {
+  formatResultAsText,
+  formatResultAsJson,
+  hasNoMutableLogic,
+  displayMutationScore,
+} from '../format.js';
 import type { MutationResult } from '../engines/base.js';
 
 type Vuln = MutationResult['vulnerabilities'][number];
@@ -35,6 +40,144 @@ interface JsonShape {
 const CLEAN_NOTE = 'No surviving mutants — the test suite caught every mutation.';
 const DIRTY_NOTE =
   'survivors: mutants your tests ran but did not kill. noCoverage: mutants no test reached (per line+mutator, so a line may appear here and in survivors). mutators = type→count. Add or strengthen tests targeting these.';
+
+describe('formatResultAsText — advisory lines', () => {
+  it('surfaces a fidelity warning when the engine flagged one', () => {
+    // A fidelity note means the run's own numbers may be wrong (a
+    // misconfiguration in the audited project, not a finding about the code).
+    // Text consumers get no other signal that the score is untrustworthy.
+    const text = formatResultAsText(result({ fidelityNote: 'PHPUnit stopped on a warning.' }));
+    expect(text).toContain('Warning: PHPUnit stopped on a warning.');
+  });
+
+  it('prints no warning line for an ordinary result', () => {
+    expect(formatResultAsText(result())).not.toContain('Warning:');
+  });
+
+  it('reports incompetent mutants, which explain why total < generated', () => {
+    const text = formatResultAsText(result({ incompetent: 3 }));
+    expect(text).toContain(
+      'Note: 3 mutant(s) excluded as incompetent (mutated code never produced a real pass/fail).',
+    );
+  });
+
+  it('ignores a negative incompetent count rather than printing it', () => {
+    // The `&&` guard is what rejects nonsense; under `||` a negative value is
+    // truthy and the report gains a "-1 mutant(s) excluded" line.
+    expect(formatResultAsText(result({ incompetent: -1 }))).not.toContain('incompetent');
+  });
+
+  it('says nothing about incompetent mutants when there were none', () => {
+    // Both arms of `result.incompetent && result.incompetent > 0`: absent, and
+    // present-but-zero. A "0 mutant(s) excluded" line is pure noise.
+    expect(formatResultAsText(result())).not.toContain('incompetent');
+    expect(formatResultAsText(result({ incompetent: 0 }))).not.toContain('incompetent');
+  });
+
+  it('prints the scope note when the run was scoped', () => {
+    const text = formatResultAsText(result({ scopeNote: 'no changed lines' }));
+    expect(text).toContain('Scope: no changed lines');
+    expect(formatResultAsText(result())).not.toContain('Scope:');
+  });
+});
+
+describe('formatResultAsText — no-coverage section', () => {
+  const noCov = (line: number, mutator = 'ConditionalExpression') =>
+    vuln(line, mutator, NO_COVERAGE_DESC);
+
+  it('reports how many no-coverage groups the cap hid', () => {
+    // The survivors section has its own truncation note; the no-coverage
+    // section repeats the pattern, and only a no-coverage-heavy result reaches
+    // that second copy. Without it the list silently ends at the cap.
+    const text = formatResultAsText(
+      result({ vulnerabilities: [1, 2, 3, 4, 5].map((n) => noCov(n)) }),
+      undefined,
+      { maxSurvivors: 2 },
+    );
+    expect(text).toContain('No-coverage mutants (line: mutators):');
+    expect(text).toContain('…3 more (raise maxSurvivors to see them)');
+  });
+
+  it('reports how many no-coverage groups the severity floor hid', () => {
+    const text = formatResultAsText(
+      result({ vulnerabilities: [noCov(1, 'ConditionalExpression'), noCov(2, 'StringLiteral')] }),
+      { projectType: 'typescript' },
+      { severityFloor: 'high' },
+    );
+    expect(text).toContain('…1 hidden below severityFloor');
+  });
+
+  it('adds neither note when nothing was capped or filtered', () => {
+    const text = formatResultAsText(result({ vulnerabilities: [noCov(1)] }));
+    expect(text).toContain('No-coverage mutants (line: mutators):');
+    expect(text).not.toContain('raise maxSurvivors');
+    expect(text).not.toContain('hidden below severityFloor');
+  });
+
+  it('prints the floor-ignored note when the caller asked for a floor without enrichment', () => {
+    // Audit M6: the JSON path attaches this via enrichNote, and text users got
+    // nothing — so a severityFloor that silently did nothing looked like a
+    // floor that found nothing to hide.
+    const text = formatResultAsText(
+      result({ vulnerabilities: [vuln(1, 'StringLiteral')] }),
+      undefined,
+      {
+        floorIgnoredNote: 'severityFloor ignored: enrichment is disabled.',
+      },
+    );
+    expect(text).toContain('severityFloor ignored: enrichment is disabled.');
+    expect(
+      formatResultAsText(result({ vulnerabilities: [vuln(1, 'StringLiteral')] })),
+    ).not.toContain('severityFloor ignored');
+  });
+});
+
+describe('hasNoMutableLogic', () => {
+  it('is true only for a zero-mutant result carrying no scope note', () => {
+    expect(hasNoMutableLogic(result({ totalMutants: 0 }))).toBe(true);
+  });
+
+  it('is false as soon as a single mutant was enumerated', () => {
+    // Pins `totalMutants === 0` against a `<= 0` / `!== 0` mutant: a one-mutant
+    // file has real logic and must keep its own score.
+    expect(hasNoMutableLogic(result({ totalMutants: 1 }))).toBe(false);
+  });
+
+  it('is false for a zero-mutant result that carries a scope note', () => {
+    // A scoped run that mutated nothing (e.g. a diff with no changed lines) is a
+    // real run, not a file without logic — this kills the `&& !result.scopeNote`
+    // conjunct, which a note-less fixture alone cannot reach.
+    expect(hasNoMutableLogic(result({ totalMutants: 0, scopeNote: 'no changed lines' }))).toBe(
+      false,
+    );
+  });
+
+  it('treats an empty scope note as absent', () => {
+    // `!result.scopeNote` is a truthiness test, not a presence test: an engine
+    // that emits '' has said nothing, so the row must still read as "no logic".
+    expect(hasNoMutableLogic(result({ totalMutants: 0, scopeNote: '' }))).toBe(true);
+  });
+});
+
+describe('displayMutationScore', () => {
+  it('substitutes "n/a" for a file with no mutable logic', () => {
+    // Audit M3: a bare "100.00%" here would rank a logic-free file as the safest
+    // in the leaderboard, indistinguishable from a genuine perfect kill rate.
+    expect(displayMutationScore(result({ totalMutants: 0, mutationScore: '100.00%' }))).toBe('n/a');
+  });
+
+  it('passes the raw score through untouched for a real run', () => {
+    expect(displayMutationScore(result({ mutationScore: '80.00%' }))).toBe('80.00%');
+  });
+
+  it('keeps a genuine 100% distinguishable from "n/a"', () => {
+    // Kills a mutant that inverts the branch: with mutants enumerated, a perfect
+    // score is proven coverage and must survive as "100.00%".
+    expect(
+      displayMutationScore(result({ totalMutants: 10, killed: 10, mutationScore: '100.00%' })),
+    ).toBe('100.00%');
+  });
+});
 
 describe('formatResultAsText', () => {
   it('renders the header and the clean success line when nothing survived', () => {

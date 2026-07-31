@@ -34,7 +34,7 @@ vi.mock('fs', async () => {
   const actual = await vi.importActual<typeof import('fs')>('fs');
   return {
     ...actual,
-    existsSync: vi.fn().mockReturnValue(false),
+    existsSync: vi.fn(() => false),
     realpathSync: vi.fn((p: string) => p),
   };
 });
@@ -47,7 +47,11 @@ vi.mock('../test-file.js', async () => {
   const actual = await vi.importActual<typeof import('../test-file.js')>('../test-file.js');
   return {
     ...actual,
-    workspaceHasPythonTests: vi.fn().mockReturnValue({ found: true, depthLimited: false }),
+    // The default lives in the `vi.fn(impl)` constructor rather than a chained
+    // `.mockReturnValue(...)`: `restoreMocks` wipes chained configuration but
+    // preserves the implementation the factory supplied, so this default
+    // survives into every test instead of decaying to `undefined`.
+    workspaceHasPythonTests: vi.fn(() => ({ found: true, depthLimited: false })),
   };
 });
 
@@ -67,13 +71,14 @@ vi.mock('../utils/git-diff.js', () => ({
 // Mock logger for verbose logging tests
 vi.mock('../utils/logger.js', () => ({
   enableVerbose: vi.fn(),
-  isVerbose: vi.fn().mockReturnValue(false),
+  isVerbose: vi.fn(() => false),
   log: vi.fn(),
   warn: vi.fn(),
 }));
 
 import { handleToolCall } from '../index.js';
 import { validateToolArgs } from '../handler.js';
+import { mapCreateSandboxError } from '../tool-result.js';
 import { TypeScriptEngine } from '../engines/typescript.js';
 import { RustEngine } from '../engines/rust.js';
 import { detectEnvironment } from '../utils/project-detector.js';
@@ -112,17 +117,18 @@ describe('handleToolCall', () => {
   // would make '/workspace' an ancestor and change the re-anchored targetFile,
   // breaking the 'src/math.ts' assertions. Pinning cwd to '/workspace' makes the
   // re-anchoring resolve to the file's workspace-relative path on every runner.
-  const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue('/workspace');
+  // `restoreMocks: true` un-installs this spy before every test, so it has to be
+  // re-installed per test rather than once at describe-collection time.
+  let cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue('/workspace');
   afterAll(() => cwdSpy.mockRestore());
 
   beforeEach(() => {
     vi.clearAllMocks();
-    cwdSpy.mockReturnValue('/workspace');
+    cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue('/workspace');
 
-    // Reset logger mock to silent default (prevents leak from verbose tests)
-    mockIsVerbose.mockReturnValue(false);
-    // Reset existsSync mock to false (prevents leak from Go/Rust prebuild tests)
-    mockExistsSync.mockReturnValue(false);
+    // `restoreMocks` already returns `isVerbose` and `existsSync` to the silent
+    // /false defaults their `vi.mock()` factories declare, so the verbose and
+    // Go/Rust-prebuild cases can no longer leak into later tests.
 
     // Default sandbox mock
     mockCreateSandbox.mockResolvedValue({
@@ -610,7 +616,7 @@ describe('handleToolCall', () => {
     );
   });
 
-  it('passes ignorePatterns to createSandbox and RunOptions', async () => {
+  it('passes ignorePatterns to createSandbox only — never to the engine', async () => {
     const mockRun = vi.fn().mockResolvedValue({
       target: 'src/math.ts',
       totalMutants: 0,
@@ -643,11 +649,11 @@ describe('handleToolCall', () => {
       ['.test.ts', 'fixtures/'],
       expect.objectContaining({ signal: undefined }),
     );
-    // RunOptions should also contain ignorePatterns
-    expect(mockRun).toHaveBeenCalledWith(
-      'src/math.ts',
-      expect.objectContaining({ ignorePatterns: ['.test.ts', 'fixtures/'] }),
-    );
+    // ...and NOT to the engine. ignorePatterns governs what the sandbox copy
+    // excludes; no engine has ever read it, so carrying it on RunOptions only
+    // advertised a filter that did not exist.
+    const runOptions = mockRun.mock.calls[0][1] as Record<string, unknown>;
+    expect(runOptions).not.toHaveProperty('ignorePatterns');
   });
 
   // Regression (C1 follow-up): the AbortSignal from the MCP request context must
@@ -1128,11 +1134,20 @@ describe('handleToolCall', () => {
 
     expect(response.isError).toBeUndefined();
     // Prebuild must run in sandbox cwd before engine
-    expect(mockRunShellCommand).toHaveBeenCalledWith('npm run build', {
-      cwd: '/tmp/chaos-mcp-sandbox',
-      timeoutMs: 298000,
-      killTree: true,
-    });
+    expect(mockRunShellCommand).toHaveBeenCalledWith(
+      'npm run build',
+      expect.objectContaining({ cwd: '/tmp/chaos-mcp-sandbox', killTree: true }),
+    );
+    // The prebuild inherits what is LEFT of the audit budget, not a fresh one:
+    // 300_000 default minus the 2_000 cleanup reserve, minus whatever the audit
+    // has already spent. Asserting the exact 298_000 turned this into a clock
+    // benchmark — under load the elapsed time is non-zero and the equality
+    // fails (observed while six suites ran concurrently). The upper bound is
+    // what carries the meaning: a prebuild handed the full 300_000 would have
+    // skipped the reserve deduction entirely.
+    const prebuildTimeoutMs = mockRunShellCommand.mock.calls[0][1]?.timeoutMs;
+    expect(prebuildTimeoutMs).toBeLessThanOrEqual(298_000);
+    expect(prebuildTimeoutMs).toBeGreaterThan(240_000);
     expect(mockRun).toHaveBeenCalled();
   });
 
@@ -3604,5 +3619,56 @@ describe('validateToolArgs minScore', () => {
 
   it('accepts a valid minScore', () => {
     expect(validateToolArgs({ filePath: 'a.ts', minScore: 80 })).toBeNull();
+  });
+});
+
+describe('mapCreateSandboxError', () => {
+  const text = (result: ReturnType<typeof mapCreateSandboxError>): string => firstText(result);
+
+  it('maps a real provisioning failure to the halted message, naming the file and the cause', () => {
+    const result = mapCreateSandboxError(new Error('ENOSPC: no space left'), 'src/math.ts');
+    expect(result.isError).toBe(true);
+    expect(text(result)).toBe(
+      'Chaos Engine Halted: Failed to provision sandbox isolation for src/math.ts: ' +
+        'ENOSPC: no space left. Ensure the file exists and the workspace is accessible.',
+    );
+  });
+
+  it('stringifies a non-Error rejection rather than dropping the cause', () => {
+    // Engines and fs shims can reject with a bare string; `error.message` on it
+    // would be undefined and erase the only diagnostic the caller gets.
+    expect(text(mapCreateSandboxError('plain string reason', 'src/math.ts'))).toContain(
+      'plain string reason',
+    );
+  });
+
+  it('collapses an aborted request to the single shared cancel message', () => {
+    // Every cancel path must surface the SAME string so a caller can branch on
+    // it without parsing which layer noticed the abort first.
+    const controller = new AbortController();
+    controller.abort();
+    const result = mapCreateSandboxError(new Error('whatever'), 'src/math.ts', {
+      signal: controller.signal,
+    });
+    expect(text(result)).toBe('Operation cancelled.');
+    expect(result.isError).toBe(true);
+  });
+
+  it('treats an AbortError as a cancel even with no context signal', () => {
+    // The signal can flip between the throw and the catch, leaving only the
+    // error's own name as evidence.
+    const abortError = Object.assign(new Error('aborted'), { name: 'AbortError' });
+    expect(text(mapCreateSandboxError(abortError, 'src/math.ts'))).toBe('Operation cancelled.');
+  });
+
+  it('does not treat a non-aborted context signal as a cancel', () => {
+    // Pins `signal.aborted === true`: merely passing a live signal must not
+    // swallow a genuine provisioning failure as a cancellation.
+    const controller = new AbortController();
+    const result = mapCreateSandboxError(new Error('EACCES'), 'src/math.ts', {
+      signal: controller.signal,
+    });
+    expect(text(result)).toContain('Chaos Engine Halted');
+    expect(text(result)).toContain('EACCES');
   });
 });

@@ -7,6 +7,7 @@ let enableVerbose: typeof import('../utils/logger.js').enableVerbose;
 let isVerbose: typeof import('../utils/logger.js').isVerbose;
 let log: typeof import('../utils/logger.js').log;
 let warn: typeof import('../utils/logger.js').warn;
+let _resetVerbose: typeof import('../utils/logger.js')._resetVerbose;
 
 beforeEach(async () => {
   // Reset module cache so verboseEnabled starts fresh
@@ -18,6 +19,7 @@ beforeEach(async () => {
   isVerbose = fresh.isVerbose;
   log = fresh.log;
   warn = fresh.warn;
+  _resetVerbose = fresh._resetVerbose;
 
   stderrOutput = [];
 
@@ -48,6 +50,25 @@ describe('logger', () => {
       enableVerbose();
       enableVerbose();
       expect(isVerbose()).toBe(true);
+    });
+  });
+
+  describe('_resetVerbose', () => {
+    it('returns verbose to disabled and silences log again', () => {
+      enableVerbose();
+      expect(isVerbose()).toBe(true);
+
+      _resetVerbose();
+      expect(isVerbose()).toBe(false);
+
+      log('should not appear');
+      expect(stderrOutput).toHaveLength(0);
+    });
+
+    it('is idempotent when verbose was never enabled', () => {
+      _resetVerbose();
+      _resetVerbose();
+      expect(isVerbose()).toBe(false);
     });
   });
 

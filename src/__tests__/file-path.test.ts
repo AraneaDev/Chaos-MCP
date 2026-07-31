@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { resolve, join } from 'node:path';
-import { validateFilePath } from '../utils/file-path.js';
+import { resolve, join, delimiter } from 'node:path';
+import { validateFilePath, describeBoundary } from '../utils/file-path.js';
+import { toolError } from '../tool-result.js';
 import { ALLOWED_ROOTS_ENV } from '../utils/path-safety.js';
 
 /** Restore the ambient environment so cases cannot leak into one another. */
@@ -15,7 +16,7 @@ const OUTSIDE = resolve(CWD, '..', 'some-other-project');
 
 const errorText = (result: ReturnType<typeof validateFilePath>): string => {
   if (result.ok) throw new Error('expected a rejection');
-  return (result.error.content[0] as { text: string }).text;
+  return result.message;
 };
 
 const accepted = (result: ReturnType<typeof validateFilePath>): { resolvedFile: string } => {
@@ -72,7 +73,50 @@ describe('validateFilePath', () => {
     expect(errorText(validateFilePath(unlisted))).toContain(OUTSIDE);
   });
 
+  it('produces a well-formed text content block once an MCP caller wraps it', () => {
+    // MCP clients dispatch on `type`; a blank one renders as an unknown block
+    // and the rejection reason never reaches the caller. The validator no longer
+    // builds the envelope itself (it is not an MCP-only helper), so this pins the
+    // wrapping the three tool handlers apply: `toolError(result.message)`.
+    const result = validateFilePath(undefined);
+    if (result.ok) throw new Error('expected a rejection');
+    const wrapped = toolError(result.message);
+    expect(wrapped.isError).toBe(true);
+    expect(wrapped.content[0].type).toBe('text');
+    expect((wrapped.content[0] as { text: string }).text).toBe(result.message);
+  });
+
   it('echoes the argument name it was given', () => {
     expect(errorText(validateFilePath(undefined, 'paths[0]'))).toContain('paths[0]');
+  });
+});
+
+describe('describeBoundary', () => {
+  it('names only the working directory when nothing is configured', () => {
+    Reflect.deleteProperty(process.env, ALLOWED_ROOTS_ENV);
+    expect(describeBoundary(CWD)).toBe(CWD);
+  });
+
+  it('lists the working directory alongside every configured root', () => {
+    // The cwd must stay in the list: a grant ADDS roots, it never replaces the
+    // process's own directory, and a rejection that omitted cwd would read as
+    // "your own workspace is out of bounds".
+    const other = resolve(CWD, '..', 'second-project');
+    process.env[ALLOWED_ROOTS_ENV] = [OUTSIDE, other].join(delimiter);
+    expect(describeBoundary(CWD)).toBe(`${CWD} or ${OUTSIDE} or ${other}`);
+  });
+
+  it('joins with " or " rather than concatenating the paths together', () => {
+    // Pins the separator: `join('')` would render two roots as one unreadable
+    // path, and every "contains that root" assertion would still pass.
+    process.env[ALLOWED_ROOTS_ENV] = OUTSIDE;
+    expect(describeBoundary(CWD)).toContain(' or ');
+  });
+
+  it('falls back to the working directory when the grant is only blank segments', () => {
+    // `allowedWorkspaceRoots` drops blanks, so the list is empty and the
+    // `length === 0` branch must still be taken.
+    process.env[ALLOWED_ROOTS_ENV] = `${delimiter}   ${delimiter}`;
+    expect(describeBoundary(CWD)).toBe(CWD);
   });
 });

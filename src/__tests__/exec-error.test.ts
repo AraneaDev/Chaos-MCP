@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { runShell, runShellCommand, ExecFailureError } from '../utils/exec.js';
+import { runShell, runShellCommand } from '../utils/exec.js';
+import { ExecFailureError } from '../utils/exec-error.js';
 
 /**
  * Run a child process and return the captured ExecFailureError. The promise

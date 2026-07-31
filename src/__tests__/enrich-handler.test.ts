@@ -4,7 +4,8 @@ import { firstText } from './helpers/content.js';
 import { writeFileSync, mkdtempSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { validateToolArgs, buildEnrichContext } from '../handler.js';
+import { validateToolArgs } from '../handler.js';
+import { buildEnrichContext } from '../audit/audit-output.js';
 import { TOOL_DEFINITION } from '../tool-schema.js';
 
 describe('enrich schema + validation', () => {

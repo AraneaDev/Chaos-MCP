@@ -6,10 +6,10 @@ import {
   loadSuppressions,
   addSuppressions,
   removeSuppressions,
-  applySuppressions,
   _resetWriteQueue,
   _writeQueueSize,
 } from '../utils/suppression.js';
+import { applySuppressions } from '../audit/apply-suppressions.js';
 import type { MutationResult } from '../engines/base.js';
 
 let root: string;
@@ -241,6 +241,35 @@ describe('suppression', () => {
   });
 
   /** An empty set is the same no-op as an undefined one. */
+  it('does not append a duplicate when the same mutant is suppressed twice', () => {
+    // Dedupe ACROSS calls, not just within one batch: the second call rebuilds
+    // `seen` from the entries already on disk. If that rebuild loses the keys,
+    // every re-suppression appends another copy and the file grows without
+    // bound — invisible through loadSuppressions(), which collapses the list
+    // into a Set on the way out.
+    return (async () => {
+      await addSuppressions(root, 'src/a.ts', [{ line: 1, mutator: 'A', reason: 'first' }]);
+      await addSuppressions(root, 'src/a.ts', [{ line: 1, mutator: 'A', reason: 'second' }]);
+
+      const raw = JSON.parse(
+        readFileSync(join(root, '.chaos-mcp', 'suppressions.json'), 'utf8'),
+      ) as { entries: Record<string, { reason?: string }[]> };
+      expect(raw.entries['src/a.ts']).toHaveLength(1);
+      // First write wins — a re-suppression is skipped, not merged.
+      expect(raw.entries['src/a.ts'][0].reason).toBe('first');
+    })();
+  });
+
+  it('does not invent a scopeNote key on a result that had none', () => {
+    // The note is added ONLY when suppressing everything would otherwise leave
+    // a zero-mutant result that reads as "no mutable logic". Spreading it
+    // unconditionally puts `scopeNote: undefined` on every result — which
+    // `toEqual` cannot see, but which changes the object's shape for anything
+    // that inspects its keys.
+    const { result } = applySuppressions(makeResult(), new Set(['1 A']));
+    expect(Object.keys(result)).not.toContain('scopeNote');
+  });
+
   it('applySuppressions with an empty set leaves the result untouched', () => {
     const r = makeResult();
 
@@ -370,6 +399,72 @@ describe('suppression', () => {
   //     3. The persisted file matches the EXPECTED MERGED STATE, not just
   //        "the last operation's view" (catches aliasing where the chain
   //        skipped an intermediate write). ──
+  it('keys the write queue per workspace AND per config path', async () => {
+    // The lock exists to serialise writes to the SAME file. Collapsing the key
+    // — an empty template, or `configPath && ''` instead of `?? ''` — makes
+    // unrelated workspaces (or two different suppression files in one
+    // workspace) queue behind each other, turning independent audits into a
+    // single serial chain.
+    const other = mkdtempSync(join(tmpdir(), 'sup-other-'));
+    try {
+      const ops = [
+        addSuppressions(root, 'src/a.ts', [{ line: 1, mutator: 'A' }]),
+        addSuppressions(other, 'src/a.ts', [{ line: 1, mutator: 'A' }]),
+        addSuppressions(root, 'src/a.ts', [{ line: 2, mutator: 'B' }], 'alt1/supp.json'),
+        addSuppressions(root, 'src/a.ts', [{ line: 3, mutator: 'C' }], 'alt2/supp.json'),
+      ];
+      // Four distinct (workspace, configPath) pairs ⇒ four independent chains.
+      expect(_writeQueueSize()).toBe(4);
+      await Promise.all(ops);
+      expect(_writeQueueSize()).toBe(0);
+    } finally {
+      rmSync(other, { recursive: true, force: true });
+    }
+  });
+
+  it('does not let a finished write evict a newer writer from the queue', async () => {
+    // Two writes on the SAME key chain together. When the first settles, the
+    // map already holds the second's promise — the identity check is what stops
+    // the first's cleanup from deleting it. Without it the second write is
+    // unqueued while still in flight, and a third caller would start a parallel
+    // chain on the same file: exactly the lost-update race the lock prevents.
+    const first = addSuppressions(root, 'src/a.ts', [{ line: 1, mutator: 'A' }]);
+    const second = addSuppressions(root, 'src/a.ts', [{ line: 2, mutator: 'B' }]);
+
+    await first;
+    expect(_writeQueueSize()).toBe(1);
+
+    await second;
+    expect(_writeQueueSize()).toBe(0);
+    expect([...(loadSuppressions(root).get('src/a.ts') ?? [])].sort()).toEqual(['1 A', '2 B']);
+  });
+
+  it('_resetWriteQueue drops in-flight bookkeeping', async () => {
+    // The suite's own isolation hook: every test leans on it in beforeEach, so
+    // a version that quietly does nothing would let one test's leaked chain
+    // serialise the next one's writes.
+    const pending = addSuppressions(root, 'src/a.ts', [{ line: 1, mutator: 'A' }]);
+    expect(_writeQueueSize()).toBe(1);
+
+    _resetWriteQueue();
+
+    expect(_writeQueueSize()).toBe(0);
+    await pending;
+  });
+
+  it('returns a real Promise on the empty no-op path', async () => {
+    // Both entry points short-circuit an empty list. The signature promises a
+    // Promise, and callers `await` it or chain `.catch()` onto it; returning
+    // undefined works under `await` by accident but breaks the moment anyone
+    // calls a method on the result.
+    const added = addSuppressions(root, 'src/a.ts', []);
+    const removed = removeSuppressions(root, 'src/a.ts', []);
+    expect(added).toBeInstanceOf(Promise);
+    expect(removed).toBeInstanceOf(Promise);
+    await expect(added).resolves.toBeUndefined();
+    await expect(removed).resolves.toBeUndefined();
+  });
+
   it('H3 mutex serialises concurrent add/remove on the same key without losing entries', async () => {
     // 6 concurrent ops on `src/a.ts`: 3 adds + 1 partial-remove + 2 more adds.
     // After all settle the file must contain entries 1..6 minus the one the

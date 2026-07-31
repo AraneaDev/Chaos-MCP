@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { dirname, basename, join, resolve } from 'path';
 import type { CallToolRequest } from '@modelcontextprotocol/sdk/types.js';
-import { resolveStrykerConcurrency } from '../triage-handler.js';
+// `resolveStrykerConcurrency` moved out of triage-handler.ts with the argument
+// prelude it belongs to (Finding 3 decomposition); the import follows it there.
+import { resolveStrykerConcurrency } from '../triage-args-validation.js';
 import { ALLOWED_ROOTS_ENV } from '../utils/path-safety.js';
 
 vi.mock('../triage.js', async () => {
@@ -22,9 +24,26 @@ vi.mock('../utils/project-detector.js', async () => {
   );
   return { ...actual, detectEnvironment: vi.fn() };
 });
-vi.mock('../handler.js', async () => {
-  const actual = await vi.importActual<typeof import('../handler.js')>('../handler.js');
-  return { ...actual, auditFile: vi.fn(), makeEngine: vi.fn(() => ({ run: vi.fn() })) };
+vi.mock('../audit/audit-file.js', async () => {
+  const actual =
+    await vi.importActual<typeof import('../audit/audit-file.js')>('../audit/audit-file.js');
+  return { ...actual, auditFile: vi.fn() };
+});
+// `makeEngine` moved out of handler.ts into the engine registry it was already
+// a one-line lookup into; the stub follows it there.
+vi.mock('../engines/registry.js', async () => {
+  const actual =
+    await vi.importActual<typeof import('../engines/registry.js')>('../engines/registry.js');
+  return { ...actual, makeEngine: vi.fn(() => ({ run: vi.fn() })) };
+});
+// The row's runId now comes from the shared `mintRunId` in run-cache.ts (both
+// audit and triage mint it identically). Stubbing `saveRun` no longer reaches
+// triage — mintRunId calls it module-internally — so the spy follows the seam
+// the handler actually imports.
+vi.mock('../utils/run-cache.js', async () => {
+  const actual =
+    await vi.importActual<typeof import('../utils/run-cache.js')>('../utils/run-cache.js');
+  return { ...actual, mintRunId: vi.fn(actual.mintRunId) };
 });
 vi.mock('../utils/suppression.js', async () => {
   const actual =
@@ -34,9 +53,11 @@ vi.mock('../utils/suppression.js', async () => {
 
 import { discoverFiles, discoverChangedFiles } from '../triage.js';
 import { detectEnvironment } from '../utils/project-detector.js';
-import { auditFile } from '../handler.js';
+import { auditFile } from '../audit/audit-file.js';
 import { listChangedFiles, computeChangedRanges } from '../utils/git-diff.js';
 import { loadSuppressions } from '../utils/suppression.js';
+import { mintRunId } from '../utils/run-cache.js';
+import { createSandbox } from '../utils/sandbox.js';
 import { handleTriageCall } from '../triage-handler.js';
 
 const mockDiscover = vi.mocked(discoverFiles);
@@ -46,6 +67,8 @@ const mockAuditFile = vi.mocked(auditFile);
 const mockListChangedFiles = vi.mocked(listChangedFiles);
 const mockComputeChangedRanges = vi.mocked(computeChangedRanges);
 const mockLoadSuppressions = vi.mocked(loadSuppressions);
+const mockMintRunId = vi.mocked(mintRunId);
+const mockCreateSandbox = vi.mocked(createSandbox);
 
 const req = (args: Record<string, unknown>): CallToolRequest =>
   ({
@@ -114,6 +137,80 @@ describe('handleTriageCall', () => {
     const res = await handleTriageCall(req({ paths: ['src'], maxFiles: 2.5 }));
     expect(res.isError).toBe(true);
     expect(res.content[0]).toEqual({ type: 'text', text: 'maxFiles must be an integer >= 1.' });
+  });
+
+  describe('argument validation boundaries', () => {
+    /** The rejection message for these args, or null when they are accepted. */
+    const rejection = async (args: Record<string, unknown>): Promise<string | null> => {
+      mockDiscover.mockReturnValue({ files: [], discovered: 0, skipped: 0 });
+      const res = await handleTriageCall(req({ paths: ['src'], ...args }));
+      return res.isError === true ? (res.content[0] as { text: string }).text : null;
+    };
+
+    it('requires diffBase to be a non-empty string', async () => {
+      // Reached only when `paths` is also given: with paths absent, an empty
+      // diffBase falls to the paths-or-diffBase message instead, so this guard
+      // has its own arm that nothing else exercises.
+      const message = 'diffBase must be a non-empty string: "HEAD", "staged", or a git ref.';
+      expect(await rejection({ diffBase: '' })).toBe(message);
+      expect(await rejection({ diffBase: '   ' })).toBe(message);
+      expect(await rejection({ diffBase: 123 })).toBe(message);
+      expect(await rejection({ diffBase: null })).toBe(message);
+    });
+
+    it('rejects an option-like diffBase separately from a malformed one', async () => {
+      expect(await rejection({ diffBase: '--upload-pack=evil' })).toBe(
+        'diffBase must not start with "-" (it would be mistaken for a git option).',
+      );
+    });
+
+    it('requires survivorsPerFile to be an integer >= 0, accepting exactly 0', async () => {
+      // 0 is the DEFAULT (scores-only leaderboard), so the boundary must be
+      // inclusive — `< 0`, not `<= 0`.
+      const message = 'survivorsPerFile must be an integer >= 0.';
+      expect(await rejection({ survivorsPerFile: -1 })).toBe(message);
+      expect(await rejection({ survivorsPerFile: 1.5 })).toBe(message);
+      expect(await rejection({ survivorsPerFile: '3' })).toBe(message);
+      expect(await rejection({ survivorsPerFile: Number.NaN })).toBe(message);
+      expect(await rejection({ survivorsPerFile: 0 })).toBeNull();
+      expect(await rejection({ survivorsPerFile: 5 })).toBeNull();
+    });
+
+    it('bounds fileConcurrency to 1..64 inclusive at both ends', async () => {
+      const message = 'fileConcurrency must be an integer between 1 and 64.';
+      expect(await rejection({ fileConcurrency: 0 })).toBe(message);
+      expect(await rejection({ fileConcurrency: 65 })).toBe(message);
+      expect(await rejection({ fileConcurrency: 1.5 })).toBe(message);
+      expect(await rejection({ fileConcurrency: '4' })).toBe(message);
+      expect(await rejection({ fileConcurrency: 1 })).toBeNull();
+      expect(await rejection({ fileConcurrency: 64 })).toBeNull();
+    });
+
+    it('requires totalTimeoutMs to be a positive number', async () => {
+      const message = 'totalTimeoutMs must be a positive number. Example: 900000.';
+      expect(await rejection({ totalTimeoutMs: 0 })).toBe(message);
+      expect(await rejection({ totalTimeoutMs: -1 })).toBe(message);
+      expect(await rejection({ totalTimeoutMs: '900000' })).toBe(message);
+      // Fractional milliseconds are fine — positivity is the only rule.
+      expect(await rejection({ totalTimeoutMs: 0.5 })).toBeNull();
+    });
+
+    it('requires timeoutMs to be a positive number, with its own message', async () => {
+      // Distinct wording from totalTimeoutMs: they are different budgets and a
+      // caller has to know which one they got wrong.
+      const message = 'timeoutMs must be a positive number. Example: 300000.';
+      expect(await rejection({ timeoutMs: 0 })).toBe(message);
+      expect(await rejection({ timeoutMs: -1 })).toBe(message);
+      expect(await rejection({ timeoutMs: '300000' })).toBe(message);
+      expect(await rejection({ timeoutMs: 0.5 })).toBeNull();
+    });
+
+    it('rejects a blank entry anywhere in paths, whitespace included', async () => {
+      const message = 'paths must be an array of non-empty workspace-relative strings.';
+      expect(await rejection({ paths: ['ok.ts', ''] })).toBe(message);
+      expect(await rejection({ paths: ['ok.ts', '\t\n'] })).toBe(message);
+      expect(await rejection({ paths: ['ok.ts', 42] })).toBe(message);
+    });
   });
 
   it('accepts a path under a CHAOS_ALLOWED_ROOTS entry', async () => {
@@ -216,6 +313,444 @@ describe('handleTriageCall', () => {
         }),
       }),
     );
+  });
+
+  describe('option resolution and per-file budgeting', () => {
+    it('treats a blank diffBase with no paths as "neither was given"', async () => {
+      // `hasDiffBase` requires a TRIMMED non-empty string. Drop the trim (or the
+      // length check) and a blank diffBase counts as supplied, so the caller is
+      // told their git ref is malformed rather than that they gave no target
+      // at all — two different fixes.
+      const expected =
+        'Provide "paths" (array of workspace-relative files/dirs) or "diffBase" (a git ref) — at least one is required.';
+      for (const args of [{ diffBase: '' }, { diffBase: '   ' }, { diffBase: '\t\n' }]) {
+        const res = await handleTriageCall(req(args));
+        expect(res.content[0]).toEqual({ type: 'text', text: expected });
+      }
+    });
+
+    it("caps each file's timeout by what is left of the total budget", async () => {
+      // `Math.min(args.timeoutMs, fileBudgetMs)` — a per-file timeout larger
+      // than the remaining sweep budget must not let one file eat the time the
+      // rest need.
+      mockDiscover.mockReturnValue({ files: ['a.ts'], discovered: 1, skipped: 0 });
+      mockAuditFile.mockResolvedValue(mrOf({}));
+
+      await handleTriageCall(req({ paths: ['src'], timeoutMs: 999_999, totalTimeoutMs: 10_000 }));
+
+      const passed = mockAuditFile.mock.calls[0][0].args.timeoutMs as number;
+      expect(passed).toBeLessThanOrEqual(10_000);
+      expect(passed).toBeGreaterThan(0);
+    });
+
+    it('gives a file the whole remaining budget when no per-file timeout is set', async () => {
+      mockDiscover.mockReturnValue({ files: ['a.ts'], discovered: 1, skipped: 0 });
+      mockAuditFile.mockResolvedValue(mrOf({}));
+
+      await handleTriageCall(req({ paths: ['src'], totalTimeoutMs: 20_000 }));
+
+      const passed = mockAuditFile.mock.calls[0][0].args.timeoutMs as number;
+      expect(passed).toBeGreaterThan(10_000);
+      expect(passed).toBeLessThanOrEqual(20_000);
+    });
+
+    it('leaves files unaudited once the total budget is spent, rather than skipping them silently', async () => {
+      // A 1ms budget is exhausted by the reserve before the first file starts.
+      // The result must SAY so — an empty ranking with no explanation reads as
+      // "these files are fine".
+      mockDiscover.mockReturnValue({ files: ['a.ts', 'b.ts'], discovered: 2, skipped: 0 });
+      mockAuditFile.mockResolvedValue(mrOf({}));
+
+      const res = await handleTriageCall(req({ paths: ['src'], totalTimeoutMs: 1 }));
+      const payload = JSON.parse(txt(res)) as {
+        unaudited?: string[];
+        stoppedReason?: string;
+        note: string;
+      };
+
+      expect(payload.unaudited).toEqual(['a.ts', 'b.ts']);
+      expect(payload.stoppedReason).toBe('time_budget_exhausted');
+      expect(payload.note).toContain('not audited before the time budget ran out');
+      expect(mockAuditFile).not.toHaveBeenCalled();
+    });
+
+    it('passes a Stryker worker cap only for TypeScript files, and only with a real pool', async () => {
+      // The cap exists so N parallel StrykerJS runs do not oversubscribe the
+      // box. A single-file pool has nothing to divide, and non-TS engines take
+      // their worker count elsewhere.
+      mockDiscover.mockReturnValue({ files: ['a.ts'], discovered: 1, skipped: 0 });
+      mockAuditFile.mockResolvedValue(mrOf({}));
+
+      await handleTriageCall(req({ paths: ['src'], fileConcurrency: 1 }));
+      expect(mockAuditFile.mock.calls[0][0].args.concurrency).toBeUndefined();
+
+      mockAuditFile.mockClear();
+      await handleTriageCall(req({ paths: ['src'], fileConcurrency: 4 }));
+      expect(mockAuditFile.mock.calls[0][0].args.concurrency).toBeTypeOf('number');
+    });
+
+    it('does not pass a Stryker worker cap to a non-TypeScript engine', async () => {
+      mockDiscover.mockReturnValue({ files: ['a.py'], discovered: 1, skipped: 0 });
+      mockDetectEnv.mockReturnValue({ ...tsEnv, projectType: 'python' });
+      mockAuditFile.mockResolvedValue(mrOf({}));
+
+      await handleTriageCall(req({ paths: ['src'], fileConcurrency: 4 }));
+
+      expect(mockAuditFile.mock.calls[0][0].args.concurrency).toBeUndefined();
+    });
+
+    it('ignores a non-integer fileConcurrency when sizing the pool', async () => {
+      // 2.5 is rejected by validation, but `null` reaches the pool sizer and
+      // must fall through to the default rather than becoming the pool size.
+      mockDiscover.mockReturnValue({ files: ['a.ts'], discovered: 1, skipped: 0 });
+      mockAuditFile.mockResolvedValue(mrOf({}));
+
+      await handleTriageCall(req({ paths: ['src'] }));
+
+      // Default pool on this machine is min(4, cpus-1) — at least 1 either way,
+      // so the observable is simply that the sweep ran.
+      expect(mockAuditFile).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('diff-scoped rows', () => {
+    it('marks a row when the language cannot be line-scoped', async () => {
+      // cargo-mutants/cosmic-ray/Infection run whole-file, so a diff-scoped
+      // triage must say the score covers more than the diff — otherwise the
+      // number reads as "your changed lines are 60% covered".
+      mockListChangedFiles.mockResolvedValue({ kind: 'files', files: ['a.py'] });
+      mockDiscoverChanged.mockReturnValue({ files: ['a.py'], discovered: 1, skipped: 0 });
+      mockDetectEnv.mockReturnValue({ ...tsEnv, projectType: 'python' });
+      mockAuditFile.mockResolvedValue(mrOf({}));
+
+      const res = await handleTriageCall(req({ diffBase: 'HEAD' }));
+      const payload = JSON.parse(txt(res)) as { ranking: { scopeNote?: string }[] };
+
+      expect(payload.ranking[0].scopeNote).toBe(
+        'diff scoping unsupported for this language; whole file',
+      );
+      expect(mockComputeChangedRanges).not.toHaveBeenCalled();
+    });
+
+    it('marks an untracked file as whole-file rather than leaving it unlabelled', async () => {
+      mockListChangedFiles.mockResolvedValue({ kind: 'files', files: ['a.ts'] });
+      mockDiscoverChanged.mockReturnValue({ files: ['a.ts'], discovered: 1, skipped: 0 });
+      mockComputeChangedRanges.mockResolvedValue({ kind: 'untracked' });
+      mockAuditFile.mockResolvedValue(mrOf({}));
+
+      const res = await handleTriageCall(req({ diffBase: 'HEAD' }));
+      const payload = JSON.parse(txt(res)) as { ranking: { scopeNote?: string }[] };
+
+      expect(payload.ranking[0].scopeNote).toBe('untracked; whole file');
+    });
+
+    it('leaves a row unlabelled when the diff yields no usable ranges', async () => {
+      // no-changes / bad-ref / not-a-repo for an individual file: the file was
+      // selected, so this is rare — and must not invent a scope note.
+      mockListChangedFiles.mockResolvedValue({ kind: 'files', files: ['a.ts'] });
+      mockDiscoverChanged.mockReturnValue({ files: ['a.ts'], discovered: 1, skipped: 0 });
+      mockComputeChangedRanges.mockResolvedValue({ kind: 'not-a-repo' });
+      mockAuditFile.mockResolvedValue(mrOf({}));
+
+      const res = await handleTriageCall(req({ diffBase: 'HEAD' }));
+      const payload = JSON.parse(txt(res)) as { ranking: Record<string, unknown>[] };
+
+      expect(Object.keys(payload.ranking[0])).not.toContain('scopeNote');
+    });
+
+    it('reports a diffBase that git cannot resolve', async () => {
+      mockListChangedFiles.mockResolvedValue({ kind: 'bad-ref', ref: 'nope' });
+
+      const res = await handleTriageCall(req({ diffBase: 'nope' }));
+
+      expect(res.isError).toBe(true);
+      expect(txt(res)).toBe('diffBase "nope" could not be resolved as a git ref.');
+    });
+  });
+
+  describe('row assembly', () => {
+    it('derives noCoverage from vulnerabilities beyond the survivor count, never negative', async () => {
+      // `vulnerabilities.length - survived` — swapped to `+` the row claims more
+      // uncovered mutants than the file has; clamped with min instead of max it
+      // would go negative when the engine reports fewer vulns than survivors.
+      mockDiscover.mockReturnValue({ files: ['a.ts'], discovered: 1, skipped: 0 });
+      mockAuditFile.mockResolvedValue(
+        mrOf({
+          survived: 1,
+          vulnerabilities: [
+            { line: 1, mutator: 'A', description: 'survived' },
+            { line: 2, mutator: 'B', description: 'no test reached this mutant' },
+            { line: 3, mutator: 'C', description: 'no test reached this mutant' },
+          ],
+        }),
+      );
+
+      const res = await handleTriageCall(req({ paths: ['src'] }));
+      const payload = JSON.parse(txt(res)) as { ranking: { noCoverage: number }[] };
+
+      expect(payload.ranking[0].noCoverage).toBe(2);
+    });
+
+    it('clamps noCoverage at zero when the engine reports fewer vulnerabilities than survivors', async () => {
+      mockDiscover.mockReturnValue({ files: ['a.ts'], discovered: 1, skipped: 0 });
+      mockAuditFile.mockResolvedValue(mrOf({ survived: 5, vulnerabilities: [] }));
+
+      const res = await handleTriageCall(req({ paths: ['src'] }));
+      const payload = JSON.parse(txt(res)) as { ranking: { noCoverage: number }[] };
+
+      expect(payload.ranking[0].noCoverage).toBe(0);
+    });
+
+    it('flags a logic-free file rather than ranking it as the safest', async () => {
+      mockDiscover.mockReturnValue({ files: ['a.ts'], discovered: 1, skipped: 0 });
+      mockAuditFile.mockResolvedValue(
+        mrOf({ totalMutants: 0, killed: 0, survived: 0, mutationScore: '100.00%' }),
+      );
+
+      const res = await handleTriageCall(req({ paths: ['src'] }));
+      const payload = JSON.parse(txt(res)) as {
+        ranking: { noMutableLogic?: boolean; mutationScore: string }[];
+      };
+
+      expect(payload.ranking[0].noMutableLogic).toBe(true);
+      expect(payload.ranking[0].mutationScore).toBe('n/a');
+    });
+
+    it('omits the logic-free flag for an ordinary file', async () => {
+      mockDiscover.mockReturnValue({ files: ['a.ts'], discovered: 1, skipped: 0 });
+      mockAuditFile.mockResolvedValue(mrOf({}));
+
+      const res = await handleTriageCall(req({ paths: ['src'] }));
+      const payload = JSON.parse(txt(res)) as { ranking: Record<string, unknown>[] };
+
+      expect(Object.keys(payload.ranking[0])).not.toContain('noMutableLogic');
+    });
+
+    it('carries partial-audit state, with its batch counts, onto the row', async () => {
+      mockDiscover.mockReturnValue({ files: ['a.ts'], discovered: 1, skipped: 0 });
+      mockAuditFile.mockResolvedValue(
+        mrOf({ complete: false, batchesCompleted: 2, batchesPlanned: 5 }),
+      );
+
+      const res = await handleTriageCall(req({ paths: ['src'] }));
+      const payload = JSON.parse(txt(res)) as {
+        ranking: { complete?: boolean; batchesCompleted?: number; batchesPlanned?: number }[];
+      };
+
+      expect(payload.ranking[0].complete).toBe(false);
+      expect(payload.ranking[0].batchesCompleted).toBe(2);
+      expect(payload.ranking[0].batchesPlanned).toBe(5);
+    });
+
+    it('leaves the partial-audit fields off a complete row entirely', async () => {
+      mockDiscover.mockReturnValue({ files: ['a.ts'], discovered: 1, skipped: 0 });
+      mockAuditFile.mockResolvedValue(mrOf({}));
+
+      const res = await handleTriageCall(req({ paths: ['src'] }));
+      const keys = Object.keys(
+        (JSON.parse(txt(res)) as { ranking: Record<string, unknown>[] }).ranking[0],
+      );
+
+      expect(keys).not.toContain('complete');
+      expect(keys).not.toContain('batchesCompleted');
+      expect(keys).not.toContain('batchesPlanned');
+    });
+
+    it('omits suppressedCount when nothing was suppressed', async () => {
+      mockDiscover.mockReturnValue({ files: ['a.ts'], discovered: 1, skipped: 0 });
+      mockAuditFile.mockResolvedValue(mrOf({}));
+
+      const res = await handleTriageCall(req({ paths: ['src'] }));
+      const keys = Object.keys(
+        (JSON.parse(txt(res)) as { ranking: Record<string, unknown>[] }).ranking[0],
+      );
+
+      expect(keys).not.toContain('suppressedCount');
+    });
+  });
+
+  describe('cancellation', () => {
+    it('reports a per-file cancel when the signal trips between files', async () => {
+      // The per-file pre-check exists so a cancelled sweep stops starting NEW
+      // files instead of running the queue to completion. Serial pool so the
+      // second file is guaranteed to see the abort.
+      const controller = new AbortController();
+      mockDiscover.mockReturnValue({ files: ['a.ts', 'b.ts'], discovered: 2, skipped: 0 });
+      mockAuditFile.mockImplementationOnce(() => {
+        controller.abort();
+        return Promise.resolve(mrOf({}));
+      });
+      mockAuditFile.mockResolvedValue(mrOf({}));
+
+      const res = await handleTriageCall(req({ paths: ['src'], fileConcurrency: 1 }), undefined, {
+        signal: controller.signal,
+      });
+      const payload = JSON.parse(txt(res)) as { errors: { file: string; error: string }[] };
+
+      expect(payload.errors).toContainEqual({ file: 'b.ts', error: 'Operation cancelled.' });
+      expect(mockAuditFile).toHaveBeenCalledTimes(1);
+    });
+
+    it('reports a cancelled sandbox as a cancel, not a provisioning failure', async () => {
+      // The two are fixed differently: one means "you stopped it", the other
+      // means the workspace is broken.
+      mockDiscover.mockReturnValue({ files: ['a.ts'], discovered: 1, skipped: 0 });
+      mockCreateSandbox.mockRejectedValueOnce(
+        Object.assign(new Error('aborted'), { name: 'AbortError' }),
+      );
+
+      const res = await handleTriageCall(req({ paths: ['src'] }));
+      const payload = JSON.parse(txt(res)) as { errors: { file: string; error: string }[] };
+
+      expect(payload.errors).toEqual([{ file: 'a.ts', error: 'Operation cancelled.' }]);
+    });
+
+    it('reports a genuine sandbox failure with the halted message', async () => {
+      // The other arm of the same branch.
+      mockDiscover.mockReturnValue({ files: ['a.ts'], discovered: 1, skipped: 0 });
+      mockCreateSandbox.mockRejectedValueOnce(new Error('disk full'));
+
+      const res = await handleTriageCall(req({ paths: ['src'] }));
+      const payload = JSON.parse(txt(res)) as { errors: { file: string; error: string }[] };
+
+      expect(payload.errors[0].error).toContain('Failed to provision sandbox isolation for a.ts');
+      expect(payload.errors[0].error).toContain('disk full');
+    });
+
+    it('reports a cancelled AUDIT as a cancel rather than raw engine stderr', async () => {
+      mockDiscover.mockReturnValue({ files: ['a.ts'], discovered: 1, skipped: 0 });
+      mockAuditFile.mockRejectedValueOnce(
+        Object.assign(new Error('ABORT_ERR: killed'), { name: 'AbortError' }),
+      );
+
+      const res = await handleTriageCall(req({ paths: ['src'] }));
+      const payload = JSON.parse(txt(res)) as { errors: { file: string; error: string }[] };
+
+      expect(payload.errors).toEqual([{ file: 'a.ts', error: 'Operation cancelled.' }]);
+    });
+
+    it('abandons the sweep when the signal trips during discovery', async () => {
+      // The second abort check, after discovery and before the pool. Only a
+      // cancel that lands DURING discovery can reach it.
+      const controller = new AbortController();
+      mockDiscover.mockImplementation(() => {
+        controller.abort();
+        return { files: ['a.ts'], discovered: 1, skipped: 0 };
+      });
+
+      const res = await handleTriageCall(req({ paths: ['src'] }), undefined, {
+        signal: controller.signal,
+      });
+
+      expect(res.isError).toBe(true);
+      expect(txt(res)).toBe('Operation cancelled.');
+      expect(mockAuditFile).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('row enrichment', () => {
+    it('reads the real source so inlined survivors carry context lines', async () => {
+      // The source read is what turns a bare line number into something a
+      // reader can act on. Point at a file that genuinely exists.
+      mockDiscover.mockReturnValue({ files: ['src/gate.ts'], discovered: 1, skipped: 0 });
+      mockAuditFile.mockResolvedValue(
+        mrOf({
+          vulnerabilities: [{ line: 3, mutator: 'ConditionalExpression', description: 'survived' }],
+        }),
+      );
+
+      const res = await handleTriageCall(req({ paths: ['src'], survivorsPerFile: 3 }));
+      const payload = JSON.parse(txt(res)) as {
+        ranking: { survivors?: { context?: string[] }[] }[];
+      };
+
+      expect(payload.ranking[0].survivors?.[0].context?.length).toBeGreaterThan(0);
+    });
+
+    it('still inlines survivors when the source cannot be read', async () => {
+      // A file that vanished between discovery and reporting must not take the
+      // whole triage down — the row just loses its context snippet.
+      mockDiscover.mockReturnValue({ files: ['does/not/exist.ts'], discovered: 1, skipped: 0 });
+      mockAuditFile.mockResolvedValue(
+        mrOf({
+          vulnerabilities: [{ line: 3, mutator: 'ConditionalExpression', description: 'survived' }],
+        }),
+      );
+
+      const res = await handleTriageCall(req({ paths: ['src'], survivorsPerFile: 3 }));
+      const payload = JSON.parse(txt(res)) as {
+        ranking: { survivors?: { context?: string[] }[] }[];
+      };
+
+      expect(payload.ranking[0].survivors).toHaveLength(1);
+      expect(payload.ranking[0].survivors?.[0].context).toBeUndefined();
+    });
+
+    it('inlines no-coverage groups and the worst severity separately from survivors', async () => {
+      mockDiscover.mockReturnValue({ files: ['a.ts'], discovered: 1, skipped: 0 });
+      mockAuditFile.mockResolvedValue(
+        mrOf({
+          survived: 0,
+          vulnerabilities: [
+            {
+              line: 7,
+              mutator: 'ConditionalExpression',
+              description: 'no test reached this mutant',
+            },
+          ],
+        }),
+      );
+
+      const res = await handleTriageCall(req({ paths: ['src'], survivorsPerFile: 3 }));
+      const row = (
+        JSON.parse(txt(res)) as {
+          ranking: Record<string, unknown>[];
+        }
+      ).ranking[0];
+
+      expect(row.noCoverageGroups).toHaveLength(1);
+      expect(row.worstSeverity).toBe('high');
+      expect(Object.keys(row)).not.toContain('survivors');
+    });
+
+    it('omits the inline groups entirely when there is nothing to inline', async () => {
+      mockDiscover.mockReturnValue({ files: ['a.ts'], discovered: 1, skipped: 0 });
+      mockAuditFile.mockResolvedValue(mrOf({ survived: 0, vulnerabilities: [] }));
+
+      const res = await handleTriageCall(req({ paths: ['src'], survivorsPerFile: 3 }));
+      const keys = Object.keys(
+        (JSON.parse(txt(res)) as { ranking: Record<string, unknown>[] }).ranking[0],
+      );
+
+      expect(keys).not.toContain('survivors');
+      expect(keys).not.toContain('noCoverageGroups');
+      expect(keys).not.toContain('worstSeverity');
+    });
+
+    it('drops the row runId rather than failing the sweep when the cache cannot be written', async () => {
+      // The runId is a convenience for a follow-up verify. Losing it must not
+      // cost the caller the leaderboard they asked for. `mintRunId` swallows the
+      // cache failure itself (see run-cache.test.ts) and returns undefined.
+      mockDiscover.mockReturnValue({ files: ['a.ts'], discovered: 1, skipped: 0 });
+      mockAuditFile.mockResolvedValue(mrOf({}));
+      mockMintRunId.mockReturnValueOnce(undefined);
+
+      const res = await handleTriageCall(req({ paths: ['src'] }));
+      const row = (JSON.parse(txt(res)) as { ranking: Record<string, unknown>[] }).ranking[0];
+
+      expect(res.isError).toBeUndefined();
+      expect(Object.keys(row)).not.toContain('runId');
+    });
+
+    it('mints a row runId on the happy path', async () => {
+      mockDiscover.mockReturnValue({ files: ['a.ts'], discovered: 1, skipped: 0 });
+      mockAuditFile.mockResolvedValue(mrOf({}));
+
+      const res = await handleTriageCall(req({ paths: ['src'] }));
+      const row = (JSON.parse(txt(res)) as { ranking: { runId?: string }[] }).ranking[0];
+
+      expect(row.runId).toMatch(/^[0-9a-f]{8}$/);
+    });
   });
 
   it('cleans up the sandbox after auditing each file', async () => {
@@ -398,6 +933,8 @@ describe('handleTriageCall', () => {
       expect.any(String),
       expect.any(String),
       'main',
+      // The git call is cancellable and charged against the sweep's budget.
+      expect.objectContaining({ timeoutMs: expect.any(Number) as number }),
     );
     expect(mockAuditFile).toHaveBeenCalledWith(
       expect.objectContaining({ lineRanges: [{ start: 1, end: 10 }] }),

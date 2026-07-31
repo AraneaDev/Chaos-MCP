@@ -1,9 +1,9 @@
 import { readFileSync } from 'node:fs';
-import type { SupportedProjectType } from './engines/registry.js';
-import type { EnvironmentInfo } from './utils/project-detector.js';
+import type { EnvironmentInfo, SupportedProjectType } from './utils/project-detector.js';
 import { estimateHeuristic } from './estimate-heuristic.js';
 import { invokeMutationTool, MutationToolStartupError } from './utils/exec-classify.js';
 import { runShell } from './utils/exec.js';
+import { isCancel } from './utils/cancel.js';
 import { resolveBaselineTestCommand, projectTimingRange } from './baseline-timing.js';
 import type { ExecutionSession } from './utils/execution.js';
 
@@ -182,7 +182,13 @@ async function applyTiming(result: EstimateResult, opts: EstimateOptions): Promi
         ? 'Estimated to fit the configured audit budget.'
         : 'Upper estimate exceeds the configured audit budget; narrow lineScope/diffBase or use a larger budget.';
     }
-  } catch {
+  } catch (err: unknown) {
+    // Cancellation must escape. This catch is a best-effort fallback for a
+    // baseline suite that fails or times out — not a place to swallow a
+    // deliberate abort. Swallowing it made handleEstimateCall's `isCancel`
+    // branch unreachable for the timing phase, so a client that cancelled
+    // mid-baseline got a SUCCESSFUL estimate back for work it had cancelled.
+    if (isCancel(err)) throw err;
     result.note += ' (timing unavailable)';
   }
 }

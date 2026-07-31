@@ -1,9 +1,10 @@
 import { readdirSync } from 'fs';
-import { join, relative, resolve } from 'path';
+import { join, relative, resolve, sep } from 'path';
 import type { MutationResult } from './engines/base.js';
 import type { Severity } from './enrich.js';
 import { displayMutationScore, hasNoMutableLogic, type LineGroup } from './format.js';
 import { evaluateGate } from './gate.js';
+import { supportedSourceExtensions } from './utils/project-detector.js';
 
 export interface TriageRow {
   file: string;
@@ -24,6 +25,17 @@ export interface TriageRow {
   passed?: boolean;
   /** True when the file has no mutable logic (zero mutants, no scope note); score is "n/a" (audit M3). */
   noMutableLogic?: boolean;
+  /**
+   * False when the file's audit ran out of time budget and scored only some of
+   * its mutation batches. Absent means complete. Without this the leaderboard
+   * presented a fraction of a file's score as the whole file's, and the gate
+   * graded it — so a partially-audited file could rank "safe" and pass.
+   */
+  complete?: boolean;
+  /** Batches that produced usable reports (only present on a partial run). */
+  batchesCompleted?: number;
+  /** Batches planned for the requested scope (only present on a partial run). */
+  batchesPlanned?: number;
 }
 
 export interface TriageError {
@@ -31,7 +43,13 @@ export interface TriageError {
   error: string;
 }
 
-const SUPPORTED_EXT = ['.ts', '.js', '.tsx', '.jsx', '.py', '.rs', '.php'];
+/**
+ * Auditable source extensions, derived from the per-language detection registry
+ * rather than restated here. Restating them meant a newly added language was
+ * invisible to triage discovery with no compile error to say so — the tool just
+ * returned an empty leaderboard (audit F15).
+ */
+const SUPPORTED_EXT = supportedSourceExtensions();
 const IGNORE_DIRS = new Set([
   'node_modules',
   'build',
@@ -45,10 +63,33 @@ const IGNORE_DIRS = new Set([
 ]);
 const TEST_FILE_RE = /(\.test\.|\.spec\.|_test\.(py|rs)$|(^|\/)test_[^/]*\.py$|Test\.php$)/;
 
+/**
+ * Normalise a path to forward slashes.
+ *
+ * {@link TEST_FILE_RE} anchors the `test_*.py` alternative on `(^|/)`, and
+ * `walk` builds candidates with `relative()`, which yields BACKslashes on
+ * Windows — so `pkg\test_math.py` failed the guard and a pytest test module was
+ * audited as if it were source.
+ *
+ * Backslashes are translated on EVERY platform, not just where `sep` is `\`.
+ * A POSIX filename may legally contain a backslash, so this technically
+ * misreads `weird\test_x.py` as a directory boundary — an acceptable trade for
+ * behaviour that Linux CI can actually verify. A platform-gated version is
+ * invisible to this project's CI, which is precisely how the bug survived.
+ * Matches the unconditional normalisation already used in engines/php.ts.
+ */
+function toPosix(path: string): string {
+  return sep === '\\' ? path.split(sep).join('/') : path.replace(/\\/g, '/');
+}
+
 /** True if a path is a mutation-testable source file (supported ext, not a test). */
 export function isSupportedSourceFile(path: string): boolean {
-  if (!SUPPORTED_EXT.some((ext) => path.endsWith(ext))) return false;
-  if (TEST_FILE_RE.test(path)) return false;
+  const normalised = toPosix(path);
+  // Extensions are compared case-insensitively: on the case-insensitive
+  // filesystems where `Foo.PHP` is an ordinary filename, it is still PHP.
+  const lower = normalised.toLowerCase();
+  if (!SUPPORTED_EXT.some((ext) => lower.endsWith(ext))) return false;
+  if (TEST_FILE_RE.test(normalised)) return false;
   return true;
 }
 
@@ -157,6 +198,11 @@ export function rankResults(results: { file: string; result: MutationResult }[])
       noCoverage: Math.max(0, result.vulnerabilities.length - result.survived),
     };
     if (hasNoMutableLogic(result)) row.noMutableLogic = true;
+    if (result.complete === false) {
+      row.complete = false;
+      if (result.batchesCompleted !== undefined) row.batchesCompleted = result.batchesCompleted;
+      if (result.batchesPlanned !== undefined) row.batchesPlanned = result.batchesPlanned;
+    }
     return row;
   });
   return rows.sort(compareTriageRows);
@@ -183,11 +229,22 @@ export interface TriagePayload {
     filesAudited: number;
     filesSkipped: number;
     filesErrored: number;
+    /** Selected files never started because the sweep's time budget ran out. */
+    filesUnaudited?: number;
   };
   ranking: TriageRow[];
   errors: TriageError[];
   scopeNote?: string;
   note: string;
+  /**
+   * Files the sweep selected but never audited, because `totalTimeoutMs` was
+   * exhausted first. Distinct from `errors` (something went wrong) and from
+   * `filesSkipped` (never selected, capped by maxFiles): nothing was measured
+   * for these, so the ranking does not describe them.
+   */
+  unaudited?: string[];
+  /** Machine-readable reason the sweep stopped early. */
+  stoppedReason?: 'time_budget_exhausted';
   /** Gate result — only present when minScore is supplied. A failing gate is never an error. */
   gate?: { minScore: number; passed: boolean; failingFiles: string[] };
 }
@@ -199,6 +256,7 @@ export function buildTriagePayload(
   skipped: number,
   scopeNote?: string,
   minScore?: number,
+  unaudited: string[] = [],
 ): TriagePayload {
   const payload: TriagePayload = {
     mode: 'triage',
@@ -212,11 +270,21 @@ export function buildTriagePayload(
     errors,
     note: note(rows, discovered, skipped, !!scopeNote),
   };
+  if (unaudited.length > 0) {
+    payload.summary.filesUnaudited = unaudited.length;
+    payload.unaudited = unaudited;
+    payload.stoppedReason = 'time_budget_exhausted';
+    payload.note += ` ${unaudited.length} file(s) were not audited before the time budget ran out — raise totalTimeoutMs or narrow the paths.`;
+  }
   if (scopeNote) payload.scopeNote = scopeNote;
   if (minScore !== undefined) {
+    // `r.complete !== false` forwards partial-audit state: a row scored from
+    // only some of its mutation batches describes a fraction of the file, so it
+    // fails the gate rather than passing on a score that was never the whole
+    // file's (see evaluateGate).
     const graded = rows.map((r) => ({
       ...r,
-      passed: evaluateGate(r.mutationScore, minScore).passed,
+      passed: evaluateGate(r.mutationScore, minScore, r.complete !== false).passed,
     }));
     const failingFiles = graded
       .filter((r) => !r.passed)
@@ -226,6 +294,10 @@ export function buildTriagePayload(
     payload.gate = { minScore, passed: failingFiles.length === 0, failingFiles };
     if (errors.length > 0) {
       payload.note += ` Note: ${errors.length} file(s) errored and are not graded.`;
+    }
+    const partial = graded.filter((r) => r.complete === false).length;
+    if (partial > 0) {
+      payload.note += ` Note: ${partial} file(s) were audited only partially (time budget) and fail the gate on that basis.`;
     }
   }
   return payload;
@@ -249,6 +321,7 @@ export function formatTriageAsText(
   discovered: number,
   skipped: number,
   scopeNote?: string,
+  unaudited: string[] = [],
 ): string {
   const lines: string[] = [
     `Chaos-MCP Triage: ${rows.length} of ${discovered} files audited` +
@@ -258,7 +331,13 @@ export function formatTriageAsText(
   if (rows.length > 0) {
     lines.push('Weakest first (score  survived/total  file):');
     for (const r of rows) {
-      lines.push(`  ${r.mutationScore}  ${r.survived}/${r.total}  ${r.file}`);
+      // A partial row's score covers only part of the file — say so inline, or
+      // the number reads as the whole file's.
+      const partial =
+        r.complete === false
+          ? `  (partial: ${r.batchesCompleted ?? '?'}/${r.batchesPlanned ?? '?'} batches)`
+          : '';
+      lines.push(`  ${r.mutationScore}  ${r.survived}/${r.total}  ${r.file}${partial}`);
     }
   } else if (discovered === 0) {
     lines.push(
@@ -270,6 +349,12 @@ export function formatTriageAsText(
   if (errors.length > 0) {
     lines.push('Errors:');
     for (const e of errors) lines.push(`  ${e.file}: ${e.error}`);
+  }
+  if (unaudited.length > 0) {
+    lines.push(
+      `Not audited (time budget exhausted — raise totalTimeoutMs or narrow the paths): ${unaudited.length}`,
+    );
+    for (const f of unaudited) lines.push(`  ${f}`);
   }
   return lines.join('\n');
 }

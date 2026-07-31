@@ -3,40 +3,16 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Mock the async exec helper
 vi.mock('../utils/exec.js', () => ({
   runShell: vi.fn(),
-  ExecFailureError: class ExecFailureError extends Error {
-    stdout = '';
-    stderr = '';
-    exit: number | null = null;
-    signal: NodeJS.Signals | null = null;
-    code: string | undefined;
-    constructor(
-      result: {
-        stdout: string;
-        stderr: string;
-        exit: number | null;
-        signal: NodeJS.Signals | null;
-        code?: string;
-      },
-      message: string,
-    ) {
-      super(message);
-      this.name = 'ExecFailureError';
-      this.stdout = result.stdout;
-      this.stderr = result.stderr;
-      this.exit = result.exit;
-      this.signal = result.signal;
-      this.code = result.code;
-    }
-  },
 }));
 
 // Mock logger
 vi.mock('../utils/logger.js', () => ({
   log: vi.fn(),
-  isVerbose: vi.fn().mockReturnValue(false),
+  isVerbose: vi.fn(() => false),
 }));
 
-import { runShell, ExecFailureError } from '../utils/exec.js';
+import { runShell } from '../utils/exec.js';
+import { ExecFailureError } from '../utils/exec-error.js';
 import { RustEngine, resolveCargoJobs } from '../engines/rust.js';
 
 const mockRunShell = vi.mocked(runShell);
@@ -55,7 +31,8 @@ function makeExecFailure(opts: {
   stdout?: string;
   stderr?: string;
 }): Error {
-  // ExecFailureError is imported at top level — vi.mock replaces it with the mock class
+  // The real ExecFailureError from exec-error.js — the same class the engine
+  // narrows against with `instanceof`.
   return new ExecFailureError(
     {
       stdout: opts.stdout ?? '',
@@ -93,6 +70,130 @@ describe('RustEngine', () => {
     expect(result.survived).toBe(0);
     expect(result.mutationScore).toBe('100.00%');
     expect(result.vulnerabilities).toHaveLength(0);
+  });
+
+  describe('authoritative "N mutants tested" summary line', () => {
+    // cargo-mutants only PRINTS the missed mutants by default, so counting
+    // printed lines reports a false 0%. Since v27 it emits a summary line, and
+    // that line is the source of truth for the score. Nothing else in this file
+    // exercises it — every other fixture relies on line counting.
+
+    it('scores from the summary rather than from the printed lines', async () => {
+      const stdout = [
+        'MISSED   src/math.rs:42:5  replaced >= with >',
+        'MISSED   src/math.rs:88:1  replaced + with -',
+        '12 mutants tested in 41s: 8 caught, 2 missed, 1 unviable, 1 timeout',
+      ].join('\n');
+      mockRunShell.mockResolvedValue(makeExecResult(stdout));
+
+      const result = await engine.run('src/math.rs');
+
+      // caught(8) + timeout(1) killed, missed(2) survived, unviable(1) excluded
+      // from the denominator and surfaced separately.
+      expect(result.killed).toBe(9);
+      expect(result.survived).toBe(2);
+      expect(result.totalMutants).toBe(11);
+      expect(result.mutationScore).toBe('81.82%');
+      expect(result.incompetent).toBe(1);
+    });
+
+    it('counts each outcome label into its own bucket', async () => {
+      // Distinct numbers per label so a bucket wired to the wrong counter, or a
+      // branch forced always-true, changes the score.
+      const stdout = ['20 mutants tested: 10 caught, 4 missed, 3 unviable, 2 timeout'].join('\n');
+      mockRunShell.mockResolvedValue(makeExecResult(stdout));
+
+      const result = await engine.run('src/math.rs');
+
+      expect(result.killed).toBe(12); // 10 caught + 2 timeout
+      expect(result.survived).toBe(4);
+      expect(result.totalMutants).toBe(16);
+      expect(result.incompetent).toBe(3);
+    });
+
+    it('omits the incompetent field when no mutant was unviable', async () => {
+      const stdout = '5 mutants tested: 4 caught, 1 missed';
+      mockRunShell.mockResolvedValue(makeExecResult(stdout));
+
+      const result = await engine.run('src/math.rs');
+
+      expect(result.killed).toBe(4);
+      expect(result.survived).toBe(1);
+      expect(Object.keys(result)).not.toContain('incompetent');
+    });
+
+    it('accepts the singular "1 mutant tested" line', async () => {
+      // cargo-mutants writes "mutant" when there is exactly one. Requiring the
+      // plural drops the summary for single-mutant files, which are then scored
+      // by line counting instead — a silent 0% when nothing was printed.
+      mockRunShell.mockResolvedValue(makeExecResult('1 mutant tested in 2s: 1 caught'));
+      const result = await engine.run('src/math.rs');
+      expect(result.killed).toBe(1);
+      expect(result.totalMutants).toBe(1);
+    });
+
+    it('tolerates runs of whitespace inside the summary line', async () => {
+      // Column-aligned output pads with several spaces; matching exactly one
+      // space would skip the summary entirely.
+      mockRunShell.mockResolvedValue(
+        makeExecResult('6  mutants   tested in 3s:   4 caught,   2 missed'),
+      );
+      const result = await engine.run('src/math.rs');
+      expect(result.killed).toBe(4);
+      expect(result.survived).toBe(2);
+    });
+
+    it('tolerates padding between a count and its label', async () => {
+      // `(\d+)\s+([a-zA-Z]+)` — cargo aligns columns with several spaces, and
+      // matching exactly one would drop every padded bucket from the score.
+      mockRunShell.mockResolvedValue(makeExecResult('9 mutants tested: 6  caught, 3   missed'));
+      const result = await engine.run('src/math.rs');
+      expect(result.killed).toBe(6);
+      expect(result.survived).toBe(3);
+    });
+
+    it('matches outcome labels by PREFIX, so plural and singular both count', async () => {
+      // cargo-mutants writes "1 caught" but "2 missed"; the labels are matched
+      // with startsWith so `caught`/`missed`/`unviable`/`timeouts` all land.
+      const stdout = '4 mutants tested: 1 caughts, 1 missing, 1 unviables, 1 timeouts';
+      mockRunShell.mockResolvedValue(makeExecResult(stdout));
+
+      const result = await engine.run('src/math.rs');
+
+      expect(result.killed).toBe(2); // caught + timeout
+      expect(result.survived).toBe(1); // missing → miss*
+      expect(result.incompetent).toBe(1);
+    });
+
+    it('falls back to line counting when the summary names no known outcome', async () => {
+      // A summary line whose labels are all unrecognised must NOT be treated as
+      // an authoritative all-zero result — that would report 0 mutants tested.
+      const stdout = [
+        'MISSED   src/math.rs:42:5  replaced >= with >',
+        '3 mutants tested in 9s: 3 wibbled',
+      ].join('\n');
+      mockRunShell.mockResolvedValue(makeExecResult(stdout));
+
+      const result = await engine.run('src/math.rs');
+
+      expect(result.totalMutants).toBe(1);
+      expect(result.survived).toBe(1);
+    });
+
+    it('ignores the "Found N mutants to test" line, which is not a summary', async () => {
+      // "to test" is not "tested" — treating it as the summary would score the
+      // run before any mutant had been exercised.
+      const stdout = [
+        'Found 9 mutants to test',
+        'MISSED   src/math.rs:42:5  replaced >= with >',
+      ].join('\n');
+      mockRunShell.mockResolvedValue(makeExecResult(stdout));
+
+      const result = await engine.run('src/math.rs');
+
+      expect(result.totalMutants).toBe(1);
+      expect(result.survived).toBe(1);
+    });
   });
 
   it('reports MISSED mutants as vulnerabilities', async () => {
@@ -428,6 +529,27 @@ describe('RustEngine', () => {
     mockVerbose.mockReturnValue(false);
   });
 
+  it('names the job count in the verbose log only when running in parallel', async () => {
+    // The `-j` suffix is what tells an operator reading the log whether the run
+    // was serial. Forced always-on it claims "-j 1" on a serial run; forced off
+    // it hides the parallelism entirely.
+    const { isVerbose, log } = await import('../utils/logger.js');
+    const mockLog = vi.mocked(log);
+    const mockVerbose = vi.mocked(isVerbose);
+
+    mockVerbose.mockReturnValue(true);
+    mockRunShell.mockResolvedValue(makeExecResult(''));
+
+    await engine.run('src/test.rs', { concurrency: 4 });
+    expect(mockLog).toHaveBeenCalledWith('RustEngine: cargo mutants --file "src/test.rs" -j 4');
+
+    mockLog.mockClear();
+    await engine.run('src/test.rs', { concurrency: 1 });
+    expect(mockLog).toHaveBeenCalledWith('RustEngine: cargo mutants --file "src/test.rs"');
+
+    mockVerbose.mockReturnValue(false);
+  });
+
   it('logs cargo-mutants stderr in verbose mode when present', async () => {
     const { isVerbose, log } = await import('../utils/logger.js');
     const mockLog = vi.mocked(log);
@@ -482,6 +604,43 @@ describe('RustEngine', () => {
     await expect(engine.run('src/test.rs')).rejects.toThrow(/build failure/);
     // Pin the remediation hint so its string literal is covered.
     await expect(engine.run('src/test.rs')).rejects.toThrow(/run `cargo test`/);
+  });
+
+  it('treats whitespace-only stdout as a baseline failure, not a zero-mutant run', async () => {
+    // A `!stdout` check passes whitespace-only stdout ("\n") through as truthy,
+    // so the text parser runs on output containing no mutants and reports
+    // totalMutants: 0 — which surfaces to the user as "no mutable logic"
+    // instead of the real cause. `!stdout.trim()` routes it to the baseline
+    // diagnosis where it belongs.
+    mockRunShell.mockRejectedValue(
+      makeExecFailure({
+        exit: 1,
+        stdout: '\n  \n',
+        stderr: 'test result: FAILED. 3 passed; 1 failed',
+      }),
+    );
+
+    await expect(engine.run('src/test.rs')).rejects.toThrow(/no parseable output/);
+    await expect(engine.run('src/test.rs')).rejects.toThrow(/run `cargo test`/);
+    await expect(engine.run('src/test.rs')).rejects.toThrow(/1 failed/);
+  });
+
+  it('still reports the halt when the failure carries no stderr at all', async () => {
+    // `execErr.stderr?.slice(0, 500) ?? ''` — an ExecFailureError built without
+    // a stderr field is what a spawn-level failure produces. Without the
+    // optional chain the error handler itself throws a TypeError, replacing a
+    // clear "run cargo test first" message with an internal crash.
+    const failure = new ExecFailureError(
+      { stdout: '', stderr: undefined as unknown as string, exit: 1, signal: null },
+      'cargo mutants failed',
+    );
+    mockRunShell.mockRejectedValue(failure);
+
+    await expect(engine.run('src/test.rs')).rejects.toThrow(/no parseable output/);
+    await expect(engine.run('src/test.rs')).rejects.toThrow(/run `cargo test`/);
+    // The `?? ''` fallback must render as nothing at all — not as placeholder
+    // text that reads like real stderr the caller should go looking for.
+    await expect(engine.run('src/test.rs')).rejects.toThrow(/stderr: $/);
   });
 
   // ─── Description fallback for empty-string (bug fix verification) ─────
@@ -605,6 +764,24 @@ describe('RustEngine', () => {
     mockRunShell.mockResolvedValue(makeExecResult(stdout));
     const result = await engine.run('src/file');
     expect(result.vulnerabilities[0].mutator).toBe('Rust Mutation Operator');
+  });
+
+  it('says "line unknown" — not "line 0" — when a MISSED location cannot be parsed', async () => {
+    // The location regex needs a ":<line>"; without one the parser falls back to
+    // the 0 sentinel. The sentence must not claim a line 0 that does not exist,
+    // but the structured `line` stays 0 because suppression/verify key on it.
+    mockRunShell.mockResolvedValue(makeExecResult('MISSED   src/file  replace add -> sub'));
+    const result = await engine.run('src/main.rs');
+    expect(result.vulnerabilities[0].description).toContain('line unknown');
+    expect(result.vulnerabilities[0].description).not.toContain('line 0');
+    expect(result.vulnerabilities[0].line).toBe(0);
+  });
+
+  it('still renders the parsed line in text descriptions', async () => {
+    mockRunShell.mockResolvedValue(makeExecResult('MISSED   src/file.rs:42:9: replace add -> sub'));
+    const result = await engine.run('src/main.rs');
+    expect(result.vulnerabilities[0].description).toContain('line 42');
+    expect(result.vulnerabilities[0].line).toBe(42);
   });
 
   it('passes exactly ["mutants", "--file", <relative path>] to cargo when serial', async () => {
@@ -801,6 +978,30 @@ describe('RustEngine', () => {
     expect(result.vulnerabilities[0].mutator).not.toMatch(/build \+/);
   });
 
+  it('strips a timing suffix padded with extra whitespace', async () => {
+    // Every separator in the timing pattern is `\s+` so cargo's column padding
+    // does not defeat the strip. Tightened to a single space, the suffix stays
+    // in the mutator key — and since the durations change every run, the same
+    // mutant gets a new identity on each audit, breaking verify and suppression.
+    mockRunShell.mockResolvedValue(
+      makeExecResult('MISSED   src/x.rs:5:1: replace a with b  in  12.4s  build  +  3s  test'),
+    );
+
+    const result = await engine.run('src/x.rs');
+    expect(result.vulnerabilities[0].mutator).toBe('replace a with b');
+  });
+
+  it('only strips a timing suffix that ends the description', async () => {
+    // The `$` anchor. Without it, any description that merely CONTAINS the
+    // pattern is truncated mid-sentence and the real mutation text is lost.
+    mockRunShell.mockResolvedValue(
+      makeExecResult('MISSED   src/x.rs:6:1: replace c with d in 0s build + 0s test cases'),
+    );
+
+    const result = await engine.run('src/x.rs');
+    expect(result.vulnerabilities[0].mutator).toBe('replace c with d in 0s build + 0s test cases');
+  });
+
   it('counts a summary "timeout" bucket as killed, not survived', async () => {
     const stdout = [
       'MISSED   src/x.rs:5:1: replace a with b in 0s build + 0s test',
@@ -868,6 +1069,25 @@ describe('resolveCargoJobs', () => {
     expect(resolveCargoJobs(4, 8)).toBe(4);
     expect(resolveCargoJobs(1, 8)).toBe(1);
   });
+  it('accepts 1 as an explicit request, not as "unset"', () => {
+    // Boundary: `concurrency >= 1`. As `> 1` an explicit serial request would be
+    // discarded and replaced by the 2-job default on any machine with spare
+    // cores — the opposite of what the caller asked for.
+    expect(resolveCargoJobs(1, 8)).toBe(1);
+  });
+
+  it('ignores a non-integer or out-of-range concurrency and uses the default', () => {
+    // Each of these must fail the guard: a fractional job count is meaningless
+    // to cargo, and 0 or negative would mean "no jobs at all". Under an
+    // `||`-swapped guard, 2.5 satisfies `>= 1` on its own and is passed straight
+    // through to `-j 2.5`.
+    expect(resolveCargoJobs(2.5, 8)).toBe(2);
+    expect(resolveCargoJobs(0, 8)).toBe(2);
+    expect(resolveCargoJobs(-3, 8)).toBe(2);
+    expect(resolveCargoJobs(Number.NaN, 8)).toBe(2);
+    expect(resolveCargoJobs('4' as unknown as number, 8)).toBe(2);
+  });
+
   it('defaults to 2 jobs when the machine has spare cores (cpus >= 3)', () => {
     expect(resolveCargoJobs(undefined, 8)).toBe(2);
     expect(resolveCargoJobs(undefined, 3)).toBe(2);
@@ -875,5 +1095,110 @@ describe('resolveCargoJobs', () => {
   it('defaults to serial (1) on low-core machines (cpus < 3)', () => {
     expect(resolveCargoJobs(undefined, 2)).toBe(1);
     expect(resolveCargoJobs(undefined, 1)).toBe(1);
+  });
+});
+
+describe('JSON output that is missing half the shape', () => {
+  let engine: RustEngine;
+  beforeEach(() => {
+    vi.clearAllMocks();
+    engine = new RustEngine();
+  });
+
+  it('falls back to text parsing when the JSON has a summary but no mutants', async () => {
+    // Both halves are required: the branch reads `parsed.mutants` immediately
+    // after. Entering it with only a summary would score the run off numbers
+    // whose per-mutant detail never arrived — and with `||` instead of `&&`,
+    // dereferencing a missing `mutants` array.
+    mockRunShell.mockResolvedValue(
+      makeExecResult(JSON.stringify({ summary: { caught: 3, missed: 1, total: 4 } })),
+    );
+
+    const result = await engine.run('src/math.rs');
+
+    expect(result.totalMutants).toBe(0);
+    expect(result.killed).toBe(0);
+  });
+
+  it('falls back to text parsing when the JSON has mutants but no summary', async () => {
+    mockRunShell.mockResolvedValue(
+      makeExecResult(JSON.stringify({ mutants: [{ status: 'missed', caught: false, line: 7 }] })),
+    );
+
+    const result = await engine.run('src/math.rs');
+
+    expect(result.totalMutants).toBe(0);
+  });
+});
+
+/**
+ * The JSON and text parsers must agree, or the same cargo-mutants run is scored
+ * differently depending on whether its stdout happened to be JSON. The JSON
+ * branch used to take `summary.total` as the denominator (which includes
+ * unviable mutants that never compiled, deflating the score against code no
+ * test could have exercised) and ignored `timeout` entirely (which the text
+ * branch counts as killed, since a mutant that hangs the suite WAS detected).
+ */
+describe('RustEngine — JSON scoring parity with the text parser', () => {
+  let engine: RustEngine;
+  beforeEach(() => {
+    vi.clearAllMocks();
+    engine = new RustEngine();
+  });
+
+  it('excludes unviable mutants from the denominator and reports them', async () => {
+    const stdout = JSON.stringify({
+      summary: { caught: 8, missed: 2, unviable: 5, total: 15 },
+      mutants: [{ status: 'missed', line: 3, description: 'replace + with -' }],
+    });
+    mockRunShell.mockResolvedValue(makeExecResult(stdout));
+    const result = await engine.run('src/main.rs');
+    // 8 killed / (8 + 2) scored — NOT 8/15.
+    expect(result.totalMutants).toBe(10);
+    expect(result.mutationScore).toBe('80.00%');
+    expect(result.incompetent).toBe(5);
+  });
+
+  it('counts timed-out mutants as killed', async () => {
+    const stdout = JSON.stringify({
+      summary: { caught: 7, missed: 1, timeout: 2 },
+      mutants: [{ status: 'missed', line: 3, description: 'replace + with -' }],
+    });
+    mockRunShell.mockResolvedValue(makeExecResult(stdout));
+    const result = await engine.run('src/main.rs');
+    expect(result.killed).toBe(9);
+    expect(result.totalMutants).toBe(10);
+    expect(result.mutationScore).toBe('90.00%');
+  });
+
+  it('infers unviable from a total that exceeds the scored mutants', async () => {
+    const stdout = JSON.stringify({
+      summary: { caught: 4, missed: 1, total: 9 },
+      mutants: [{ status: 'missed', line: 3, description: 'x' }],
+    });
+    mockRunShell.mockResolvedValue(makeExecResult(stdout));
+    const result = await engine.run('src/main.rs');
+    expect(result.totalMutants).toBe(5);
+    expect(result.incompetent).toBe(4);
+  });
+
+  it('omits incompetent when every mutant was scored', async () => {
+    const stdout = JSON.stringify({
+      summary: { caught: 4, missed: 1, total: 5 },
+      mutants: [{ status: 'missed', line: 3, description: 'x' }],
+    });
+    mockRunShell.mockResolvedValue(makeExecResult(stdout));
+    const result = await engine.run('src/main.rs');
+    expect(result.incompetent).toBeUndefined();
+  });
+
+  it('classifies JSON survivors structurally, not by their description text', async () => {
+    const stdout = JSON.stringify({
+      summary: { caught: 1, missed: 1 },
+      mutants: [{ status: 'missed', line: 3, description: 'x' }],
+    });
+    mockRunShell.mockResolvedValue(makeExecResult(stdout));
+    const result = await engine.run('src/main.rs');
+    expect(result.vulnerabilities[0].kind).toBe('survived');
   });
 });

@@ -8,18 +8,16 @@
  */
 
 import type { MutationResult } from './engines/base.js';
-import type { SupportedProjectType } from './engines/registry.js';
+import type { SupportedProjectType } from './utils/project-detector.js';
 import { enrichGroup, SEVERITY_RANK, type Severity, type Enrichment } from './enrich.js';
 import type { GateResult } from './gate.js';
 import { warn } from './utils/logger.js';
+import { isNoCoverage } from './utils/no-coverage.js';
 
 export interface EnrichContext {
   projectType: SupportedProjectType;
   sourceLines?: string[];
 }
-
-/** Matches the NoCoverage marker engines embed in a vulnerability description. */
-export const NO_COVERAGE_RE = /no test reached|nocoverage/i;
 
 /**
  * A result with zero enumerated mutants and no scope note has no mutable logic:
@@ -104,7 +102,7 @@ function compactSurvivors(result: MutationResult): {
     // covered survivors on that same line (e.g. an unreachable `|| []` fallback
     // next to a live `.filter`), so reporting a bare line number would wrongly
     // imply the whole line is uncovered.
-    const target = NO_COVERAGE_RE.test(v.description) ? noCoverageByLine : survivorsByLine;
+    const target = isNoCoverage(v) ? noCoverageByLine : survivorsByLine;
     const acc = target.get(v.line) ?? { mutators: {}, changes: new Set<string>() };
     acc.mutators[v.mutator] = (acc.mutators[v.mutator] ?? 0) + 1;
     const change = buildChange(v.original, v.mutated);
@@ -191,6 +189,94 @@ function floorGroups(
   return { groups: kept, filtered: groups.length - kept.length };
 }
 
+/** The shared group pipeline's output, consumed by both entry points. */
+export interface PreparedGroups {
+  /** Survivor groups after enrich → floor → cap. */
+  survivors: LineGroup[];
+  /** No-coverage groups after enrich → floor → cap. */
+  noCoverage: LineGroup[];
+  /** Whether the result had no survivor and no no-coverage group at all (pre-filter). */
+  clean: boolean;
+  survivorsTruncated: number;
+  noCoverageTruncated: number;
+  survivorsFiltered: number;
+  noCoverageFiltered: number;
+  /** Highest severity across the non-empty enriched group lists; only set when enriching. */
+  worstSeverity?: Severity;
+  /** Advisory about unclassifiable mutants, or an ignored severityFloor. */
+  enrichNote?: string;
+}
+
+export interface PrepareGroupsOpts {
+  enrich?: EnrichContext;
+  maxSurvivors?: number;
+  severityFloor?: Severity;
+}
+
+/**
+ * Compact a MutationResult into line groups and run the five-stage pipeline
+ * (compact → enrich → floor → cap, plus the worst-severity reduce) that both
+ * `formatResultAsText` and `buildResultPayload` need.
+ *
+ * Previously each entry point reassembled these stages independently, which is
+ * how the `hasNoMutableLogic` predicate came to be spelled two ways in one file.
+ * The stages themselves are unchanged and run in the same order as before;
+ * `clean` is captured before any filtering so the text path can still short-
+ * circuit on "nothing to report" rather than on "nothing survived the floor".
+ */
+function prepareGroups(result: MutationResult, opts: PrepareGroupsOpts): PreparedGroups {
+  const compact = compactSurvivors(result);
+  let survivors: LineGroup[] = compact.survivors;
+  let noCoverage: LineGroup[] = compact.noCoverage;
+  const clean = survivors.length === 0 && noCoverage.length === 0;
+
+  const { enrich } = opts;
+  const enriched = Boolean(enrich);
+  let worstSeverity: Severity | undefined;
+  let enrichNote: string | undefined;
+  if (enrich) {
+    const s = enrichGroups(survivors, enrich);
+    const n = enrichGroups(noCoverage, enrich);
+    survivors = s.groups;
+    noCoverage = n.groups;
+    if (survivors.length > 0 || noCoverage.length > 0) {
+      const candidates: Severity[] = [];
+      if (survivors.length > 0) candidates.push(s.worst);
+      if (noCoverage.length > 0) candidates.push(n.worst);
+      worstSeverity = candidates.reduce((a, b) => (SEVERITY_RANK[a] >= SEVERITY_RANK[b] ? a : b));
+    }
+    if (s.hasUnknown || n.hasUnknown) {
+      enrichNote =
+        'some mutants could not be classified — this language\'s mutation tool doesn\'t expose per-mutant operator detail (severity reported as "unknown").';
+    }
+  }
+
+  const sFloor = floorGroups(survivors, opts.severityFloor, enriched);
+  const nFloor = floorGroups(noCoverage, opts.severityFloor, enriched);
+  survivors = sFloor.groups;
+  noCoverage = nFloor.groups;
+  if (!enriched && opts.severityFloor) {
+    enrichNote =
+      'severityFloor was ignored: it requires enrichment (severity classification), which is off for this run.';
+  }
+
+  const sCap = capGroups(survivors, opts.maxSurvivors);
+  const nCap = capGroups(noCoverage, opts.maxSurvivors);
+
+  const prepared: PreparedGroups = {
+    survivors: sCap.groups,
+    noCoverage: nCap.groups,
+    clean,
+    survivorsTruncated: sCap.truncated,
+    noCoverageTruncated: nCap.truncated,
+    survivorsFiltered: sFloor.filtered,
+    noCoverageFiltered: nFloor.filtered,
+  };
+  if (worstSeverity) prepared.worstSeverity = worstSeverity;
+  if (enrichNote) prepared.enrichNote = enrichNote;
+  return prepared;
+}
+
 /**
  * Format a MutationResult as a compact, human-readable text summary.
  * Used when the caller requests `outputFormat: 'text'`.
@@ -205,15 +291,22 @@ export function formatResultAsText(
     floorIgnoredNote?: string;
   } = {},
 ): string {
-  const compact = compactSurvivors(result);
-  let survivors = compact.survivors;
-  let noCoverage = compact.noCoverage;
+  // The text path ignores `prepared.worstSeverity` (a payload-only field) and
+  // `prepared.enrichNote` (the payload's self-computed wording); the caller
+  // hands text its own `floorIgnoredNote` instead. Everything else — the group
+  // pipeline and its truncation/filter counts — is identical to the payload's.
+  const prepared = prepareGroups(result, {
+    enrich,
+    maxSurvivors: opts.maxSurvivors,
+    severityFloor: opts.severityFloor,
+  });
+  const { survivors, noCoverage } = prepared;
   // A file with zero enumerated mutants AND no scope note has no mutable logic
   // (only constants, type hints, or straight delegation). Reporting "100%" there
   // reads as proven coverage when nothing was actually tested — show "n/a".
   // A scopeNote (e.g. diff "no changed lines") is a different, already-explained
   // zero, so leave it untouched.
-  const noMutants = result.totalMutants === 0 && !result.scopeNote;
+  const noMutants = hasNoMutableLogic(result);
   const lines: string[] = [
     `Chaos-MCP Audit Report: ${result.target}`,
     `Mutation score: ${noMutants ? 'n/a' : result.mutationScore} (${result.killed}/${result.totalMutants} killed, ${result.survived} survived)`,
@@ -234,7 +327,7 @@ export function formatResultAsText(
     lines.push(opts.floorIgnoredNote);
   }
 
-  if (survivors.length === 0 && noCoverage.length === 0) {
+  if (prepared.clean) {
     lines.push(
       noMutants
         ? 'No mutants generated — this file has no mutable logic, so mutation testing is not meaningful here (this is not the same as proven coverage).'
@@ -242,22 +335,6 @@ export function formatResultAsText(
     );
     return lines.join('\n');
   }
-
-  const enriched = Boolean(enrich);
-  if (enrich) {
-    survivors = enrichGroups(survivors, enrich).groups;
-    noCoverage = enrichGroups(noCoverage, enrich).groups;
-  }
-
-  const sFloorText = floorGroups(survivors, opts.severityFloor, enriched);
-  const nFloorText = floorGroups(noCoverage, opts.severityFloor, enriched);
-  survivors = sFloorText.groups;
-  noCoverage = nFloorText.groups;
-
-  const sCap = capGroups(survivors, opts.maxSurvivors);
-  const nCap = capGroups(noCoverage, opts.maxSurvivors);
-  survivors = sCap.groups;
-  noCoverage = nCap.groups;
 
   const renderGroup = (g: LineGroup): void => {
     const suffix = g.changes ? `  (${g.changes.join('; ')})` : '';
@@ -275,16 +352,18 @@ export function formatResultAsText(
   if (survivors.length > 0) {
     lines.push(`Survivors (line: mutators):`);
     survivors.forEach(renderGroup);
-    if (sCap.truncated > 0)
-      lines.push(`  …${sCap.truncated} more (raise maxSurvivors to see them)`);
-    if (sFloorText.filtered > 0) lines.push(`  …${sFloorText.filtered} hidden below severityFloor`);
+    if (prepared.survivorsTruncated > 0)
+      lines.push(`  …${prepared.survivorsTruncated} more (raise maxSurvivors to see them)`);
+    if (prepared.survivorsFiltered > 0)
+      lines.push(`  …${prepared.survivorsFiltered} hidden below severityFloor`);
   }
   if (noCoverage.length > 0) {
     lines.push(`No-coverage mutants (line: mutators):`);
     noCoverage.forEach(renderGroup);
-    if (nCap.truncated > 0)
-      lines.push(`  …${nCap.truncated} more (raise maxSurvivors to see them)`);
-    if (nFloorText.filtered > 0) lines.push(`  …${nFloorText.filtered} hidden below severityFloor`);
+    if (prepared.noCoverageTruncated > 0)
+      lines.push(`  …${prepared.noCoverageTruncated} more (raise maxSurvivors to see them)`);
+    if (prepared.noCoverageFiltered > 0)
+      lines.push(`  …${prepared.noCoverageFiltered} hidden below severityFloor`);
   }
   lines.push('Add or strengthen tests targeting these lines to kill the survivors.');
   return lines.join('\n');
@@ -338,45 +417,12 @@ export function buildResultPayload(
   result: MutationResult,
   opts: ResultPayloadOpts = {},
 ): ResultPayload {
-  const { enrich } = opts;
-  const compact = compactSurvivors(result);
-  let survivors: LineGroup[] = compact.survivors;
-  let noCoverage: LineGroup[] = compact.noCoverage;
-  const clean = survivors.length === 0 && noCoverage.length === 0;
-
-  const enriched = Boolean(enrich);
-  let worstSeverity: Severity | undefined;
-  let enrichNote: string | undefined;
-  if (enrich) {
-    const s = enrichGroups(survivors, enrich);
-    const n = enrichGroups(noCoverage, enrich);
-    survivors = s.groups;
-    noCoverage = n.groups;
-    if (survivors.length > 0 || noCoverage.length > 0) {
-      const candidates: Severity[] = [];
-      if (survivors.length > 0) candidates.push(s.worst);
-      if (noCoverage.length > 0) candidates.push(n.worst);
-      worstSeverity = candidates.reduce((a, b) => (SEVERITY_RANK[a] >= SEVERITY_RANK[b] ? a : b));
-    }
-    if (s.hasUnknown || n.hasUnknown) {
-      enrichNote =
-        'some mutants could not be classified — this language\'s mutation tool doesn\'t expose per-mutant operator detail (severity reported as "unknown").';
-    }
-  }
-
-  const sFloor = floorGroups(survivors, opts.severityFloor, enriched);
-  const nFloor = floorGroups(noCoverage, opts.severityFloor, enriched);
-  survivors = sFloor.groups;
-  noCoverage = nFloor.groups;
-  if (!enriched && opts.severityFloor) {
-    enrichNote =
-      'severityFloor was ignored: it requires enrichment (severity classification), which is off for this run.';
-  }
-
-  const sCap = capGroups(survivors, opts.maxSurvivors);
-  const nCap = capGroups(noCoverage, opts.maxSurvivors);
-  survivors = sCap.groups;
-  noCoverage = nCap.groups;
+  const prepared = prepareGroups(result, {
+    enrich: opts.enrich,
+    maxSurvivors: opts.maxSurvivors,
+    severityFloor: opts.severityFloor,
+  });
+  const { survivors, noCoverage, clean } = prepared;
 
   const hasChanges = [...survivors, ...noCoverage].some((g) => g.changes);
   const baseNote =
@@ -387,7 +433,7 @@ export function buildResultPayload(
     killed: result.killed,
     survived: result.survived,
   };
-  if (worstSeverity) summary.worstSeverity = worstSeverity;
+  if (prepared.worstSeverity) summary.worstSeverity = prepared.worstSeverity;
 
   // Zero enumerated mutants and no scope note ⇒ no mutable logic; "100%" would
   // misread as proven coverage. Surface "n/a" + an honest note instead
@@ -408,11 +454,11 @@ export function buildResultPayload(
         ? `${baseNote} changes = sampled original→mutated edits for that line (capped).`
         : baseNote,
   };
-  if (sCap.truncated > 0) payload.survivorsTruncated = sCap.truncated;
-  if (nCap.truncated > 0) payload.noCoverageTruncated = nCap.truncated;
-  if (sFloor.filtered > 0) payload.survivorsFiltered = sFloor.filtered;
-  if (nFloor.filtered > 0) payload.noCoverageFiltered = nFloor.filtered;
-  if (enrichNote) payload.enrichNote = enrichNote;
+  if (prepared.survivorsTruncated > 0) payload.survivorsTruncated = prepared.survivorsTruncated;
+  if (prepared.noCoverageTruncated > 0) payload.noCoverageTruncated = prepared.noCoverageTruncated;
+  if (prepared.survivorsFiltered > 0) payload.survivorsFiltered = prepared.survivorsFiltered;
+  if (prepared.noCoverageFiltered > 0) payload.noCoverageFiltered = prepared.noCoverageFiltered;
+  if (prepared.enrichNote) payload.enrichNote = prepared.enrichNote;
   if (result.scopeNote) payload.scopeNote = result.scopeNote;
   if (result.fidelityNote) payload.fidelityNote = result.fidelityNote;
   if (result.complete !== undefined) payload.complete = result.complete;

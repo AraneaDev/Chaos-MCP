@@ -34,20 +34,15 @@ export function listResources(): ResourceListing[] {
   ];
 }
 
-/** Engine display names keyed by language (kept here as the doc-facing label). */
-const ENGINE_NAMES: Record<SupportedProjectType, string> = {
-  typescript: 'StrykerJS',
-  python: 'cosmic-ray',
-  rust: 'cargo-mutants',
-  php: 'Infection',
-};
-
 function languagesJson(): string {
   const out: Record<string, unknown> = {};
   for (const key of Object.keys(ENGINE_REGISTRY) as SupportedProjectType[]) {
     const entry = ENGINE_REGISTRY[key];
     out[key] = {
-      engine: ENGINE_NAMES[key],
+      // Engine name comes from the registry (was a private parallel
+      // ENGINE_NAMES map here, which a new language could silently omit —
+      // audit finding 38).
+      engine: entry.displayName,
       supportsLineScope: entry.supportsLineScope,
       estimateFidelity: key === 'rust' ? 'exact' : 'approx',
       configKey: entry.configKey,
@@ -79,6 +74,11 @@ function configSchemaJson(): string {
     rust: 'object — cargo-mutants-specific overrides.',
     infection:
       'object — Infection (PHP)-specific overrides (timeoutMs, threads, testFrameworkOptions).',
+    container:
+      'object — shared OCI execution backend: mode ("native"|"container"|"auto"), runtime ' +
+      '("docker"|"podman"), network, cpus, memoryMb, pidsLimit, startupTimeoutMs, ' +
+      'tmpfsSizeMb (writable /tmp size; the container root is read-only, so this holds every ' +
+      'toolchain cache — default 2048), and per-language images.',
   };
   return JSON.stringify(keys, null, 2);
 }

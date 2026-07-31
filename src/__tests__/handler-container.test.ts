@@ -20,7 +20,7 @@ vi.mock('../test-file.js', async (importOriginal) => {
   };
 });
 
-import { auditFile } from '../handler.js';
+import { auditFile } from '../audit/audit-file.js';
 import { createExecutionSession } from '../utils/execution.js';
 import { runShellCommand } from '../utils/exec.js';
 

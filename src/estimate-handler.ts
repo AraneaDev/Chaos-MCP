@@ -1,11 +1,11 @@
-import { relative, isAbsolute } from 'path';
 import { statSync } from 'fs';
 import { cpus } from 'os';
 import type { CallToolRequest, CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { detectProjectType, detectEnvironment } from './utils/project-detector.js';
 import { createSandbox } from './utils/sandbox.js';
-import { toolError, mapCreateSandboxError } from './handler.js';
+import { toolError, mapCreateSandboxError } from './tool-result.js';
 import { validateFilePath } from './utils/file-path.js';
+import { anchorToWorkspace } from './utils/workspace-anchor.js';
 import { estimateAudit, estimateNeedsSandbox } from './estimate.js';
 import type { ChaosConfig } from './utils/config-loader.js';
 import type { ToolContext } from './tool-context.js';
@@ -56,7 +56,7 @@ export async function handleEstimateCall(
   // ── Validate filePath before any other work (C2 — shared via
   //    validateFilePath; audit A3). ──
   const filePathResult = validateFilePath(args.filePath);
-  if (!filePathResult.ok) return filePathResult.error;
+  if (!filePathResult.ok) return toolError(filePathResult.message);
   const { resolvedFile, raw: rawFilePath } = filePathResult.value;
 
   // Validate withTiming: boolean or absent.
@@ -87,13 +87,9 @@ export async function handleEstimateCall(
     // Auto-detect the workspace environment (test runner, workspace root).
     const env = detectEnvironment(rawFilePath);
 
-    // Re-anchor the target to the detected workspace root (matches the same
-    // expression handleToolCall and triage-handler use).
-    const relFromRoot = relative(env.workspaceRoot, resolvedFile);
-    const relFile =
-      relFromRoot.length > 0 && !relFromRoot.startsWith('..') && !isAbsolute(relFromRoot)
-        ? relFromRoot
-        : rawFilePath;
+    // Re-anchor the target to the detected workspace root (the same helper
+    // handleToolCall and triage-handler use).
+    const { targetFile: relFile } = anchorToWorkspace(env.workspaceRoot, resolvedFile, rawFilePath);
 
     const withTiming = args.withTiming === true;
     const cfg = config ?? {};

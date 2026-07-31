@@ -8,11 +8,13 @@ import {
   discoverFiles,
   discoverChangedFiles,
   rankResults,
+  compareTriageRows,
   formatTriageAsJson,
   formatTriageAsText,
   buildTriagePayload,
   type TriageRow,
 } from '../triage.js';
+import { supportedSourceExtensions } from '../utils/project-detector.js';
 
 const mr = (over: Partial<MutationResult>): MutationResult => ({
   target: 'f',
@@ -30,6 +32,14 @@ describe('isSupportedSourceFile', () => {
       expect(isSupportedSourceFile(f)).toBe(true);
     }
   });
+  it('anchors the PHPUnit `Test.php` rule to the END of the path', () => {
+    // Without the `$`, any path merely CONTAINING "Test.php" is misread as a
+    // test file and silently dropped from the triage — so a production source
+    // file would never be audited and nothing would say why.
+    expect(isSupportedSourceFile('src/FooTest.phpunit.php')).toBe(true);
+    expect(isSupportedSourceFile('src/FooTest.php')).toBe(false);
+  });
+
   it('rejects unsupported extensions and test files', () => {
     for (const f of ['a.md', 'a.test.ts', 'a.spec.js', 'test_x.py', 'x_test.rs']) {
       expect(isSupportedSourceFile(f)).toBe(false);
@@ -47,6 +57,62 @@ describe('isSupportedSourceFile', () => {
     // `test_xy.py` needs the `*` quantifier to span more than one stem char.
     expect(isSupportedSourceFile('test_xy.py')).toBe(false);
     expect(isSupportedSourceFile('dir/test_helpers.py')).toBe(false);
+  });
+
+  it('discovers every extension the detection registry supports (audit F15)', () => {
+    // Discovery used to work off a hand-copied extension array, so a newly
+    // supported language was invisible to triage with no compile error to say
+    // so — the tool just returned an empty leaderboard. It now derives from the
+    // same registry the engines do, and this asserts the two agree.
+    const exts = supportedSourceExtensions();
+    expect(exts).toEqual(['.ts', '.js', '.tsx', '.jsx', '.py', '.rs', '.php']);
+    for (const ext of exts) {
+      expect(isSupportedSourceFile(`src/widget${ext}`)).toBe(true);
+    }
+  });
+
+  it('does not widen discovery beyond the registry', () => {
+    for (const ext of ['.go', '.rb', '.java', '.md', '.mjs']) {
+      expect(isSupportedSourceFile(`src/widget${ext}`)).toBe(false);
+    }
+  });
+});
+
+describe('rankResults — partial-audit fields', () => {
+  it('carries the partial flag and batch counts onto the row', () => {
+    // A row scored from only some of its batches describes a fraction of the
+    // file. `complete: false` is what makes it fail a gate and what the text
+    // report prints as "(partial: x/y batches)"; without the counts the caller
+    // cannot tell a nearly-finished audit from one that barely started.
+    const [row] = rankResults([
+      {
+        file: 'a.ts',
+        result: mr({ complete: false, batchesCompleted: 2, batchesPlanned: 5 }),
+      },
+    ]);
+    expect(row.complete).toBe(false);
+    expect(row.batchesCompleted).toBe(2);
+    expect(row.batchesPlanned).toBe(5);
+  });
+
+  it('leaves the partial fields off a complete result entirely', () => {
+    // Not `complete: undefined`: the gate reads `r.complete !== false`, and the
+    // row is serialised into the response, so an invented key changes the shape
+    // every consumer sees.
+    const [row] = rankResults([{ file: 'a.ts', result: mr({}) }]);
+    expect(Object.keys(row)).not.toContain('complete');
+    expect(Object.keys(row)).not.toContain('batchesCompleted');
+    expect(Object.keys(row)).not.toContain('batchesPlanned');
+  });
+
+  it('records the partial flag even when the engine reported no batch counts', () => {
+    // Non-StrykerJS engines mark a run partial without batching it, so the
+    // counts are genuinely absent — and must stay absent rather than becoming
+    // `undefined` keys next to a real `complete: false`.
+    const [row] = rankResults([{ file: 'a.ts', result: mr({ complete: false }) }]);
+    expect(row.complete).toBe(false);
+    expect(Object.keys(row)).not.toContain('batchesCompleted');
+    expect(Object.keys(row)).not.toContain('batchesPlanned');
   });
 });
 
@@ -188,6 +254,70 @@ describe('formatTriageAsText', () => {
     expect(text).not.toContain('given paths');
   });
 
+  it('prints the scope note as its own line, and prints nothing when there is none', () => {
+    // The truthiness guard is all that stops `lines.push(undefined)` — which
+    // `join('\n')` renders as a literal "undefined" line in the report.
+    const rows = rankResults([{ file: 'a.ts', result: mr({}) }]);
+    const scoped = formatTriageAsText(rows, [], 1, 0, 'Scoped to files changed vs main.');
+    expect(scoped.split('\n')[1]).toBe('Scoped to files changed vs main.');
+
+    const plain = formatTriageAsText(rows, [], 1, 0);
+    expect(plain).not.toContain('undefined');
+    expect(plain.split('\n')[1]).toBe('Weakest first (score  survived/total  file):');
+  });
+
+  it('marks a partially-audited row inline, and leaves a complete row unmarked', () => {
+    // A partial row's score describes only part of the file. Tagging every row
+    // as partial is just as wrong as tagging none: both make the marker useless
+    // for telling the two apart.
+    const partialRow = {
+      file: 'partial.ts',
+      mutationScore: '80.00%',
+      total: 10,
+      killed: 8,
+      survived: 2,
+      noCoverage: 0,
+      complete: false as const,
+      batchesCompleted: 2,
+      batchesPlanned: 5,
+    };
+    const completeRow = {
+      file: 'complete.ts',
+      mutationScore: '90.00%',
+      total: 10,
+      killed: 9,
+      survived: 1,
+      noCoverage: 0,
+    };
+    const text = formatTriageAsText([partialRow, completeRow], [], 2, 0);
+    const line = (file: string) => text.split('\n').find((l) => l.includes(file)) ?? '';
+    expect(line('partial.ts')).toBe('  80.00%  2/10  partial.ts  (partial: 2/5 batches)');
+    // Exact, not `not.toContain('partial')`: the empty else-branch must append
+    // NOTHING, and any other suffix would still pass a substring check.
+    expect(line('complete.ts')).toBe('  90.00%  1/10  complete.ts');
+  });
+
+  it('renders "?" for batch counts an engine did not report', () => {
+    // Non-StrykerJS engines mark a run partial without batching it. Blanking
+    // the `?` fallback yields "(partial: / batches)", which reads as a
+    // formatting bug rather than as missing information.
+    const row = {
+      file: 'partial.ts',
+      mutationScore: '80.00%',
+      total: 10,
+      killed: 8,
+      survived: 2,
+      noCoverage: 0,
+      complete: false as const,
+    };
+    expect(formatTriageAsText([row], [], 1, 0)).toContain('(partial: ?/? batches)');
+  });
+
+  it('omits the unaudited section when nothing was left unaudited', () => {
+    const rows = rankResults([{ file: 'a.ts', result: mr({}) }]);
+    expect(formatTriageAsText(rows, [], 1, 0)).not.toContain('Not audited');
+  });
+
   it('shows no ranking header or errors section when rows and errors are empty but files were discovered', () => {
     // Kills: ConditionalExpression on `rows.length > 0` (line 162) and
     // `errors.length > 0` (line 170).
@@ -320,6 +450,41 @@ describe('discoverChangedFiles', () => {
     expect(r.discovered).toBe(3);
     expect(r.skipped).toBe(2);
   });
+
+  it('treats an EMPTY paths array as "no filter", exactly like omitting it', () => {
+    // `!paths || paths.length === 0`. Without the length half, an empty array
+    // reaches `[].some(...)` — which is always false — and every changed file is
+    // silently filtered out, so a diff-scoped triage reports nothing to audit.
+    const r = discoverChangedFiles(changed, [], 25);
+    expect(r.files).toEqual(['pkg/c.rs', 'src/a.ts', 'src/util/b.ts']);
+  });
+
+  it('matches a path given as the file itself, not only as a directory prefix', () => {
+    // `rel === norm || rel.startsWith(norm + '/')`. Callers routinely pass an
+    // exact file path; with only the prefix half, `src/a.ts` never matches
+    // `src/a.ts` (it would need to be `src/a.ts/…`) and the file is dropped.
+    expect(discoverChangedFiles(changed, ['src/a.ts'], 25).files).toEqual(['src/a.ts']);
+  });
+
+  it('ignores a trailing slash on a directory path', () => {
+    expect(discoverChangedFiles(changed, ['src/util/'], 25).files).toEqual(['src/util/b.ts']);
+    expect(discoverChangedFiles(changed, ['src/util///'], 25).files).toEqual(['src/util/b.ts']);
+  });
+
+  it('keeps a file matching ANY of several paths, not only files matching all', () => {
+    // `paths.some(...)`. As `.every(...)` a file would have to live under every
+    // path at once — impossible for two disjoint directories — so a multi-path
+    // triage would return nothing at all. With a single path the two are
+    // indistinguishable, which is why every existing case missed it.
+    const r = discoverChangedFiles(changed, ['src/util', 'pkg'], 25);
+    expect(r.files).toEqual(['pkg/c.rs', 'src/util/b.ts']);
+  });
+
+  it('does not treat a path as a prefix of a longer sibling directory', () => {
+    // `src/uti` must not match `src/util/b.ts` — the `/` in the prefix check is
+    // what stops a partial segment from matching.
+    expect(discoverChangedFiles(changed, ['src/uti'], 25).files).toEqual([]);
+  });
 });
 
 describe('buildTriagePayload', () => {
@@ -358,9 +523,39 @@ describe('buildTriagePayload', () => {
     expect(p.note).toContain('given paths');
     expect(p.note).not.toContain('diff base');
   });
+
+  it('omits the scopeNote key entirely when there is no scope note', () => {
+    // Not `scopeNote: undefined`. The payload is returned as structuredContent,
+    // where a key that is present-but-undefined is a different shape than one
+    // that was never set — and `toEqual` cannot tell them apart.
+    expect(Object.keys(buildTriagePayload([], [], 0, 0))).not.toContain('scopeNote');
+  });
+
+  it('omits the unaudited fields when every discovered file was audited', () => {
+    const rows = [
+      { file: 'a.ts', mutationScore: '90.00%', total: 10, killed: 9, survived: 1, noCoverage: 0 },
+    ];
+    const p = buildTriagePayload(rows, [], 1, 0);
+    expect(p.note).not.toContain('time budget ran out');
+    expect(Object.keys(p)).not.toContain('unaudited');
+    expect(Object.keys(p)).not.toContain('stoppedReason');
+    expect(Object.keys(p.summary)).not.toContain('filesUnaudited');
+  });
 });
 
 describe('buildTriagePayload gate computation', () => {
+  it('adds no caveat notes when nothing errored and nothing was partial', () => {
+    // Both caveats are appended to the SAME note string, so an always-true guard
+    // on either one produces a report that claims files were skipped or
+    // truncated when they were not — and the operator goes looking for them.
+    const rows = [
+      { file: 'a.ts', mutationScore: '90.00%', total: 10, killed: 9, survived: 1, noCoverage: 0 },
+    ];
+    const p = buildTriagePayload(rows, [], 1, 0, undefined, 80);
+    expect(p.note).not.toContain('errored and are not graded');
+    expect(p.note).not.toContain('partially');
+  });
+
   it('computes a gate over ranked rows when minScore is given', () => {
     const rows = [
       { file: 'a.ts', mutationScore: '90.00%', total: 10, killed: 9, survived: 1, noCoverage: 0 },
@@ -454,5 +649,161 @@ describe('TriageRow optional runId and suppressedCount fields', () => {
     const payload = buildTriagePayload([row], [], 1, 0);
     expect(payload.ranking[0].suppressedCount).toBeUndefined();
     expect(payload.ranking[0].runId).toBeUndefined();
+  });
+});
+
+/**
+ * A triage row's score is only as meaningful as the audit behind it. Two
+ * things used to be invisible in the leaderboard: a file audited only
+ * partially (time budget exhausted mid-batch), and a file never audited at all.
+ * Both let the ranking read as covering more than it did — and the first also
+ * passed the gate on a fraction of a file.
+ */
+describe('buildTriagePayload — partial and unaudited files', () => {
+  const row = (over: Partial<TriageRow> = {}): TriageRow => ({
+    file: 'src/a.ts',
+    mutationScore: '100.00%',
+    total: 10,
+    killed: 10,
+    survived: 0,
+    noCoverage: 0,
+    ...over,
+  });
+
+  it('fails the gate for a partially-audited file despite a perfect score', () => {
+    const p = buildTriagePayload([row({ complete: false })], [], 1, 0, undefined, 80);
+    expect(p.gate?.passed).toBe(false);
+    expect(p.gate?.failingFiles).toEqual(['src/a.ts']);
+    expect(p.ranking[0].passed).toBe(false);
+  });
+
+  it('passes the gate for the same score when the audit was complete', () => {
+    const p = buildTriagePayload([row()], [], 1, 0, undefined, 80);
+    expect(p.gate?.passed).toBe(true);
+  });
+
+  it('says in the note how many files were only partially audited', () => {
+    const p = buildTriagePayload([row({ complete: false })], [], 1, 0, undefined, 80);
+    expect(p.note).toContain('partially');
+  });
+
+  it('reports files the time budget never reached, separately from errors', () => {
+    const p = buildTriagePayload([row()], [], 3, 0, undefined, undefined, ['src/b.ts', 'src/c.ts']);
+    expect(p.unaudited).toEqual(['src/b.ts', 'src/c.ts']);
+    expect(p.summary.filesUnaudited).toBe(2);
+    expect(p.summary.filesErrored).toBe(0);
+    expect(p.stoppedReason).toBe('time_budget_exhausted');
+    expect(p.note).toContain('time budget');
+  });
+
+  it('omits the unaudited fields entirely when everything was audited', () => {
+    const p = buildTriagePayload([row()], [], 1, 0);
+    expect(p).not.toHaveProperty('unaudited');
+    expect(p).not.toHaveProperty('stoppedReason');
+    expect(p.summary.filesUnaudited).toBeUndefined();
+  });
+
+  it('marks a partial row inline in the text output', () => {
+    const text = formatTriageAsText(
+      [row({ complete: false, batchesCompleted: 2, batchesPlanned: 7 })],
+      [],
+      1,
+      0,
+    );
+    expect(text).toContain('partial: 2/7 batches');
+  });
+
+  it('lists unaudited files in the text output', () => {
+    const text = formatTriageAsText([row()], [], 2, 0, undefined, ['src/b.ts']);
+    expect(text).toContain('Not audited');
+    expect(text).toContain('src/b.ts');
+  });
+});
+
+/**
+ * `walk` builds candidate paths with `relative()`, which yields BACKslashes on
+ * Windows — so the `(^|/)test_*.py` alternative never matched a nested pytest
+ * module and triage audited test files as though they were source.
+ */
+describe('isSupportedSourceFile — separators and case', () => {
+  it('recognises a nested pytest module written with either separator', () => {
+    expect(isSupportedSourceFile('pkg/test_math.py')).toBe(false);
+    expect(isSupportedSourceFile('pkg\\test_math.py')).toBe(false);
+  });
+
+  it('still accepts ordinary sources under either separator', () => {
+    expect(isSupportedSourceFile('pkg/math.py')).toBe(true);
+    expect(isSupportedSourceFile('pkg\\math.py')).toBe(true);
+  });
+
+  it('accepts uppercase extensions (case-insensitive filesystems)', () => {
+    expect(isSupportedSourceFile('src/Main.RS')).toBe(true);
+    expect(isSupportedSourceFile('src/Foo.PHP')).toBe(true);
+  });
+
+  it('still rejects genuinely unsupported extensions', () => {
+    expect(isSupportedSourceFile('README.md')).toBe(false);
+  });
+});
+
+describe('compareTriageRows', () => {
+  const row = (over: Partial<TriageRow>): TriageRow => ({
+    file: 'f',
+    mutationScore: '80.00%',
+    total: 10,
+    killed: 8,
+    survived: 2,
+    noCoverage: 0,
+    ...over,
+  });
+
+  it('orders by score ascending — the weakest file first', () => {
+    expect(
+      compareTriageRows(row({ mutationScore: '40.00%' }), row({ mutationScore: '90.00%' })),
+    ).toBeLessThan(0);
+    expect(
+      compareTriageRows(row({ mutationScore: '90.00%' }), row({ mutationScore: '40.00%' })),
+    ).toBeGreaterThan(0);
+  });
+
+  it('breaks a score tie by survivor count descending', () => {
+    // Same score, more uncaught mutants ⇒ ranked worse. A mutant that flips this
+    // subtraction to `a.survived - b.survived` would bury the file with the most
+    // holes at the bottom of the leaderboard.
+    expect(compareTriageRows(row({ survived: 9 }), row({ survived: 1 }))).toBeLessThan(0);
+    expect(compareTriageRows(row({ survived: 1 }), row({ survived: 9 }))).toBeGreaterThan(0);
+  });
+
+  it('breaks a score-and-survivor tie by file name ascending', () => {
+    expect(compareTriageRows(row({ file: 'a.ts' }), row({ file: 'b.ts' }))).toBeLessThan(0);
+    expect(compareTriageRows(row({ file: 'b.ts' }), row({ file: 'a.ts' }))).toBeGreaterThan(0);
+  });
+
+  it('treats fully identical rows as equal', () => {
+    expect(compareTriageRows(row({}), row({}))).toBe(0);
+  });
+
+  it('ranks an unparseable score as a perfect 100 rather than as zero', () => {
+    // `scoreNum` maps a non-numeric score ("n/a", from a file with no mutable
+    // logic) to 100, so it sorts to the SAFE end. Reading it as 0 would put every
+    // logic-free file at the top of a weakest-first list.
+    expect(
+      compareTriageRows(row({ mutationScore: '99.00%' }), row({ mutationScore: 'n/a' })),
+    ).toBeLessThan(0);
+  });
+
+  it('sorts a real leaderboard weakest-first through Array.sort', () => {
+    const rows = [
+      row({ file: 'safe.ts', mutationScore: '95.00%', survived: 1 }),
+      row({ file: 'b-weak.ts', mutationScore: '50.00%', survived: 4 }),
+      row({ file: 'a-weak.ts', mutationScore: '50.00%', survived: 4 }),
+      row({ file: 'weakest.ts', mutationScore: '50.00%', survived: 7 }),
+    ];
+    expect([...rows].sort(compareTriageRows).map((r) => r.file)).toEqual([
+      'weakest.ts',
+      'a-weak.ts',
+      'b-weak.ts',
+      'safe.ts',
+    ]);
   });
 });

@@ -1,7 +1,15 @@
 import { writeFileSync, existsSync, readFileSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { BaseEngine, RunOptions, MutationResult, Vulnerability } from './base.js';
+import {
+  BaseEngine,
+  RunOptions,
+  MutationResult,
+  Vulnerability,
+  formatMutationScore,
+  survivorVulnerability,
+} from './base.js';
 import { invokeMutationTool } from '../utils/exec-classify.js';
+import type { ExecFailureError } from '../utils/exec-error.js';
 import { log, isVerbose } from '../utils/logger.js';
 import { DEFAULT_TIMEOUT_MS } from '../utils/constants.js';
 
@@ -266,27 +274,154 @@ export function parseInfectionJsonLog(logText: string, filePath: string): Mutati
   const killed = (stats.killedCount ?? killedArr.length) + timeouts;
   const totalMutants = killed + survived;
 
-  const vulnerabilities: Vulnerability[] = escaped.map((e) => {
-    const line = e.mutator?.originalStartLine ?? 0;
-    const mutator = e.mutator?.mutatorName ?? 'PHP Mutation Operator';
-    const vuln: Vulnerability = {
-      line,
-      mutator,
-      description: `Mutation survived at line ${line}. The PHP test suite did not catch this change.`,
-    };
-    if (e.diff) vuln.mutated = e.diff.trim();
-    return vuln;
-  });
+  const vulnerabilities: Vulnerability[] = escaped.map((e) =>
+    // Only Infection's `escaped` list becomes a vulnerability (`kind: 'survived'`);
+    // its `notCovered` mutants are excluded from the result entirely.
+    survivorVulnerability(
+      e.mutator?.originalStartLine ?? 0,
+      e.mutator?.mutatorName ?? 'PHP Mutation Operator',
+      'PHP',
+      { mutated: e.diff ? e.diff.trim() : undefined },
+    ),
+  );
 
-  const score = totalMutants > 0 ? ((killed / totalMutants) * 100).toFixed(2) : '100.00';
   return {
     target: filePath,
     totalMutants,
     killed,
     survived,
-    mutationScore: `${score}%`,
+    mutationScore: formatMutationScore(killed, totalMutants),
     vulnerabilities,
   };
+}
+
+/**
+ * Prepare the sandbox so an Infection run's output is unambiguously its own.
+ *
+ * Three pieces of side-effect setup, all of which must happen before the CLI is
+ * invoked:
+ *  1. Delete any `chaos-infection-log.json` copied in with the workspace.
+ *  2. Hybrid config: write a minimal `infection.json` only when the project
+ *     ships none.
+ *  3. Create a per-run temp directory to point TMPDIR/TMP/TEMP at.
+ *
+ * @returns `hasProjectConfig` (drives the failure diagnosis and the log-read
+ *   hint), the absolute `jsonLogPath` to read results from, and the `env` to
+ *   run Infection with.
+ * @throws only when the generated config cannot be written — without it
+ *   Infection has nothing to run.
+ */
+function prepareInfectionWorkspace(
+  cwd: string,
+  filePath: string,
+): { hasProjectConfig: boolean; jsonLogPath: string; env: NodeJS.ProcessEnv } {
+  const jsonLogPath = join(cwd, JSON_LOG_NAME);
+
+  // The sandbox is a copy of the workspace, so an earlier audit's
+  // `chaos-infection-log.json` is copied in along with it. The failure path
+  // below treats "a log exists" as proof that Infection ran, so a stale copy
+  // silently stood in for a run that never happened — auditing one file
+  // returned a hours-old 100% score computed for a different file entirely.
+  // Removing it first makes any log read below necessarily this run's output.
+  try {
+    rmSync(jsonLogPath, { force: true });
+  } catch {
+    // Best-effort. If the stale log cannot be removed, the provenance check in
+    // parseInfectionJsonLog is the remaining guard against reporting it.
+  }
+
+  // Hybrid config: only generate when the project ships none.
+  const hasProjectConfig = PROJECT_CONFIG_NAMES.some((n) => existsSync(join(cwd, n)));
+  if (!hasProjectConfig) {
+    try {
+      writeFileSync(
+        join(cwd, GENERATED_CONFIG_NAME),
+        buildInfectionConfig(inferSourceDir(filePath), JSON_LOG_NAME),
+        'utf8',
+      );
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Failed to write generated infection.json: ${message}`);
+    }
+  }
+
+  // Isolate Infection's working files per run. Infection (and the phpunit it
+  // spawns) write to `sys_get_temp_dir()/infection` — a FIXED shared path. Two
+  // concurrent runs (e.g. a parallel `triage_test_coverage` sweep, each in its
+  // own sandbox) clobber each other there: one run's phpunit ends up loading a
+  // DIFFERENT sandbox's Composer autoloader and dies with
+  // `Cannot declare class ComposerAutoloaderInit… already in use`, failing the
+  // initial test run. Pointing TMPDIR/TMP/TEMP at a per-run dir inside the
+  // sandbox gives each run its own `sys_get_temp_dir()`, so they never collide.
+  const infectionTmp = join(cwd, '.chaos-infection-tmp');
+  try {
+    mkdirSync(infectionTmp, { recursive: true });
+  } catch {
+    // Best-effort: if we can't create it, fall through and let Infection use
+    // its default temp dir (the pre-existing single-run behaviour).
+  }
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    TMPDIR: infectionTmp,
+    TMP: infectionTmp,
+    TEMP: infectionTmp,
+  };
+
+  return { hasProjectConfig, jsonLogPath, env };
+}
+
+/**
+ * Explain an Infection run that exited non-zero WITHOUT producing a JSON log.
+ *
+ * A non-zero exit alone is normal (mutants escaped); a non-zero exit with no
+ * log means the initial coverage run never completed. Returns — rather than
+ * throws — the error to raise, so each branch is assertable directly.
+ *
+ * The three branches are ordered most-specific-first, and that order decides
+ * which explanation a user sees:
+ *  1. we generated the config (so it targets PHPUnit) and the project has no
+ *     PHPUnit config at all → Infection could never have run;
+ *  2. a named startup failure recognised in Infection's own output
+ *     (see {@link diagnoseInfectionStartupFailure});
+ *  3. the generic "make the suite pass, enable a coverage driver" guidance.
+ */
+export function explainMissingJsonLog(
+  execErr: ExecFailureError,
+  cwd: string,
+  hasProjectConfig: boolean,
+): Error {
+  // When we generated the config (no project Infection config), it targets
+  // PHPUnit. If the project ships no PHPUnit configuration at all, Infection
+  // can never run — report that specific, actionable cause instead of the
+  // generic coverage-driver hint. (A project with its own Infection config
+  // may deliberately target a different framework, so this only applies to
+  // the generated-config path.)
+  const hasPhpUnitConfig = PHPUNIT_CONFIG_NAMES.some((n) => existsSync(join(cwd, n)));
+  if (!hasProjectConfig && !hasPhpUnitConfig) {
+    return new Error(
+      `Infection could not run: no PHPUnit configuration found (looked for ` +
+        `${PHPUNIT_CONFIG_NAMES.join(', ')}). Chaos-MCP's PHP engine drives Infection, which ` +
+        `requires PHPUnit; this project appears to use a different or custom test runner. Add a ` +
+        `phpunit.xml, or ship an Infection config (${PROJECT_CONFIG_NAMES.join('/')}) that ` +
+        `targets your framework.\n${infectionDiagnostics(execErr)}`,
+    );
+  }
+  // Infection reports startup failures on its own STDOUT, so the specific
+  // cause — when there is one we can name — is found there.
+  const specific = diagnoseInfectionStartupFailure(
+    `${execErr.stdout ?? ''}\n${execErr.stderr ?? ''}`,
+  );
+  if (specific !== null) {
+    return new Error(
+      `Infection failed (exit ${execErr.exit}) without producing a JSON log. ` +
+        `${specific}\n${infectionDiagnostics(execErr)}`,
+    );
+  }
+  return new Error(
+    `Infection failed (exit ${execErr.exit}) without producing a JSON log. This usually means ` +
+      `the initial test run failed — ensure the PHPUnit suite passes (vendor/bin/phpunit) and a ` +
+      `coverage driver (Xdebug or PCOV) is enabled.\n${infectionDiagnostics(execErr)}`,
+  );
 }
 
 /**
@@ -306,35 +441,7 @@ export class PhpEngine extends BaseEngine {
   async run(filePath: string, options?: RunOptions): Promise<MutationResult> {
     const cwd = options?.workDir ?? process.cwd();
     const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-    const jsonLogPath = join(cwd, JSON_LOG_NAME);
-
-    // The sandbox is a copy of the workspace, so an earlier audit's
-    // `chaos-infection-log.json` is copied in along with it. The failure path
-    // below treats "a log exists" as proof that Infection ran, so a stale copy
-    // silently stood in for a run that never happened — auditing one file
-    // returned a hours-old 100% score computed for a different file entirely.
-    // Removing it first makes any log read below necessarily this run's output.
-    try {
-      rmSync(jsonLogPath, { force: true });
-    } catch {
-      // Best-effort. If the stale log cannot be removed, the provenance check in
-      // parseInfectionJsonLog is the remaining guard against reporting it.
-    }
-
-    // Hybrid config: only generate when the project ships none.
-    const hasProjectConfig = PROJECT_CONFIG_NAMES.some((n) => existsSync(join(cwd, n)));
-    if (!hasProjectConfig) {
-      try {
-        writeFileSync(
-          join(cwd, GENERATED_CONFIG_NAME),
-          buildInfectionConfig(inferSourceDir(filePath), JSON_LOG_NAME),
-          'utf8',
-        );
-      } catch (error: unknown) {
-        const message = error instanceof Error ? error.message : String(error);
-        throw new Error(`Failed to write generated infection.json: ${message}`);
-      }
-    }
+    const { hasProjectConfig, jsonLogPath, env } = prepareInfectionWorkspace(cwd, filePath);
 
     // Prefer the vendored binary; fall back to a global `infection` on PATH.
     const vendored = join(cwd, 'vendor', 'bin', 'infection');
@@ -360,28 +467,6 @@ export class PhpEngine extends BaseEngine {
 
     if (isVerbose()) log(`PhpEngine: ${bin} ${args.join(' ')}`);
 
-    // Isolate Infection's working files per run. Infection (and the phpunit it
-    // spawns) write to `sys_get_temp_dir()/infection` — a FIXED shared path. Two
-    // concurrent runs (e.g. a parallel `triage_test_coverage` sweep, each in its
-    // own sandbox) clobber each other there: one run's phpunit ends up loading a
-    // DIFFERENT sandbox's Composer autoloader and dies with
-    // `Cannot declare class ComposerAutoloaderInit… already in use`, failing the
-    // initial test run. Pointing TMPDIR/TMP/TEMP at a per-run dir inside the
-    // sandbox gives each run its own `sys_get_temp_dir()`, so they never collide.
-    const infectionTmp = join(cwd, '.chaos-infection-tmp');
-    try {
-      mkdirSync(infectionTmp, { recursive: true });
-    } catch {
-      // Best-effort: if we can't create it, fall through and let Infection use
-      // its default temp dir (the pre-existing single-run behaviour).
-    }
-    const env: NodeJS.ProcessEnv = {
-      ...process.env,
-      TMPDIR: infectionTmp,
-      TMP: infectionTmp,
-      TEMP: infectionTmp,
-    };
-
     let stderr = '';
     try {
       const res = await invokeMutationTool('Infection', bin, args, {
@@ -400,38 +485,7 @@ export class PhpEngine extends BaseEngine {
       // is the normal survivors case AS LONG AS the JSON log was produced. If no
       // log exists, the initial (coverage) run failed — surface the likely cause.
       if (!existsSync(jsonLogPath)) {
-        // When we generated the config (no project Infection config), it targets
-        // PHPUnit. If the project ships no PHPUnit configuration at all, Infection
-        // can never run — report that specific, actionable cause instead of the
-        // generic coverage-driver hint. (A project with its own Infection config
-        // may deliberately target a different framework, so this only applies to
-        // the generated-config path.)
-        const hasPhpUnitConfig = PHPUNIT_CONFIG_NAMES.some((n) => existsSync(join(cwd, n)));
-        if (!hasProjectConfig && !hasPhpUnitConfig) {
-          throw new Error(
-            `Infection could not run: no PHPUnit configuration found (looked for ` +
-              `${PHPUNIT_CONFIG_NAMES.join(', ')}). Chaos-MCP's PHP engine drives Infection, which ` +
-              `requires PHPUnit; this project appears to use a different or custom test runner. Add a ` +
-              `phpunit.xml, or ship an Infection config (${PROJECT_CONFIG_NAMES.join('/')}) that ` +
-              `targets your framework.\n${infectionDiagnostics(execErr)}`,
-          );
-        }
-        // Infection reports startup failures on its own STDOUT, so the specific
-        // cause — when there is one we can name — is found there.
-        const specific = diagnoseInfectionStartupFailure(
-          `${execErr.stdout ?? ''}\n${execErr.stderr ?? ''}`,
-        );
-        if (specific !== null) {
-          throw new Error(
-            `Infection failed (exit ${execErr.exit}) without producing a JSON log. ` +
-              `${specific}\n${infectionDiagnostics(execErr)}`,
-          );
-        }
-        throw new Error(
-          `Infection failed (exit ${execErr.exit}) without producing a JSON log. This usually means ` +
-            `the initial test run failed — ensure the PHPUnit suite passes (vendor/bin/phpunit) and a ` +
-            `coverage driver (Xdebug or PCOV) is enabled.\n${infectionDiagnostics(execErr)}`,
-        );
+        throw explainMissingJsonLog(execErr, cwd, hasProjectConfig);
       }
     }
 

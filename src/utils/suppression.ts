@@ -1,7 +1,13 @@
+/**
+ * Suppression-file storage: load, add, remove, and the per-workspace write lock.
+ *
+ * This module owns the FILE and nothing else. Applying a suppression set to a
+ * `MutationResult` is domain logic over the audit result, not storage, and now
+ * lives in `audit/apply-suppressions.ts` — which is what keeps this leaf module
+ * from importing up into `format.ts`.
+ */
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join } from 'node:path';
-import type { MutationResult } from '../engines/base.js';
-import { NO_COVERAGE_RE } from '../format.js';
 
 /**
  * Per-file mutex for suppression writes (audit H3).
@@ -185,36 +191,4 @@ export function removeSuppressions(
     }
     writeFile(workspaceRoot, data, configPath);
   });
-}
-
-/**
- * Drop suppressed (equivalent) mutants from a result. Equivalent mutants are
- * unkillable, so they leave the denominator: total shrinks, score is recomputed,
- * survived is clamped down. Returns a new result; the input is not mutated.
- */
-export function applySuppressions(
-  result: MutationResult,
-  suppressed: Set<string> | undefined,
-): { result: MutationResult; suppressedCount: number } {
-  if (!suppressed || suppressed.size === 0) return { result, suppressedCount: 0 };
-  const kept = result.vulnerabilities.filter((v) => !suppressed.has(keyOf(v.line, v.mutator)));
-  const suppressedCount = result.vulnerabilities.length - kept.length;
-  if (suppressedCount === 0) return { result, suppressedCount: 0 };
-  // Only true survivors (not NoCoverage) count against result.survived.
-  const suppressedSurvivors = result.vulnerabilities.filter(
-    (v) => suppressed.has(keyOf(v.line, v.mutator)) && !NO_COVERAGE_RE.test(v.description),
-  ).length;
-  const totalMutants = Math.max(0, result.totalMutants - suppressedCount);
-  const survived = Math.max(0, result.survived - suppressedSurvivors);
-  const score = totalMutants === 0 ? 100 : (result.killed / totalMutants) * 100;
-  return {
-    result: {
-      ...result,
-      vulnerabilities: kept,
-      totalMutants,
-      survived,
-      mutationScore: `${score.toFixed(2)}%`,
-    },
-    suppressedCount,
-  };
 }

@@ -23,6 +23,7 @@ import { makeToolContext } from './tool-context.js';
 import { listResources, readResource } from './resources.js';
 import { listPrompts, getPrompt } from './prompts.js';
 import { ChaosConfig } from './utils/config-loader.js';
+import { cleanupAllSandboxes, setSandboxSignalExit } from './utils/sandbox.js';
 import { runCli } from './cli.js';
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -52,8 +53,16 @@ export const APP_VERSION = '1.6.0'; // x-release-please-version
  * does not trigger side effects.
  *
  * @param config - Optional ChaosConfig used by the CallToolRequest handler.
+ * @param options.installShutdownHandlers - Whether to claim process-wide signal
+ *   handling for a graceful shutdown (default true). Pass false when the caller
+ *   owns the process lifecycle — an embedder with its own shutdown sequence, or
+ *   a test driving the server in-process, where registering real handlers would
+ *   otherwise leave them armed after the caller is done with the server.
  */
-export async function startServer(config?: ChaosConfig): Promise<void> {
+export async function startServer(
+  config?: ChaosConfig,
+  options?: { installShutdownHandlers?: boolean },
+): Promise<void> {
   const server = new Server(
     {
       name: 'chaos-mcp',
@@ -109,6 +118,59 @@ export async function startServer(config?: ChaosConfig): Promise<void> {
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
+  if (options?.installShutdownHandlers !== false) installShutdownHandlers(server);
+}
+
+/** Conventional exit code for a signal kill: 128 + the signal number. */
+const SHUTDOWN_SIGNALS: Record<string, number> = {
+  SIGHUP: 1,
+  SIGINT: 2,
+  SIGQUIT: 3,
+  SIGTERM: 15,
+};
+
+/** Hard cap on how long a graceful shutdown may take before we exit anyway. */
+const SHUTDOWN_GRACE_MS = 2_000;
+
+/**
+ * Terminate the server cleanly on a signal.
+ *
+ * The sandbox module registers its own signal handlers so temp directories are
+ * never leaked, and those used to call `process.exit` directly — which meant
+ * the transport was torn down mid-write and any in-flight JSON-RPC response was
+ * lost, because nothing had a chance to close it. Shutdown belongs to whoever
+ * owns the process, so the server claims it here: close the transport first,
+ * then remove the sandboxes, then exit. `setSandboxSignalExit(false)` stops the
+ * sandbox handlers from racing us to `process.exit`; they still clean up, which
+ * is idempotent with the call below.
+ *
+ * Exported for testing.
+ */
+export function installShutdownHandlers(server: { close: () => Promise<void> }): void {
+  setSandboxSignalExit(false);
+  let shuttingDown = false;
+  for (const [signal, number] of Object.entries(SHUTDOWN_SIGNALS)) {
+    process.on(signal as NodeJS.Signals, () => {
+      // A second Ctrl-C must not restart the sequence (or double-close).
+      if (shuttingDown) return;
+      shuttingDown = true;
+      const code = 128 + number;
+      // Never let a wedged transport keep the process alive forever: exit on a
+      // timer regardless of whether close() ever settles.
+      const failsafe = setTimeout(() => process.exit(code), SHUTDOWN_GRACE_MS);
+      failsafe.unref();
+      void Promise.resolve(server.close())
+        .catch(() => undefined)
+        .finally(() => {
+          // Disarm the failsafe: once we are exiting on the normal path there
+          // is nothing left for it to rescue, and leaving it armed fires a
+          // second exit later in any context where `process.exit` is stubbed.
+          clearTimeout(failsafe);
+          cleanupAllSandboxes();
+          process.exit(code);
+        });
+    });
+  }
 }
 
 // Auto-start when run directly (not when imported for testing).

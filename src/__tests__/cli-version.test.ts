@@ -11,9 +11,10 @@ import { performance } from 'perf_hooks';
  *   - exit code 0
  *   - stdout contains the synced `chaos-mcp v${version}` string
  *   - stderr is empty (no banner / warning noise on --version)
- *   - wall-clock time < 2s (catches regressions where arg-parsing
- *     moves AFTER the MCP server lifecycle — `--version` would then
- *     still print + exit, but only AFTER a stdio server started)
+ *   - the process exits on its own (catches regressions where arg-parsing
+ *     moves AFTER the MCP server lifecycle — `--version` would then still
+ *     print, but the stdio server would hold the event loop open and the
+ *     spawn would never close)
  *
  * Complements `version-sync.test.ts` (constant canary) by exercising
  * the actual CLI surface — a future regression in postbuild shebang
@@ -22,6 +23,9 @@ import { performance } from 'perf_hooks';
  *
  * Requires `npm run build` to have produced `./build/index.js`.
  */
+
+/** SIGKILL deadline for the spawn; also the hang-guard ceiling asserted below. */
+const SPAWN_TIMEOUT_MS = 5000;
 
 describe('CLI --version flag', () => {
   const __filename = fileURLToPath(import.meta.url);
@@ -41,7 +45,7 @@ describe('CLI --version flag', () => {
     expectedVersion = pkg.version;
   });
 
-  it('prints the synced version on stdout, exits 0, quiet stderr, <2s wall-clock', async () => {
+  it('prints the synced version on stdout, exits 0, quiet stderr, without hanging', async () => {
     const start = performance.now();
     const result = await new Promise<{
       stdout: string;
@@ -68,10 +72,10 @@ describe('CLI --version flag', () => {
         child.kill('SIGKILL');
         reject(
           new Error(
-            `chaos-mcp --version timed out after 5s; stdout="${stdout.trim()}", stderr="${stderr.trim()}"`,
+            `chaos-mcp --version timed out after ${SPAWN_TIMEOUT_MS}ms; stdout="${stdout.trim()}", stderr="${stderr.trim()}"`,
           ),
         );
-      }, 5000);
+      }, SPAWN_TIMEOUT_MS);
 
       // Use 'close' instead of 'exit': 'close' fires after stdio
       // streams have closed (all output read by the parent); 'exit'
@@ -100,10 +104,16 @@ describe('CLI --version flag', () => {
     // will still trip the assertion by design — fail-loud on Node
     // version bumps rather than silently flake.
     expect(result.stderr.trim()).toBe('');
-    // --version must short-circuit BEFORE the MCP server lifecycle.
-    // Real CLI startup is ~50–300ms; 2s is a generous ceiling that
-    // still catches the regression where --version was moved past
-    // server-start.
-    expect(result.elapsedMs).toBeLessThan(2000);
+    // --version must short-circuit BEFORE the MCP server lifecycle. The
+    // regression this guards against is a HANG (the stdio server holds the
+    // event loop, so the spawn never closes), which the 5s SIGKILL above
+    // already catches — this bound just states it as an assertion.
+    //
+    // It is deliberately NOT a performance benchmark. A 2s ceiling used to
+    // live here and failed on a loaded machine: cold Node startup was
+    // measured at 2.1–4.8s while six test processes ran concurrently, which
+    // is exactly the condition mutation testing creates. Matches the
+    // rationale already recorded in cli-smoke.test.ts.
+    expect(result.elapsedMs).toBeLessThan(SPAWN_TIMEOUT_MS);
   });
 });

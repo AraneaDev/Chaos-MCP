@@ -5,6 +5,52 @@
  * from request handling, formatting, and server bootstrap.
  */
 
+import { MAX_TIMEOUT_MS } from './utils/constants.js';
+import { primarySourceExtensions, supportedSourceExtensions } from './utils/project-detector.js';
+import { ENGINE_REGISTRY, type SupportedProjectType } from './engines/registry.js';
+
+/**
+ * `['a', 'b', 'c']` → `'a, b, <conj> c'` (Oxford comma, conjunction before the
+ * last item). Two items get `'a <conj> b'` with no comma; one or zero items are
+ * returned as-is.
+ */
+function conjoin(items: readonly string[], conj: string): string {
+  if (items.length < 2) return items.join('');
+  if (items.length === 2) return `${items[0]} ${conj} ${items[1]}`;
+  return `${items.slice(0, -1).join(', ')}, ${conj} ${items[items.length - 1]}`;
+}
+
+/** `['.a', '.b', '.c']` → `'.a, .b, or .c'` (Oxford comma, `or` before the last). */
+function orList(items: readonly string[]): string {
+  return conjoin(items, 'or');
+}
+
+/**
+ * Extension prose rendered from the per-language detection registry rather than
+ * hardcoded, so a newly supported language is never described to the model as
+ * unsupported (audit F15). These strings are what an LLM client reads to decide
+ * whether a file is auditable, so their exact wording is pinned by
+ * `tool-schema.test.ts`.
+ */
+const SUPPORTED_EXT_PROSE = orList(supportedSourceExtensions());
+
+/** Compact slash-separated form for space-constrained prose: `.ts/.js/.py/…`. */
+const PRIMARY_EXT_PROSE = primarySourceExtensions().join('/');
+
+/**
+ * `'TypeScript/JavaScript (StrykerJS), Python (cosmic-ray), Rust (cargo-mutants), and PHP (Infection)'`
+ * — rendered from the engine registry's `label` + `displayName` pairs in
+ * registry order, rather than hardcoded, so a newly supported language is never
+ * described to the model as unsupported (audit finding 38). Byte-identical to
+ * the string it replaced; pinned by `tool-schema.test.ts`.
+ */
+const ENGINE_SUPPORT_PROSE = conjoin(
+  (Object.keys(ENGINE_REGISTRY) as SupportedProjectType[]).map(
+    (t) => `${ENGINE_REGISTRY[t].label} (${ENGINE_REGISTRY[t].displayName})`,
+  ),
+  'and',
+);
+
 /** A single (line, mutator) mutant identity — shared by verify-mode delta arrays. */
 const MUTANT_KEY_SCHEMA = {
   type: 'object',
@@ -31,7 +77,7 @@ export const TOOL_DEFINITION = {
   description:
     'Runs on-demand, sandbox-isolated mutation testing against a single source file to identify gaps in unit test coverage. ' +
     'Chaos-MCP generates mutants (logical faults like changing `>` to `>=`) and checks whether the local test suite catches them. ' +
-    'Surviving mutants indicate test coverage holes. Supports TypeScript/JavaScript (StrykerJS), Python (cosmic-ray), Rust (cargo-mutants), and PHP (Infection).',
+    `Surviving mutants indicate test coverage holes. Supports ${ENGINE_SUPPORT_PROSE}.`,
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -39,14 +85,17 @@ export const TOOL_DEFINITION = {
         type: 'string',
         description:
           'Workspace-relative path to the file to audit. ' +
-          'Must end in .ts, .js, .tsx, .jsx, .py, .rs, or .php. ' +
+          `Must end in ${SUPPORTED_EXT_PROSE}. ` +
           'Example: "src/utils/math.ts"',
       },
       timeoutMs: {
         type: 'number',
+        exclusiveMinimum: 0,
+        maximum: MAX_TIMEOUT_MS,
         description:
           'Maximum time in milliseconds for the entire mutation run. ' +
           'Default: 300000 (5 minutes). Increase for large files or slow test suites. ' +
+          `Must be <= ${MAX_TIMEOUT_MS} (the largest delay a timer accepts). ` +
           'Example: 120000 for a 2-minute cap.',
       },
       lineScope: {
@@ -134,10 +183,13 @@ export const TOOL_DEFINITION = {
       },
       perMutantTimeoutMs: {
         type: 'number',
+        exclusiveMinimum: 0,
+        maximum: MAX_TIMEOUT_MS,
         description:
           'Maximum time in milliseconds per individual mutant test (StrykerJS only). ' +
           'Distinct from timeoutMs (total run cap). Use this to prevent a single slow mutant ' +
           'from hanging the entire mutation run. Default: StrykerJS default (~5000ms). ' +
+          `Must be <= ${MAX_TIMEOUT_MS} (the largest delay a timer accepts). ` +
           'Example: 10000 for a 10-second per-mutant ceiling.',
       },
       diffBase: {
@@ -260,7 +312,11 @@ export const TOOL_DEFINITION = {
       suppressedCount: { type: 'integer' },
       gate: {
         type: 'object',
-        properties: { minScore: { type: 'number' }, passed: { type: 'boolean' } },
+        properties: {
+          minScore: { type: 'number' },
+          passed: { type: 'boolean' },
+          reason: { type: 'string', enum: ['partial_audit'] },
+        },
       },
       incompetent: { type: 'integer' },
       complete: { type: 'boolean' },
@@ -304,9 +360,10 @@ export const TRIAGE_TOOL_DEFINITION = {
   description:
     'Batch triage: audit a set of files and/or directories and return a weakest-first ranked ' +
     'leaderboard of mutation scores, so you can see where the test suite is most fragile in one call. ' +
-    'Directories are recursively expanded to supported source files (.ts/.js/.py/.rs/.php), skipping ' +
-    'test files. Files are audited serially. Drill into a weak file with audit_code_resilience for ' +
-    'per-mutant survivor detail.',
+    `Directories are recursively expanded to supported source files (${PRIMARY_EXT_PROSE}), skipping ` +
+    'test files. Files are audited in parallel (see fileConcurrency, default min(4, cpus-1)), under a ' +
+    'shared wall-clock budget (see totalTimeoutMs). Drill into a weak file with audit_code_resilience ' +
+    'for per-mutant survivor detail.',
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -326,7 +383,22 @@ export const TRIAGE_TOOL_DEFINITION = {
       },
       timeoutMs: {
         type: 'number',
-        description: 'Per-file mutation-run timeout in milliseconds. Default: 300000 (5 minutes).',
+        exclusiveMinimum: 0,
+        maximum: MAX_TIMEOUT_MS,
+        description:
+          'Per-file mutation-run timeout in milliseconds. Default: 300000 (5 minutes). ' +
+          `Must be <= ${MAX_TIMEOUT_MS} (the largest delay a timer accepts). ` +
+          'Also clamped by whatever remains of totalTimeoutMs.',
+      },
+      totalTimeoutMs: {
+        type: 'number',
+        exclusiveMinimum: 0,
+        maximum: MAX_TIMEOUT_MS,
+        description:
+          'Wall-clock budget for the WHOLE sweep in milliseconds. Default: 900000 (15 minutes). ' +
+          'Files not started before it runs out are returned in "unaudited" rather than audited, ' +
+          'so a large sweep still returns the ranking it produced. ' +
+          `Must be <= ${MAX_TIMEOUT_MS} (the largest delay a timer accepts). Example: 1800000`,
       },
       mutatorDenylist: {
         type: 'array',
@@ -383,6 +455,7 @@ export const TRIAGE_TOOL_DEFINITION = {
           filesAudited: { type: 'integer' },
           filesSkipped: { type: 'integer' },
           filesErrored: { type: 'integer' },
+          filesUnaudited: { type: 'integer' },
         },
         required: ['filesDiscovered', 'filesAudited', 'filesSkipped', 'filesErrored'],
       },
@@ -407,11 +480,18 @@ export const TRIAGE_TOOL_DEFINITION = {
             runId: { type: 'string' },
             suppressedCount: { type: 'integer' },
             passed: { type: 'boolean' },
+            // Present (false) only when the file's audit was truncated by the
+            // time budget; its score then covers only the completed batches.
+            complete: { type: 'boolean' },
+            batchesCompleted: { type: 'integer' },
+            batchesPlanned: { type: 'integer' },
           },
           required: ['file', 'mutationScore', 'total', 'killed', 'survived', 'noCoverage'],
         },
       },
       errors: { type: 'array', items: { type: 'object' } },
+      unaudited: { type: 'array', items: { type: 'string' } },
+      stoppedReason: { type: 'string', enum: ['time_budget_exhausted'] },
       scopeNote: { type: 'string' },
       note: { type: 'string' },
       gate: {

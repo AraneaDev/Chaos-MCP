@@ -1,0 +1,359 @@
+/**
+ * Auditing ONE file inside a triage sweep.
+ *
+ * This was a 201-line closure inside `handleTriageCall` that captured a dozen
+ * outer variables (Finding 3). Lifting it to the top level with an explicit
+ * `deps` object makes the sweep's per-file contract visible — and testable —
+ * without changing a single message, budget, or ordering decision.
+ *
+ * The three phases are split so no block nests deeper than two levels:
+ * {@link resolveDiffScope} decides what part of the file is in scope,
+ * `auditTriageFile` runs the engine inside the sandbox lifetime, and
+ * {@link buildTriageRow} assembles the leaderboard row from the result.
+ */
+import { resolve } from 'path';
+import { readFileSync } from 'fs';
+import { auditFile } from '../audit/audit-file.js';
+import { createSandbox } from '../utils/sandbox.js';
+import { detectProjectType, detectEnvironment } from '../utils/project-detector.js';
+import type { EnvironmentInfo, SupportedProjectType } from '../utils/project-detector.js';
+import { ENGINE_REGISTRY, makeEngine, resolvePrebuildCommand } from '../engines/registry.js';
+import { computeChangedRanges } from '../utils/git-diff.js';
+import { anchorToWorkspace } from '../utils/workspace-anchor.js';
+import { loadSuppressions } from '../utils/suppression.js';
+import { applySuppressions } from '../audit/apply-suppressions.js';
+import { mintRunId } from '../utils/run-cache.js';
+import { buildResultPayload, displayMutationScore, hasNoMutableLogic } from '../format.js';
+import { isCancel } from '../utils/cancel.js';
+import { mapCreateSandboxError } from '../tool-result.js';
+import type { MutationResult } from '../engines/base.js';
+import type { ChaosConfig } from '../utils/config-loader.js';
+import type { ToolContext } from '../tool-context.js';
+import type { ToolArgs } from '../tool-args-validation.js';
+import type { AuditDeadline } from '../utils/deadline.js';
+import type { TriageRow, TriageError } from '../triage.js';
+
+/**
+ * What one file contributed to the sweep: a ranked row, a per-file failure, or
+ * nothing at all because the sweep's budget ran out before it started.
+ *
+ * "Unaudited" is deliberately neither of the other two — nothing went wrong and
+ * nothing was measured, so the caller can re-run for the remainder instead of
+ * reading the ranking as covering everything they asked for.
+ */
+export type TriageAuditOutcome =
+  | { row: TriageRow }
+  | { error: TriageError }
+  | { unaudited: string };
+
+/** Everything one file's audit needs from the sweep that owns it. */
+export interface TriageFileDeps {
+  /** Directory the caller's paths resolve against (the server's cwd). */
+  rootCwd: string;
+  cfg: ChaosConfig;
+  /** The raw tool arguments; `timeoutMs` and `mutatorDenylist` are read per file. */
+  args: ToolArgs;
+  /** Validated git ref when the sweep is diff-scoped, else `undefined`. */
+  diffBase: string | undefined;
+  /** Per-file StrykerJS worker cap, or `undefined` when the pool is serial. */
+  strykerConcurrency: number | undefined;
+  /** How many survivors to inline per row; 0 means scores only. */
+  survivorsPerFile: number;
+  /**
+   * Suppressions memoized per workspaceRoot — NOT once from rootCwd — so that
+   * monorepo packages whose workspaceRoot differs from rootCwd read the right
+   * suppressions file. Keys are workspace-relative paths (relFromRoot),
+   * matching the key used by audit_code_resilience (Task 7 / Key Contract).
+   */
+  suppressionCache: Map<string, Map<string, Set<string>>>;
+  /** The sweep-wide wall-clock budget every file spends from. */
+  deadline: AuditDeadline;
+  /** Reserve left unspent so ranking/formatting can finish after the last file. */
+  cleanupReserveMs: number;
+  ctx?: ToolContext;
+  /** Advance the sweep's progress counter (called once per file, always). */
+  onProgress: () => void;
+}
+
+/** The line scope for one file, plus the note explaining it on the row. */
+interface DiffScope {
+  lineRanges?: { start: number; end: number }[];
+  scopeNote?: string;
+}
+
+/**
+ * Narrow a diff-scoped sweep down to the changed lines of ONE file.
+ *
+ * Whole-file (`{}`) for a sweep that is not diff-scoped. Languages whose engine
+ * cannot take a line scope say so on the row: their score covers more than the
+ * diff, and an unlabelled 60% would read as "your changed lines are 60%
+ * covered".
+ */
+async function resolveDiffScope(
+  targetFile: string,
+  env: EnvironmentInfo,
+  projectType: SupportedProjectType,
+  fileBudgetMs: number,
+  deps: TriageFileDeps,
+): Promise<DiffScope> {
+  if (deps.diffBase === undefined) return {};
+  if (!ENGINE_REGISTRY[projectType].supportsLineScope) {
+    return { scopeNote: 'diff scoping unsupported for this language; whole file' };
+  }
+  const ranges = await computeChangedRanges(targetFile, env.workspaceRoot, deps.diffBase, {
+    signal: deps.ctx?.signal,
+    timeoutMs: fileBudgetMs,
+  });
+  if (ranges.kind === 'ranges') {
+    return { lineRanges: ranges.ranges, scopeNote: 'scored on changed lines' };
+  }
+  if (ranges.kind === 'untracked') return { scopeNote: 'untracked; whole file' };
+  // no-changes/bad-ref/not-a-repo: leave whole-file (the file was selected, so this is rare)
+  return {};
+}
+
+/** The already-suppression-filtered facts a row is assembled from. */
+interface RowInput {
+  file: string;
+  result: MutationResult;
+  relFromRoot: string;
+  projectType: SupportedProjectType;
+  scopeNote?: string;
+  suppressedCount: number;
+}
+
+/**
+ * Assemble one leaderboard row: score, counts, partial-audit state, runId, and
+ * (when asked for) inlined survivors.
+ */
+function buildTriageRow(input: RowInput, deps: TriageFileDeps): TriageRow {
+  const { file, result, projectType } = input;
+  const row: TriageRow = {
+    file,
+    // Substitute "n/a" for a no-mutable-logic file so it is not ranked as a
+    // genuine 100% (audit M3) — shared with audit_code_resilience via format.ts.
+    mutationScore: displayMutationScore(result),
+    total: result.totalMutants,
+    killed: result.killed,
+    survived: result.survived,
+    noCoverage: Math.max(0, result.vulnerabilities.length - result.survived),
+  };
+  if (hasNoMutableLogic(result)) row.noMutableLogic = true;
+  if (input.scopeNote) row.scopeNote = input.scopeNote;
+  // Carry partial-audit state onto the row so the leaderboard and the gate
+  // can tell "scored 92% over the whole file" from "scored 92% over the
+  // third of it we had time for".
+  if (result.complete === false) {
+    row.complete = false;
+    if (result.batchesCompleted !== undefined) row.batchesCompleted = result.batchesCompleted;
+    if (result.batchesPlanned !== undefined) row.batchesPlanned = result.batchesPlanned;
+  }
+  if (input.suppressedCount > 0) row.suppressedCount = input.suppressedCount;
+
+  // Mint a per-row runId so the caller can verify survivors from a triage result
+  // without re-auditing. A cache failure is non-fatal (mintRunId swallows it):
+  // omit the runId rather than fail the whole triage row.
+  //
+  // The compact payload is built here rather than inside mintRunId (run-cache.ts
+  // is a leaf util and may not import format.js); the try preserves the swallow
+  // that used to cover the construction too. It is deliberately a separate,
+  // uncapped `{}` build from the enriched one below — reusing that one would
+  // cache only `survivorsPerFile` survivors, and a later verify would read the
+  // truncated-away ones as fixed.
+  let rowRunId: string | undefined;
+  try {
+    rowRunId = mintRunId(buildResultPayload(result, {}), input.relFromRoot, projectType, {
+      ttlMs: deps.cfg.runCacheTtlMs,
+      max: deps.cfg.runCacheMax,
+    });
+  } catch {
+    rowRunId = undefined;
+  }
+  if (rowRunId !== undefined) row.runId = rowRunId;
+
+  // Enrich with inline survivors when the caller asked for them.
+  // Source-read failure is non-fatal: enrichment works without source lines
+  // (severity comes from mutator type, not the code text).
+  // Skip the synchronous read when the call has already been cancelled:
+  // burning CPU on a cancelled triage row is wasted work (audit M5).
+  if (deps.survivorsPerFile > 0 && !deps.ctx?.signal?.aborted) {
+    let sourceLines: string[] | undefined;
+    try {
+      sourceLines = readFileSync(resolve(deps.rootCwd, file), 'utf8').split(/\r?\n/);
+    } catch {
+      sourceLines = undefined;
+    }
+    const payload = buildResultPayload(result, {
+      enrich: { projectType, sourceLines },
+      maxSurvivors: deps.survivorsPerFile,
+    });
+    if (payload.survivors.length > 0) row.survivors = payload.survivors;
+    if (payload.noCoverage.length > 0) row.noCoverageGroups = payload.noCoverage;
+    if (payload.summary.worstSeverity) row.worstSeverity = payload.summary.worstSeverity;
+  }
+
+  return row;
+}
+
+/**
+ * The suppressions for `workspaceRoot`, loading (and memoizing) them on first use.
+ *
+ * NOT `audit/suppression-io.ts#loadSuppressedKeys`, deliberately: that helper
+ * reads and re-parses the suppressions file on every call, which is right for
+ * the audit tool (one file per call) and wrong here (up to `maxFiles` files per
+ * sweep, all usually under one workspace root). Adopting it would trade this
+ * memoization for N synchronous reads and parses per sweep. The two agree on
+ * everything that matters — same loader, same workspace root, same
+ * workspace-relative key — so the Key Contract holds either way.
+ */
+function suppressionsFor(workspaceRoot: string, deps: TriageFileDeps): Map<string, Set<string>> {
+  const cached = deps.suppressionCache.get(workspaceRoot);
+  if (cached !== undefined) return cached;
+  const loaded = loadSuppressions(workspaceRoot, deps.cfg.suppressionsPath);
+  deps.suppressionCache.set(workspaceRoot, loaded);
+  return loaded;
+}
+
+/** The per-file arguments handed to the shared `auditFile` core. */
+function buildPerFileArgs(
+  fileBudgetMs: number,
+  projectType: SupportedProjectType,
+  deps: TriageFileDeps,
+): ToolArgs {
+  const perFileArgs: ToolArgs = {
+    // Clamp the per-file timeout to what is left of the sweep's budget, so
+    // one slow file cannot consume time the remaining files need.
+    timeoutMs:
+      typeof deps.args.timeoutMs === 'number'
+        ? Math.min(deps.args.timeoutMs, fileBudgetMs)
+        : fileBudgetMs,
+    mutatorDenylist: deps.args.mutatorDenylist,
+  };
+  // A2: include Stryker concurrency cap only for TypeScript files and only
+  // when the pool size is > 1 (strykerConcurrency is defined).
+  if (deps.strykerConcurrency !== undefined && projectType === 'typescript') {
+    perFileArgs.concurrency = deps.strykerConcurrency;
+  }
+  return perFileArgs;
+}
+
+/**
+ * Audit one file and return its outcome. NEVER throws: a per-file failure is a
+ * row in `errors[]`, never fatal to the sweep.
+ */
+export async function auditTriageFile(
+  file: string,
+  deps: TriageFileDeps,
+): Promise<TriageAuditOutcome> {
+  const ctx = deps.ctx;
+  try {
+    // Skip not-yet-started files quickly when already cancelled. (Task 6)
+    if (ctx?.signal?.aborted) {
+      return { error: { file, error: 'Operation cancelled.' } };
+    }
+    // The sweep's budget is spent. A file that never started is neither an
+    // error (nothing went wrong) nor a result (nothing was measured) — report
+    // it as unaudited so the caller can re-run for the remainder rather than
+    // read the ranking as covering everything it asked for.
+    const fileBudgetMs = deps.deadline.remainingMs(deps.cleanupReserveMs);
+    if (fileBudgetMs <= 0) return { unaudited: file };
+    const projectType = detectProjectType(file);
+    if (projectType === 'unsupported') {
+      return { error: { file, error: `Unsupported file type for ${file}` } };
+    }
+    const env = detectEnvironment(file);
+    const suppressionMap = suppressionsFor(env.workspaceRoot, deps);
+    const engine = makeEngine(projectType);
+
+    const { relFromRoot, targetFile } = anchorToWorkspace(
+      env.workspaceRoot,
+      resolve(deps.rootCwd, file),
+      file,
+    );
+
+    const perFileArgs = buildPerFileArgs(fileBudgetMs, projectType, deps);
+    const prebuildCmd = resolvePrebuildCommand(perFileArgs, env, projectType);
+    const scope = await resolveDiffScope(targetFile, env, projectType, fileBudgetMs, deps);
+
+    // audit C1: await the async createSandbox; forward the abort signal so
+    // a mid-copy cancel from the MCP client propagates into the file copy.
+    // Wrapped in try/catch so a sandbox-failure row can be returned to the
+    // pooling caller (instead of being thrown to the outer catch and aborting
+    // other in-flight audits via tool-promise rejection).
+    let sandbox: Awaited<ReturnType<typeof createSandbox>>;
+    try {
+      sandbox = await createSandbox(targetFile, env.workspaceRoot, undefined, {
+        signal: ctx?.signal,
+      });
+    } catch (error: unknown) {
+      // Cancellation (mid-CP reject or pre-aborted signal) must surface as a
+      // row with `error: 'Operation cancelled.'` so the caller can distinguish
+      // it from a real provisioning failure (which surfaces the file's `raw`
+      // error message). `mapCreateSandboxError` owns both strings for all three
+      // tools; unwrap its CallToolResult back into this row's error text.
+      return { error: { file, error: sandboxErrorText(error, file, ctx) } };
+    }
+    let result: MutationResult;
+    try {
+      result = await auditFile({
+        targetFile,
+        env,
+        projectType,
+        engine,
+        args: perFileArgs,
+        config: deps.cfg,
+        workDir: sandbox.workDir,
+        prebuildCmd,
+        lineRanges: scope.lineRanges,
+        signal: ctx?.signal, // Task 6: thread abort signal so in-flight subprocesses are killed
+      });
+    } finally {
+      sandbox.cleanup();
+    }
+
+    // Apply equivalent-mutant suppression before building the row. The key is
+    // relFromRoot — byte-identical to the key used by audit_code_resilience (Key
+    // Contract) so suppressions added via audit are honored in triage.
+    const sup = applySuppressions(result, suppressionMap.get(relFromRoot));
+
+    return {
+      row: buildTriageRow(
+        {
+          file,
+          result: sup.result,
+          relFromRoot,
+          projectType,
+          scopeNote: scope.scopeNote,
+          suppressedCount: sup.suppressedCount,
+        },
+        deps,
+      ),
+    };
+  } catch (error: unknown) {
+    // Audit C1 follow-up: an in-flight cancel (subprocess killed by the
+    // abort signal → ExecFailureError('ABORTED'), OR the signal flipped
+    // JUST as we entered this catch) must surface as 'Operation cancelled.'
+    // — NOT as the raw `'ABORT_ERR ...'` engine stderr text the caller
+    // can't branch on. Match the handler + estimate shapes exactly.
+    if (isCancel(error, ctx)) {
+      return { error: { file, error: 'Operation cancelled.' } };
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    return { error: { file, error: message } };
+  } finally {
+    // Advance progress counter in finally so even errored files are counted. (Task 6)
+    deps.onProgress();
+  }
+}
+
+/**
+ * The sandbox-failure text for a triage row, taken from the shared
+ * {@link mapCreateSandboxError} so triage cannot drift from the audit and
+ * estimate tools on the cancel/provisioning wording (that is the whole point of
+ * the helper). Triage reports per file rather than per call, so the shared
+ * `CallToolResult` is unwrapped back to its message here.
+ */
+function sandboxErrorText(error: unknown, file: string, ctx?: ToolContext): string {
+  const mapped = mapCreateSandboxError(error, file, ctx);
+  return (mapped.content as { text: string }[])[0].text;
+}

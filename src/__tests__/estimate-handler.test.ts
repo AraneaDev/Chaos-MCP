@@ -5,7 +5,7 @@ import type { CallToolRequest } from '@modelcontextprotocol/sdk/types.js';
 // Mock estimate functions before importing the handler.
 vi.mock('../estimate.js', () => ({
   estimateAudit: vi.fn(),
-  estimateNeedsSandbox: vi.fn().mockReturnValue(false),
+  estimateNeedsSandbox: vi.fn(() => false),
 }));
 
 // Partial mock: keep detectProjectType (real extension check), mock detectEnvironment.
@@ -91,12 +91,14 @@ const approxResult = {
 
 describe('handleEstimateCall', () => {
   // Pin cwd so boundary and relFile calculations are deterministic on every runner.
-  const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue('/workspace');
+  // `restoreMocks: true` un-installs this spy before every test, so it has to be
+  // re-installed per test rather than once at describe-collection time.
+  let cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue('/workspace');
   afterAll(() => cwdSpy.mockRestore());
 
   beforeEach(() => {
     vi.clearAllMocks();
-    cwdSpy.mockReturnValue('/workspace');
+    cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue('/workspace');
     cleanupSpy.mockReset();
     mockEstimateNeedsSandbox.mockReturnValue(false);
     mockDetectEnv.mockReturnValue(defaultEnv);
@@ -172,6 +174,10 @@ describe('handleEstimateCall', () => {
     expect(res.isError).toBe(true);
     expect(text(res)).toMatch(/not found/i);
     expect(text(res)).toContain('src/typo.ts');
+    // The second sentence is the actionable half: without it a caller who typed
+    // a cwd-relative path has no idea the path is resolved against the
+    // workspace root instead.
+    expect(text(res)).toContain('Paths are resolved relative to the workspace root.');
     expect(mockEstimateAudit).not.toHaveBeenCalled();
   });
 
@@ -335,6 +341,51 @@ describe('handleEstimateCall', () => {
     );
   });
 
+  it('reports a mid-flight cancellation as a cancel, not an engine failure', async () => {
+    // The pre-abort check above returns before the try block, so nothing else
+    // reaches the catch-side isCancel. A caller branches on this exact string to
+    // tell "I cancelled this" from "the estimate broke".
+    mockEstimateAudit.mockRejectedValueOnce(
+      Object.assign(new Error('aborted'), { name: 'AbortError' }),
+    );
+    const controller = new AbortController();
+
+    const res = await handleEstimateCall(req({ filePath: 'src/math.ts' }), undefined, {
+      signal: controller.signal,
+    });
+
+    expect(res.isError).toBe(true);
+    expect(text(res)).toBe('Operation cancelled.');
+  });
+
+  it('reports a genuine engine failure as halted, not as a cancel', async () => {
+    // The other arm of the same branch: without it, forcing isCancel to false
+    // is invisible because no test distinguishes the two messages.
+    mockEstimateAudit.mockRejectedValueOnce(new Error('engine exploded'));
+    const res = await handleEstimateCall(req({ filePath: 'src/math.ts' }));
+    expect(text(res)).toBe('Chaos Engine Halted: engine exploded');
+  });
+
+  it('hands the abort signal to createSandbox so provisioning is cancellable', async () => {
+    // The sandbox copy is the slowest part of a timed estimate; without the
+    // signal a cancel cannot interrupt it and the copy runs to completion with
+    // nobody waiting for it.
+    mockEstimateNeedsSandbox.mockReturnValue(true);
+    mockEstimateAudit.mockResolvedValue(approxResult);
+    const controller = new AbortController();
+
+    await handleEstimateCall(req({ filePath: 'src/math.ts' }), undefined, {
+      signal: controller.signal,
+    });
+
+    expect(mockCreateSandbox).toHaveBeenCalledWith(
+      'src/math.ts',
+      '/workspace',
+      undefined,
+      expect.objectContaining({ signal: controller.signal }),
+    );
+  });
+
   it('does not throw when ctx is supplied without a signal', async () => {
     // `ctx?.signal?.aborted` must stay null-safe when signal is absent (kills the
     // mutant that drops the optional chain after `.signal`).
@@ -358,6 +409,37 @@ describe('handleEstimateCall', () => {
     mockDetectEnv.mockReturnValue({ ...defaultEnv, workspaceRoot: '/workspace/pkg' });
     mockEstimateAudit.mockResolvedValue(approxResult);
     await handleEstimateCall(req({ filePath: 'src/math.ts' }));
+    expect(mockEstimateAudit).toHaveBeenCalledWith(
+      expect.objectContaining({ relFile: 'src/math.ts' }),
+    );
+  });
+
+  it('re-anchors the target to the workspace root in a monorepo', async () => {
+    // The whole point of the re-anchor: cwd is the package, but the workspace
+    // root is the repo, so the engine must be given the repo-relative path.
+    // Every other case in this file has rawFilePath === relFromRoot, so the two
+    // arms of the ternary return the same string and none of them can tell a
+    // working re-anchor from one that always falls back.
+    cwdSpy.mockReturnValue('/workspace/pkg');
+    mockDetectEnv.mockReturnValue({ ...defaultEnv, workspaceRoot: '/workspace' });
+    mockEstimateAudit.mockResolvedValue(approxResult);
+
+    await handleEstimateCall(req({ filePath: 'src/math.ts' }));
+
+    expect(mockEstimateAudit).toHaveBeenCalledWith(
+      expect.objectContaining({ relFile: 'pkg/src/math.ts' }),
+    );
+  });
+
+  it('falls back to the raw filePath when the target IS the workspace root', async () => {
+    // `relative()` returns '' for a path equal to the root. An empty relFile
+    // would reach the engine as "mutate nothing"; the length guard is what
+    // sends the raw path through instead.
+    mockDetectEnv.mockReturnValue({ ...defaultEnv, workspaceRoot: '/workspace/src/math.ts' });
+    mockEstimateAudit.mockResolvedValue(approxResult);
+
+    await handleEstimateCall(req({ filePath: 'src/math.ts' }));
+
     expect(mockEstimateAudit).toHaveBeenCalledWith(
       expect.objectContaining({ relFile: 'src/math.ts' }),
     );
@@ -391,6 +473,18 @@ describe('handleEstimateCall', () => {
     mockEstimateAudit.mockResolvedValue(approxResult);
     await handleEstimateCall(req({ filePath: 'src/math.ts' }), {
       defaultTimeoutMs: 'soon' as never,
+    });
+    expect(mockEstimateAudit).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 300_000 }));
+  });
+
+  it('rejects a NUMERIC STRING defaultTimeoutMs rather than passing it through', async () => {
+    // `'90000' > 0` is true, so the `> 0` half of the guard accepts it and only
+    // the typeof check stops it. Passing the string on would hand the engine a
+    // budget it compares numerically elsewhere — the classic JSON-config
+    // mistake this guard exists for.
+    mockEstimateAudit.mockResolvedValue(approxResult);
+    await handleEstimateCall(req({ filePath: 'src/math.ts' }), {
+      defaultTimeoutMs: '90000' as never,
     });
     expect(mockEstimateAudit).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 300_000 }));
   });

@@ -1,14 +1,27 @@
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { BaseEngine, RunOptions, MutationResult, Vulnerability } from './base.js';
-import { ExecFailureError } from '../utils/exec.js';
+import {
+  BaseEngine,
+  RunOptions,
+  MutationResult,
+  Vulnerability,
+  formatMutationScore,
+} from './base.js';
+import { ExecFailureError } from '../utils/exec-error.js';
 import { invokeMutationTool, MutationToolStartupError } from '../utils/exec-classify.js';
 import { log, isVerbose } from '../utils/logger.js';
 import { DEFAULT_TIMEOUT_MS } from '../utils/constants.js';
+import { AuditDeadline } from '../utils/deadline.js';
 
 /** Per-mutant test timeout written into the cosmic-ray config (seconds). */
 const DEFAULT_PER_MUTANT_TIMEOUT_S = 30;
+/**
+ * Floor below which starting another cosmic-ray subcommand is pointless — the
+ * process would be killed before it finished spawning. Mirrors the engine floor
+ * the handler applies to the audit as a whole (`MIN_ENGINE_BUDGET_MS`).
+ */
+const MIN_STEP_BUDGET_MS = 1_000;
 /** Sandbox-relative names for the generated config + session DB. */
 const CONFIG_NAME = 'chaos-cosmic-ray.toml';
 const SESSION_NAME = 'chaos-cosmic-ray.sqlite';
@@ -82,8 +95,18 @@ function extractDiffChange(diff: string): { original?: string; mutated?: string 
  *   is excluded from the denominator (not a real test gap), mirroring how
  *   StrykerJS handles compile errors.
  * - `result === null` → a pending job (exec interrupted); ignored.
+ *
+ * Returns the result alongside `completed` — the number of mutants that came
+ * back with ANY outcome. It is deliberately NOT a field on `MutationResult`
+ * (which is the public payload shape): the engine reads it to distinguish
+ * "no mutants enumerated" (a genuine 100%) from "mutants ran but none were
+ * scorable" (a broken test command). See the degenerate-run guard in
+ * {@link PythonEngine.run}.
  */
-export function parseCosmicRayDump(dumpText: string, filePath: string): MutationResult {
+export function parseCosmicRayDump(
+  dumpText: string,
+  filePath: string,
+): { result: MutationResult; completed: number } {
   let killed = 0;
   let survived = 0;
   let incompetent = 0;
@@ -120,6 +143,9 @@ export function parseCosmicRayDump(dumpText: string, filePath: string): Mutation
       const vuln: Vulnerability = {
         line,
         mutator: operator,
+        // cosmic-ray reports killed/survived/incompetent only — it has no
+        // "no test reached this line" outcome to distinguish.
+        kind: 'survived',
         description: `Surviving mutant (${operator}) at line ${line} bypassed the test suite. Your tests did not catch this change.`,
       };
       if (original !== undefined) vuln.original = original;
@@ -130,21 +156,19 @@ export function parseCosmicRayDump(dumpText: string, filePath: string): Mutation
   }
 
   const totalMutants = killed + survived;
-  const score = totalMutants > 0 ? ((killed / totalMutants) * 100).toFixed(2) : '100.00';
 
   return {
-    target: filePath,
-    totalMutants,
-    killed,
-    survived,
-    mutationScore: `${score}%`,
-    vulnerabilities,
-    incompetent,
-    // `completed` rides along on the result so the engine can distinguish
-    // "no mutants enumerated" (genuine 100%) from "mutants ran but none were
-    // scorable" (broken test command). Not part of the public payload.
-    ...(completed > 0 ? { _completed: completed } : {}),
-  } as MutationResult & { _completed?: number };
+    result: {
+      target: filePath,
+      totalMutants,
+      killed,
+      survived,
+      mutationScore: formatMutationScore(killed, totalMutants),
+      vulnerabilities,
+      incompetent,
+    },
+    completed,
+  };
 }
 
 /**
@@ -170,14 +194,67 @@ function probePythonInterpreter(): string | undefined {
   return 'python3';
 }
 
-/** Resolve the shell test-command cosmic-ray runs per mutant. */
-function resolveTestCommand(interpreter: string, options?: RunOptions): string {
+/**
+ * A bare executable name — letters, digits, and the few punctuation characters
+ * that appear in real binary names. Deliberately excludes whitespace and every
+ * shell metacharacter (`;`, `|`, `&`, `$`, backticks, redirects, parentheses),
+ * so a value matching this can only ever name a program to run: it cannot carry
+ * arguments, chain commands, or substitute a subshell.
+ */
+const BARE_EXECUTABLE_RE = /^[A-Za-z0-9._+-]+$/;
+
+/**
+ * Whether a test-runner string sourced from the AUDITED PROJECT may be used as
+ * a shell command verbatim.
+ *
+ * cosmic-ray executes `test-command` through a shell once per mutant, and one
+ * source of that string is the audited repository's own
+ * `pyproject.toml [tool.mutmut] runner` key — content Chaos-MCP does not
+ * control. Mutation testing inherently runs the project's test suite, so
+ * naming a test binary is in scope; accepting an arbitrary shell line from repo
+ * content is not, and it is the same hazard `prebuildCommand` is gated behind
+ * `allowPrebuild` for.
+ *
+ * A bare executable name is therefore accepted (the shape the mutmut key is
+ * meant to hold — `nose2`, `ward`, `green`); anything carrying arguments or
+ * shell syntax requires an explicit operator opt-in, via the
+ * `cosmicray.testRunner` config key (which is trusted, being the operator's own
+ * file) or `CHAOS_MCP_ALLOW_REPO_TEST_COMMAND=1`.
+ */
+export function isRepoTestCommandAllowed(runner: string): boolean {
+  if (BARE_EXECUTABLE_RE.test(runner)) return true;
+  const flag = process.env.CHAOS_MCP_ALLOW_REPO_TEST_COMMAND;
+  return flag === '1' || flag === 'true';
+}
+
+/**
+ * Resolve the shell test-command cosmic-ray runs per mutant.
+ *
+ * Throws when the resolved runner came from the audited project and is not a
+ * bare executable name — see {@link isRepoTestCommandAllowed}. Failing loudly
+ * beats silently substituting pytest, which would run a different suite than
+ * the project declared and quietly change what "survived" means.
+ */
+export function resolveTestCommand(interpreter: string, options?: RunOptions): string {
   const runner = options?.testRunner;
   // A custom non-pytest/unittest runner string is used verbatim as the command.
   let base: string;
   if (runner === 'unittest') base = `${interpreter} -m unittest`;
-  else if (runner && runner !== 'pytest' && !runner.includes('pytest')) base = runner;
-  else base = `${interpreter} -m pytest -x -q`;
+  else if (runner && runner !== 'pytest' && !runner.includes('pytest')) {
+    // `testRunnerTrusted` marks a runner that came from the operator's own
+    // config rather than from the workspace scan.
+    if (options?.testRunnerTrusted !== true && !isRepoTestCommandAllowed(runner)) {
+      throw new Error(
+        `Refusing to run the test command "${runner}" declared by the audited project ` +
+          `(pyproject.toml [tool.mutmut] runner). cosmic-ray executes it through a shell once per ` +
+          `mutant, and only a bare executable name is accepted from project files. ` +
+          `Set "cosmicray": { "testRunner": "…" } in your chaos-mcp.config.json to run it ` +
+          `deliberately, or set CHAOS_MCP_ALLOW_REPO_TEST_COMMAND=1 to trust project-declared ` +
+          `commands in this workspace.`,
+      );
+    }
+    base = runner;
+  } else base = `${interpreter} -m pytest -x -q`;
 
   const selection = options?.pythonTestSelection;
   if (selection && selection.length > 0) base += ` ${selection.join(' ')}`;
@@ -219,7 +296,12 @@ export class PythonEngine extends BaseEngine {
 
   async run(filePath: string, options?: RunOptions): Promise<MutationResult> {
     const cwd = options?.workDir ?? process.cwd();
-    const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    // `timeoutMs` is the budget for the WHOLE audit of this file, not for each
+    // sub-command: the caller already derived it from the audit-wide
+    // {@link AuditDeadline} (handler) or from the per-file triage clamp. The five
+    // sequential cosmic-ray invocations below therefore share one wall-clock
+    // budget — each gets what is left, not a fresh full timeout.
+    const budget = new AuditDeadline(options?.timeoutMs ?? DEFAULT_TIMEOUT_MS);
     const configPath = join(cwd, CONFIG_NAME);
     const sessionPath = join(cwd, SESSION_NAME);
 
@@ -247,7 +329,7 @@ export class PythonEngine extends BaseEngine {
     // spuriously "killed"; surface it instead of reporting a meaningless 100%.
     // NOTE: no `--session-file` — baseline would otherwise create the session DB,
     // and the subsequent `init` refuses a pre-existing session (exit 65).
-    await this.invoke(['baseline', configPath], cwd, timeoutMs, {
+    await this.invoke(['baseline', configPath], cwd, this.stepBudget(budget, 'baseline'), {
       onExecFailure: (e) =>
         new Error(
           `cosmic-ray baseline failed (exit ${e.exit}) before mutation testing began. ` +
@@ -259,7 +341,7 @@ export class PythonEngine extends BaseEngine {
     });
 
     // Step 2: init — enumerate mutants into the session DB (no tests run).
-    await this.invoke(['init', configPath, sessionPath], cwd, timeoutMs, {
+    await this.invoke(['init', configPath, sessionPath], cwd, this.stepBudget(budget, 'init'), {
       onExecFailure: (e) =>
         new Error(
           `cosmic-ray init failed (exit ${e.exit}): ${(e.stderr || e.message).slice(0, 500)}`,
@@ -275,7 +357,7 @@ export class PythonEngine extends BaseEngine {
     // with cosmic-ray. Skipped mutants are omitted from `dump`, so they simply
     // drop out of the score (a scoped audit). Only runs when a list is supplied.
     if (options?.pythonExcludeOperators && options.pythonExcludeOperators.length > 0) {
-      await this.invoke([sessionPath, configPath], cwd, timeoutMs, {
+      await this.invoke([sessionPath, configPath], cwd, this.stepBudget(budget, 'filter'), {
         command: 'cr-filter-operators',
         onExecFailure: (e) =>
           new Error(
@@ -287,7 +369,7 @@ export class PythonEngine extends BaseEngine {
     }
 
     // Step 3: exec — apply each mutant and run the test-command.
-    await this.invoke(['exec', configPath, sessionPath], cwd, timeoutMs, {
+    await this.invoke(['exec', configPath, sessionPath], cwd, this.stepBudget(budget, 'exec'), {
       onExecFailure: (e) =>
         new Error(
           `cosmic-ray exec failed (exit ${e.exit}): ${(e.stderr || e.message).slice(0, 500)}`,
@@ -297,7 +379,7 @@ export class PythonEngine extends BaseEngine {
     });
 
     // Step 4: dump — structured JSON results.
-    const dump = await this.invoke(['dump', sessionPath], cwd, timeoutMs, {
+    const dump = await this.invoke(['dump', sessionPath], cwd, this.stepBudget(budget, 'dump'), {
       onExecFailure: (e) =>
         new Error(
           `cosmic-ray dump failed (exit ${e.exit}): ${(e.stderr || e.message).slice(0, 500)}`,
@@ -306,9 +388,7 @@ export class PythonEngine extends BaseEngine {
       executor: options?.executor,
     });
 
-    const result = parseCosmicRayDump(dump.stdout, filePath) as MutationResult & {
-      _completed?: number;
-    };
+    const { result, completed } = parseCosmicRayDump(dump.stdout, filePath);
 
     // Degenerate-run guard. cosmic-ray's `baseline` returns exit 0 even when the
     // test binary is missing or collects nothing, so a broken run reaches here
@@ -319,9 +399,7 @@ export class PythonEngine extends BaseEngine {
     // every mutation") when in truth NO test ever ran. Detect it — mutants
     // completed, none were scorable — and fail loudly with the resolved command
     // so the operator can fix the interpreter / test-command. A genuinely tiny
-    // file with zero enumerated mutants has `_completed === 0` and is untouched.
-    const completed = result._completed ?? 0;
-    delete result._completed;
+    // file with zero enumerated mutants has `completed === 0` and is untouched.
     if (result.totalMutants === 0 && completed > 0) {
       throw new Error(
         `cosmic-ray ran ${completed} mutant(s) on ${filePath} but scored none of them — ` +
@@ -333,6 +411,31 @@ export class PythonEngine extends BaseEngine {
     }
 
     return result;
+  }
+
+  /**
+   * Wall-clock still available for the next cosmic-ray subcommand.
+   *
+   * A cosmic-ray audit is five sequential CLI invocations (baseline → init →
+   * filter → exec → dump). Handing each the caller's full `timeoutMs` would let
+   * one file occupy five times its budget, which defeats both the audit-wide
+   * {@link AuditDeadline} and the per-file clamp triage applies before a sweep.
+   * Passing the REMAINING budget instead keeps the whole run inside `timeoutMs`.
+   *
+   * Throws once too little is left to be worth spawning a process, so the
+   * failure names the phase that ran out rather than surfacing as an opaque
+   * sub-second timeout.
+   */
+  private stepBudget(budget: AuditDeadline, step: string): number {
+    const remaining = budget.remainingMs();
+    if (remaining < MIN_STEP_BUDGET_MS) {
+      throw new Error(
+        `cosmic-ray audit budget exhausted after ${budget.elapsedMs()}ms — only ${remaining}ms ` +
+          `left, too little to run \`${step}\`. Raise timeoutMs, or narrow the audit ` +
+          `(e.g. "cosmicray": { "excludeOperators": [...] }) so it fits the budget.`,
+      );
+    }
+    return remaining;
   }
 
   /**

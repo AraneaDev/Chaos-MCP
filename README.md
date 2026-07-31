@@ -16,7 +16,7 @@ Chaos-MCP is an [MCP (Model Context Protocol)](https://modelcontextprotocol.io/)
 ## Features
 
 - **4 Languages Supported** — TypeScript/JavaScript (StrykerJS), Python (cosmic-ray), Rust (cargo-mutants), PHP (Infection)
-- **Sandbox Isolation** — all mutation runs execute in temporary directories; your real workspace is never touched
+- **Sandbox Isolation** — all mutation runs execute in temporary directories; your real workspace is never touched. The target's real path is verified to live inside the sandbox before any engine runs, so a symlinked source file (or one under a symlinked directory) is refused rather than mutated in place through the link
 - **Pinned Container Runners** — release-matched OCI images provide all four mutation engines without installing them on the host
 - **Auto-Detection** — automatically detects project type, test runner, and workspace root
 - **Async Subprocesses** — all mutation-tool execution uses async `execFile`/`exec` (subprocess runs never block the event loop; the one-time sandbox copy is synchronous)
@@ -234,7 +234,7 @@ Add or strengthen tests targeting these lines to kill the survivors.
 | `concurrency`      | `number`                          | No       | Parallel mutation workers (StrykerJS only)                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `dryRun`           | `boolean`                         | No       | Validate test suite only, no mutations (StrykerJS only)                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `outputFormat`     | `"json"` \| `"text"`              | No       | Output format (default: `"json"`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `incremental`      | `boolean`                         | No       | Reuse previous run results (StrykerJS only)                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `incremental`      | `boolean`                         | No       | Reuse previous run results (StrykerJS only). State is cached per (workspace, file) OUTSIDE the sandbox — the sandbox is deleted after each run, so without that the option would have nothing to reuse                                                                                                                                                                                                                                                                                              |
 | `ignorePatterns`   | `string[]`                        | No       | Substring patterns to exclude from sandbox copy                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `enrich`           | `boolean`                         | No       | Annotate each survivor with severity, why-it-matters, a test hint, and source context — and rank severity-first. **Default: `true`** (pass `false` to disable and return plain unranked output). Richest for TypeScript; Python degrades to `severity: "unknown"`.                                                                                                                                                                                                                                  |
 | `maxSurvivors`     | `integer ≥ 1`                     | No       | Cap on how many survivor (and no-coverage) line groups are returned after severity ranking. Hidden groups counted in `survivorsTruncated`/`noCoverageTruncated`. Precedence: arg > `defaultMaxSurvivors` config > 10.                                                                                                                                                                                                                                                                               |
@@ -368,17 +368,18 @@ TypeScript files are mutated only on the changed lines; Python and Rust files ru
 
 **Parameters:**
 
-| Parameter          | Type                 | Description                                                                                                                                                                                                               |
-| ------------------ | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `paths`            | `string[]`           | Workspace-relative files/dirs to triage. Optional when `diffBase` is provided.                                                                                                                                            |
-| `maxFiles`         | `integer ≥ 1`        | Cap on files audited (precedence: arg → `defaultMaxFiles` config → 25).                                                                                                                                                   |
-| `timeoutMs`        | `number`             | Per-file mutation-run timeout in ms (default: 300000).                                                                                                                                                                    |
-| `mutatorDenylist`  | `string[]`           | Stryker mutator names to exclude, applied to every TypeScript/JS file.                                                                                                                                                    |
-| `outputFormat`     | `"json"` \| `"text"` | Output format (default: `"json"`).                                                                                                                                                                                        |
-| `diffBase`         | `string`             | Auto-scope to git-changed files. `"HEAD"`, `"staged"`, or any git ref/SHA. Makes `paths` optional; with `paths`, intersects changed files under those paths. TypeScript: changed lines only. Other languages: whole-file. |
-| `survivorsPerFile` | `integer ≥ 0`        | Inline top-N enriched survivors per ranked file (default `0` = scores-only).                                                                                                                                              |
-| `fileConcurrency`  | `integer 1–64`       | Files audited in parallel (default `max(1, min(4, cpus-1))`). Per-file StrykerJS worker count is automatically capped (TypeScript/StrykerJS only; other engines ignore the worker-count cap).                             |
-| `minScore`         | `number 0–100`       | Gate threshold. Per-row `passed` field + top-level `gate: { minScore, passed, failingFiles }` in output. Never an error.                                                                                                  |
+| Parameter          | Type                 | Description                                                                                                                                                                                                                   |
+| ------------------ | -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `paths`            | `string[]`           | Workspace-relative files/dirs to triage. Optional when `diffBase` is provided.                                                                                                                                                |
+| `maxFiles`         | `integer ≥ 1`        | Cap on files audited (precedence: arg → `defaultMaxFiles` config → 25).                                                                                                                                                       |
+| `timeoutMs`        | `number > 0`         | Per-file mutation-run timeout in ms (default: 300000). Also clamped by whatever remains of `totalTimeoutMs`.                                                                                                                  |
+| `totalTimeoutMs`   | `number > 0`         | Wall-clock budget for the whole sweep (default: 900000 = 15 min). Files not started before it runs out are returned in `unaudited` with `stoppedReason: "time_budget_exhausted"`, so a large sweep still returns its ranking. |
+| `mutatorDenylist`  | `string[]`           | Stryker mutator names to exclude, applied to every TypeScript/JS file.                                                                                                                                                        |
+| `outputFormat`     | `"json"` \| `"text"` | Output format (default: `"json"`).                                                                                                                                                                                            |
+| `diffBase`         | `string`             | Auto-scope to git-changed files. `"HEAD"`, `"staged"`, or any git ref/SHA. Makes `paths` optional; with `paths`, intersects changed files under those paths. TypeScript: changed lines only. Other languages: whole-file.     |
+| `survivorsPerFile` | `integer ≥ 0`        | Inline top-N enriched survivors per ranked file (default `0` = scores-only).                                                                                                                                                  |
+| `fileConcurrency`  | `integer 1–64`       | Files audited in parallel (default `max(1, min(4, cpus-1))`). Per-file StrykerJS worker count is automatically capped (TypeScript/StrykerJS only; other engines ignore the worker-count cap).                                 |
+| `minScore`         | `number 0–100`       | Gate threshold. Per-row `passed` field + top-level `gate: { minScore, passed, failingFiles }` in output. Never an error. A row whose audit was cut short (`complete: false`) fails the gate regardless of its score.          |
 
 ## Pre-flight Estimate — `estimate_audit`
 
@@ -547,7 +548,8 @@ sandbox may be mounted separately and read-only, as described below.
     "cpus": 2,
     "memoryMb": 4096,
     "pidsLimit": 512,
-    "startupTimeoutMs": 60000
+    "startupTimeoutMs": 60000,
+    "tmpfsSizeMb": 2048
   }
 }
 ```
@@ -561,16 +563,17 @@ Modes:
 
 Container settings:
 
-| Key                | Type                          | Default                   | Description                                                                   |
-| ------------------ | ----------------------------- | ------------------------- | ----------------------------------------------------------------------------- |
-| `mode`             | `native \| container \| auto` | `native`                  | Select the execution backend or runtime-only fallback behavior                |
-| `runtime`          | `docker \| podman`            | `docker`                  | OCI-compatible command used to create and manage audit containers             |
-| `network`          | `string`                      | `bridge`                  | Container network mode or name; use `none` when project tests need no network |
-| `cpus`             | positive number               | `2`                       | CPU limit for each audit container                                            |
-| `memoryMb`         | positive integer              | `4096`                    | Memory limit in MiB for each audit container                                  |
-| `pidsLimit`        | positive integer              | `512`                     | Maximum number of processes in each audit container                           |
-| `startupTimeoutMs` | positive integer              | 60 s startup; 10 s probe  | Override the timeout for runtime probing, container creation, and startup     |
-| `images`           | per-language image map        | release-matched GHCR tags | Override the `typescript`, `python`, `rust`, or `php` image                   |
+| Key                | Type                          | Default                   | Description                                                                                                                                                                                                                |
+| ------------------ | ----------------------------- | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mode`             | `native \| container \| auto` | `native`                  | Select the execution backend or runtime-only fallback behavior                                                                                                                                                             |
+| `runtime`          | `docker \| podman`            | `docker`                  | OCI-compatible command used to create and manage audit containers                                                                                                                                                          |
+| `network`          | `string`                      | `bridge`                  | Container network mode or name; use `none` when project tests need no network                                                                                                                                              |
+| `cpus`             | positive number               | `2`                       | CPU limit for each audit container                                                                                                                                                                                         |
+| `memoryMb`         | positive integer              | `4096`                    | Memory limit in MiB for each audit container                                                                                                                                                                               |
+| `pidsLimit`        | positive integer              | `512`                     | Maximum number of processes in each audit container                                                                                                                                                                        |
+| `startupTimeoutMs` | positive integer              | 60 s startup; 10 s probe  | Override the timeout for runtime probing, container creation, and startup                                                                                                                                                  |
+| `tmpfsSizeMb`      | positive integer              | `2048`                    | Size of the writable `/tmp`. The container root filesystem is read-only and host dependency directories are mounted read-only, so `/tmp` holds every toolchain cache (Cargo registry, npm cache, per-mutant working files) |
+| `images`           | per-language image map        | release-matched GHCR tags | Override the `typescript`, `python`, `rust`, or `php` image                                                                                                                                                                |
 
 The images pin the language runtime and mutation engine, while the project
 still supplies its own test dependencies. Existing sandbox dependency
@@ -624,6 +627,31 @@ govern the mutation audit itself.
 ### Enabling `prebuildCommand`
 
 The `prebuildCommand` tool argument runs an arbitrary shell command inside the sandbox, which can reach outside it. It is **disabled by default**. Enable it explicitly with `"allowPrebuild": true` in `chaos-mcp.config.json`, or by setting the `CHAOS_MCP_ALLOW_PREBUILD=1` environment variable. The auto-detected prebuild for Rust (`cargo check`) runs without this flag.
+
+### Python test commands declared by the audited project
+
+Mutation testing runs the audited project's test suite — that is the job. But
+the Python engine resolves its test command partly from the **audited
+project's own** `pyproject.toml`, via the `[tool.mutmut] runner` key, and
+cosmic-ray executes that string through a shell once per mutant. Accepting an
+arbitrary command line from repository content is the same hazard
+`prebuildCommand` is gated for, so it is bounded the same way:
+
+- A **bare executable name** (`nose2`, `ward`, `green`) is accepted. It can name
+  a program to run and nothing else — no arguments, no `;`, `|`, `&&`, `$(...)`,
+  or redirects.
+- Anything else is **refused with an explanation** rather than silently replaced
+  with pytest, which would quietly change which tests can kill a mutant.
+
+To run such a command deliberately, either set it in **your** config (which is
+trusted, being your file):
+
+```json
+{ "cosmicray": { "testRunner": "python -m unittest discover" } }
+```
+
+or set `CHAOS_MCP_ALLOW_REPO_TEST_COMMAND=1` to trust project-declared commands
+in this workspace.
 
 ### Auditing workspaces outside the working directory
 

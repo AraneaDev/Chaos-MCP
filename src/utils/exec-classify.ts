@@ -1,4 +1,5 @@
-import { ExecResult, ExecFailureError, runShell } from './exec.js';
+import { ExecResult, ExecFailureError } from './exec-error.js';
+import { runShell } from './exec.js';
 import { DEFAULT_TIMEOUT_MS } from './constants.js';
 import type { ExecutionSession } from './execution.js';
 
@@ -81,6 +82,19 @@ export async function invokeMutationTool(
       throw new MutationToolStartupError(
         tool,
         `${tool} is not installed. Install it with: ${INSTALL_HINTS[tool]}`,
+      );
+    }
+
+    // The tool outran the output cap, so the captured stream is truncated.
+    // This MUST fail the run rather than fall through: every engine's parser
+    // reads that stream as a complete report, and a truncated one yields a
+    // confident wrong score (cargo-mutants loses its authoritative summary
+    // line and the text parser then reports 0%) instead of an error.
+    if (error.code === 'OUTPUT_TRUNCATED') {
+      throw new MutationToolStartupError(
+        tool,
+        `${tool} produced more output than Chaos-MCP can capture, so its results were truncated and cannot be scored. ` +
+          `Narrow the run (lineScope/diffBase, or a smaller target file) and re-audit.`,
       );
     }
 

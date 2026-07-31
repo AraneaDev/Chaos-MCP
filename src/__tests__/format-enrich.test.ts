@@ -114,6 +114,44 @@ describe('formatResultAsJson with enrich', () => {
     expect(out.survivors[1].line).toBe(10);
   });
 
+  it('breaks a severity tie by line number, ascending', () => {
+    // Same mutator on both lines, so severity cannot separate them and the
+    // secondary `a.line - b.line` key is the only thing ordering the report.
+    // Swapped for `+` it returns a positive number for every pair, which
+    // reorders equally-severe findings arbitrarily — and a reader working top
+    // to bottom through a file has no idea the list is not in file order.
+    const result: MutationResult = {
+      ...RESULT,
+      vulnerabilities: [
+        {
+          line: 50,
+          mutator: 'EqualityOperator',
+          description: 'survived',
+          original: 'a > b',
+          mutated: 'a >= b',
+        },
+        {
+          line: 10,
+          mutator: 'EqualityOperator',
+          description: 'survived',
+          original: 'c > d',
+          mutated: 'c >= d',
+        },
+        {
+          line: 30,
+          mutator: 'EqualityOperator',
+          description: 'survived',
+          original: 'e > f',
+          mutated: 'e >= f',
+        },
+      ],
+    };
+    const out = JSON.parse(
+      formatResultAsJson(result, { projectType: 'typescript', sourceLines: SRC }),
+    );
+    expect(out.survivors.map((g: { line: number }) => g.line)).toEqual([10, 30, 50]);
+  });
+
   it('sets worstSeverity from noCoverage groups when there are no survivors', () => {
     // worstSeverity now considers noCoverage too — a noCoverage-only result
     // that has high-severity groups (EqualityOperator → high) must report it.

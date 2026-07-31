@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 
 import { isCancel } from '../utils/cancel.js';
-import { ExecFailureError } from '../utils/exec.js';
+import { ExecFailureError } from '../utils/exec-error.js';
 import type { ToolContext } from '../tool-context.js';
 
 /**

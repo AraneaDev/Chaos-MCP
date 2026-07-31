@@ -12,11 +12,12 @@ vi.mock('child_process', async (importOriginal) => {
 
 vi.mock('../utils/logger.js', () => ({
   log: vi.fn(),
-  isVerbose: vi.fn().mockReturnValue(false),
+  isVerbose: vi.fn(() => false),
 }));
 
 import { execFile, exec } from 'child_process';
-import { killProcessTree, runShell, runShellCommand } from '../utils/exec.js';
+import { runShell, runShellCommand } from '../utils/exec.js';
+import { killProcessTree } from '../utils/process-reaper.js';
 
 describe('process-tree termination', () => {
   it('kills a Unix process group and returns without killing the child twice', () => {
@@ -533,6 +534,103 @@ describe('abort classification (audit M5)', () => {
       code: 'ABORTED',
       message: expect.stringContaining('cargo'),
     });
+  });
+
+  // The three cancel signals are checked as one `||` chain, and the case above
+  // sets code AND name together — so either clause alone satisfies it and
+  // neither can be shown to matter. These split them apart. The third has
+  // NEITHER marker on the error and relies solely on the caller's AbortSignal,
+  // which is the shape Node produces when the abort races the child's own exit.
+
+  it('runShell treats an ABORT_ERR code alone as a cancellation', async () => {
+    vi.mocked(execFile).mockImplementationOnce(((
+      _f: string,
+      _a: string[],
+      _opts: Record<string, unknown>,
+      cb: (e: unknown, o: string, er: string) => void,
+    ) => {
+      cb(Object.assign(new Error('aborted'), { code: 'ABORT_ERR' }), '', '');
+      return {} as cpType.ChildProcess;
+    }) as never);
+
+    await expect(runShell('cargo', ['mutants'])).rejects.toMatchObject({ code: 'ABORTED' });
+  });
+
+  it('runShell treats an AbortError NAME alone as a cancellation', async () => {
+    vi.mocked(execFile).mockImplementationOnce(((
+      _f: string,
+      _a: string[],
+      _opts: Record<string, unknown>,
+      cb: (e: unknown, o: string, er: string) => void,
+    ) => {
+      cb(Object.assign(new Error('aborted'), { name: 'AbortError' }), '', '');
+      return {} as cpType.ChildProcess;
+    }) as never);
+
+    await expect(runShell('cargo', ['mutants'])).rejects.toMatchObject({ code: 'ABORTED' });
+  });
+
+  it('runShell treats an already-aborted signal as a cancellation, whatever the error looks like', async () => {
+    vi.mocked(execFile).mockImplementationOnce(((
+      _f: string,
+      _a: string[],
+      _opts: Record<string, unknown>,
+      cb: (e: unknown, o: string, er: string) => void,
+    ) => {
+      // A plain failure with no abort markers at all — what Node reports when
+      // the abort lands as the child is already exiting.
+      cb(Object.assign(new Error('boom'), { code: 1 }), '', 'died');
+      return {} as cpType.ChildProcess;
+    }) as never);
+
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      runShell('cargo', ['mutants'], { signal: controller.signal }),
+    ).rejects.toMatchObject({ code: 'ABORTED' });
+  });
+
+  it('runShellCommand treats an ABORT_ERR code alone as a cancellation', async () => {
+    vi.mocked(exec).mockImplementationOnce(((
+      _c: string,
+      _opts: Record<string, unknown>,
+      cb: (e: unknown, o: string, er: string) => void,
+    ) => {
+      cb(Object.assign(new Error('aborted'), { code: 'ABORT_ERR' }), '', '');
+      return {} as cpType.ChildProcess;
+    }) as never);
+
+    await expect(runShellCommand('cargo mutants')).rejects.toMatchObject({ code: 'ABORTED' });
+  });
+
+  it('runShellCommand treats an AbortError NAME alone as a cancellation', async () => {
+    vi.mocked(exec).mockImplementationOnce(((
+      _c: string,
+      _opts: Record<string, unknown>,
+      cb: (e: unknown, o: string, er: string) => void,
+    ) => {
+      cb(Object.assign(new Error('aborted'), { name: 'AbortError' }), '', '');
+      return {} as cpType.ChildProcess;
+    }) as never);
+
+    await expect(runShellCommand('cargo mutants')).rejects.toMatchObject({ code: 'ABORTED' });
+  });
+
+  it('runShellCommand treats an already-aborted signal as a cancellation', async () => {
+    vi.mocked(exec).mockImplementationOnce(((
+      _c: string,
+      _opts: Record<string, unknown>,
+      cb: (e: unknown, o: string, er: string) => void,
+    ) => {
+      cb(Object.assign(new Error('boom'), { code: 1 }), '', 'died');
+      return {} as cpType.ChildProcess;
+    }) as never);
+
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      runShellCommand('cargo mutants', { signal: controller.signal }),
+    ).rejects.toMatchObject({ code: 'ABORTED' });
   });
 
   it('runShellCommand classifies an aborted child (code ABORT_ERR) as code "ABORTED"', async () => {

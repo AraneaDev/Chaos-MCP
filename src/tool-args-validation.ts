@@ -1,15 +1,40 @@
 import { validateMinScore } from './gate.js';
+import { MAX_TIMEOUT_MS } from './utils/constants.js';
 
 /** Tool-call arguments object (untyped MCP payload). */
 export type ToolArgs = Record<string, unknown>;
 
-/** perMutantTimeoutMs: must be a positive number. */
+/**
+ * timeoutMs: must be a positive number no larger than MAX_TIMEOUT_MS.
+ *
+ * Previously unvalidated, and the resolver only accepts `number > 0` — so
+ * `timeoutMs: -1`, `0`, `NaN`, or `"60000"` silently fell back to the 5-minute
+ * default while the caller believed the run was capped. Every other argument
+ * here rejects malformed input rather than ignoring it; this one now matches.
+ */
+function validateTimeoutMs(args: ToolArgs): string | null {
+  if (
+    args.timeoutMs !== undefined &&
+    (typeof args.timeoutMs !== 'number' || !(args.timeoutMs > 0))
+  ) {
+    return 'timeoutMs must be a positive number. Example: 120000.';
+  }
+  if (typeof args.timeoutMs === 'number' && args.timeoutMs > MAX_TIMEOUT_MS) {
+    return `timeoutMs must be <= ${MAX_TIMEOUT_MS} (the largest delay a timer accepts; larger values are clamped to 1ms and abort the run immediately). Example: 120000.`;
+  }
+  return null;
+}
+
+/** perMutantTimeoutMs: must be a positive number no larger than MAX_TIMEOUT_MS. */
 function validatePerMutantTimeoutMs(args: ToolArgs): string | null {
   if (
     args.perMutantTimeoutMs !== undefined &&
     (typeof args.perMutantTimeoutMs !== 'number' || args.perMutantTimeoutMs <= 0)
   ) {
     return 'perMutantTimeoutMs must be a positive number. Example: 10000.';
+  }
+  if (typeof args.perMutantTimeoutMs === 'number' && args.perMutantTimeoutMs > MAX_TIMEOUT_MS) {
+    return `perMutantTimeoutMs must be <= ${MAX_TIMEOUT_MS} (the largest delay a timer accepts; larger values are clamped to 1ms and abort the run immediately). Example: 10000.`;
   }
   return null;
 }
@@ -208,14 +233,30 @@ function validateOutputFormatArg(args: ToolArgs): string | null {
   return null;
 }
 
-/** runId (verify-from-cache): non-empty string, mutually exclusive with baseline/diffBase/lineScope. */
+/**
+ * The exact shape `saveRun` mints: the first 8 characters of a UUID, so
+ * lowercase hex only. Pinning it here keeps a caller-supplied id from being
+ * used as a path fragment — `loadRun` interpolates it into a filename, and a
+ * value like `../../etc/whatever` would otherwise escape the cache directory
+ * and read an arbitrary JSON file (verified reproducible before this guard).
+ */
+const RUN_ID_RE = /^[0-9a-f]{8}$/;
+
+/** runId (verify-from-cache): minted-shape id, mutually exclusive with baseline/diffBase/lineScope. */
 function validateRunIdArg(args: ToolArgs): string | null {
   if (args.runId === undefined) return null;
   if (typeof args.runId !== 'string' || args.runId.trim().length === 0) {
     return 'runId must be a non-empty string returned by a prior audit. Example: "a1b2c3d4".';
   }
+  // Mutual exclusion is reported before the format check: when a caller passes
+  // both runId and baseline, "use only one at a time" is the actionable
+  // message, and complaining about the id's shape first would send them off
+  // fixing the wrong argument.
   if (args.baseline !== undefined || args.diffBase !== undefined || args.lineScope !== undefined) {
     return 'runId is mutually exclusive with baseline, diffBase, and lineScope — use only one at a time.';
+  }
+  if (!RUN_ID_RE.test(args.runId)) {
+    return 'runId must be an 8-character lowercase hex id returned by a prior audit. Example: "a1b2c3d4".';
   }
   return null;
 }
@@ -263,11 +304,34 @@ function validateMinScoreArg(args: ToolArgs): string | null {
   return validateMinScore(args.minScore);
 }
 
+/**
+ * ignorePatterns: an array of strings (M7).
+ *
+ * Non-string elements are rejected explicitly rather than silently filtered
+ * out — a caller who passes `[".test.ts", 123]` otherwise gets a sandbox that
+ * quietly ignores half of what they asked for. This rule used to be inlined in
+ * `handleToolCall`, ahead of the validator loop; it now lives with every other
+ * per-argument rule. Kept FIRST in the list so it still leads the combined
+ * message when several arguments are malformed at once.
+ */
+function validateIgnorePatternsArg(args: ToolArgs): string | null {
+  if (args.ignorePatterns === undefined) return null;
+  if (
+    !Array.isArray(args.ignorePatterns) ||
+    args.ignorePatterns.some((v) => typeof v !== 'string')
+  ) {
+    return 'ignorePatterns must be an array of strings. Example: [".test.ts", "fixtures/"].';
+  }
+  return null;
+}
+
 /** Ordered per-field validators run by `validateToolArgs`.
  *  Each validator returns an error message OR null; `validateToolArgs`
  *  accumulates ALL failures (M2) and returns a single combined message so the
  *  caller doesn't have to fix-retry one error at a time. */
 export const TOOL_ARG_VALIDATORS: ((args: ToolArgs) => string | null)[] = [
+  validateIgnorePatternsArg, // first: it was checked ahead of this loop before it moved here
+  validateTimeoutMs,
   validatePerMutantTimeoutMs,
   validatePrebuildCommand,
   validateConcurrencyArg,

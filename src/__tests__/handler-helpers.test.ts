@@ -4,16 +4,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 vi.mock('fs', () => ({ existsSync: vi.fn(() => false) }));
 
 import { existsSync } from 'fs';
-import {
-  validateToolArgs,
-  buildRunOptions,
-  buildVitestRelatedCommand,
-  quoteCommandArg,
-  resolveAuditTimeoutMs,
-  resolvePrebuildCommand,
-  auditFile,
-  isPrebuildAllowed,
-} from '../handler.js';
+import { validateToolArgs } from '../handler.js';
+import { buildRunOptions, resolveAuditTimeoutMs, isPrebuildAllowed } from '../audit/run-options.js';
+import { auditFile } from '../audit/audit-file.js';
+import { buildVitestRelatedCommand, quoteCommandArg } from '../utils/shell-quote.js';
+import { resolvePrebuildCommand } from '../engines/registry.js';
 import type { EnvironmentInfo } from '../utils/project-detector.js';
 
 const mockExistsSync = vi.mocked(existsSync);
@@ -604,12 +599,13 @@ describe('buildRunOptions — mutation hardening', () => {
     ).toBe('json');
   });
 
-  it('filters non-string entries out of ignorePatterns', () => {
-    // Kills the dropped `.filter` and `typeof v === 'string' → true` mutants.
+  it('does not forward ignorePatterns to the engine', () => {
+    // ignorePatterns is consumed by createSandbox (it selects what the sandbox
+    // COPY excludes) and by nothing else. Populating it on RunOptions as well
+    // implied engines applied it too, which none ever did.
     expect(
-      buildRunOptions({ ignorePatterns: ['a', 1, 'b', null] }, {}, env(), '/sb', 'typescript')
-        .ignorePatterns,
-    ).toEqual(['a', 'b']);
+      buildRunOptions({ ignorePatterns: ['a', 'b'] }, {}, env(), '/sb', 'typescript'),
+    ).not.toHaveProperty('ignorePatterns');
   });
 
   it('rejects an out-of-range args.concurrency of 0 in favour of the config fallback', () => {

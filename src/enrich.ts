@@ -6,7 +6,7 @@
  * calling agent does the creative test-writing; this module hands it structured
  * context. Keyed by canonical category so the strings are stable and testable.
  */
-import type { SupportedProjectType } from './engines/registry.js';
+import type { SupportedProjectType } from './utils/project-detector.js';
 
 export type Severity = 'high' | 'medium' | 'low' | 'unknown';
 

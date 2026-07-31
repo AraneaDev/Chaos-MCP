@@ -3,18 +3,18 @@ set -euo pipefail
 
 # ─── Chaos-MCP Easy Installer ────────────────────────────────────────────────
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/codebuff/chaos-mcp/master/scripts/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/AraneaDev/Chaos-MCP/master/scripts/install.sh | bash
 #   # or locally:
 #   bash scripts/install.sh
 #
 # What it does:
 #   1. Checks OS (Linux / macOS)
-#   2. Checks Node.js >= 18
+#   2. Checks Node.js >= 22
 #   3. Installs chaos-mcp globally via npm
 #   4. Verifies the installation
 #   5. Prints quick-start guidance
 
-readonly MIN_NODE_VERSION="18.0.0"
+readonly MIN_NODE_VERSION="22.0.0"
 readonly PACKAGE_NAME="chaos-mcp"
 
 # ── Colors ────────────────────────────────────────────────────────────────────
@@ -159,6 +159,6 @@ echo '        "args": ["--verbose"]'
 echo '      }'
 echo '    }'
 echo ""
-echo "  Docs:  https://github.com/codebuff/chaos-mcp"
-echo "         https://codebuff.com/docs"
+echo "  Docs:  https://github.com/AraneaDev/Chaos-MCP"
+echo "         https://github.com/AraneaDev/Chaos-MCP"
 echo ""

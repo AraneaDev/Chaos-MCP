@@ -22,14 +22,18 @@ vi.mock('../utils/exec.js', async (importOriginal) => {
 
 vi.mock('../utils/logger.js', () => ({ warn: vi.fn() }));
 
-import { ExecFailureError, runShell, runShellCommand } from '../utils/exec.js';
+import { runShell, runShellCommand } from '../utils/exec.js';
+import { ExecFailureError } from '../utils/exec-error.js';
 import {
   _resetExecutionCaches,
   CONTAINER_IMAGE_VERSION,
   createExecutionSession,
   defaultContainerImage,
+  discoverSitePackages,
   inspectContainerRuntime,
+  SHARED_DEPENDENCY_DIRS,
 } from '../utils/execution.js';
+import { dependencyDirectories } from '../engines/registry.js';
 import { warn } from '../utils/logger.js';
 
 const ok = (stdout = '') => ({ stdout, stderr: '', exit: 0, signal: null }) as const;
@@ -134,6 +138,186 @@ describe('execution sessions', () => {
     expect(runShell).toHaveBeenCalledTimes(1);
   });
 
+  it('re-probes the runtime once the cached result has expired', async () => {
+    // The cache exists so a triage sweep does not run `docker version` per file,
+    // but a daemon that dies mid-sweep must not stay "available" forever. With
+    // the age check forced true, a single early success would be trusted for the
+    // rest of the process's life.
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date(1_000_000));
+      vi.mocked(runShell).mockResolvedValue(ok('27.0.0'));
+
+      await createExecutionSession('typescript', '/tmp/one', { mode: 'container' });
+      expect(runShell).toHaveBeenCalledTimes(1);
+
+      // Still inside the 30s window: served from cache.
+      vi.setSystemTime(new Date(1_000_000 + 29_999));
+      await createExecutionSession('typescript', '/tmp/two', { mode: 'container' });
+      expect(runShell).toHaveBeenCalledTimes(1);
+
+      // Exactly ON the TTL the entry is stale — the comparison is `<`, not `<=`.
+      vi.setSystemTime(new Date(1_000_000 + 30_000));
+      await createExecutionSession('typescript', '/tmp/three', { mode: 'container' });
+      expect(runShell).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('provisions a fresh container for a command issued after a dispose', async () => {
+    // `dispose()` removes the container, so the id it used is gone — and so is
+    // the container itself. A session that is used again must create a new one:
+    // exec-ing against the removed container (or against the session name, which
+    // now resolves to nothing) fails with a bare exit 1 that the engines
+    // misreport as a mutation-tool configuration error.
+    vi.mocked(runShell)
+      .mockResolvedValueOnce(ok('27.0.0'))
+      .mockResolvedValueOnce(ok('container-id\n'))
+      .mockResolvedValueOnce(ok('container-id\n'))
+      .mockResolvedValueOnce(ok('first'))
+      .mockResolvedValueOnce(ok())
+      .mockResolvedValueOnce(ok('second-id\n'))
+      .mockResolvedValueOnce(ok())
+      .mockResolvedValueOnce(ok('later'))
+      .mockResolvedValue(ok());
+
+    const session = await createExecutionSession('typescript', '/tmp/work', {
+      mode: 'container',
+    });
+    await session.run('tool', ['arg']);
+    await session.dispose();
+
+    expect((await session.run('tool', ['again'])).stdout).toBe('later');
+    await session.dispose();
+
+    const calls = vi.mocked(runShell).mock.calls;
+    expect(calls.map((call) => call[1]?.[0])).toEqual([
+      'version',
+      'create',
+      'start',
+      'exec',
+      'rm',
+      'create',
+      'start',
+      'exec',
+      'rm',
+    ]);
+    // The replacement exec targets the new container, never the removed one.
+    expect(calls[7]?.[1]).toEqual([
+      'exec',
+      '--workdir',
+      '/workspace',
+      'second-id',
+      'tool',
+      'again',
+    ]);
+    // And the restarted session is itself disposable again.
+    expect(calls[8]?.[1]).toEqual(['rm', '-f', 'second-id']);
+    expect(calls.slice(5).every((call) => !(call[1] ?? []).includes('container-id'))).toBe(true);
+  });
+
+  it('re-provisions after a timed-out command destroys the container', async () => {
+    // The reachable path: `run()` disposes on TIMEOUT, and
+    // TypeScriptEngine.runBatched swallows that timeout and runs the next batch
+    // through the very same session.
+    vi.mocked(runShell)
+      .mockResolvedValueOnce(ok('27.0.0'))
+      .mockResolvedValueOnce(ok('cid'))
+      .mockResolvedValueOnce(ok())
+      .mockRejectedValueOnce(
+        new ExecFailureError(
+          { stdout: '', stderr: '', exit: null, signal: 'SIGKILL', code: 'TIMEOUT' },
+          'timeout',
+        ),
+      )
+      .mockResolvedValueOnce(ok())
+      .mockResolvedValueOnce(ok('cid-2'))
+      .mockResolvedValueOnce(ok())
+      .mockResolvedValueOnce(ok('batch two'));
+    const session = await createExecutionSession('typescript', '/tmp/work', {
+      mode: 'container',
+    });
+
+    await expect(session.run('stryker', ['batch-one'])).rejects.toMatchObject({
+      code: 'TIMEOUT',
+    });
+    expect(vi.mocked(runShell).mock.calls[4]?.[1]).toEqual(['rm', '-f', 'cid']);
+
+    expect((await session.run('stryker', ['batch-two'])).stdout).toBe('batch two');
+    expect(vi.mocked(runShell).mock.calls[5]?.[1]?.[0]).toBe('create');
+    expect(vi.mocked(runShell).mock.calls[7]?.[1]).toEqual([
+      'exec',
+      '--workdir',
+      '/workspace',
+      'cid-2',
+      'stryker',
+      'batch-two',
+    ]);
+  });
+
+  it('does not leak the old abort listener across a dispose and restart', async () => {
+    const controller = new AbortController();
+    const addListener = vi.spyOn(controller.signal, 'addEventListener');
+    const removeListener = vi.spyOn(controller.signal, 'removeEventListener');
+    vi.mocked(runShell)
+      .mockResolvedValueOnce(ok('27.0.0'))
+      .mockResolvedValueOnce(ok('cid'))
+      .mockResolvedValueOnce(ok())
+      .mockResolvedValueOnce(ok())
+      .mockResolvedValueOnce(ok())
+      .mockResolvedValueOnce(ok('cid-2'))
+      .mockResolvedValue(ok());
+    const session = await createExecutionSession(
+      'rust',
+      '/tmp/work',
+      { mode: 'container' },
+      controller.signal,
+    );
+
+    await session.run('cargo', ['check']);
+    await session.dispose();
+    expect(removeListener).toHaveBeenCalledTimes(1);
+    await session.run('cargo', ['test']);
+
+    // Exactly one listener per provisioned container — the disposed one was
+    // removed, so the abort below tears down only the current container.
+    expect(addListener).toHaveBeenCalledTimes(2);
+    controller.abort();
+    await vi.waitFor(() => {
+      expect(vi.mocked(runShell).mock.calls.filter((call) => call[1]?.[0] === 'rm')).toHaveLength(
+        2,
+      );
+    });
+    const removals = vi.mocked(runShell).mock.calls.filter((call) => call[1]?.[0] === 'rm');
+    expect(removals.map((call) => call[1]?.[2])).toEqual(['cid', 'cid-2']);
+  });
+
+  it('refuses to re-provision a container once the session signal is aborted', async () => {
+    const controller = new AbortController();
+    vi.mocked(runShell)
+      .mockResolvedValueOnce(ok('27.0.0'))
+      .mockResolvedValueOnce(ok('cid'))
+      .mockResolvedValue(ok());
+    const session = await createExecutionSession(
+      'rust',
+      '/tmp/work',
+      { mode: 'container' },
+      controller.signal,
+    );
+
+    await session.run('cargo', ['check']);
+    controller.abort();
+    await vi.waitFor(() => {
+      expect(vi.mocked(runShell).mock.calls.some((call) => call[1]?.[0] === 'rm')).toBe(true);
+    });
+
+    await expect(session.run('cargo', ['test'])).rejects.toThrow('cancelled before startup');
+    expect(vi.mocked(runShell).mock.calls.filter((call) => call[1]?.[0] === 'create')).toHaveLength(
+      1,
+    );
+  });
+
   it('passes runtime probe overrides through exactly', async () => {
     const controller = new AbortController();
     vi.mocked(runShell).mockResolvedValue(ok('5.4.0'));
@@ -203,7 +387,11 @@ describe('execution sessions', () => {
           'type=bind,src=/tmp/work,dst=/workspace',
           '--read-only',
           '--tmpfs',
-          '/tmp:rw,exec,nosuid,nodev,size=512m',
+          // /tmp is the only writable space under the read-only rootfs, so it
+          // has to hold the whole toolchain's scratch (Cargo registry, npm
+          // cache, per-mutant files) — 512 MiB was not enough for a Cargo
+          // registry download. Configurable via container.tmpfsSizeMb.
+          '/tmp:rw,exec,nosuid,nodev,size=2048m',
           '--cap-drop',
           'ALL',
           '--security-opt',
@@ -221,6 +409,17 @@ describe('execution sessions', () => {
           'HOME=/tmp/chaos-home',
           '--env',
           'XDG_CACHE_HOME=/tmp/chaos-cache',
+          // Every toolchain cache is redirected onto the writable tmpfs: the
+          // rootfs is read-only and the host dependency trees are mounted
+          // read-only, so a tool writing to its default cache cannot start.
+          // The rust image pins CARGO_HOME=/usr/local/cargo, which is on that
+          // read-only root, and cargo must write its registry and lock there.
+          '--env',
+          'CARGO_HOME=/tmp/chaos-cargo',
+          '--env',
+          'npm_config_cache=/tmp/chaos-npm',
+          '--env',
+          'COMPOSER_HOME=/tmp/chaos-composer-home',
           defaultContainerImage(language),
           'sh',
           '-c',
@@ -653,6 +852,18 @@ describe('execution sessions', () => {
     });
   });
 
+  it('derives SHARED_DEPENDENCY_DIRS from the engine registry with the list unchanged', () => {
+    // This used to be a THIRD verbatim copy of the dependency-dir list (after
+    // EngineDescriptor.dependencyDirs and utils/sandbox.ts's SYMLINK_DIRS), so a
+    // new language's dependency tree would never get bind-mounted. It is now
+    // derived from the same data the registry exposes. Both halves matter:
+    //   1. the rendered list is byte-for-byte what it was before, IN ORDER —
+    //      that order fixes the order of the generated `--mount` argv;
+    //   2. it really is the registry's union, not a coincidence.
+    expect(SHARED_DEPENDENCY_DIRS).toEqual(['node_modules', '.venv', 'venv', 'vendor']);
+    expect(SHARED_DEPENDENCY_DIRS).toEqual(dependencyDirectories());
+  });
+
   it('mounts every supported symlinked dependency tree read-only', async () => {
     const root = mkdtempSync(join(tmpdir(), 'chaos-execution-deps-'));
     const workDir = join(root, 'sandbox');
@@ -680,6 +891,9 @@ describe('execution sessions', () => {
 
     const createArgs = vi.mocked(runShell).mock.calls[1]?.[1] ?? [];
     for (const mount of expectedMounts) expect(createArgs).toContain(mount);
+    // Dependency mounts are emitted in SHARED_DEPENDENCY_DIRS order, so pin the
+    // argv ORDER too — not just membership.
+    expect(createArgs.filter((arg) => expectedMounts.includes(arg))).toEqual(expectedMounts);
     expect(createArgs.filter((arg) => arg === '--mount')).toHaveLength(4);
     expect(createArgs).toEqual(expect.arrayContaining(['--network', 'bridge', '--cpus', '2']));
     expect(createArgs).toEqual(expect.arrayContaining(['--memory', '4096m']));
@@ -897,5 +1111,85 @@ describe('execution sessions', () => {
       { timeoutMs: 10_000, killTree: true },
     ]);
     expect(runShell).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('discoverSitePackages', () => {
+  const tempDirs: string[] = [];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  function virtualenv(prefix: string): string {
+    const dir = mkdtempSync(join(tmpdir(), `chaos-sitepkgs-${prefix}-`));
+    tempDirs.push(dir);
+    return dir;
+  }
+
+  it('collects one site-packages path per python* interpreter directory', () => {
+    const venv = virtualenv('multi');
+    mkdirSync(join(venv, 'lib', 'python3.13', 'site-packages'), { recursive: true });
+    mkdirSync(join(venv, 'lib', 'python3.9', 'site-packages'), { recursive: true });
+
+    expect(discoverSitePackages(venv).sort()).toEqual([
+      `${venv}/lib/python3.13/site-packages`,
+      `${venv}/lib/python3.9/site-packages`,
+    ]);
+  });
+
+  it('reports a site-packages path even when that directory does not exist yet', () => {
+    const venv = virtualenv('bare-interpreter');
+    mkdirSync(join(venv, 'lib', 'python3.12'), { recursive: true });
+
+    expect(discoverSitePackages(venv)).toEqual([`${venv}/lib/python3.12/site-packages`]);
+  });
+
+  it('ignores non-directory entries and directories not named python*', () => {
+    const venv = virtualenv('filtered');
+    mkdirSync(join(venv, 'lib', 'not-python', 'site-packages'), { recursive: true });
+    mkdirSync(join(venv, 'lib', 'pypy3.10'), { recursive: true });
+    writeFileSync(join(venv, 'lib', 'python-file'), '');
+
+    expect(discoverSitePackages(venv)).toEqual([]);
+  });
+
+  it('returns paths in the order the filesystem yields them, without sorting', () => {
+    const venv = virtualenv('order');
+    vi.mocked(readdirSync).mockReturnValueOnce([
+      { name: 'python3.9', isDirectory: () => true },
+      { name: 'python3.13', isDirectory: () => true },
+      { name: 'python3.11', isDirectory: () => true },
+    ] as unknown as ReturnType<typeof readdirSync>);
+
+    expect(discoverSitePackages(venv)).toEqual([
+      `${venv}/lib/python3.9/site-packages`,
+      `${venv}/lib/python3.13/site-packages`,
+      `${venv}/lib/python3.11/site-packages`,
+    ]);
+    expect(vi.mocked(readdirSync).mock.calls[0]).toEqual([`${venv}/lib`, { withFileTypes: true }]);
+  });
+
+  it('yields nothing for an empty lib directory', () => {
+    const venv = virtualenv('empty');
+    mkdirSync(join(venv, 'lib'));
+
+    expect(discoverSitePackages(venv)).toEqual([]);
+  });
+
+  it('swallows an unreadable or missing lib directory instead of throwing', () => {
+    const venv = virtualenv('missing-lib');
+
+    expect(discoverSitePackages(venv)).toEqual([]);
+    expect(discoverSitePackages(join(venv, 'no-such-virtualenv'))).toEqual([]);
+
+    vi.mocked(readdirSync).mockImplementationOnce(() => {
+      throw new Error('EACCES: permission denied');
+    });
+    expect(discoverSitePackages(venv)).toEqual([]);
   });
 });

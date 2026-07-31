@@ -1,10 +1,25 @@
 import { cp } from 'fs/promises';
-import { mkdtempSync, symlinkSync, rmSync, existsSync, statSync, readdirSync } from 'fs';
+import {
+  mkdtempSync,
+  symlinkSync,
+  rmSync,
+  existsSync,
+  statSync,
+  readdirSync,
+  realpathSync,
+} from 'fs';
 import { join, resolve, sep } from 'path';
 import { tmpdir } from 'os';
 import { randomUUID } from 'crypto';
 import { warn } from './logger.js';
-import { ALLOWED_ROOTS_ENV, allowedWorkspaceRoots, isWorkspaceRootAllowed } from './path-safety.js';
+import { killAllTrackedProcesses, killProcessesUnder } from './process-reaper.js';
+import {
+  ALLOWED_ROOTS_ENV,
+  allowedWorkspaceRoots,
+  isPathInside,
+  isWorkspaceRootAllowed,
+} from './path-safety.js';
+import { dependencyDirectories } from '../engines/registry.js';
 
 /**
  * Registry of active sandbox directories that have not yet been cleaned up.
@@ -20,6 +35,48 @@ const ACTIVE_SANDBOXES = new Set<string>();
 let exitHandlerRegistered = false;
 
 /**
+ * Whether this module's signal handlers terminate the process themselves.
+ *
+ * Registering a signal handler suppresses Node's default termination, so
+ * something must still end the process — but a leaf utility calling
+ * `process.exit` pre-empts every other shutdown path, including the MCP
+ * transport's graceful close, and drops in-flight responses. The process owner
+ * can take that responsibility instead via {@link setSandboxSignalExit}; the
+ * default stays true so a library or CLI consumer that installs nothing keeps
+ * the previous behaviour and never hangs on a signal.
+ */
+let signalExitEnabled = true;
+
+/**
+ * Hand signal-driven termination to the caller (see {@link signalExitEnabled}).
+ * The caller MUST then terminate the process itself and SHOULD call
+ * {@link cleanupAllSandboxes} on its way out.
+ */
+export function setSandboxSignalExit(enabled: boolean): void {
+  signalExitEnabled = enabled;
+}
+
+/**
+ * Remove every sandbox this process still owns. Synchronous and idempotent, so
+ * it is safe from an `exit` handler and safe to call more than once.
+ */
+export function cleanupAllSandboxes(): void {
+  // Kill first, delete second. A mutation engine's test processes run INSIDE
+  // these directories; removing the directory out from under a live `vitest`
+  // does not stop it — it just leaves it running against a path that no longer
+  // exists. (Observed: a worker held 2 GB for 20 hours that way.)
+  killAllTrackedProcesses();
+  for (const dir of ACTIVE_SANDBOXES) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // Best-effort — OS will reclaim tmpdir() eventually
+    }
+  }
+  ACTIVE_SANDBOXES.clear();
+}
+
+/**
  * Register process-wide handlers that remove any sandboxes left behind
  * when the process terminates unexpectedly. The handlers use only
  * synchronous operations because Node.js `exit` callbacks must be sync.
@@ -28,16 +85,7 @@ function ensureExitHandler(): void {
   if (exitHandlerRegistered) return;
   exitHandlerRegistered = true;
 
-  const cleanupAll = (): void => {
-    for (const dir of ACTIVE_SANDBOXES) {
-      try {
-        rmSync(dir, { recursive: true, force: true });
-      } catch {
-        // Best-effort — OS will reclaim tmpdir() eventually
-      }
-    }
-    ACTIVE_SANDBOXES.clear();
-  };
+  const cleanupAll = cleanupAllSandboxes;
 
   // `process.on('exit')` fires when the event loop empties or process.exit() is
   // called. Only synchronous operations are allowed in exit handlers.
@@ -57,10 +105,14 @@ function ensureExitHandler(): void {
     SIGQUIT: 3,
     SIGTERM: 15,
   };
+  //
+  // The exit is skipped when the process owner has claimed shutdown via
+  // setSandboxSignalExit(false) — see that flag for why a leaf utility should
+  // not unilaterally end the process. Cleanup always runs either way.
   for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP', 'SIGQUIT'] as const) {
     process.on(sig, () => {
       cleanupAll();
-      process.exit(128 + SIGNAL_NUMBERS[sig]);
+      if (signalExitEnabled) process.exit(128 + SIGNAL_NUMBERS[sig]);
     });
   }
 }
@@ -133,26 +185,169 @@ const ALWAYS_EXCLUDE = new Set([
  * into the sandbox rather than copied (they are large and read-only during
  * mutation runs).
  *
+ * DERIVED, not hand-maintained: the union of every language's
+ * `EngineDescriptor.dependencyDirs`, deduped, in registry order. A new language
+ * therefore cannot ship with its dependency tree silently deep-copied into every
+ * sandbox — the registry entry it is forced to add carries the answer. Today
+ * that yields exactly `['node_modules', '.venv', 'venv', 'vendor']`
+ * (typescript → python → rust(none) → php), pinned by sandbox.test.ts.
+ *
  * Note: `target` (Rust build artifacts) is intentionally NOT symlinked — Rust
  * compiles into `target/`, and a symlink would let mutation runs corrupt the
- * host workspace's build cache (audit finding H1). Use `ALWAYS_EXCLUDE` for
- * bulk-excluded layout directories and add specific directories here only
- * when they are safe to share across sandboxes.
+ * host workspace's build cache (audit finding H1), so the Rust descriptor
+ * declares no dependency dirs at all and `target` is bulk-excluded via
+ * `ALWAYS_EXCLUDE` instead. Only list a directory in `dependencyDirs` when it is
+ * safe to share across sandboxes.
+ *
+ * @internal Exported for testing only.
  */
-const SYMLINK_DIRS = ['node_modules', '.venv', 'venv', 'vendor'];
+export const SYMLINK_DIRS: readonly string[] = dependencyDirectories();
 
 /**
- * Set form of {@link SYMLINK_DIRS} for O(1) membership checks.
+ * The single decision function for "does this path get copied into the sandbox?".
  *
- * Symlinked directories MUST be excluded from the workspace copy: Step 1 copies
- * the tree and Step 2 symlinks these dirs into the sandbox, so if the copy also
- * materialised them the symlink would collide with `EEXIST`. Excluding them here
- * (rather than relying on every entry ALSO being hand-listed in ALWAYS_EXCLUDE)
- * makes the "symlinked ⇒ never copied" invariant structural, so the two lists
- * cannot silently drift. Regression: `vendor` was in SYMLINK_DIRS but missing
- * from ALWAYS_EXCLUDE, so every PHP (Composer) project failed provisioning.
+ * Built once per {@link createSandbox} call and shared by the `fs.cp` filter and
+ * the pre-copy size estimate, so the exclusion rules (and in particular the
+ * trailing-separator / empty-pattern normalisation) exist in exactly one place.
+ *
+ * @internal Exported for testing only.
  */
-const SYMLINK_DIRS_SET = new Set(SYMLINK_DIRS);
+export interface CopyPolicy {
+  /** Whether the absolute path `src` should be copied into the sandbox. */
+  shouldCopy(src: string): boolean;
+  /**
+   * The caller's ignorePatterns after normalisation: a single trailing
+   * separator stripped and empty patterns dropped (an empty pattern matches
+   * every `split(sep)` result and would silently exclude everything).
+   */
+  normalisedExcludes: Set<string>;
+  /**
+   * Heavyweight dirs {@link CopyPolicy.shouldCopy} refused, at any depth, so
+   * Step 2 can symlink them back in. Populated as a side effect of the filter
+   * (which `fs.cp` calls synchronously per entry).
+   */
+  skippedHeavyDirs: Set<string>;
+}
+
+/** Inputs for {@link buildCopyPolicy}. */
+export interface CopyPolicyInput {
+  /** Absolute path of the audited file inside the workspace. */
+  absoluteTarget: string;
+  /**
+   * Heavyweight dirs that will be symlinked into the sandbox for THIS audit.
+   *
+   * Symlinked directories MUST be excluded from the workspace copy: Step 1 copies
+   * the tree and Step 2 symlinks these dirs into the sandbox, so if the copy also
+   * materialised them the symlink would collide with `EEXIST`. Excluding them here
+   * (rather than relying on every entry ALSO being hand-listed in ALWAYS_EXCLUDE)
+   * makes the "symlinked ⇒ never copied" invariant structural, so the two lists
+   * cannot silently drift. Regression: `vendor` was in SYMLINK_DIRS but missing
+   * from ALWAYS_EXCLUDE, so every PHP (Composer) project failed provisioning.
+   */
+  symlinkDirs: Iterable<string>;
+  /** Caller-supplied ignorePatterns (workspace-relative dir/file segments). */
+  userExcludes?: Iterable<string>;
+  /**
+   * Force-include the target file and every ancestor directory (default true).
+   *
+   * Only the copy filter wants this; see {@link estimateWorkspaceSize} for why
+   * the size estimate deliberately opts out.
+   */
+  forceIncludeTarget?: boolean;
+  /**
+   * Match user excludes against EVERY segment of `src`, not just its basename
+   * (default true).
+   *
+   * The copy filter sees each entry in isolation and must therefore reject a
+   * path whose ancestor matched. A pruned walk (the size estimate) never
+   * descends past a rejected ancestor, so it opts out to avoid ALSO matching
+   * segments of the workspace root's own absolute path.
+   */
+  matchAncestorSegments?: boolean;
+}
+
+/**
+ * Build the copy/exclusion policy for one sandbox provision.
+ *
+ * Pure: it touches no filesystem and holds no state beyond
+ * {@link CopyPolicy.skippedHeavyDirs}, so the rules can be unit-tested on plain
+ * path strings without provisioning a sandbox.
+ *
+ * @internal Exported for testing only.
+ */
+export function buildCopyPolicy({
+  absoluteTarget,
+  symlinkDirs,
+  userExcludes,
+  forceIncludeTarget = true,
+  matchAncestorSegments = true,
+}: CopyPolicyInput): CopyPolicy {
+  const symlinkDirsSet = new Set(symlinkDirs);
+
+  // Strip a single trailing separator so the common convention `["fixtures/"]`
+  // matches directory segments named `fixtures` (Live-audit L2 fix), and drop
+  // patterns that normalise to empty — they would match every split and
+  // silently exclude the entire workspace.
+  const normalisedExcludes = new Set<string>();
+  for (const pattern of userExcludes ?? []) {
+    if (pattern.length === 0) continue;
+    const normalised = pattern.endsWith(sep) ? pattern.slice(0, -1) : pattern;
+    if (normalised.length > 0) normalisedExcludes.add(normalised);
+  }
+
+  const skippedHeavyDirs = new Set<string>();
+
+  return {
+    normalisedExcludes,
+    skippedHeavyDirs,
+    shouldCopy(src: string): boolean {
+      // Force-include the target file itself and any ancestor directory. This
+      // deliberately wins over BOTH checks below: a target under a
+      // conventionally-named dir (build/, dist/, coverage/, vendor/,
+      // node_modules/) or matched by an ignorePattern would otherwise be
+      // dropped and provisioning would fail with a confusing "target not
+      // found" (Med#7). Step 2's symlink loops guard on `!existsSync(dst)`
+      // precisely because this can materialise a heavyweight dir.
+      if (forceIncludeTarget && (src === absoluteTarget || absoluteTarget.startsWith(src + sep))) {
+        return true;
+      }
+
+      const segments = src.split(sep);
+      const basename = segments[segments.length - 1] ?? '';
+
+      // Symlinked heavyweight dirs (node_modules, .venv, venv, and — except
+      // for Composer PHP audits — vendor) are materialised as symlinks in
+      // Step 2, so they must never be copied here: a copied dir would make the
+      // later symlinkSync fail with EEXIST. Dirs we deliberately COPY (vendor
+      // for PHP) are absent from this set and fall through to be copied.
+      //
+      // This matches on a path SEGMENT, so it skips these dirs at every depth.
+      // Record each one: Step 2 used to symlink only the workspace root, so a
+      // workspace layout (npm workspaces, or a PHP project shipping a Node
+      // worker) lost its NESTED dependencies from the sandbox entirely.
+      //
+      // Checked BEFORE ALWAYS_EXCLUDE because node_modules/.venv/venv appear
+      // in both lists; an ALWAYS_EXCLUDE hit first would drop them silently
+      // instead of recording them for re-linking.
+      if (symlinkDirsSet.has(basename)) {
+        skippedHeavyDirs.add(src);
+        return false;
+      }
+      if (ALWAYS_EXCLUDE.has(basename)) return false;
+
+      // Audit finding M6: segment-based matching prevents over-eager substring
+      // exclusion. Excludes only when a path segment exactly equals the
+      // pattern, not when the pattern is a substring of any path component.
+      if (matchAncestorSegments) {
+        for (const segment of segments) {
+          if (normalisedExcludes.has(segment)) return false;
+        }
+        return true;
+      }
+      return !normalisedExcludes.has(basename);
+    },
+  };
+}
 
 /**
  * Detect a Composer (PHP) audit that must COPY `vendor/` rather than symlink it.
@@ -174,6 +369,45 @@ function isComposerPhpAudit(targetFile: string, absoluteWorkspace: string): bool
   return (
     existsSync(join(absoluteWorkspace, 'composer.json')) ||
     existsSync(join(absoluteWorkspace, 'vendor', 'composer'))
+  );
+}
+
+/**
+ * Throw unless the provisioned target resolves to a path physically inside the
+ * sandbox directory.
+ *
+ * Both sides are realpath'd: the sandbox root itself is commonly a symlink
+ * (macOS `/tmp` → `/private/tmp`), so comparing an already-resolved target
+ * against an unresolved root would reject every macOS run.
+ *
+ * A realpath failure on the target is itself disqualifying — a target we cannot
+ * resolve is a target we cannot prove is safe to mutate, so this fails closed.
+ *
+ * @internal Exported for testing only.
+ */
+export function assertTargetInsideSandbox(
+  absoluteTargetPath: string,
+  sandboxDir: string,
+  targetFile: string,
+): void {
+  let realTarget: string;
+  let realSandbox: string;
+  try {
+    realTarget = realpathSync(absoluteTargetPath);
+    realSandbox = realpathSync(sandboxDir);
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `Sandbox provisioning failed: could not resolve the real path of target file "${targetFile}" ` +
+        `(${message}), so it cannot be confirmed to live inside the sandbox.`,
+    );
+  }
+  if (isPathInside(realTarget, realSandbox)) return;
+  throw new Error(
+    `Sandbox provisioning failed: target file "${targetFile}" resolves to "${realTarget}", which is ` +
+      `outside the sandbox. It is a symlink into the real workspace (or lives under one), and mutating ` +
+      `it would modify your actual source tree rather than the isolated copy. ` +
+      `Audit the symlink's target path directly instead.`,
   );
 }
 
@@ -217,29 +451,37 @@ function safeSymlink(target: string, path: string): void {
   }
 }
 
+/** Size of a single file in bytes; 0 for files we cannot stat. */
+function fileSize(path: string): number {
+  try {
+    return statSync(path).size;
+  } catch {
+    // Ignore files we can't stat
+    return 0;
+  }
+}
+
 /**
  * Estimate the size of a directory tree by summing file sizes.
  * Used as a pre-copy guard to warn on very large workspaces.
  *
- * Skips ALWAYS_EXCLUDE directories AND the caller's ignorePatterns so the
- * estimate matches what the copy will actually walk — otherwise the warning
- * would fire for bytes that are never copied (audit Low#3).
+ * Applies the SAME {@link CopyPolicy} the copy will use, so the estimate
+ * matches what the copy actually walks — otherwise the warning would fire for
+ * bytes that are never copied (audit Low#3).
+ *
+ * The policy passed here is built with `forceIncludeTarget: false` and
+ * `matchAncestorSegments: false` (see {@link createSandbox}), which preserves
+ * this function's long-standing semantics: heavyweight dirs are skipped
+ * unconditionally — even when the audited file lives inside one, where the copy
+ * force-includes (and therefore copies) the whole tree — and exclusions match
+ * the walked entry's own name rather than segments of the workspace root's
+ * absolute path.
  */
 function estimateWorkspaceSize(
   workspaceRoot: string,
-  ignorePatterns?: string[],
+  policy: CopyPolicy,
   signal?: AbortSignal,
-  symlinkDirsSet: Set<string> = SYMLINK_DIRS_SET,
 ): number {
-  // Normalise ignore patterns the same way the cp filter does: strip a
-  // single trailing separator and drop empties (which would match everything).
-  const excludeSegments = new Set<string>();
-  for (const pattern of ignorePatterns ?? []) {
-    if (pattern.length === 0) continue;
-    const normalised = pattern.endsWith(sep) ? pattern.slice(0, -1) : pattern;
-    if (normalised.length > 0) excludeSegments.add(normalised);
-  }
-
   try {
     const stack: string[] = [workspaceRoot];
     let total = 0;
@@ -265,22 +507,16 @@ function estimateWorkspaceSize(
 
       for (const entry of entries) {
         const fullPath = join(current, entry.name);
-        if (ALWAYS_EXCLUDE.has(entry.name)) continue;
         // Symlinked dirs are not copied, so they must not count toward the
         // copy-size estimate that drives the "large workspace" warning. (A dir
         // we COPY instead of symlink — e.g. vendor for a Composer audit — is
-        // absent from this set and so DOES count, which is correct.)
-        if (symlinkDirsSet.has(entry.name)) continue;
-        if (excludeSegments.has(entry.name)) continue;
+        // absent from the policy's symlink set and so DOES count, correctly.)
+        if (!policy.shouldCopy(fullPath)) continue;
 
         if (entry.isDirectory()) {
           stack.push(fullPath);
         } else if (entry.isFile()) {
-          try {
-            total += statSync(fullPath).size;
-          } catch {
-            // Ignore files we can't stat
-          }
+          total += fileSize(fullPath);
         }
       }
     }
@@ -292,6 +528,124 @@ function estimateWorkspaceSize(
     if (err instanceof Error && err.name === 'AbortError') throw err;
     return 0;
   }
+}
+
+/**
+ * Step 1: copy the workspace tree into the sandbox, excluding heavyweight and
+ * generated dirs per `policy`.
+ *
+ * Audit C1: the async `cp` releases the event loop during disk I/O. The filter
+ * callback is synchronous — Node's async `fs.cp` calls it sync per entry and
+ * accumulates results internally — so `policy.skippedHeavyDirs` is fully
+ * populated by the time this resolves.
+ *
+ * @returns the heavyweight dirs the filter skipped, for {@link linkHeavyDirs}.
+ */
+async function copyWorkspaceTree(
+  absoluteWorkspace: string,
+  sandboxDir: string,
+  policy: CopyPolicy,
+  signal?: AbortSignal,
+): Promise<Set<string>> {
+  await cp(absoluteWorkspace, sandboxDir, {
+    recursive: true,
+    filter: (src: string) => policy.shouldCopy(src),
+    dereference: false,
+  });
+
+  if (signal?.aborted) throw abortError();
+
+  return policy.skippedHeavyDirs;
+}
+
+/**
+ * Step 2: symlink heavyweight directories into the sandbox.
+ *
+ * (`symlinkDirs` excludes vendor for Composer PHP audits — that dir was
+ * copied in Step 1 instead, so it is intentionally not symlinked here.)
+ *
+ * A destination that ALREADY EXISTS was materialised by Step 1 and must be
+ * left alone. That happens when the audited file lives inside one of these
+ * dirs (e.g. `vendor/my-lib/index.ts` in a repo that vendors first-party
+ * code): the filter's force-include of the target's ancestors wins over the
+ * symlink-dir check, so `cp` copies the whole tree and the dir is never
+ * recorded in `skippedHeavyDirs`. Symlinking over it threw a raw EEXIST
+ * (`safeSymlink` only retries on Windows), failing provisioning outright.
+ * Skipping is correct AND required: the real copy already makes the sandbox
+ * complete, and a symlink here would point the target back at the live
+ * workspace — which Step 4's containment assertion rejects anyway.
+ */
+function linkHeavyDirs(
+  absoluteWorkspace: string,
+  sandboxDir: string,
+  symlinkDirs: readonly string[],
+  skippedHeavyDirs: Set<string>,
+): void {
+  for (const dirName of symlinkDirs) {
+    const src = join(absoluteWorkspace, dirName);
+    const dst = join(sandboxDir, dirName);
+    if (existsSync(src) && !existsSync(dst)) {
+      safeSymlink(src, dst);
+    }
+    skippedHeavyDirs.delete(src); // handled above; do not link it twice
+  }
+  // Nested occurrences (e.g. workers/typescript/node_modules). Their parent
+  // directories were copied, so the link destination's parent already exists.
+  for (const src of skippedHeavyDirs) {
+    if (!src.startsWith(absoluteWorkspace + sep)) continue;
+    if (!existsSync(src)) continue;
+    const dst = join(sandboxDir, src.slice(absoluteWorkspace.length + 1));
+    if (existsSync(dst)) continue; // already materialised by the copy — see above
+    safeSymlink(src, dst);
+  }
+}
+
+/**
+ * Steps 3 + 4: verify the target file exists in the sandbox AND really lives
+ * there.
+ *
+ * `existsSync` (Step 3) follows symlinks, so it passes for a target that is
+ * merely a link back into the real workspace. The copy runs with
+ * `dereference: false`, so a symlinked source file (or a source file under
+ * a symlinked directory) is reproduced in the sandbox AS a symlink — and
+ * engines that mutate in place (cosmic-ray) would then write the injected
+ * fault straight into the user's real working tree. That breaks the single
+ * guarantee this module exists to provide, and a crashed or cancelled run
+ * leaves the mutation behind on disk. Step 4 resolves both sides and requires
+ * containment: an assertion, not a claim.
+ */
+function verifyTarget(sandboxDir: string, targetFile: string, absoluteWorkspace: string): void {
+  const absoluteTargetPath = join(sandboxDir, targetFile);
+  if (!existsSync(absoluteTargetPath)) {
+    throw new Error(
+      `Sandbox provisioning failed: target file "${targetFile}" was not found in the copied workspace. ` +
+        `Workspace root: ${absoluteWorkspace}`,
+    );
+  }
+
+  assertTargetInsideSandbox(absoluteTargetPath, sandboxDir, targetFile);
+}
+
+/**
+ * Build the teardown returned to the caller as {@link SandboxContext.cleanup}.
+ *
+ * Best-effort by design: it runs from `finally` blocks and process shutdown,
+ * where throwing would strand the remaining sandboxes.
+ */
+function makeCleanup(sandboxDir: string): () => void {
+  return () => {
+    try {
+      // Reap only the engine processes running in THIS sandbox — a triage
+      // sweep tears sandboxes down while its siblings are still auditing,
+      // so a global kill here would abort the rest of the run.
+      killProcessesUnder(sandboxDir);
+      rmSync(sandboxDir, { recursive: true, force: true });
+    } catch {
+      // Best-effort — OS will reclaim tmpdir() eventually
+    } finally {
+      ACTIVE_SANDBOXES.delete(sandboxDir);
+    }
+  };
 }
 
 /**
@@ -354,7 +708,19 @@ export async function createSandbox(
   const symlinkDirs = isComposerPhpAudit(targetFile, absoluteWorkspace)
     ? SYMLINK_DIRS.filter((d) => d !== 'vendor')
     : SYMLINK_DIRS;
-  const symlinkDirsSet = new Set(symlinkDirs);
+
+  // Absolute path of the audited file inside the workspace. The target and
+  // every directory on the path to it must NEVER be excluded from the copy
+  // (Med#7) — see the force-include in buildCopyPolicy.
+  const absoluteTarget = resolve(absoluteWorkspace, targetFile);
+
+  // The single exclusion policy for this provision: ALWAYS_EXCLUDE +
+  // per-audit symlink dirs + the caller's ignorePatterns.
+  const copyPolicy = buildCopyPolicy({
+    absoluteTarget,
+    symlinkDirs,
+    userExcludes: ignorePatterns,
+  });
 
   // ── Pre-copy: warn on very large workspaces ──
   // Always estimate and warn on large workspaces. Previously gated behind
@@ -365,11 +731,24 @@ export async function createSandbox(
   // unexpected process termination.
   ensureExitHandler();
 
+  // A SEPARATE policy instance for the estimate. It shares every rule with
+  // `copyPolicy` but keeps the estimator's pre-existing semantics: no
+  // force-include (a target inside node_modules/ makes the copy pull the whole
+  // dir in, but the size warning has never counted it) and basename-only
+  // exclusion matching (the pruned walk cannot see an excluded ancestor, and
+  // must not match segments of the workspace root's own path). Its
+  // `skippedHeavyDirs` is deliberately discarded — only the copy's set drives
+  // the symlink step.
   const size = estimateWorkspaceSize(
     absoluteWorkspace,
-    ignorePatterns,
+    buildCopyPolicy({
+      absoluteTarget,
+      symlinkDirs,
+      userExcludes: ignorePatterns,
+      forceIncludeTarget: false,
+      matchAncestorSegments: false,
+    }),
     options?.signal,
-    symlinkDirsSet,
   );
   if (size > MAX_WORKSPACE_SIZE_BYTES) {
     warn(
@@ -388,116 +767,24 @@ export async function createSandbox(
   let success = false;
   try {
     // ── Step 1: Copy workspace tree (exclude heavyweight / generated dirs) ──
-    // Build the combined exclusion set: ALWAYS_EXCLUDE + user ignorePatterns
-    const userExcludes = new Set(ignorePatterns ?? []);
-
-    // Absolute path of the audited file inside the workspace. The target and
-    // every directory on the path to it must NEVER be excluded — otherwise a
-    // target under a conventionally-named dir (build/, dist/, coverage/) or
-    // matched by an ignorePattern would be dropped and provisioning would fail
-    // with a confusing "target not found" (Med#7).
-    const absoluteTarget = resolve(absoluteWorkspace, targetFile);
-
-    // Heavyweight dirs the filter skipped, at any depth, to be symlinked back in
-    // Step 2. Populated by the filter callback below (which cp calls synchronously).
-    const skippedHeavyDirs = new Set<string>();
-
-    // ── Audit C1: async cp releases the event loop during disk I/O. ──
-    // The filter callback is synchronous — Node's async fs.cp calls the
-    // filter sync per entry and accumulates results internally.
-    await cp(absoluteWorkspace, sandboxDir, {
-      recursive: true,
-      filter: (src: string) => {
-        // Force-include the target file itself and any ancestor directory.
-        if (src === absoluteTarget || absoluteTarget.startsWith(src + sep)) return true;
-
-        const segments = src.split(sep);
-        const basename = segments[segments.length - 1] ?? '';
-        // Symlinked heavyweight dirs (node_modules, .venv, venv, and — except
-        // for Composer PHP audits — vendor) are materialised as symlinks in
-        // Step 2, so they must never be copied here: a copied dir would make the
-        // later symlinkSync fail with EEXIST. Dirs we deliberately COPY (vendor
-        // for PHP) are absent from this set and fall through to be copied.
-        //
-        // This matches on a path SEGMENT, so it skips these dirs at every depth.
-        // Record each one: Step 2 used to symlink only the workspace root, so a
-        // workspace layout (npm workspaces, or a PHP project shipping a Node
-        // worker) lost its NESTED dependencies from the sandbox entirely.
-        //
-        // Checked BEFORE ALWAYS_EXCLUDE because node_modules/.venv/venv appear
-        // in both lists; an ALWAYS_EXCLUDE hit first would drop them silently
-        // instead of recording them for re-linking.
-        if (symlinkDirsSet.has(basename)) {
-          skippedHeavyDirs.add(src);
-          return false;
-        }
-        if (ALWAYS_EXCLUDE.has(basename)) return false;
-        // Audit finding M6: segment-based matching prevents over-eager substring
-        // exclusion. Excludes only when a path segment exactly equals the
-        // pattern, not when the pattern is a substring of any path component.
-        for (const pattern of userExcludes) {
-          // Empty patterns would match every split (because `split(sep)` always
-          // produces at least one element), so guard against the silent
-          // "exclude everything" failure mode.
-          if (pattern.length === 0) continue;
-          // Strip a single trailing separator so common convention `["fixtures/"]`
-          // matches directory segments named `fixtures`. (Live-audit L2 fix.)
-          const normalised = pattern.endsWith(sep) ? pattern.slice(0, -1) : pattern;
-          if (normalised.length === 0) continue;
-          if (segments.includes(normalised)) return false;
-        }
-        return true;
-      },
-      dereference: false,
-    });
-
-    if (options?.signal?.aborted) throw abortError();
+    const skippedHeavyDirs = await copyWorkspaceTree(
+      absoluteWorkspace,
+      sandboxDir,
+      copyPolicy,
+      options?.signal,
+    );
 
     // ── Step 2: Symlink heavyweight directories ──
-    // (`symlinkDirs` excludes vendor for Composer PHP audits — that dir was
-    // copied in Step 1 instead, so it is intentionally not symlinked here.)
-    for (const dirName of symlinkDirs) {
-      const src = join(absoluteWorkspace, dirName);
-      const dst = join(sandboxDir, dirName);
-      if (existsSync(src)) {
-        safeSymlink(src, dst);
-      }
-      skippedHeavyDirs.delete(src); // handled above; do not link it twice
-    }
-    // Nested occurrences (e.g. workers/typescript/node_modules). Their parent
-    // directories were copied, so the link destination's parent already exists.
-    for (const src of skippedHeavyDirs) {
-      if (!src.startsWith(absoluteWorkspace + sep)) continue;
-      if (!existsSync(src)) continue;
-      safeSymlink(src, join(sandboxDir, src.slice(absoluteWorkspace.length + 1)));
-    }
+    linkHeavyDirs(absoluteWorkspace, sandboxDir, symlinkDirs, skippedHeavyDirs);
 
     if (options?.signal?.aborted) throw abortError();
 
-    // ── Step 3: Verify the target file exists in the sandbox ──
-    const absoluteTargetPath = join(sandboxDir, targetFile);
-    if (!existsSync(absoluteTargetPath)) {
-      throw new Error(
-        `Sandbox provisioning failed: target file "${targetFile}" was not found in the copied workspace. ` +
-          `Workspace root: ${absoluteWorkspace}`,
-      );
-    }
+    // ── Steps 3 + 4: Verify the target exists in — and really lives in — the sandbox ──
+    verifyTarget(sandboxDir, targetFile, absoluteWorkspace);
 
     success = true;
     ACTIVE_SANDBOXES.add(sandboxDir);
-    return {
-      workDir: sandboxDir,
-      targetFile,
-      cleanup: () => {
-        try {
-          rmSync(sandboxDir, { recursive: true, force: true });
-        } catch {
-          // Best-effort — OS will reclaim tmpdir() eventually
-        } finally {
-          ACTIVE_SANDBOXES.delete(sandboxDir);
-        }
-      },
-    };
+    return { workDir: sandboxDir, targetFile, cleanup: makeCleanup(sandboxDir) };
   } finally {
     if (!success) {
       try {

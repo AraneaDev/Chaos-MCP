@@ -5,7 +5,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { computeVerifyDelta } from '../verify.js';
-import { applySuppressions } from '../utils/suppression.js';
+import { applySuppressions } from '../audit/apply-suppressions.js';
 
 // ── Mocks (mirror handler.test.ts so handleToolCall can run with a stub engine) ──
 vi.mock('../engines/typescript.js', () => ({ TypeScriptEngine: vi.fn() }));
@@ -26,7 +26,7 @@ vi.mock('fs', async () => {
   const actual = await vi.importActual<typeof import('fs')>('fs');
   return {
     ...actual,
-    existsSync: vi.fn().mockReturnValue(false),
+    existsSync: vi.fn(() => false),
     realpathSync: vi.fn((p: string) => p),
   };
 });
@@ -40,7 +40,7 @@ vi.mock('../utils/git-diff.js', () => ({ computeChangedRanges: vi.fn() }));
 
 vi.mock('../utils/logger.js', () => ({
   enableVerbose: vi.fn(),
-  isVerbose: vi.fn().mockReturnValue(false),
+  isVerbose: vi.fn(() => false),
   log: vi.fn(),
   warn: vi.fn(),
 }));
@@ -134,14 +134,16 @@ describe('phase3 run-cache integration seam', () => {
 });
 
 describe('handleToolCall phase3 wiring', () => {
-  const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(WS);
+  // `restoreMocks: true` un-installs this spy before every test, so it has to be
+  // re-installed per test rather than once at describe-collection time.
+  let cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(WS);
   afterAll(() => cwdSpy.mockRestore());
 
   let supPath: string;
 
   beforeEach(() => {
     vi.clearAllMocks();
-    cwdSpy.mockReturnValue(WS);
+    cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(WS);
     mockCreateSandbox.mockResolvedValue({
       workDir: '/tmp/chaos-mcp-sandbox',
       targetFile: '',
@@ -236,7 +238,11 @@ describe('handleToolCall phase3 wiring', () => {
     stubEngine(cleanResult());
     const res = await handleToolCall(makeRequest({ filePath: FILE, runId }));
     expect(res.isError).toBe(true);
-    expect(firstText(res)).toContain('was for');
+    expect(firstText(res)).toContain('was recorded for a different file');
+    // The cached file name is deliberately NOT echoed: it is content read from
+    // a path derived from a caller-supplied id, so reflecting it would turn
+    // this error message into a file-read primitive.
+    expect(firstText(res)).not.toContain('src/other.ts');
   });
 
   it('filters suppressed mutants out of the result and reports suppressedCount', async () => {

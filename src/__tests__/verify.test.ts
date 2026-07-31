@@ -3,6 +3,7 @@ import {
   parseBaseline,
   baselineLines,
   computeVerifyDelta,
+  buildVerifyNote,
   formatVerifyResultAsJson,
   formatVerifyResultAsText,
 } from '../verify.js';
@@ -245,5 +246,49 @@ describe('formatVerifyResultAsText', () => {
     expect(text).not.toContain('Still surviving:');
     expect(text).toContain('Now killed:');
     expect(text).toContain('New survivors (regressions on baseline lines):');
+  });
+});
+
+describe('buildVerifyNote', () => {
+  /** Four deliberately distinct counts so a swapped field cannot read as correct. */
+  const delta = {
+    baselineTotal: 5,
+    nowKilled: [
+      { line: 1, mutator: 'A' },
+      { line: 2, mutator: 'B' },
+    ],
+    stillSurviving: [
+      { line: 3, mutator: 'C' },
+      { line: 4, mutator: 'D' },
+      { line: 5, mutator: 'E' },
+    ],
+    newSurvivors: [{ line: 6, mutator: 'F' }],
+  };
+
+  it('reports each count against the field it belongs to', () => {
+    expect(buildVerifyNote(delta)).toBe(
+      '2 of 5 previously-uncaught mutants are now killed; 3 still surviving; 1 new. ' +
+        'stillSurviving: add or strengthen tests for these. ' +
+        'newSurvivors: your change introduced these uncaught mutants on the same lines.',
+    );
+  });
+
+  it('renders zeroes rather than omitting a section when the delta is empty', () => {
+    expect(
+      buildVerifyNote({
+        baselineTotal: 0,
+        nowKilled: [],
+        stillSurviving: [],
+        newSurvivors: [],
+      }),
+    ).toContain('0 of 0 previously-uncaught mutants are now killed; 0 still surviving; 0 new.');
+  });
+
+  it('is the same note the JSON and text renderers carry', () => {
+    // The note is built once and reused; a renderer that reworded its own copy
+    // would drift from this contract silently.
+    const built = buildVerifyNote(delta);
+    const json = JSON.parse(formatVerifyResultAsJson('src/x.ts', delta)) as { note: string };
+    expect(json.note).toBe(built);
   });
 });

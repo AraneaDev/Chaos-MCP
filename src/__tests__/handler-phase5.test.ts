@@ -44,7 +44,7 @@ vi.mock('fs', async () => {
   const actual = await vi.importActual<typeof import('fs')>('fs');
   return {
     ...actual,
-    existsSync: vi.fn().mockReturnValue(false),
+    existsSync: vi.fn(() => false),
     realpathSync: vi.fn((p: string) => p),
   };
 });
@@ -60,7 +60,7 @@ vi.mock('../utils/git-diff.js', () => ({
 
 vi.mock('../utils/logger.js', () => ({
   enableVerbose: vi.fn(),
-  isVerbose: vi.fn().mockReturnValue(false),
+  isVerbose: vi.fn(() => false),
   log: vi.fn(),
   warn: vi.fn(),
 }));
@@ -121,12 +121,14 @@ function stubWorkspaceEnv(): void {
 describe('handleToolCall — Phase 5: progress milestones + cancellation', () => {
   // Pin cwd so workspace re-anchoring is deterministic (same rationale as
   // handler.test.ts — prevents Forgejo /workspace/<owner>/<repo> breakage).
-  const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue('/workspace');
+  // `restoreMocks: true` un-installs this spy before every test, so it has to be
+  // re-installed per test rather than once at describe-collection time.
+  let cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue('/workspace');
   afterAll(() => cwdSpy.mockRestore());
 
   beforeEach(() => {
     vi.clearAllMocks();
-    cwdSpy.mockReturnValue('/workspace');
+    cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue('/workspace');
 
     // Default sandbox mock
     mockCreateSandbox.mockResolvedValue({

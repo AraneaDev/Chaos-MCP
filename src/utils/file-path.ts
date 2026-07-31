@@ -9,7 +9,6 @@
  */
 import { allowedWorkspaceRoots, isPathPermitted } from './path-safety.js';
 import { resolve } from 'node:path';
-import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 
 /**
  * The validated, boundary-checked values for a `filePath` argument. Every
@@ -29,9 +28,16 @@ export interface ValidatedFilePath {
   raw: string;
 }
 
+/**
+ * A rejection carries the user-facing `message` only — NOT an MCP
+ * `CallToolResult`. This validator is a path check, so an MCP-only caller would
+ * otherwise be the only kind it could have: `cli.ts` or a future CI mode would
+ * have to learn the protocol envelope to ask whether a path is in-bounds. The
+ * three MCP call sites wrap the message with `toolError` from `tool-result.ts`.
+ */
 export type FilePathValidation =
   | { ok: true; value: ValidatedFilePath }
-  | { ok: false; error: CallToolResult };
+  | { ok: false; message: string };
 
 /**
  * Validate and resolve a tool-call `filePath` argument against the C2 workspace
@@ -45,9 +51,7 @@ export function validateFilePath(rawFilePath: unknown, argName = 'filePath'): Fi
   if (typeof rawFilePath !== 'string' || rawFilePath.length === 0) {
     return {
       ok: false,
-      error: pathValidationError(
-        `${argName} is required and must be a non-empty string. Example: "src/utils/math.ts".`,
-      ),
+      message: `${argName} is required and must be a non-empty string. Example: "src/utils/math.ts".`,
     };
   }
 
@@ -56,9 +60,7 @@ export function validateFilePath(rawFilePath: unknown, argName = 'filePath'): Fi
   if (!isPathPermitted(resolvedFile)) {
     return {
       ok: false,
-      error: pathValidationError(
-        `Error: ${argName} must resolve within the workspace (${describeBoundary(rootCwd)}); received "${rawFilePath}".`,
-      ),
+      message: `Error: ${argName} must resolve within the workspace (${describeBoundary(rootCwd)}); received "${rawFilePath}".`,
     };
   }
 
@@ -80,8 +82,4 @@ export function validateFilePath(rawFilePath: unknown, argName = 'filePath'): Fi
 export function describeBoundary(rootCwd: string): string {
   const extra = allowedWorkspaceRoots();
   return extra.length === 0 ? rootCwd : [rootCwd, ...extra].join(' or ');
-}
-
-function pathValidationError(text: string): CallToolResult {
-  return { content: [{ type: 'text', text }], isError: true };
 }

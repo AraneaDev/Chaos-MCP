@@ -1,106 +1,89 @@
 import { execFile, exec, type ChildProcess } from 'child_process';
 import { log, isVerbose } from './logger.js';
 import { DEFAULT_TIMEOUT_MS } from './constants.js';
+import { MAX_OUTPUT_BYTES, classifyChildError, shouldKillTreeOnFailure } from './exec-error.js';
+import type { ExecResult } from './exec-error.js';
+import {
+  installProcessTreeCleanup,
+  killProcessTree,
+  trackProcessGroup,
+  untrackProcessGroup,
+} from './process-reaper.js';
 
 /**
- * Normalized result of a child process execution.
- * Either `exit` is set (process exited normally with a code) or `signal`
- * is set (process was killed by a signal such as SIGTERM/SIGSEGV).
- */
-export interface ExecResult {
-  /** Captured stdout as a UTF-8 string */
-  stdout: string;
-  /** Captured stderr as a UTF-8 string */
-  stderr: string;
-  /** Numeric exit code, or `null` when the process was killed by a signal */
-  exit: number | null;
-  /** Signal name (e.g. 'SIGTERM') when the process was killed, otherwise `null` */
-  signal: NodeJS.Signals | null;
-}
-
-/**
- * Normalized error thrown when a child process fails to spawn (ENOENT) or
- * exits with a non-zero code / is killed by a signal.
+ * Spawning of child processes.
  *
- * Non-zero exits are represented as a thrown {@link ExecFailureError} so
- * callers can distinguish "expected survivors" (non-zero) from genuine
- * crashes (signal) or missing-binary (code 'ENOENT') conditions.
+ * Failure classification lives in `exec-error.ts` and process termination in
+ * `process-reaper.ts`; this module only knows how to start a child and wire the
+ * two together.
  */
-export class ExecFailureError extends Error {
-  /** Same fields as {@link ExecResult}; populated for non-zero exits and signals */
-  readonly stdout: string;
-  readonly stderr: string;
-  readonly exit: number | null;
-  readonly signal: NodeJS.Signals | null;
-  /** Node errno code — set to 'ENOENT' when the binary could not be found */
-  readonly code: string | undefined;
 
-  constructor(result: ExecResult & { code?: string }, message: string) {
-    super(message);
-    this.name = 'ExecFailureError';
-    this.stdout = result.stdout;
-    this.stderr = result.stderr;
-    this.exit = result.exit;
-    this.signal = result.signal;
-    this.code = result.code;
-  }
+/** The `(err, stdout, stderr)` shape both `exec` and `execFile` call back with. */
+type ChildDoneCallback = (err: Error | null, stdout: string, stderr: string) => void;
+
+/** Everything `runChild` needs that it cannot read off the child itself. */
+interface RunChildOptions {
+  /** Message subject: 'Command' (execFile) or 'Shell command' (exec). */
+  label: string;
+  command: string;
+  cwd: string;
+  timeoutMs: number;
+  signal?: AbortSignal;
+  killTree: boolean;
+  /** See {@link classifyChildError} — only the execFile path reports ENOENT. */
+  classifyEnoent: boolean;
 }
 
-/** Best-effort termination of a detached subprocess and all descendants. */
-export function killProcessTree(child: ChildProcess | undefined, detachedGroup: boolean): void {
-  // Stryker disable next-line ConditionalExpression: continuing with an absent child is observably the same because both best-effort kill attempts are caught.
-  if (!child?.pid) return;
-  if (process.platform === 'win32') {
-    try {
-      execFile(
-        'taskkill',
-        ['/PID', String(child.pid), '/T', '/F'],
-        { windowsHide: true },
-        () => undefined,
-      );
-    } catch {
-      // Fall through to direct-child termination.
-    }
-  }
-  if (detachedGroup && process.platform !== 'win32') {
-    try {
-      process.kill(-child.pid, 'SIGKILL');
-      return;
-    } catch {
-      // The process group may already be gone; fall back to the direct child.
-    }
-  }
-  try {
-    child.kill('SIGKILL');
-  } catch {
-    // Best effort on an already-failing timeout/cancellation path.
-  }
-}
+/**
+ * Own the lifetime of one child process: run it, classify any failure, and make
+ * sure nothing it spawned outlives it.
+ *
+ * `spawnChild` is handed the completion callback and must return the started
+ * child, so the two spawn front-ends below differ only in which Node API they
+ * call and which options they pass.
+ */
+function runChild(
+  spawnChild: (done: ChildDoneCallback) => ChildProcess,
+  options: RunChildOptions,
+): Promise<ExecResult> {
+  const { label, command, cwd, timeoutMs, signal, killTree, classifyEnoent } = options;
 
-/** Arm timeout/abort tree cleanup independently of the child close callback. */
-function installProcessTreeCleanup(
-  child: ChildProcess | undefined,
-  killTree: boolean,
-  timeoutMs: number,
-  signal?: AbortSignal,
-): () => void {
-  if (!killTree || !child) return () => undefined;
-  let active = true;
-  const deactivate = (): boolean => {
-    if (!active) return false;
-    active = false;
-    clearTimeout(timer);
-    signal?.removeEventListener('abort', terminate);
-    return true;
-  };
-  const terminate = () => {
-    if (deactivate()) killProcessTree(child, true);
-  };
-  const timer = setTimeout(terminate, timeoutMs);
-  timer.unref();
-  if (signal?.aborted) terminate();
-  else signal?.addEventListener('abort', terminate);
-  return () => void deactivate();
+  return new Promise((resolveResult, reject) => {
+    const childRef: { current?: ChildProcess } = {};
+    let completed = false;
+    let stopTreeCleanup: () => void = () => undefined;
+    childRef.current = spawnChild((err, stdout, stderr) => {
+      completed = true;
+      stopTreeCleanup();
+      untrackProcessGroup(childRef.current);
+      const stdoutStr = stdout ?? '';
+      const stderrStr = stderr ?? '';
+
+      if (err) {
+        const failure = classifyChildError(err, stdoutStr, stderrStr, {
+          label,
+          command,
+          timeoutMs,
+          aborted: signal?.aborted === true,
+          classifyEnoent,
+        });
+        // Kill BEFORE rejecting: the awaiting caller may tear the sandbox down
+        // the moment it sees the rejection.
+        if (shouldKillTreeOnFailure(failure)) killProcessTree(childRef.current, killTree);
+        reject(failure);
+        return;
+      }
+
+      resolveResult({ stdout: stdoutStr, stderr: stderrStr, exit: 0, signal: null });
+    });
+    if (!completed) {
+      // `killTree` is the caller asking for tree semantics; see
+      // ACTIVE_PROCESS_GROUPS in process-reaper.ts for why grandchildren need
+      // this at all.
+      if (killTree && process.platform !== 'win32') trackProcessGroup(childRef.current, cwd);
+      stopTreeCleanup = installProcessTreeCleanup(childRef.current, killTree, timeoutMs, signal);
+    }
+  });
 }
 
 /**
@@ -128,96 +111,35 @@ export function runShellCommand(
     log(`exec-shell: ${command}  (cwd=${cwd}, timeout=${timeoutMs}ms)`);
   }
 
-  return new Promise((resolve, reject) => {
-    const childRef: { current?: ChildProcess } = {};
-    let completed = false;
-    let stopTreeCleanup: () => void = () => undefined;
-    childRef.current = exec(
+  return runChild(
+    (done) =>
+      exec(
+        command,
+        {
+          cwd,
+          timeout: timeoutMs,
+          signal,
+          encoding: 'utf-8',
+          maxBuffer: MAX_OUTPUT_BYTES,
+          windowsHide: true,
+          ...(killTree && process.platform !== 'win32' ? { detached: true } : {}),
+        },
+        (err, stdout, stderr) => done(err, stdout, stderr),
+      ),
+    {
+      label: 'Shell command',
       command,
-      {
-        cwd,
-        timeout: timeoutMs,
-        signal,
-        encoding: 'utf-8',
-        maxBuffer: 10 * 1024 * 1024, // 10 MB stdout/stderr cap
-        windowsHide: true,
-        ...(killTree && process.platform !== 'win32' ? { detached: true } : {}),
-      },
-      (err, stdout, stderr) => {
-        completed = true;
-        stopTreeCleanup();
-        const stdoutStr = stdout ?? '';
-        const stderrStr = stderr ?? '';
-
-        if (err) {
-          // child_process.exec error shape: code (number|null), killed (boolean),
-          // signal (string|null). Unlike execFile, `code` is always the numeric
-          // exit code on non-zero exit (never 'ENOENT' — that surfaces as a
-          // thrown error before the callback).
-          const execErr = err as NodeJS.ErrnoException & {
-            killed?: boolean;
-            signal?: NodeJS.Signals | string;
-          };
-
-          const exitCode = typeof execErr.code === 'number' ? execErr.code : null;
-          const procSignal =
-            typeof execErr.signal === 'string' ? (execErr.signal as NodeJS.Signals) : null;
-
-          const result: ExecResult = {
-            stdout: stdoutStr,
-            stderr: stderrStr,
-            exit: exitCode,
-            signal: procSignal,
-          };
-
-          // Cancellation: an aborted child surfaces as an AbortError
-          // (`code: 'ABORT_ERR'`), often with killed/signal unset. Classify it
-          // explicitly and BEFORE the timeout/signal branches so a deliberate
-          // cancel is never mislabelled a tool failure — callers key on
-          // `code === 'ABORTED'` to report "Operation cancelled." (audit M5).
-          if (execErr.code === 'ABORT_ERR' || execErr.name === 'AbortError' || signal?.aborted) {
-            killProcessTree(childRef.current, killTree);
-            reject(
-              new ExecFailureError(
-                { ...result, code: 'ABORTED' },
-                `Shell command was cancelled: ${command}`,
-              ),
-            );
-            return;
-          }
-
-          // Timeout detection: Node sets killed=true + signal when the timeout
-          // elapses. Gating on `killed === true` (not just `signal`) distinguishes
-          // internal timeouts from external kills (OOM, SIGTERM from parent).
-          if (execErr.killed === true && result.exit === null && result.signal) {
-            killProcessTree(childRef.current, killTree);
-            reject(
-              new ExecFailureError(
-                { ...result, code: 'TIMEOUT' },
-                `Shell command timed out after ${timeoutMs}ms: ${command}`,
-              ),
-            );
-            return;
-          }
-
-          // Non-zero exit — surface with captured output.
-          if (result.signal) killProcessTree(childRef.current, killTree);
-          reject(
-            new ExecFailureError(
-              { ...result, code: String(result.exit ?? 'SIGNAL') },
-              `Shell command exited with ${result.signal ? `signal ${result.signal}` : `code ${result.exit}`}: ${command}`,
-            ),
-          );
-          return;
-        }
-
-        resolve({ stdout: stdoutStr, stderr: stderrStr, exit: 0, signal: null });
-      },
-    );
-    if (!completed) {
-      stopTreeCleanup = installProcessTreeCleanup(childRef.current, killTree, timeoutMs, signal);
-    }
-  });
+      cwd,
+      timeoutMs,
+      signal,
+      killTree,
+      // child_process.exec error shape: code (number|null), killed (boolean),
+      // signal (string|null). Unlike execFile, `code` is the numeric exit code
+      // on a non-zero exit; a missing command comes back through the shell as
+      // exit code 127, never as ENOENT.
+      classifyEnoent: false,
+    },
+  );
 }
 
 /**
@@ -259,126 +181,33 @@ export function runShell(
     log(`exec: ${command} ${args.join(' ')}  (cwd=${cwd}, timeout=${timeoutMs}ms)`);
   }
 
-  return new Promise((resolve, reject) => {
-    const childRef: { current?: ChildProcess } = {};
-    let completed = false;
-    let stopTreeCleanup: () => void = () => undefined;
-    childRef.current = execFile(
+  return runChild(
+    (done) =>
+      execFile(
+        command,
+        args,
+        {
+          cwd,
+          timeout: timeoutMs,
+          env,
+          signal,
+          encoding: 'utf-8',
+          maxBuffer: MAX_OUTPUT_BYTES,
+          windowsHide: true,
+          ...(killTree && process.platform !== 'win32' ? { detached: true } : {}),
+        },
+        (err, stdout, stderr) => done(err, stdout, stderr),
+      ),
+    {
+      label: 'Command',
       command,
-      args,
-      {
-        cwd,
-        timeout: timeoutMs,
-        env,
-        signal,
-        encoding: 'utf-8',
-        maxBuffer: 10 * 1024 * 1024, // 10 MB stdout/stderr cap
-        windowsHide: true,
-        ...(killTree && process.platform !== 'win32' ? { detached: true } : {}),
-      },
-      (err, stdout, stderr) => {
-        completed = true;
-        stopTreeCleanup();
-        const stdoutStr = stdout ?? '';
-        const stderrStr = stderr ?? '';
-
-        if (err) {
-          // Node's child_process.spawn error object has additional fields beyond
-          // ErrnoException (which only declares `errno`, `code`, `path`, `syscall`).
-          // Cast to the full child-process error shape so we can read `signal`.
-          const errnoError = err as NodeJS.ErrnoException & {
-            signal?: NodeJS.Signals;
-            killed?: boolean;
-          };
-
-          // Node's child_process.execFile callback sets the following on the
-          // error object:
-          //   - `err.code`:  numeric exit code on a non-zero exit,
-          //                  string errno (e.g. 'ENOENT') when spawn fails,
-          //                  signal name (e.g. 'SIGTERM') when killed,
-          //                  or undefined on success.
-          //   - `err.signal`: signal name (e.g. 'SIGTERM') when killed.
-          //
-          // We classify the result into ExecResult:
-          //   - `exit` = numeric code when the child exited with one,
-          //   - `exit` = null when killed by signal OR spawn failure.
-          //   - `signal` = signal name when killed, otherwise null.
-          //
-          // (C1 regression: prior versions read `err.status` which is undefined
-          // on the spawn-error object, causing every non-zero exit to be
-          // reported as exit=null. Always read `err.code` and gate on its type.)
-          const exitCode = typeof errnoError.code === 'number' ? errnoError.code : null;
-          const procSignal =
-            typeof errnoError.signal === 'string' ? (errnoError.signal as NodeJS.Signals) : null;
-
-          const result: ExecResult = {
-            stdout: stdoutStr,
-            stderr: stderrStr,
-            exit: exitCode,
-            signal: procSignal,
-          };
-
-          // Cancellation: an aborted child surfaces as an AbortError
-          // (`code: 'ABORT_ERR'`), often with killed/signal unset. Classify it
-          // explicitly and BEFORE the ENOENT/timeout/signal branches so a
-          // deliberate cancel is never mislabelled a tool failure — callers key
-          // on `code === 'ABORTED'` to report "Operation cancelled." (audit M5).
-          if (
-            errnoError.code === 'ABORT_ERR' ||
-            errnoError.name === 'AbortError' ||
-            signal?.aborted
-          ) {
-            killProcessTree(childRef.current, killTree);
-            reject(
-              new ExecFailureError(
-                { ...result, code: 'ABORTED' },
-                `Command was cancelled: ${command}`,
-              ),
-            );
-            return;
-          }
-
-          // ENOENT: binary not found — propagate with a clear code.
-          if (errnoError.code === 'ENOENT') {
-            reject(
-              new ExecFailureError({ ...result, code: 'ENOENT' }, `Command not found: ${command}`),
-            );
-            return;
-          }
-
-          // Timeout: execFile internally calls child.kill() when the configured
-          // timeout elapses, setting both signal='SIGTERM' AND killed=true.
-          // External kills (OOM killer, parent process SIGTERM) typically have
-          // signal='SIGTERM' but killed=false. Gating on `killed === true`
-          // distinguishes these so an external resource crash isn't misreported
-          // as a tool timeout. (Live-audit L3 fix.)
-          if (errnoError.killed === true && result.exit === null && result.signal) {
-            killProcessTree(childRef.current, killTree);
-            reject(
-              new ExecFailureError(
-                { ...result, code: 'TIMEOUT' },
-                `Command timed out after ${timeoutMs}ms: ${command}`,
-              ),
-            );
-            return;
-          }
-
-          // Non-zero exit or signal — surface as a recoverable failure with captured output.
-          if (result.signal) killProcessTree(childRef.current, killTree);
-          reject(
-            new ExecFailureError(
-              { ...result, code: String(result.exit ?? 'SIGNAL') },
-              `Command exited with ${result.signal ? `signal ${result.signal}` : `code ${result.exit}`}: ${command}`,
-            ),
-          );
-          return;
-        }
-
-        resolve({ stdout: stdoutStr, stderr: stderrStr, exit: 0, signal: null });
-      },
-    );
-    if (!completed) {
-      stopTreeCleanup = installProcessTreeCleanup(childRef.current, killTree, timeoutMs, signal);
-    }
-  });
+      cwd,
+      timeoutMs,
+      signal,
+      killTree,
+      // execFile spawns the binary directly, so a missing binary arrives as a
+      // string errno of 'ENOENT' on the callback error.
+      classifyEnoent: true,
+    },
+  );
 }

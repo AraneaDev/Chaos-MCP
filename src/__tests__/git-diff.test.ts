@@ -1,19 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+// Only the spawn front-end is stubbed. `ExecFailureError` now lives in
+// `exec-error.js` and is imported for real, so `instanceof` narrowing in the
+// code under test matches the errors these tests construct.
 vi.mock('../utils/exec.js', () => ({
   runShell: vi.fn(),
-  // Mirror the real two-argument constructor (ExecResult-shaped first arg,
-  // message second). A bare `extends Error {}` accepted the message in slot 1,
-  // which diverged from the real class every call site is type-checked against.
-  ExecFailureError: class ExecFailureError extends Error {
-    constructor(_result: unknown, message: string) {
-      super(message);
-      this.name = 'ExecFailureError';
-    }
-  },
 }));
 
-import { runShell, ExecFailureError } from '../utils/exec.js';
+import { runShell } from '../utils/exec.js';
+import { ExecFailureError } from '../utils/exec-error.js';
 import { parseHunks, computeChangedRanges, listChangedFiles } from '../utils/git-diff.js';
 
 const mockRunShell = vi.mocked(runShell);
@@ -146,6 +141,51 @@ describe('computeChangedRanges', () => {
       expect(call[0]).toBe('git');
       expect(call[2]).toMatchObject({ cwd: '/workspace', timeoutMs: 15_000 });
     }
+  });
+
+  it('clamps a caller-supplied timeout instead of ignoring or inverting it', async () => {
+    // These git calls run BEFORE the sandbox exists, so `timeoutMs` is how the
+    // caller charges them against whatever is left of the audit budget.
+    // Ignoring the option (always GIT_TIMEOUT_MS) or clamping the wrong way
+    // round (Math.max instead of Math.min) both hand git more time than the
+    // caller has left.
+    mockRunShell
+      .mockResolvedValueOnce(ok('true\n'))
+      .mockResolvedValueOnce(ok('a.ts\n'))
+      .mockResolvedValueOnce(ok('abc123\n'))
+      .mockResolvedValueOnce(ok(''));
+    await computeChangedRanges('a.ts', '/workspace', 'HEAD', { timeoutMs: 5_000 });
+    for (const call of mockRunShell.mock.calls) {
+      expect(call[2]).toMatchObject({ timeoutMs: 5_000 });
+    }
+  });
+
+  it('never lets a caller raise the timeout above the built-in ceiling', async () => {
+    mockRunShell
+      .mockResolvedValueOnce(ok('true\n'))
+      .mockResolvedValueOnce(ok('a.ts\n'))
+      .mockResolvedValueOnce(ok('abc123\n'))
+      .mockResolvedValueOnce(ok(''));
+    await computeChangedRanges('a.ts', '/workspace', 'HEAD', { timeoutMs: 60_000 });
+    for (const call of mockRunShell.mock.calls) {
+      expect(call[2]).toMatchObject({ timeoutMs: 15_000 });
+    }
+  });
+
+  it('floors an exhausted budget at 1ms rather than passing through 0', async () => {
+    // Node reads a zero or negative timeout as "no timeout at all", so a spent
+    // budget would silently become unbounded — the exact opposite of the intent.
+    mockRunShell.mockResolvedValueOnce(ok('true\n')).mockResolvedValueOnce(ok(''));
+    await computeChangedRanges('a.ts', '/workspace', 'HEAD', { timeoutMs: 0 });
+    expect(mockRunShell.mock.calls[0][2]).toMatchObject({ timeoutMs: 1 });
+  });
+
+  it('kills the whole git process tree on timeout or cancel', async () => {
+    // git shells out to pagers and helpers; killing only the direct child
+    // leaves them holding the pipe and the call never settles.
+    mockRunShell.mockResolvedValueOnce(ok('true\n')).mockResolvedValueOnce(ok(''));
+    await computeChangedRanges('a.ts', '/workspace', 'HEAD');
+    expect(mockRunShell.mock.calls[0][2]).toMatchObject({ killTree: true });
   });
 
   it('calls rev-parse and ls-files with the correct args', async () => {

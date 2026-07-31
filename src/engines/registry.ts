@@ -1,9 +1,18 @@
+import { existsSync } from 'fs';
+import { join } from 'path';
 import type { BaseEngine } from './base.js';
 import { TypeScriptEngine } from './typescript.js';
 import { PythonEngine } from './python.js';
 import { RustEngine } from './rust.js';
 import { PhpEngine } from './php.js';
-import type { SupportedProjectType } from '../utils/project-detector.js';
+import type {
+  EnvironmentInfo,
+  ProjectType,
+  SupportedProjectType,
+} from '../utils/project-detector.js';
+import type { EngineConfigKey } from '../utils/config-loader.js';
+import { DEPENDENCY_DIRS } from './dependency-dirs.js';
+import type { ToolArgs } from '../tool-args-validation.js';
 
 /**
  * Re-exported from the detection leaf so existing `from './registry.js'`
@@ -13,13 +22,34 @@ import type { SupportedProjectType } from '../utils/project-detector.js';
 export type { SupportedProjectType };
 
 /**
+ * The lexical family a language belongs to for *source-text scanning* purposes.
+ *
+ * Deliberately named after the comment/string SYNTAX rather than the language:
+ * it is the only thing the estimate heuristic keys on, and several languages
+ * share one family (TypeScript and Rust are both `'c'`). Members:
+ *
+ * - `'c'`      — `/* … *\/` block comments, `//` line comments, `'`/`"`/backtick strings.
+ * - `'python'` — `#` line comments and triple-quoted strings; NO `//` (floor division).
+ * - `'php'`    — the C family PLUS `#` line comments, and `<?php`/`?>` tag stripping.
+ *
+ * A new language MUST pick one; `noisePattern` in estimate-heuristic.ts switches
+ * on this exhaustively, so a new *family* is a compile error there.
+ */
+export type SyntaxFamily = 'c' | 'python' | 'php';
+
+/**
  * Per-language execution metadata. This is the single source of truth for the
- * facts the handler previously re-encoded as parallel `projectType === '…'`
- * ternaries scattered across handler.ts (engine construction, config-section
- * selection, line-scope capability, auto-prebuild defaults). Adding a language
- * is now: implement a {@link BaseEngine} and add one entry here (plus the
- * detection entry in project-detector.ts and the config section in
- * config-loader.ts).
+ * facts the codebase previously re-encoded as parallel `projectType === '…'`
+ * ternaries and hand-maintained parallel lists (engine construction,
+ * config-section selection, line-scope capability, auto-prebuild defaults,
+ * sandbox dependency-dir symlinking, comment/string syntax, doc-facing names).
+ *
+ * Because this is a `Record<SupportedProjectType, EngineDescriptor>`, EVERY
+ * field here is compile-enforced: adding a member to `ProjectType` fails the
+ * build until the new language supplies all of them.
+ *
+ * See the "Adding a language" note at the bottom of this file for the sites a
+ * new language still has to touch by hand.
  */
 export interface EngineDescriptor {
   /** Construct the engine instance for this language. */
@@ -27,9 +57,10 @@ export interface EngineDescriptor {
 
   /**
    * The {@link ChaosConfig} section key holding this engine's overrides
-   * (`cfg[configKey]`). Mirrors the section keys parsed in config-loader.ts.
+   * (`cfg[configKey]`). The union is declared in config-loader.ts — the module
+   * that owns the sections it names — so the two cannot silently disagree.
    */
-  configKey: 'stryker' | 'cosmicray' | 'rust' | 'infection';
+  configKey: EngineConfigKey;
 
   /**
    * Whether the engine supports line-level scoping — `lineScope`, diff-aware
@@ -54,21 +85,73 @@ export interface EngineDescriptor {
    * `allowPrebuild` gate (audit Med#10) since they are not caller-supplied.
    */
   prebuild?: { marker: string; command: string };
+
+  /**
+   * Heavyweight dependency directories this language keeps at the workspace
+   * root, which the sandbox SYMLINKS instead of copying (they are large and
+   * read-only during a mutation run). Union'd across languages into
+   * `SYMLINK_DIRS` in utils/sandbox.ts.
+   *
+   * Only list a directory that is safe to SHARE with the host workspace. Build
+   * *output* directories must NOT go here: Rust declares `[]` even though it has
+   * a huge `target/`, because a symlinked `target/` would let a mutation run
+   * corrupt the host's build cache (audit finding H1) — that one is bulk-excluded
+   * from the copy via `ALWAYS_EXCLUDE` instead.
+   *
+   * Order is significant only in that the union is built in registry order.
+   */
+  dependencyDirs: readonly string[];
+
+  /**
+   * Comment/string lexical family, used by the estimate heuristic to strip
+   * non-code spans before counting mutable constructs. See {@link SyntaxFamily}.
+   */
+  syntaxFamily: SyntaxFamily;
+
+  /**
+   * Human-facing name of the mutation engine (`'StrykerJS'`, `'cosmic-ray'`, …).
+   * Surfaced verbatim in the `chaos://languages` resource and in the MCP tool
+   * description.
+   */
+  displayName: string;
+
+  /**
+   * Human-facing name of the LANGUAGE, which is not the `SupportedProjectType`
+   * key: `typescript` covers `'TypeScript/JavaScript'`. Paired with
+   * {@link EngineDescriptor.displayName} to render the tool description's
+   * "Supports X (engine), …" prose.
+   */
+  label: string;
 }
 
-/** Language → execution metadata. Insertion order is not significant. */
+/**
+ * Language → execution metadata.
+ *
+ * Insertion order IS significant for two derived values: the sandbox's
+ * `SYMLINK_DIRS` union (utils/sandbox.ts) and the tool description's
+ * "Supports …" prose (tool-schema.ts) are both built by walking this object in
+ * declaration order. Reordering it changes those strings; tests pin both.
+ */
 export const ENGINE_REGISTRY: Record<SupportedProjectType, EngineDescriptor> = {
   typescript: {
     make: () => new TypeScriptEngine(),
     configKey: 'stryker',
     supportsLineScope: true,
     honorsConcurrency: true,
+    dependencyDirs: DEPENDENCY_DIRS.typescript,
+    syntaxFamily: 'c',
+    displayName: 'StrykerJS',
+    label: 'TypeScript/JavaScript',
   },
   python: {
     make: () => new PythonEngine(),
     configKey: 'cosmicray',
     supportsLineScope: false,
     honorsConcurrency: false,
+    dependencyDirs: DEPENDENCY_DIRS.python,
+    syntaxFamily: 'python',
+    displayName: 'cosmic-ray',
+    label: 'Python',
   },
   rust: {
     make: () => new RustEngine(),
@@ -76,11 +159,116 @@ export const ENGINE_REGISTRY: Record<SupportedProjectType, EngineDescriptor> = {
     supportsLineScope: false,
     honorsConcurrency: true,
     prebuild: { marker: 'Cargo.toml', command: 'cargo check' },
+    dependencyDirs: DEPENDENCY_DIRS.rust,
+    syntaxFamily: 'c',
+    displayName: 'cargo-mutants',
+    label: 'Rust',
   },
   php: {
     make: () => new PhpEngine(),
     configKey: 'infection',
     supportsLineScope: false,
     honorsConcurrency: true,
+    dependencyDirs: DEPENDENCY_DIRS.php,
+    syntaxFamily: 'php',
+    displayName: 'Infection',
+    label: 'PHP',
   },
 };
+
+/**
+ * Every heavyweight dependency directory across all languages, deduped, in
+ * registry order. The sandbox symlinks these rather than copying them; see
+ * `SYMLINK_DIRS` in utils/sandbox.ts, which is exactly this list.
+ */
+export function dependencyDirectories(): string[] {
+  return [
+    ...new Set(
+      (Object.keys(ENGINE_REGISTRY) as SupportedProjectType[]).flatMap(
+        (t) => ENGINE_REGISTRY[t].dependencyDirs,
+      ),
+    ),
+  ];
+}
+
+/** Construct the engine for a (supported) project type. */
+export function makeEngine(projectType: SupportedProjectType): BaseEngine {
+  return ENGINE_REGISTRY[projectType].make();
+}
+
+/**
+ * Resolve the prebuild command: explicit args win, then fall back to smart
+ * defaults based on the detected package manager / language. Returns `null`
+ * when no prebuild is needed.
+ */
+export function resolvePrebuildCommand(
+  args: ToolArgs,
+  env: EnvironmentInfo,
+  projectType: ProjectType,
+): string | null {
+  if (typeof args.prebuildCommand === 'string' && args.prebuildCommand.trim().length > 0) {
+    return args.prebuildCommand;
+  }
+  // Python dependency installers (`uv sync` / `poetry install`) are intentionally
+  // NOT auto-run: `.venv` is symlinked into the sandbox from the host, so an
+  // install would mutate the user's real virtual environment (High#2). The
+  // symlinked environment is already populated; callers who genuinely need a
+  // rebuild can pass an explicit prebuildCommand. Rust (`cargo check`) declares
+  // its auto-prebuild in the engine registry. (PHP has none — Infection needs no build.)
+  const prebuild = ENGINE_REGISTRY[projectType as SupportedProjectType]?.prebuild;
+  if (prebuild && existsSync(join(env.workspaceRoot, prebuild.marker))) {
+    return prebuild.command;
+  }
+  return null;
+}
+
+/*
+ * ─── Adding a language ───────────────────────────────────────────────────────
+ *
+ * It is NOT "one entry here". A new language touches roughly a dozen files. What
+ * this registry buys you is that most of them now fail the BUILD rather than
+ * failing silently at runtime — which is what the earlier version of this note
+ * (and the claim that the config lived in `config-loader.ts`, now a 26-line
+ * barrel over `utils/config/`) got wrong.
+ *
+ * COMPILE-ENFORCED — `tsc` fails until each is handled. Adding a member to
+ * `ProjectType` in utils/project-detector.ts is the trigger:
+ *
+ *  1. utils/project-detector.ts — `LANGUAGE_DETECTORS`
+ *     (`Record<SupportedProjectType, …>`): extension matcher, extension list,
+ *     root markers, test-runner detection. Triage discovery and the tool
+ *     schema's extension prose are DERIVED from it.
+ *  2. engines/dependency-dirs.ts — `DEPENDENCY_DIRS`
+ *     (`Record<SupportedProjectType, …>`): the language's heavyweight dependency
+ *     directories, and the ONE place they are written down. `dependencyDirs`
+ *     below points at it, and BOTH `SYMLINK_DIRS` (utils/sandbox.ts) and
+ *     `SHARED_DEPENDENCY_DIRS` (utils/execution.ts, container bind-mounts) are
+ *     DERIVED from it. Declare `[]` for a language whose big directory is build
+ *     OUTPUT rather than a shareable cache — see Rust and audit H1.
+ *  3. engines/registry.ts — this `Record`. Every `EngineDescriptor` field is
+ *     mandatory, and four consumers are DERIVED from them, so they cannot go
+ *     stale: `SYMLINK_DIRS` in utils/sandbox.ts (`dependencyDirs`), comment /
+ *     string stripping in estimate-heuristic.ts (`syntaxFamily`), the
+ *     `chaos://languages` resource and the `audit_code_resilience` description
+ *     (`displayName` + `label`).
+ *  4. utils/config/types.ts — `EngineConfigKey`, because `configKey` above must
+ *     name a real config section (a new section also needs its own type there).
+ *  5. utils/execution.ts — `DEFAULT_IMAGES` (`Record<SupportedProjectType, …>`):
+ *     the container image for the language.
+ *  6. baseline-timing.ts — baseline test command (`never` guard).
+ *  7. test-file.ts — test-file naming convention (`never` guard).
+ *
+ * STILL MANUAL — nothing breaks; behaviour is silently wrong or degraded:
+ *
+ *  8. engines/<lang>.ts — the {@link BaseEngine} implementation itself.
+ *  9. utils/config/rules.ts — validation rules for the new config section
+ *     (unvalidated keys are accepted and then ignored).
+ * 10. utils/execution.ts — the python-only virtualenv env args. The container
+ *     bind-mount list is no longer a hand-written copy; it derives from (2).
+ * 11. resources.ts (`estimateFidelity`) and estimate.ts — both branch on
+ *     `=== 'rust'` to mean "exact mutant count"; a new language silently
+ *     reports "approx".
+ * 12. enrich.ts — per-language severity/hint enrichment; without a branch the
+ *     language reports severity "unknown". Plus the Docker image, CI matrix,
+ *     and README/CONTRIBUTING tables.
+ */

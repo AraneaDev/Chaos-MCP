@@ -19,6 +19,11 @@ import {
   detectRustTestRunner,
   detectRawRustRunner,
   detectPythonPackageManager,
+  detectPhpTestRunner,
+  detectRawPhpRunner,
+  supportedSourceExtensions,
+  primarySourceExtensions,
+  assertNeverProjectType,
 } from '../utils/project-detector.js';
 const mockExistsSync = vi.mocked(existsSync);
 const mockReadFileSync = vi.mocked(readFileSync);
@@ -96,9 +101,17 @@ describe('detectProjectType', () => {
       expect(detectProjectType('src/python/main.rb')).toBe('unsupported');
     });
 
-    it('matches case-sensitively', () => {
-      // .TS uppercase should not match (extensions are lowercase by convention)
-      expect(detectProjectType('file.TS')).toBe('unsupported');
+    it('matches extensions case-insensitively', () => {
+      // On the case-insensitive filesystems where these are ordinary filenames
+      // (macOS, Windows), an uppercase extension still names the same language.
+      // Rejecting them as "Extension unsupported" was a confusing way to
+      // describe a file that plainly has a supported extension.
+      expect(detectProjectType('file.TS')).toBe('typescript');
+      expect(detectProjectType('Main.RS')).toBe('rust');
+      expect(detectProjectType('Foo.PHP')).toBe('php');
+      expect(detectProjectType('Script.PY')).toBe('python');
+      // Genuinely unsupported extensions are still rejected.
+      expect(detectProjectType('file.TXT')).toBe('unsupported');
     });
   });
 });
@@ -336,6 +349,44 @@ describe('detectJsTestRunner', () => {
         });
 
         expect(detectJsTestRunner('/workspace')).toBe('vitest');
+      });
+
+      it('does not apply the vitest-3 command-runner switch to a jest project', () => {
+        // The switch exists because vitest 3 removed the API StrykerJS's native
+        // runner needs. Forced on for every runner, a Jest project that merely
+        // has vitest 3 somewhere in its tree is silently moved onto the slower
+        // command runner.
+        mockExistsSync.mockImplementation((p) => String(p).endsWith('jest.config.js'));
+        mockReadFileSync.mockImplementation((p) => {
+          const s = String(p);
+          if (s === join('/workspace', 'node_modules', 'vitest', 'package.json')) {
+            return JSON.stringify({ version: '3.1.0' });
+          }
+          if (s === join('/workspace', 'package.json')) {
+            return JSON.stringify({ devDependencies: { jest: '^29.0.0' } });
+          }
+          throw new Error('ENOENT');
+        });
+
+        expect(detectJsTestRunner('/workspace')).toBe('jest');
+      });
+
+      it('reads a multi-digit vitest major, not just its first character', () => {
+        // `version.split('.')` — split on the empty string instead and version
+        // "12.0.0" reads as major 1, putting a modern vitest back on the native
+        // runner that cannot drive it.
+        mockReadFileSync.mockImplementation((p) => {
+          const s = String(p);
+          if (s === join('/workspace', 'node_modules', 'vitest', 'package.json')) {
+            return JSON.stringify({ version: '12.0.0' });
+          }
+          if (s === join('/workspace', 'package.json')) {
+            return JSON.stringify({ devDependencies: { vitest: '^12.0.0' } });
+          }
+          throw new Error('ENOENT');
+        });
+
+        expect(detectJsTestRunner('/workspace')).toBe('command');
       });
 
       it('finds a vitest hoisted to a monorepo root (ancestor node_modules)', () => {
@@ -1404,5 +1455,97 @@ describe('project-detector mutation hardening (priority short-circuits + regex)'
     // detectedRunner dispatch skipped the python arm it would return 'cargo test'.
     expect(env.detectedRunner).toBe('tox');
     expect(env.testRunner).toBe('pytest');
+  });
+});
+
+describe('detectPhpTestRunner', () => {
+  it('always resolves to phpunit — the only runner Infection drives', () => {
+    // Infection's initial-test-run integration is PHPUnit-specific, so the
+    // detector is deliberately a constant rather than a filesystem probe.
+    // Pinning the literal keeps a mutant that blanks it from silently emitting
+    // an empty test command.
+    expect(detectPhpTestRunner('/any/workspace')).toBe('phpunit');
+  });
+
+  it('does not consult the filesystem to decide', () => {
+    // A workspace where nothing exists must still resolve — this is what makes
+    // the function safe to call before a sandbox is provisioned.
+    mockExistsSync.mockClear();
+    mockExistsSync.mockReturnValue(false);
+    expect(detectPhpTestRunner('/missing')).toBe('phpunit');
+    expect(mockExistsSync).not.toHaveBeenCalled();
+  });
+});
+
+describe('detectRawPhpRunner', () => {
+  it('agrees with detectPhpTestRunner for the same workspace', () => {
+    // The "raw" variants exist so callers that want the un-wrapped command have
+    // a stable entry point; for PHP the two must not drift apart.
+    expect(detectRawPhpRunner('/any/workspace')).toBe(detectPhpTestRunner('/any/workspace'));
+    expect(detectRawPhpRunner('/any/workspace')).toBe('phpunit');
+  });
+});
+
+// ─── Extension registry accessors (audit F15) ───────────────────────────────
+
+describe('supportedSourceExtensions', () => {
+  it('returns exactly the seven auditable extensions, in detection order', () => {
+    // Pinned literally: this list IS the contract that triage discovery and the
+    // MCP tool-schema prose derive from, and it must not drift silently while
+    // the four supported languages are unchanged.
+    expect(supportedSourceExtensions()).toEqual([
+      '.ts',
+      '.js',
+      '.tsx',
+      '.jsx',
+      '.py',
+      '.rs',
+      '.php',
+    ]);
+  });
+
+  it('agrees with detectProjectType for every extension it advertises', () => {
+    // The whole point of deriving the list from the detection registry: an
+    // extension triage will walk into must be one an audit can actually run.
+    for (const ext of supportedSourceExtensions()) {
+      expect(detectProjectType(`src/sample${ext}`)).not.toBe('unsupported');
+    }
+  });
+
+  it('is dot-prefixed, lowercase, and free of duplicates', () => {
+    const exts = supportedSourceExtensions();
+    expect(new Set(exts).size).toBe(exts.length);
+    for (const ext of exts) {
+      expect(ext).toBe(ext.toLowerCase());
+      expect(ext.startsWith('.')).toBe(true);
+    }
+  });
+
+  it('hands back a fresh array each call so callers cannot mutate the registry', () => {
+    const first = supportedSourceExtensions();
+    first.push('.go');
+    expect(supportedSourceExtensions()).not.toContain('.go');
+  });
+});
+
+describe('primarySourceExtensions', () => {
+  it('collapses the JSX/TSX variants for compact prose', () => {
+    expect(primarySourceExtensions()).toEqual(['.ts', '.js', '.py', '.rs', '.php']);
+  });
+
+  it('is a subset of the full extension list', () => {
+    const all = new Set(supportedSourceExtensions());
+    for (const ext of primarySourceExtensions()) {
+      expect(all.has(ext)).toBe(true);
+    }
+  });
+});
+
+describe('assertNeverProjectType', () => {
+  it('is a runtime no-op, so a guarded switch keeps its silent fallback', () => {
+    // The guard exists to fail the BUILD when a language is added without
+    // handling; it must never turn today's fallback path into a throw.
+    expect(() => assertNeverProjectType(undefined as never)).not.toThrow();
+    expect(assertNeverProjectType(undefined as never)).toBeUndefined();
   });
 });

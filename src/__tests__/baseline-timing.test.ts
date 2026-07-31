@@ -4,7 +4,7 @@ import {
   projectEstimatedMs,
   projectTimingRange,
 } from '../baseline-timing.js';
-import type { EnvironmentInfo } from '../utils/project-detector.js';
+import type { EnvironmentInfo, SupportedProjectType } from '../utils/project-detector.js';
 
 const env = (over: Partial<EnvironmentInfo> = {}): EnvironmentInfo =>
   ({
@@ -52,6 +52,24 @@ describe('resolveBaselineTestCommand', () => {
   it('resolves rust', () => {
     expect(resolveBaselineTestCommand(env(), 'rust')).toEqual({ command: 'cargo', args: ['test'] });
   });
+  it('resolves php to the vendored phpunit binary with no arguments', () => {
+    // The PHP case had no test at all: a blanked command string or a stray
+    // argument would have shipped an unrunnable baseline command, and
+    // `estimate_audit --withTiming` would have silently reported no timing.
+    expect(resolveBaselineTestCommand(env(), 'php')).toEqual({
+      command: 'vendor/bin/phpunit',
+      args: [],
+    });
+  });
+
+  it('ignores the detected runner for php', () => {
+    // PHP resolution is unconditional — a JS runner leaking in from the
+    // environment must not change the command.
+    expect(resolveBaselineTestCommand(env({ detectedRunner: 'vitest' }), 'php')?.command).toBe(
+      'vendor/bin/phpunit',
+    );
+  });
+
   it('resolves python to pytest with empty args', () => {
     expect(resolveBaselineTestCommand(env({ detectedRunner: 'pytest' }), 'python')).toEqual({
       command: 'pytest',
@@ -134,5 +152,20 @@ describe('resolveBaselineTestCommand', () => {
   });
   it('returns undefined for an unsupported project type (default arm)', () => {
     expect(resolveBaselineTestCommand(env(), 'cobol' as never)).toBeUndefined();
+  });
+});
+
+describe('resolveBaselineTestCommand — per-language coverage (audit F15)', () => {
+  const SUPPORTED: SupportedProjectType[] = ['typescript', 'python', 'rust', 'php'];
+
+  it.each(SUPPORTED)('resolves a baseline command for %s', (projectType) => {
+    // The switch behind this used to fall through to `return undefined`, so a
+    // newly supported language made `estimate_audit --withTiming` silently drop
+    // timing. A `never` guard now makes that a compile error; this pins the
+    // runtime half — every supported language must resolve a real command.
+    const cmd = resolveBaselineTestCommand(env({ projectType }), projectType, 'src/widget.ts');
+    expect(cmd).toBeDefined();
+    expect(cmd?.command).toBeTruthy();
+    expect(Array.isArray(cmd?.args)).toBe(true);
   });
 });
