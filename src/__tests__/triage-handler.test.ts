@@ -922,7 +922,15 @@ describe('handleTriageCall', () => {
         {},
         'a.ts',
       );
-      expect(resolved).toMatchObject({ kind: 'scope', diffRanges: [{ start: 4, end: 4 }] });
+      // The point of this test is the cross-tool handshake: a triage-minted
+      // runId resolves under the audit tool's own gate. The scope it yields is
+      // whole-file (verify no longer line-scopes), with the baseline carried
+      // for post-run filtering.
+      expect(resolved).toMatchObject({
+        kind: 'scope',
+        diffRanges: undefined,
+        baselineKeys: [{ line: 4, mutator: 'ConditionalExpression' }],
+      });
     });
 
     it('stamps the FILE’s workspace root, not the sweep’s working directory', async () => {

@@ -255,9 +255,12 @@ describe('handleToolCall phase3 wiring', () => {
     });
     expect(verified.isError).toBeUndefined();
     expect(verified.structuredContent).toMatchObject({ mode: 'verify' });
+    // The re-run is WHOLE-FILE: this used to assert `lineRanges: [{start: 7,
+    // end: 7}]`, and that single-line scoping is exactly what dropped
+    // multi-line mutants from the re-run and made them read as "now killed".
     expect(run).toHaveBeenCalledWith(
       FILE,
-      expect.objectContaining({ lineRanges: [{ start: 7, end: 7 }] }),
+      expect.not.objectContaining({ lineRanges: expect.anything() }),
     );
   });
 
@@ -315,10 +318,13 @@ describe('handleToolCall phase3 wiring', () => {
     // Verify mode now carries structuredContent matching the outputSchema's
     // verify-delta variant (audit H3).
     expect(res.structuredContent).toMatchObject({ mode: 'verify', target: FILE });
-    // Scope was derived from the baseline lines (TS supports line scope).
+    // The re-run is WHOLE-FILE on every engine — the baseline is applied as a
+    // post-run FILTER, not as a mutate scope. Single-line scoping excluded any
+    // mutant whose span crossed a line boundary, and those absences were then
+    // reported as "now killed".
     expect(run).toHaveBeenCalledWith(
       FILE,
-      expect.objectContaining({ lineRanges: [{ start: 7, end: 7 }] }),
+      expect.not.objectContaining({ lineRanges: expect.anything() }),
     );
   });
 

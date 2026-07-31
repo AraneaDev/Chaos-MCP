@@ -8,7 +8,7 @@
 import { readFileSync } from 'fs';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import type { MutationResult } from '../engines/base.js';
-import { ENGINE_REGISTRY, type SupportedProjectType } from '../engines/registry.js';
+import { type SupportedProjectType } from '../engines/registry.js';
 import type { EnvironmentInfo } from '../utils/project-detector.js';
 import type { ChaosConfig } from '../utils/config-loader.js';
 import type { ToolArgs } from '../tool-args-validation.js';
@@ -101,11 +101,12 @@ export function formatAuditOutput(
     const suppressed = verdict.applied;
     const rerun = applySuppressions(auditResults, suppressed).result;
     const keptBaseline = baselineKeys.filter((k) => !suppressed.has(`${k.line} ${k.mutator}`));
-    // Whole-file engines (cosmic-ray/cargo-mutants/Infection) re-run the entire
-    // file in verify mode, so regressions can land on lines outside the baseline;
-    // pass the engine's line-scope capability so those are counted (audit H1).
-    const supportsLineScope = ENGINE_REGISTRY[projectType].supportsLineScope;
-    const delta = computeVerifyDelta(keptBaseline, rerun, supportsLineScope);
+    // EVERY engine re-runs the whole file in verify mode now — StrykerJS
+    // included, since single-line scoping silently dropped multi-line mutants
+    // and `computeVerifyDelta` then read their absence as "killed" (see
+    // `audit/scope.ts`). Regressions can therefore land on lines outside the
+    // baseline on any engine, and all of them are counted (audit H1).
+    const delta = computeVerifyDelta(keptBaseline, rerun);
     const verifyText =
       args.outputFormat === 'text'
         ? formatVerifyResultAsText(targetFile, delta)

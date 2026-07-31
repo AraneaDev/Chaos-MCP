@@ -16,7 +16,7 @@ import { formatResultAsText, buildResultPayload } from '../format.js';
 import { evaluateGate } from '../gate.js';
 import { computeChangedRanges, type GitOptions } from '../utils/git-diff.js';
 import { loadRun, workspaceFingerprint } from '../utils/run-cache.js';
-import { parseBaseline, baselineLines, type BaselineInput, type MutantKey } from '../verify.js';
+import { parseBaseline, type BaselineInput, type MutantKey } from '../verify.js';
 import type { AuditDeadline } from '../utils/deadline.js';
 
 /**
@@ -321,14 +321,36 @@ export async function computeScope(
         earlyArgs,
       );
     }
-    // Reuse the A2 scope channel (`diffRanges` → runOptions.lineRanges), and
-    // only on engines that support line scoping (TS only); the others run
-    // whole-file and filter afterwards (Fix 3 — consistency). `baseline`,
-    // `runId` and `diffBase` are mutually exclusive (validateToolArgs /
-    // validateRunIdArg), so this never collides with the diff path above.
-    if (ENGINE_REGISTRY[projectType].supportsLineScope) {
-      diffRanges = baselineLines(baselineKeys).map((l) => ({ start: l, end: l }));
-    }
+    // Verify deliberately does NOT line-scope the re-run, on ANY engine.
+    //
+    // It used to on StrykerJS, via one single-line range per baseline line:
+    //   baselineLines(baselineKeys).map((l) => ({ start: l, end: l }))
+    // Stryker's `--mutate file:A-B` only includes a mutant whose ENTIRE span
+    // lies within [A,B], and plenty of mutants span several lines — a `case`
+    // arm with its body, a block statement, an arrow function. Every one of
+    // those was silently EXCLUDED from the re-run. `computeVerifyDelta` infers
+    // "killed" from ABSENCE, so a multi-line mutant that was never re-tested
+    // came back reported as `nowKilled`: a false "you fixed it" on the single
+    // question verify exists to answer.
+    //
+    // Found by running this server against its own source. A baseline of 8
+    // survivors in src/estimate-heuristic.ts reported 2 "now killed" with no
+    // source change between the two runs, reproducibly. Both were multi-line
+    // ConditionalExpression mutants; re-auditing with `lineScope {44,48}`
+    // showed them alive, and with `lineScope {44,44}` showed them not generated
+    // at all — the mutant spans lines 44-47.
+    //
+    // Widening the ranges cannot be made provably safe: a mutant's span has no
+    // upper bound, so no amount of padding guarantees containment. Verify
+    // therefore runs whole-file and filters by baseline key afterwards, exactly
+    // as the non-line-scoping engines have always done (Fix 3 — consistency,
+    // now genuinely uniform). Absence from a whole-file re-run means the mutant
+    // really is not a survivor.
+    //
+    // `baseline`, `runId` and `diffBase` are mutually exclusive
+    // (validateToolArgs / validateRunIdArg), so this never collides with the
+    // diff path above, which keeps its line scoping — a diff range comes from
+    // git and is not claimed to contain any particular mutant.
   }
 
   return { kind: 'scope', diffRanges, scopeNote, baselineKeys };

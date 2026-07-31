@@ -159,16 +159,23 @@ describe('computeScope — empty baseline', () => {
     expect(structured(res.result).gate).toEqual({ minScore: 90, passed: true });
   });
 
-  it('still scopes a NON-empty baseline to its lines', async () => {
+  // These three previously asserted `diffRanges: [{ start: N, end: N }]` — one
+  // single-line range per baseline line. That scoping was the bug: Stryker only
+  // generates a mutant whose ENTIRE span fits inside the range, so every
+  // multi-line mutant was excluded from the re-run and `computeVerifyDelta`,
+  // which infers "killed" from absence, reported it as `nowKilled`. Verify now
+  // re-runs whole-file and filters by baseline key, so `diffRanges` must stay
+  // undefined while `baselineKeys` still carries what to filter by.
+  it('does NOT line-scope a NON-empty baseline, but still carries its keys', async () => {
     const res = await scope({ baseline: { survivors: [{ line: 7, mutators: { Cond: 1 } }] } });
     expect(res).toMatchObject({
       kind: 'scope',
-      diffRanges: [{ start: 7, end: 7 }],
+      diffRanges: undefined,
       baselineKeys: [{ line: 7, mutator: 'Cond' }],
     });
   });
 
-  it('still scopes a NON-empty cached run to its lines', async () => {
+  it('does NOT line-scope a NON-empty cached run either', async () => {
     const runId = saveRun(
       {
         file: FILE,
@@ -179,7 +186,11 @@ describe('computeScope — empty baseline', () => {
       { workspaceRoot: WS },
     );
     const res = await scope({ runId });
-    expect(res).toMatchObject({ kind: 'scope', diffRanges: [{ start: 12, end: 12 }] });
+    expect(res).toMatchObject({
+      kind: 'scope',
+      diffRanges: undefined,
+      baselineKeys: [{ line: 12, mutator: 'Cond' }],
+    });
   });
 });
 
@@ -212,7 +223,13 @@ describe('computeScope — runId workspace binding', () => {
       { workspaceRoot: WS },
     );
     const res = await scope({ runId });
-    expect(res).toMatchObject({ kind: 'scope', diffRanges: [{ start: 3, end: 3 }] });
+    // The workspace gate is what this test is about; the scope it returns is
+    // whole-file (diffRanges undefined) with the baseline carried for filtering.
+    expect(res).toMatchObject({
+      kind: 'scope',
+      diffRanges: undefined,
+      baselineKeys: [{ line: 3, mutator: 'C' }],
+    });
   });
 
   it('refuses an entry that carries NO workspace hash', async () => {

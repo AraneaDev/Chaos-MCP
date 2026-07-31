@@ -102,28 +102,28 @@ describe('computeVerifyDelta', () => {
     expect(delta.newSurvivors).toEqual([{ line: 42, mutator: 'BooleanLiteral' }]);
   });
 
-  it('excludes re-run survivors on non-baseline lines from newSurvivors for line-scoped engines', () => {
-    // engineSupportsLineScope=true (StrykerJS): the re-run is scoped to baseline
-    // lines, so an out-of-baseline survivor cannot occur and is not counted.
-    const delta = computeVerifyDelta(baseline, result([{ line: 999, mutator: 'X' }]), true);
-    expect(delta.newSurvivors).toEqual([]);
+  it('counts a re-run survivor on a NON-baseline line, with no engine exemption', () => {
+    // This test previously asserted the opposite — that an out-of-baseline
+    // survivor is dropped for StrykerJS — on the grounds that "the re-run is
+    // scoped to baseline lines, so an out-of-baseline survivor cannot occur".
+    // The scoping that premise rested on was one single-line range per baseline
+    // line, and Stryker only generates a mutant whose ENTIRE span fits the
+    // range, so multi-line mutants were never re-tested and came back reported
+    // as `nowKilled`. Verify now re-runs whole-file on every engine, so an
+    // out-of-baseline survivor CAN occur and is a real regression.
+    const delta = computeVerifyDelta(baseline, result([{ line: 999, mutator: 'X' }]));
+    expect(delta.newSurvivors).toEqual([{ line: 999, mutator: 'X' }]);
     expect(delta.nowKilled).toEqual([
       { line: 42, mutator: 'ConditionalExpression' },
       { line: 88, mutator: 'ArithmeticOperator' },
     ]);
   });
 
-  it('includes a new survivor ON a baseline line under line-scoped engines', () => {
-    // engineSupportsLineScope=true: a fresh survivor whose (line, mutator) key is
-    // NEW but whose LINE is in the baseline is a real regression on a re-tested
-    // line and MUST be counted. This exercises baselineLineSet.has(<baseline line>)
-    // returning true — the non-baseline (line 999) case above cannot, since it is
-    // excluded whether or not baselineLineSet actually holds the baseline lines.
-    const delta = computeVerifyDelta(
-      baseline,
-      result([{ line: 42, mutator: 'BooleanLiteral' }]),
-      true,
-    );
+  it('includes a new survivor ON a baseline line', () => {
+    // A fresh survivor whose (line, mutator) key is NEW but whose LINE is in the
+    // baseline is a regression on a re-tested line and must be counted. Held
+    // before and after the line-scope exemption was removed.
+    const delta = computeVerifyDelta(baseline, result([{ line: 42, mutator: 'BooleanLiteral' }]));
     expect(delta.newSurvivors).toEqual([{ line: 42, mutator: 'BooleanLiteral' }]);
   });
 

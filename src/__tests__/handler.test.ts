@@ -3413,11 +3413,14 @@ describe('handleToolCall', () => {
         }),
       );
 
+      // Whole-file re-run: this used to assert one single-line range per
+      // baseline line. Stryker only generates a mutant whose ENTIRE span fits
+      // the range, so that scoping silently excluded every multi-line mutant
+      // from the re-run, and computeVerifyDelta — which infers "killed" from
+      // absence — reported each of them as `nowKilled`. The baseline is now a
+      // post-run filter instead of a mutate scope.
       const runOpts = mockRun.mock.calls[0][1] as { lineRanges?: { start: number; end: number }[] };
-      expect(runOpts.lineRanges).toEqual([
-        { start: 42, end: 42 },
-        { start: 88, end: 88 },
-      ]);
+      expect(runOpts.lineRanges).toBeUndefined();
 
       const json = JSON.parse((res.content[0] as { text: string }).text);
       expect(json.mode).toBe('verify');

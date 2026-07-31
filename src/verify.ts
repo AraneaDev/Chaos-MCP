@@ -75,21 +75,26 @@ export function baselineLines(keys: MutantKey[]): number[] {
 /**
  * Compare baseline keys against a fresh run's vulnerabilities (Survived ∪ NoCoverage).
  *
- * `engineSupportsLineScope` mirrors `ENGINE_REGISTRY[type].supportsLineScope`.
- * When true (StrykerJS/TS) the rerun is scoped to exactly the baseline lines, so
- * every fresh survivor is guaranteed to land on a baseline line and we restrict
- * `newSurvivors` accordingly. When false (cosmic-ray/cargo-mutants/Infection) the
- * rerun is whole-file: a regression the fix introduces on a *different* line is a
- * real new survivor and MUST be counted, so we drop the baseline-line restriction.
- * Defaults to false so an omitted flag never silently hides regressions.
+ * Every verify re-run is WHOLE-FILE, on every engine, so a fresh survivor may
+ * legitimately land on a line the baseline never mentioned and all of them are
+ * counted as `newSurvivors`.
+ *
+ * This used to take an `engineSupportsLineScope` flag that restricted
+ * `newSurvivors` to baseline lines for StrykerJS, on the stated grounds that
+ * "the rerun is scoped to exactly the baseline lines, so every fresh survivor is
+ * guaranteed to land on a baseline line". That premise was false in a way that
+ * mattered: the re-run was scoped to one single-line range per baseline line,
+ * and Stryker only generates a mutant whose ENTIRE span fits inside the range —
+ * so multi-line mutants were never re-tested at all, and this function, which
+ * infers "killed" from ABSENCE, reported them as `nowKilled`. `scope.ts` no
+ * longer line-scopes verify (see the long comment there), which removes both the
+ * false-killed bug and the flag's justification. Dropping the restriction also
+ * restores the property the flag's own `= false` default was chosen for: a
+ * regression the fix introduces on a DIFFERENT line is a real new survivor and
+ * must never be silently hidden.
  */
-export function computeVerifyDelta(
-  baseline: MutantKey[],
-  result: MutationResult,
-  engineSupportsLineScope = false,
-): VerifyDelta {
+export function computeVerifyDelta(baseline: MutantKey[], result: MutationResult): VerifyDelta {
   const baselineKeySet = new Set(baseline.map((k) => keyOf(k.line, k.mutator)));
-  const baselineLineSet = new Set(baseline.map((k) => k.line));
 
   const rerun: MutantKey[] = [];
   const rerunKeySet = new Set<string>();
@@ -103,11 +108,7 @@ export function computeVerifyDelta(
 
   const nowKilled = baseline.filter((k) => !rerunKeySet.has(keyOf(k.line, k.mutator)));
   const stillSurviving = baseline.filter((k) => rerunKeySet.has(keyOf(k.line, k.mutator)));
-  const newSurvivors = rerun.filter(
-    (k) =>
-      !baselineKeySet.has(keyOf(k.line, k.mutator)) &&
-      (!engineSupportsLineScope || baselineLineSet.has(k.line)),
-  );
+  const newSurvivors = rerun.filter((k) => !baselineKeySet.has(keyOf(k.line, k.mutator)));
 
   return {
     baselineTotal: baseline.length,
