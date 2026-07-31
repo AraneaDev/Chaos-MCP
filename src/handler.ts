@@ -27,8 +27,12 @@ import { AuditDeadline } from './utils/deadline.js';
 import { resolveAuditTimeoutMs, resolveGatedPrebuild } from './audit/run-options.js';
 import { auditFile, assertPythonHasTests, type AuditFileInput } from './audit/audit-file.js';
 import { computeScope } from './audit/scope.js';
-import { buildEnrichContext, formatAuditOutput } from './audit/audit-output.js';
-import { applySuppressionArgs, loadSuppressedKeys } from './audit/suppression-io.js';
+import {
+  buildEnrichContext,
+  formatAuditOutput,
+  type SuppressionCounts,
+} from './audit/audit-output.js';
+import { applySuppressionArgs, loadVerifiedSuppressions } from './audit/suppression-io.js';
 
 /**
  * Validate the optional tool arguments that are not covered by the JSON schema's
@@ -354,14 +358,19 @@ export async function handleToolCall(
       // filter is owned by Task 9: removing a now-suppressed mutant from the
       // re-run but NOT from the baseline would make computeVerifyDelta misreport
       // it as "now killed" (Fix 2). Writes above remain ungated (explicit action).
-      let suppressedCount = 0;
+      //
+      // Only fingerprint-verified entries filter the result. Drifted and
+      // unverified entries are counted and reported instead — including the
+      // entries just written above whose source line could not be read, which
+      // land in `unverified` in this very response.
+      const suppression: SuppressionCounts = { applied: 0, drifted: 0, unverified: 0 };
       if (!baselineKeys) {
-        const filtered = applySuppressions(
-          auditResults,
-          loadSuppressedKeys(wsRoot, relFromRoot, supPath),
-        );
+        const verdict = loadVerifiedSuppressions(wsRoot, relFromRoot, supPath);
+        const filtered = applySuppressions(auditResults, verdict.applied);
         auditResults = filtered.result;
-        suppressedCount = filtered.suppressedCount;
+        suppression.applied = filtered.suppressedCount;
+        suppression.drifted = verdict.drifted;
+        suppression.unverified = verdict.unverified;
       }
 
       // Mint a runId for non-verify runs so the caller can verify later by id.
@@ -401,7 +410,7 @@ export async function handleToolCall(
         enrichCtx,
         cfg,
         env,
-        suppressedCount,
+        suppression,
         mintedRunId,
         relFromRoot,
       );

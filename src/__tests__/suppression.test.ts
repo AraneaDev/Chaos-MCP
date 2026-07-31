@@ -1,16 +1,37 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import {
   loadSuppressions,
   addSuppressions,
   removeSuppressions,
+  verifySuppressions,
+  normalizeSourceLine,
+  fingerprintOfLine,
+  fingerprintSourceLine,
   _resetWriteQueue,
   _writeQueueSize,
 } from '../utils/suppression.js';
 import { applySuppressions } from '../audit/apply-suppressions.js';
 import type { MutationResult } from '../engines/base.js';
+
+/**
+ * The `"<line> <mutator>"` keys stored for one file, in file order.
+ *
+ * `loadSuppressions` returns the stored ENTRIES now (v2 keeps a fingerprint on
+ * each), so the tests that only care about identity project them back down to
+ * the key they used to assert on.
+ */
+function storedKeys(root: string, file: string, configPath?: string): string[] {
+  return (loadSuppressions(root, configPath).get(file) ?? []).map((e) => `${e.line} ${e.mutator}`);
+}
+
+/** Write a source file under the workspace so a suppression can fingerprint it. */
+function writeSource(root: string, rel: string, lines: string[]): void {
+  mkdirSync(dirname(join(root, rel)), { recursive: true });
+  writeFileSync(join(root, rel), `${lines.join('\n')}\n`, 'utf8');
+}
 
 let root: string;
 beforeEach(() => {
@@ -56,8 +77,7 @@ describe('suppression', () => {
       { line: 1, mutator: 'A', reason: 'equivalent' },
       { line: 1, mutator: 'A' }, // dup
     ]);
-    const map = loadSuppressions(root);
-    expect([...(map.get('src/a.ts') ?? [])]).toEqual(['1 A']);
+    expect(storedKeys(root, 'src/a.ts')).toEqual(['1 A']);
     // Assert the dedup happened at WRITE time (one stored entry), not just that
     // loadSuppressions' Set collapses it — pins the `seen.has(k)` guard.
     const raw = JSON.parse(readFileSync(join(root, '.chaos-mcp', 'suppressions.json'), 'utf8')) as {
@@ -83,7 +103,7 @@ describe('suppression', () => {
       { line: 2, mutator: 'B' },
     ]);
     await removeSuppressions(root, 'src/a.ts', [{ line: 1, mutator: 'A' }]);
-    expect([...(loadSuppressions(root).get('src/a.ts') ?? [])]).toEqual(['2 B']);
+    expect(storedKeys(root, 'src/a.ts')).toEqual(['2 B']);
   });
 
   it('applySuppressions filters vulnerabilities and recomputes score', () => {
@@ -116,7 +136,7 @@ describe('suppression', () => {
   it('honors a relative configPath (not the default location)', async () => {
     await addSuppressions(root, 'src/a.ts', [{ line: 7, mutator: 'C' }], 'custom/sup.json');
     // The custom file round-trips...
-    expect([...(loadSuppressions(root, 'custom/sup.json').get('src/a.ts') ?? [])]).toEqual(['7 C']);
+    expect(storedKeys(root, 'src/a.ts', 'custom/sup.json')).toEqual(['7 C']);
     // ...and the DEFAULT location was never written.
     expect(loadSuppressions(root).size).toBe(0);
   });
@@ -124,7 +144,7 @@ describe('suppression', () => {
   it('honors an absolute configPath verbatim', async () => {
     const abs = join(root, 'abs-suppressions.json');
     await addSuppressions(root, 'src/a.ts', [{ line: 9, mutator: 'D' }], abs);
-    expect([...(loadSuppressions(root, abs).get('src/a.ts') ?? [])]).toEqual(['9 D']);
+    expect(storedKeys(root, 'src/a.ts', abs)).toEqual(['9 D']);
     // Reading it as a relative path (joined to root) would point elsewhere → empty.
     expect(loadSuppressions(root).size).toBe(0);
   });
@@ -183,7 +203,7 @@ describe('suppression', () => {
     );
     const map = loadSuppressions(root);
     expect([...map.keys()].sort()).toEqual(['good.ts']);
-    expect([...(map.get('good.ts') ?? [])]).toEqual(['5 A']);
+    expect(storedKeys(root, 'good.ts')).toEqual(['5 A']);
   });
 
   // ── removeSuppressions else-branch (lines 110–112): removing the last entry
@@ -243,10 +263,9 @@ describe('suppression', () => {
   /** An empty set is the same no-op as an undefined one. */
   it('does not append a duplicate when the same mutant is suppressed twice', () => {
     // Dedupe ACROSS calls, not just within one batch: the second call rebuilds
-    // `seen` from the entries already on disk. If that rebuild loses the keys,
-    // every re-suppression appends another copy and the file grows without
-    // bound — invisible through loadSuppressions(), which collapses the list
-    // into a Set on the way out.
+    // its index from the entries already on disk. If that rebuild loses the
+    // keys, every re-suppression appends another copy and the file grows without
+    // bound.
     return (async () => {
       await addSuppressions(root, 'src/a.ts', [{ line: 1, mutator: 'A', reason: 'first' }]);
       await addSuppressions(root, 'src/a.ts', [{ line: 1, mutator: 'A', reason: 'second' }]);
@@ -255,9 +274,35 @@ describe('suppression', () => {
         readFileSync(join(root, '.chaos-mcp', 'suppressions.json'), 'utf8'),
       ) as { entries: Record<string, { reason?: string }[]> };
       expect(raw.entries['src/a.ts']).toHaveLength(1);
-      // First write wins — a re-suppression is skipped, not merged.
-      expect(raw.entries['src/a.ts'][0].reason).toBe('first');
+      // A re-suppression is a RE-CONFIRMATION (it re-stamps the fingerprint), so
+      // an explicitly supplied new reason replaces the old one.
+      expect(raw.entries['src/a.ts'][0].reason).toBe('second');
     })();
+  });
+
+  it('a re-suppression with no reason keeps the reason already on record', async () => {
+    // The stored reasons are hand-written equivalence arguments. Re-confirming
+    // an entry (to re-stamp its fingerprint) must not wipe one.
+    await addSuppressions(root, 'src/a.ts', [
+      { line: 1, mutator: 'A', reason: 'unreachable by construction' },
+    ]);
+    await addSuppressions(root, 'src/a.ts', [{ line: 1, mutator: 'A' }]);
+    const stored = loadSuppressions(root).get('src/a.ts');
+    expect(stored?.[0].reason).toBe('unreachable by construction');
+  });
+
+  it('a re-suppression preserves the original addedAt', async () => {
+    mkdirSync(join(root, '.chaos-mcp'), { recursive: true });
+    writeFileSync(
+      join(root, '.chaos-mcp', 'suppressions.json'),
+      JSON.stringify({
+        version: 2,
+        entries: { 'src/a.ts': [{ line: 1, mutator: 'A', addedAt: 111, fingerprint: 'stale' }] },
+      }),
+    );
+    await addSuppressions(root, 'src/a.ts', [{ line: 1, mutator: 'A' }]);
+    // When the equivalence was first argued is provenance, not a write timestamp.
+    expect(loadSuppressions(root).get('src/a.ts')?.[0].addedAt).toBe(111);
   });
 
   it('does not invent a scopeNote key on a result that had none', () => {
@@ -330,7 +375,7 @@ describe('suppression', () => {
       addSuppressions(root, 'src/a.ts', [{ line: 1, mutator: 'A' }]),
     ).resolves.not.toThrow();
     // The corrupted value is replaced by a fresh list containing just the new entry.
-    expect([...(loadSuppressions(root).get('src/a.ts') ?? [])]).toEqual(['1 A']);
+    expect(storedKeys(root, 'src/a.ts')).toEqual(['1 A']);
   });
 
   it('all mutants suppressed → 100.00% (no measurable mutants)', () => {
@@ -436,7 +481,7 @@ describe('suppression', () => {
 
     await second;
     expect(_writeQueueSize()).toBe(0);
-    expect([...(loadSuppressions(root).get('src/a.ts') ?? [])].sort()).toEqual(['1 A', '2 B']);
+    expect(storedKeys(root, 'src/a.ts').sort()).toEqual(['1 A', '2 B']);
   });
 
   it('_resetWriteQueue drops in-flight bookkeeping', async () => {
@@ -461,7 +506,9 @@ describe('suppression', () => {
     const removed = removeSuppressions(root, 'src/a.ts', []);
     expect(added).toBeInstanceOf(Promise);
     expect(removed).toBeInstanceOf(Promise);
-    await expect(added).resolves.toBeUndefined();
+    // The add path resolves with its stamped/unstamped tally on every path,
+    // including this one — callers may read it without a null check.
+    await expect(added).resolves.toEqual({ stamped: 0, unstamped: 0 });
     await expect(removed).resolves.toBeUndefined();
   });
 
@@ -483,16 +530,248 @@ describe('suppression', () => {
     // Invariant 1+3: file must contain exactly the merged state of all 7 ops.
     // If the chain skipped a write (H3 breakage), one of these entries would
     // be missing and the assertion would fail.
-    const persisted = loadSuppressions(root);
-    expect([...(persisted.get('src/a.ts') ?? [])].sort()).toEqual([
-      '1 A',
-      '2 B',
-      '4 D',
-      '5 E',
-      '6 F',
-    ]);
+    expect(storedKeys(root, 'src/a.ts').sort()).toEqual(['1 A', '2 B', '4 D', '5 E', '6 F']);
 
     // Invariant 2: map is empty after all writes settled (no leak).
     expect(_writeQueueSize()).toBe(0);
+  });
+});
+
+/**
+ * Schema v2: a suppression is identified by `(line, mutator)` PLUS a fingerprint
+ * of the source line it was recorded against. Without the fingerprint any edit
+ * that shifts a line silently re-points every suppression below it at different
+ * code — the failure this whole suite exists to make impossible.
+ */
+describe('suppression fingerprints (schema v2)', () => {
+  const FILE = 'src/calc.ts';
+  const SRC = [
+    'export function pick(a: number, b: number): number {', // 1
+    '  if (a > b) {', //                                       2
+    '    return a;', //                                        3
+    '  }', //                                                  4
+    '  return b;', //                                          5
+    '}', //                                                    6
+  ];
+
+  beforeEach(() => writeSource(root, FILE, SRC));
+
+  describe('normalization', () => {
+    it('is stable against formatting-only churn', () => {
+      // Re-indentation and re-wrapped whitespace are not a change in meaning.
+      expect(normalizeSourceLine('   if (a > b) {   ')).toBe('if (a > b) {');
+      expect(normalizeSourceLine('\tif (a  >   b) {')).toBe('if (a > b) {');
+      expect(fingerprintOfLine('  if (a > b) {')).toBe(fingerprintOfLine('if (a  >  b) {'));
+    });
+
+    it('does NOT collapse genuinely different code onto one digest', () => {
+      // Every token stays in the digest: operators, identifiers, punctuation.
+      expect(fingerprintOfLine('if (a > b) {')).not.toBe(fingerprintOfLine('if (a >= b) {'));
+      expect(fingerprintOfLine('if (a > b) {')).not.toBe(fingerprintOfLine('if (a > c) {'));
+      expect(fingerprintOfLine('return a;')).not.toBe(fingerprintOfLine('return -a;'));
+    });
+
+    it('excludes the line number, so a pure line shift is not content drift', () => {
+      // The number is the lookup key; the digest is the evidence behind it.
+      expect(fingerprintOfLine('  return b;')).toBe(fingerprintOfLine('return b;'));
+    });
+  });
+
+  describe('write path', () => {
+    it('stamps the fingerprint of the targeted source line', async () => {
+      const res = await addSuppressions(root, FILE, [
+        { line: 2, mutator: 'ConditionalExpression' },
+      ]);
+      expect(res).toEqual({ stamped: 1, unstamped: 0 });
+      const stored = loadSuppressions(root).get(FILE);
+      expect(stored?.[0].fingerprint).toBe(fingerprintOfLine(SRC[1]));
+    });
+
+    it('bumps the stored schema version to 2', async () => {
+      await addSuppressions(root, FILE, [{ line: 2, mutator: 'X' }]);
+      const raw = JSON.parse(
+        readFileSync(join(root, '.chaos-mcp', 'suppressions.json'), 'utf8'),
+      ) as { version: number };
+      expect(raw.version).toBe(2);
+    });
+
+    it('records NO fingerprint when the source file is missing', async () => {
+      const res = await addSuppressions(root, 'src/gone.ts', [{ line: 2, mutator: 'X' }]);
+      // Observable at the call site, and stored honestly rather than invented.
+      expect(res).toEqual({ stamped: 0, unstamped: 1 });
+      expect(loadSuppressions(root).get('src/gone.ts')?.[0].fingerprint).toBeUndefined();
+    });
+
+    it('records NO fingerprint when the line is past the end of the file', async () => {
+      const res = await addSuppressions(root, FILE, [{ line: 9999, mutator: 'X' }]);
+      expect(res).toEqual({ stamped: 0, unstamped: 1 });
+      expect(loadSuppressions(root).get(FILE)?.[0].fingerprint).toBeUndefined();
+    });
+  });
+
+  describe('apply path (three-way)', () => {
+    it('APPLIES an entry whose fingerprint matches the current line', async () => {
+      await addSuppressions(root, FILE, [{ line: 2, mutator: 'ConditionalExpression' }]);
+      const verdict = verifySuppressions(root, FILE, loadSuppressions(root).get(FILE));
+      expect([...verdict.applied]).toEqual(['2 ConditionalExpression']);
+      expect(verdict.drifted).toBe(0);
+      expect(verdict.unverified).toBe(0);
+    });
+
+    it('survives a whitespace-only reformat of the targeted line', async () => {
+      await addSuppressions(root, FILE, [{ line: 2, mutator: 'ConditionalExpression' }]);
+      const reformatted = [...SRC];
+      reformatted[1] = '\t if   (a > b)   {';
+      writeSource(root, FILE, reformatted);
+      const verdict = verifySuppressions(root, FILE, loadSuppressions(root).get(FILE));
+      expect([...verdict.applied]).toEqual(['2 ConditionalExpression']);
+      expect(verdict.drifted).toBe(0);
+    });
+
+    it('does NOT apply — and counts as drifted — when the line becomes different code', async () => {
+      await addSuppressions(root, FILE, [{ line: 2, mutator: 'ConditionalExpression' }]);
+      const edited = [...SRC];
+      edited[1] = '  if (a >= b) {';
+      writeSource(root, FILE, edited);
+      const verdict = verifySuppressions(root, FILE, loadSuppressions(root).get(FILE));
+      expect(verdict.applied.size).toBe(0);
+      expect(verdict.drifted).toBe(1);
+      expect(verdict.unverified).toBe(0);
+    });
+
+    it('does NOT apply when an inserted line shifts the target down', async () => {
+      // The exact regression: line 2 now hosts different code, so the stored key
+      // must stop matching instead of silently suppressing whatever moved in.
+      await addSuppressions(root, FILE, [{ line: 2, mutator: 'ConditionalExpression' }]);
+      writeSource(root, FILE, ['// a new banner comment', ...SRC]);
+      const verdict = verifySuppressions(root, FILE, loadSuppressions(root).get(FILE));
+      expect(verdict.applied.size).toBe(0);
+      expect(verdict.drifted).toBe(1);
+    });
+
+    it('does NOT apply when the file can no longer be read', async () => {
+      await addSuppressions(root, FILE, [{ line: 2, mutator: 'ConditionalExpression' }]);
+      rmSync(join(root, FILE));
+      const verdict = verifySuppressions(root, FILE, loadSuppressions(root).get(FILE));
+      // Cannot be shown to still match ⇒ not applied. Fail toward the VISIBLE
+      // failure (a lower score) over the invisible one (a hidden coverage gap).
+      expect(verdict.applied.size).toBe(0);
+      expect(verdict.drifted).toBe(1);
+    });
+
+    it('verifies each entry independently within one file', async () => {
+      await addSuppressions(root, FILE, [
+        { line: 2, mutator: 'ConditionalExpression' },
+        { line: 5, mutator: 'ArithmeticOperator' },
+      ]);
+      const edited = [...SRC];
+      edited[4] = '  return a;';
+      writeSource(root, FILE, edited);
+      const verdict = verifySuppressions(root, FILE, loadSuppressions(root).get(FILE));
+      expect([...verdict.applied]).toEqual(['2 ConditionalExpression']);
+      expect(verdict.drifted).toBe(1);
+    });
+
+    it('treats no stored entries as an empty verdict', () => {
+      const verdict = verifySuppressions(root, FILE, undefined);
+      expect(verdict.applied.size).toBe(0);
+      expect(verdict.drifted).toBe(0);
+      expect(verdict.unverified).toBe(0);
+    });
+  });
+
+  describe('v1 migration', () => {
+    /** The exact v1 shape: no `version: 2`, no fingerprint on any entry. */
+    function writeV1(): void {
+      mkdirSync(join(root, '.chaos-mcp'), { recursive: true });
+      writeFileSync(
+        join(root, '.chaos-mcp', 'suppressions.json'),
+        JSON.stringify({
+          version: 1,
+          entries: {
+            [FILE]: [
+              {
+                line: 2,
+                mutator: 'ConditionalExpression',
+                reason: 'a > b is dominated by the caller guard',
+                addedAt: 1700000000000,
+              },
+            ],
+          },
+        }),
+      );
+    }
+
+    it('loads without error and keeps every v1 field verbatim', () => {
+      writeV1();
+      const stored = loadSuppressions(root).get(FILE);
+      expect(stored).toHaveLength(1);
+      expect(stored?.[0]).toEqual({
+        line: 2,
+        mutator: 'ConditionalExpression',
+        reason: 'a > b is dominated by the caller guard',
+        addedAt: 1700000000000,
+      });
+    });
+
+    it('counts a v1 entry as unverified and does NOT apply it', () => {
+      writeV1();
+      const verdict = verifySuppressions(root, FILE, loadSuppressions(root).get(FILE));
+      expect(verdict.applied.size).toBe(0);
+      expect(verdict.unverified).toBe(1);
+      // Not "drifted": nothing was ever recorded to compare against. The two
+      // counts prescribe the same action but describe different histories.
+      expect(verdict.drifted).toBe(0);
+    });
+
+    it('is NOT back-filled from current source just because the line still parses', () => {
+      writeV1();
+      // Reading is not blessing: the entry stays fingerprint-less on disk until
+      // a human re-confirms it. Back-filling here would bless a suppression that
+      // may now sit on entirely unrelated code.
+      const verdict = verifySuppressions(root, FILE, loadSuppressions(root).get(FILE));
+      expect(verdict.unverified).toBe(1);
+      expect(loadSuppressions(root).get(FILE)?.[0].fingerprint).toBeUndefined();
+    });
+
+    it('re-adding promotes a v1 entry to applied, keeping its reason', async () => {
+      writeV1();
+      const res = await addSuppressions(root, FILE, [
+        { line: 2, mutator: 'ConditionalExpression' },
+      ]);
+      expect(res).toEqual({ stamped: 1, unstamped: 0 });
+      const stored = loadSuppressions(root).get(FILE);
+      expect(stored).toHaveLength(1);
+      expect(stored?.[0].reason).toBe('a > b is dominated by the caller guard');
+      expect(stored?.[0].fingerprint).toBe(fingerprintSourceLine(root, FILE, 2));
+      const verdict = verifySuppressions(root, FILE, stored);
+      expect([...verdict.applied]).toEqual(['2 ConditionalExpression']);
+      expect(verdict.unverified).toBe(0);
+    });
+
+    it('drops a stale fingerprint rather than keeping it when the line cannot be re-read', async () => {
+      await addSuppressions(root, FILE, [{ line: 2, mutator: 'ConditionalExpression' }]);
+      rmSync(join(root, FILE));
+      const res = await addSuppressions(root, FILE, [
+        { line: 2, mutator: 'ConditionalExpression' },
+      ]);
+      expect(res).toEqual({ stamped: 0, unstamped: 1 });
+      // An entry we could not re-verify must not keep applying on an older check.
+      expect(loadSuppressions(root).get(FILE)?.[0].fingerprint).toBeUndefined();
+    });
+
+    it('ignores a non-string fingerprint instead of comparing against it', () => {
+      mkdirSync(join(root, '.chaos-mcp'), { recursive: true });
+      writeFileSync(
+        join(root, '.chaos-mcp', 'suppressions.json'),
+        JSON.stringify({
+          version: 2,
+          entries: { [FILE]: [{ line: 2, mutator: 'X', addedAt: 1, fingerprint: 42 }] },
+        }),
+      );
+      const verdict = verifySuppressions(root, FILE, loadSuppressions(root).get(FILE));
+      expect(verdict.unverified).toBe(1);
+      expect(verdict.applied.size).toBe(0);
+    });
   });
 });

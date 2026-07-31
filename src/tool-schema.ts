@@ -225,7 +225,9 @@ export const TOOL_DEFINITION = {
         type: 'array',
         description:
           'Mark mutants as equivalent (unkillable) so future runs exclude them from the score and output. ' +
-          'Appended to .chaos-mcp/suppressions.json for this file. Example: [{ "line": 42, "mutator": "ConditionalExpression", "reason": "guard unreachable" }].',
+          'Appended to .chaos-mcp/suppressions.json for this file, stamped with a fingerprint of the source line so a later edit to that line retires the suppression instead of silently re-pointing it. ' +
+          'Re-issue the same entry to re-confirm one reported as drifted or unverified. ' +
+          'Example: [{ "line": 42, "mutator": "ConditionalExpression", "reason": "guard unreachable" }].',
         items: {
           type: 'object',
           properties: {
@@ -310,6 +312,8 @@ export const TOOL_DEFINITION = {
       enrichNote: { type: 'string' },
       runId: { type: 'string' },
       suppressedCount: { type: 'integer' },
+      driftedSuppressions: { type: 'integer' },
+      unverifiedSuppressions: { type: 'integer' },
       gate: {
         type: 'object',
         properties: {
@@ -479,6 +483,8 @@ export const TRIAGE_TOOL_DEFINITION = {
             noMutableLogic: { type: 'boolean' },
             runId: { type: 'string' },
             suppressedCount: { type: 'integer' },
+            driftedSuppressions: { type: 'integer' },
+            unverifiedSuppressions: { type: 'integer' },
             passed: { type: 'boolean' },
             // Present (false) only when the file's audit was truncated by the
             // time budget; its score then covers only the completed batches.

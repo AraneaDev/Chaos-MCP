@@ -584,3 +584,50 @@ describe('formatResultAsJson', () => {
     expect(json.noCoverage).toEqual([{ line: 12, mutators: { StringLiteral: 1 } }]);
   });
 });
+
+describe('formatResultAsText — un-applied suppressions', () => {
+  it('says nothing when both counts are zero', () => {
+    // The existing report must be untouched on a healthy run.
+    const plain = formatResultAsText(result());
+    expect(
+      formatResultAsText(result(), undefined, {
+        driftedSuppressions: 0,
+        unverifiedSuppressions: 0,
+      }),
+    ).toBe(plain);
+    expect(plain).not.toContain('suppression(s)');
+  });
+
+  it('reports drifted suppressions with the action to take', () => {
+    const text = formatResultAsText(result(), undefined, { driftedSuppressions: 2 });
+    expect(text).toContain(
+      'Note: 2 suppression(s) no longer match the code they were recorded against and were NOT applied',
+    );
+    expect(text).toContain('re-confirm them with `suppress`');
+  });
+
+  it('reports unverified (v1) suppressions with the action to take', () => {
+    const text = formatResultAsText(result(), undefined, { unverifiedSuppressions: 125 });
+    expect(text).toContain(
+      'Note: 125 suppression(s) predate content fingerprinting and were NOT applied',
+    );
+  });
+
+  it('still reports them on a CLEAN result', () => {
+    // The clean branch returns early; a file can come back 100% while carrying
+    // stale suppressions, and that is exactly when it needs saying.
+    const text = formatResultAsText(result({ survived: 0, vulnerabilities: [] }), undefined, {
+      unverifiedSuppressions: 1,
+    });
+    expect(text).toContain('No surviving mutants');
+    expect(text).toContain('predate content fingerprinting');
+  });
+
+  it('emits one line per kind, both when both are non-zero', () => {
+    const text = formatResultAsText(result(), undefined, {
+      driftedSuppressions: 1,
+      unverifiedSuppressions: 1,
+    });
+    expect(text.split('\n').filter((l) => l.includes('suppression(s)'))).toHaveLength(2);
+  });
+});

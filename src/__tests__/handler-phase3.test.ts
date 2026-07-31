@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
 import { firstText } from './helpers/content.js';
 import type { CallToolRequest } from '@modelcontextprotocol/sdk/types.js';
-import { mkdtempSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { computeVerifyDelta } from '../verify.js';
 import { applySuppressions } from '../audit/apply-suppressions.js';
 
@@ -50,15 +50,36 @@ import { TypeScriptEngine } from '../engines/typescript.js';
 import { detectEnvironment } from '../utils/project-detector.js';
 import { createSandbox } from '../utils/sandbox.js';
 import { loadRun, saveRun } from '../utils/run-cache.js';
-import { loadSuppressions, addSuppressions } from '../utils/suppression.js';
+import { loadSuppressions, addSuppressions, fingerprintSourceLine } from '../utils/suppression.js';
 import type { MutationResult } from '../engines/base.js';
 
 const MockTSEngine = vi.mocked(TypeScriptEngine);
 const mockDetectEnv = vi.mocked(detectEnvironment);
 const mockCreateSandbox = vi.mocked(createSandbox);
 
-const WS = '/workspace';
+// A REAL workspace on disk, not a synthetic '/workspace': suppressions are now
+// fingerprinted against the source line they target, so the write path has to be
+// able to read src/math.ts to stamp one and the read path has to be able to
+// re-read it to confirm the stamp still matches.
+const WS = mkdtempSync(join(tmpdir(), 'chaos-ws-'));
 const FILE = 'src/math.ts';
+mkdirSync(join(WS, 'src'), { recursive: true });
+writeFileSync(
+  join(WS, FILE),
+  [
+    'export function add(a: number, b: number): number {',
+    '  return a + b;',
+    '}',
+    '',
+    'export function pick(a: number, b: number): number {',
+    '  // line 6',
+    '  if (a > b) return a;',
+    '  return a - b;',
+    '}',
+    '',
+  ].join('\n'),
+  'utf8',
+);
 
 function makeRequest(args: Record<string, unknown>): CallToolRequest {
   return { method: 'tools/call', params: { name: 'audit_code_resilience', arguments: args } };
@@ -246,7 +267,9 @@ describe('handleToolCall phase3 wiring', () => {
   });
 
   it('filters suppressed mutants out of the result and reports suppressedCount', async () => {
-    addSuppressions(WS, FILE, [{ line: 7, mutator: 'ConditionalExpression' }], supPath);
+    // Awaited: the entry has to be on disk (and fingerprint-stamped) before the
+    // audit reads it back.
+    await addSuppressions(WS, FILE, [{ line: 7, mutator: 'ConditionalExpression' }], supPath);
     stubEngine(resultWithSurvivor());
     const res = await handleToolCall(makeRequest({ filePath: FILE }), {
       suppressionsPath: supPath,
@@ -270,7 +293,77 @@ describe('handleToolCall phase3 wiring', () => {
     const sc = res.structuredContent as Record<string, unknown>;
     expect(sc.suppressedCount).toBe(1);
     const persisted = loadSuppressions(WS, supPath).get(FILE);
-    expect(persisted?.has('7 ConditionalExpression')).toBe(true);
+    const stored = persisted?.find((e) => e.line === 7 && e.mutator === 'ConditionalExpression');
+    expect(stored).toBeDefined();
+    // The write stamped a content fingerprint — that is what let the same call
+    // apply it (an unstamped entry would have come back as `unverified`).
+    expect(stored?.fingerprint).toBe(fingerprintSourceLine(WS, FILE, 7));
+    expect(sc.unverifiedSuppressions).toBeUndefined();
+  });
+
+  it('a suppression whose source line changed is reported as drifted, not applied', async () => {
+    await addSuppressions(WS, FILE, [{ line: 7, mutator: 'ConditionalExpression' }], supPath);
+    // Rewrite line 7 into genuinely different code. The stored fingerprint no
+    // longer matches, so the suppression must NOT be applied — the survivor
+    // comes back and the response says why.
+    const original = readFileSync(join(WS, FILE), 'utf8');
+    const lines = original.split('\n');
+    lines[6] = '  if (a >= b) return b;';
+    writeFileSync(join(WS, FILE), lines.join('\n'), 'utf8');
+    try {
+      stubEngine(resultWithSurvivor());
+      const res = await handleToolCall(makeRequest({ filePath: FILE }), {
+        suppressionsPath: supPath,
+      });
+      const sc = res.structuredContent as Record<string, unknown>;
+      expect(sc.suppressedCount).toBeUndefined();
+      expect(sc.driftedSuppressions).toBe(1);
+      expect((sc.survivors as unknown[]).length).toBe(1);
+      expect(sc.note).toContain('no longer match the code they were recorded against');
+    } finally {
+      writeFileSync(join(WS, FILE), original, 'utf8');
+    }
+  });
+
+  it('a v1 (unfingerprinted) entry is reported as unverified and is not applied', async () => {
+    // The migration case: a suppressions file written before fingerprinting.
+    mkdirSync(dirname(supPath), { recursive: true });
+    writeFileSync(
+      supPath,
+      JSON.stringify({
+        version: 1,
+        entries: {
+          [FILE]: [
+            { line: 7, mutator: 'ConditionalExpression', reason: 'legacy', addedAt: 1700000000000 },
+          ],
+        },
+      }),
+      'utf8',
+    );
+    stubEngine(resultWithSurvivor());
+    const res = await handleToolCall(makeRequest({ filePath: FILE }), {
+      suppressionsPath: supPath,
+    });
+    const sc = res.structuredContent as Record<string, unknown>;
+    expect(sc.suppressedCount).toBeUndefined();
+    expect(sc.unverifiedSuppressions).toBe(1);
+    expect(sc.note).toContain('predate content fingerprinting');
+    // ...and re-issuing the same suppress argument promotes it: the reason is
+    // kept, a fingerprint is stamped, and it applies in that very call.
+    const again = await handleToolCall(
+      makeRequest({
+        filePath: FILE,
+        suppress: [{ line: 7, mutator: 'ConditionalExpression' }],
+      }),
+      { suppressionsPath: supPath },
+    );
+    const sc2 = again.structuredContent as Record<string, unknown>;
+    expect(sc2.suppressedCount).toBe(1);
+    expect(sc2.unverifiedSuppressions).toBeUndefined();
+    const stored = loadSuppressions(WS, supPath).get(FILE)?.[0];
+    expect(stored?.reason).toBe('legacy'); // hand-written argument survives
+    expect(stored?.addedAt).toBe(1700000000000); // original provenance survives
+    expect(stored?.fingerprint).toBe(fingerprintSourceLine(WS, FILE, 7));
   });
 
   it('suppressed mutants are excluded from verify-mode delta (not stillSurviving nor nowKilled)', async () => {
@@ -281,7 +374,7 @@ describe('handleToolCall phase3 wiring', () => {
     // Strengthened: include a non-suppressed mutant to ensure filtering doesn't corrupt
     // the entire result — this catches misimplementations that filter neither, only
     // baseline, or only re-run.
-    addSuppressions(WS, FILE, [{ line: 7, mutator: 'ConditionalExpression' }], supPath);
+    await addSuppressions(WS, FILE, [{ line: 7, mutator: 'ConditionalExpression' }], supPath);
     const runId = saveRun({
       file: FILE,
       projectType: 'typescript',

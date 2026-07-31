@@ -20,7 +20,7 @@ import type { EnvironmentInfo, SupportedProjectType } from '../utils/project-det
 import { ENGINE_REGISTRY, makeEngine, resolvePrebuildCommand } from '../engines/registry.js';
 import { computeChangedRanges } from '../utils/git-diff.js';
 import { anchorToWorkspace } from '../utils/workspace-anchor.js';
-import { loadSuppressions } from '../utils/suppression.js';
+import { loadSuppressions, verifySuppressions, type StoredEntry } from '../utils/suppression.js';
 import { applySuppressions } from '../audit/apply-suppressions.js';
 import { mintRunId } from '../utils/run-cache.js';
 import { buildResultPayload, displayMutationScore, hasNoMutableLogic } from '../format.js';
@@ -64,8 +64,12 @@ export interface TriageFileDeps {
    * monorepo packages whose workspaceRoot differs from rootCwd read the right
    * suppressions file. Keys are workspace-relative paths (relFromRoot),
    * matching the key used by audit_code_resilience (Task 7 / Key Contract).
+   *
+   * The cache holds the STORED entries, not a key set: fingerprint verification
+   * needs the entries, and is done per audited file so the sweep reads only the
+   * source files it actually audits.
    */
-  suppressionCache: Map<string, Map<string, Set<string>>>;
+  suppressionCache: Map<string, Map<string, StoredEntry[]>>;
   /** The sweep-wide wall-clock budget every file spends from. */
   deadline: AuditDeadline;
   /** Reserve left unspent so ranking/formatting can finish after the last file. */
@@ -120,6 +124,10 @@ interface RowInput {
   projectType: SupportedProjectType;
   scopeNote?: string;
   suppressedCount: number;
+  /** Stored suppressions rejected because their fingerprint no longer matches. */
+  driftedSuppressions: number;
+  /** Stored suppressions rejected because they carry no fingerprint (v1 data). */
+  unverifiedSuppressions: number;
 }
 
 /**
@@ -149,6 +157,10 @@ function buildTriageRow(input: RowInput, deps: TriageFileDeps): TriageRow {
     if (result.batchesPlanned !== undefined) row.batchesPlanned = result.batchesPlanned;
   }
   if (input.suppressedCount > 0) row.suppressedCount = input.suppressedCount;
+  // Un-applied suppressions are per-file facts, so they ride on the row; the
+  // sweep-level note in buildTriagePayload aggregates them.
+  if (input.driftedSuppressions > 0) row.driftedSuppressions = input.driftedSuppressions;
+  if (input.unverifiedSuppressions > 0) row.unverifiedSuppressions = input.unverifiedSuppressions;
 
   // Mint a per-row runId so the caller can verify survivors from a triage result
   // without re-auditing. A cache failure is non-fatal (mintRunId swallows it):
@@ -206,7 +218,7 @@ function buildTriageRow(input: RowInput, deps: TriageFileDeps): TriageRow {
  * everything that matters — same loader, same workspace root, same
  * workspace-relative key — so the Key Contract holds either way.
  */
-function suppressionsFor(workspaceRoot: string, deps: TriageFileDeps): Map<string, Set<string>> {
+function suppressionsFor(workspaceRoot: string, deps: TriageFileDeps): Map<string, StoredEntry[]> {
   const cached = deps.suppressionCache.get(workspaceRoot);
   if (cached !== undefined) return cached;
   const loaded = loadSuppressions(workspaceRoot, deps.cfg.suppressionsPath);
@@ -314,7 +326,16 @@ export async function auditTriageFile(
     // Apply equivalent-mutant suppression before building the row. The key is
     // relFromRoot — byte-identical to the key used by audit_code_resilience (Key
     // Contract) so suppressions added via audit are honored in triage.
-    const sup = applySuppressions(result, suppressionMap.get(relFromRoot));
+    //
+    // Verification happens here, once per audited file, against the memoized
+    // per-workspace entries: the suppressions FILE is still read once per
+    // workspace, never once per file.
+    const verdict = verifySuppressions(
+      env.workspaceRoot,
+      relFromRoot,
+      suppressionMap.get(relFromRoot),
+    );
+    const sup = applySuppressions(result, verdict.applied);
 
     return {
       row: buildTriageRow(
@@ -325,6 +346,8 @@ export async function auditTriageFile(
           projectType,
           scopeNote: scope.scopeNote,
           suppressedCount: sup.suppressedCount,
+          driftedSuppressions: verdict.drifted,
+          unverifiedSuppressions: verdict.unverified,
         },
         deps,
       ),

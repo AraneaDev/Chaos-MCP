@@ -190,6 +190,8 @@ describe('buildResultPayload — optional field assembly', () => {
     'ignoredOptions',
     'runId',
     'suppressedCount',
+    'driftedSuppressions',
+    'unverifiedSuppressions',
     'gate',
     'incompetent',
   ];
@@ -440,6 +442,65 @@ describe('buildResultPayload runId / suppressedCount', () => {
     const payload = buildResultPayload(r, {});
     expect(payload.runId).toBeUndefined();
     expect(payload.suppressedCount).toBeUndefined();
+  });
+});
+
+describe('buildResultPayload drifted / unverified suppressions', () => {
+  function result(): MutationResult {
+    return {
+      target: 'a.ts',
+      totalMutants: 4,
+      killed: 4,
+      survived: 0,
+      mutationScore: '100.00%',
+      vulnerabilities: [],
+    };
+  }
+
+  it('leaves the payload byte-identical when both counts are zero', () => {
+    // A healthy run must read EXACTLY as it did before the feature existed.
+    const before = buildResultPayload(result(), {});
+    const after = buildResultPayload(result(), {
+      driftedSuppressions: 0,
+      unverifiedSuppressions: 0,
+    });
+    expect(after).toEqual(before);
+    expect(Object.keys(after)).not.toContain('driftedSuppressions');
+    expect(Object.keys(after)).not.toContain('unverifiedSuppressions');
+  });
+
+  it('reports drifted suppressions and tells the caller to re-confirm them', () => {
+    const payload = buildResultPayload(result(), { driftedSuppressions: 3 });
+    expect(payload.driftedSuppressions).toBe(3);
+    expect(payload.note).toContain(
+      '3 suppression(s) no longer match the code they were recorded against and were NOT applied',
+    );
+    expect(payload.note).toContain('re-confirm them with `suppress`');
+    expect(Object.keys(payload)).not.toContain('unverifiedSuppressions');
+  });
+
+  it('reports unverified (v1) suppressions separately', () => {
+    const payload = buildResultPayload(result(), { unverifiedSuppressions: 125 });
+    expect(payload.unverifiedSuppressions).toBe(125);
+    expect(payload.note).toContain(
+      '125 suppression(s) predate content fingerprinting and were NOT applied',
+    );
+    expect(Object.keys(payload)).not.toContain('driftedSuppressions');
+  });
+
+  it('reports both kinds independently, alongside the applied count', () => {
+    const payload = buildResultPayload(result(), {
+      suppressedCount: 1,
+      driftedSuppressions: 2,
+      unverifiedSuppressions: 4,
+    });
+    expect(payload.suppressedCount).toBe(1);
+    expect(payload.driftedSuppressions).toBe(2);
+    expect(payload.unverifiedSuppressions).toBe(4);
+    // Applied first (what changed the score), then why the rest did not.
+    expect(payload.note).toContain('1 equivalent mutant(s) suppressed');
+    expect(payload.note).toContain('2 suppression(s) no longer match');
+    expect(payload.note).toContain('4 suppression(s) predate content fingerprinting');
   });
 });
 

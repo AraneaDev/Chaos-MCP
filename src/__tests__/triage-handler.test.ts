@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { dirname, basename, join, resolve } from 'path';
 import type { CallToolRequest } from '@modelcontextprotocol/sdk/types.js';
+import type { MutationResult } from '../engines/base.js';
 // `resolveStrykerConcurrency` moved out of triage-handler.ts with the argument
 // prelude it belongs to (Finding 3 decomposition); the import follows it there.
 import { resolveStrykerConcurrency } from '../triage-args-validation.js';
@@ -55,7 +56,7 @@ import { discoverFiles, discoverChangedFiles } from '../triage.js';
 import { detectEnvironment } from '../utils/project-detector.js';
 import { auditFile } from '../audit/audit-file.js';
 import { listChangedFiles, computeChangedRanges } from '../utils/git-diff.js';
-import { loadSuppressions } from '../utils/suppression.js';
+import { loadSuppressions, fingerprintSourceLine, type StoredEntry } from '../utils/suppression.js';
 import { mintRunId } from '../utils/run-cache.js';
 import { createSandbox } from '../utils/sandbox.js';
 import { handleTriageCall } from '../triage-handler.js';
@@ -983,30 +984,43 @@ describe('handleTriageCall', () => {
     expect(row.worstSeverity).toBeUndefined();
   });
 
-  it('filters suppressed mutants and reflects suppressedCount in the row', async () => {
-    // Validates the load→filter seam: a suppression entry matching a surviving mutant
-    // must be removed from the result and reflected in row.suppressedCount.
-    // loadSuppressions is stubbed to return a map keyed by the workspace-relative path
-    // (tsEnv.workspaceRoot = process.cwd(), file = 'src/foo.ts' → key 'src/foo.ts').
-    const mrWithSurvivor = {
-      target: 'src/foo.ts',
+  // A REAL file under the mocked workspaceRoot (= process.cwd()). Suppressions
+  // are fingerprinted against their source line, so the sweep must be able to
+  // read the file to confirm the stamp — a synthetic 'src/foo.ts' could only
+  // ever come back as drifted.
+  const REAL_FILE = 'src/utils/no-coverage.ts';
+  const REAL_LINE = 10;
+
+  function survivorAt(file: string, line: number): MutationResult {
+    return {
+      target: file,
       totalMutants: 5,
       killed: 4,
       survived: 1,
       mutationScore: '80.00%',
-      vulnerabilities: [
-        { line: 10, mutator: 'ConditionalExpression', description: 'a conditional' },
-      ],
+      vulnerabilities: [{ line, mutator: 'ConditionalExpression', description: 'a conditional' }],
     };
-    mockDiscover.mockReturnValue({ files: ['src/foo.ts'], discovered: 1, skipped: 0 });
-    mockAuditFile.mockResolvedValue(mrWithSurvivor);
+  }
 
-    // Stub suppressions: the surviving mutant at line 10 is an equivalent mutant.
-    const suppMap = new Map<string, Set<string>>();
-    suppMap.set('src/foo.ts', new Set(['10 ConditionalExpression']));
-    mockLoadSuppressions.mockReturnValueOnce(suppMap);
+  function stubStored(fingerprint: string | undefined): void {
+    const entry: StoredEntry = {
+      line: REAL_LINE,
+      mutator: 'ConditionalExpression',
+      addedAt: 1,
+    };
+    if (fingerprint !== undefined) entry.fingerprint = fingerprint;
+    mockLoadSuppressions.mockReturnValueOnce(new Map([[REAL_FILE, [entry]]]));
+  }
 
-    const res = await handleTriageCall(req({ paths: ['src/foo.ts'], survivorsPerFile: 10 }));
+  it('filters suppressed mutants and reflects suppressedCount in the row', async () => {
+    // Validates the load→verify→filter seam: a suppression entry whose fingerprint
+    // still matches the source line must be removed from the result and reflected
+    // in row.suppressedCount.
+    mockDiscover.mockReturnValue({ files: [REAL_FILE], discovered: 1, skipped: 0 });
+    mockAuditFile.mockResolvedValue(survivorAt(REAL_FILE, REAL_LINE));
+    stubStored(fingerprintSourceLine(tsEnv.workspaceRoot, REAL_FILE, REAL_LINE));
+
+    const res = await handleTriageCall(req({ paths: [REAL_FILE], survivorsPerFile: 10 }));
     const parsed = JSON.parse((res.content[0] as { text: string }).text);
     const row = parsed.ranking[0];
 
@@ -1015,8 +1029,39 @@ describe('handleTriageCall', () => {
     // survived drops to 0 after suppression, so survivorsPerFile enrichment has
     // nothing to inline — row.survivors must be absent.
     expect(row.survivors).toBeUndefined();
+    expect(row.driftedSuppressions).toBeUndefined();
+    expect(row.unverifiedSuppressions).toBeUndefined();
     // loadSuppressions was called with the per-file workspaceRoot, not rootCwd.
     expect(mockLoadSuppressions).toHaveBeenCalledWith(tsEnv.workspaceRoot, undefined);
+  });
+
+  it('does NOT apply a suppression whose fingerprint no longer matches, and says so', async () => {
+    mockDiscover.mockReturnValue({ files: [REAL_FILE], discovered: 1, skipped: 0 });
+    mockAuditFile.mockResolvedValue(survivorAt(REAL_FILE, REAL_LINE));
+    stubStored('deadbeefcafe'); // a fingerprint the current line cannot produce
+
+    const res = await handleTriageCall(req({ paths: [REAL_FILE], survivorsPerFile: 10 }));
+    const parsed = JSON.parse((res.content[0] as { text: string }).text);
+    const row = parsed.ranking[0];
+
+    expect(row.suppressedCount).toBeUndefined();
+    expect(row.driftedSuppressions).toBe(1);
+    expect(row.survived).toBe(1); // the survivor is still counted against the score
+    expect(parsed.note).toContain('no longer match the code they were recorded against');
+  });
+
+  it('does NOT apply a v1 entry with no fingerprint, and reports it as unverified', async () => {
+    mockDiscover.mockReturnValue({ files: [REAL_FILE], discovered: 1, skipped: 0 });
+    mockAuditFile.mockResolvedValue(survivorAt(REAL_FILE, REAL_LINE));
+    stubStored(undefined); // v1 shape: no fingerprint at all
+
+    const res = await handleTriageCall(req({ paths: [REAL_FILE], survivorsPerFile: 10 }));
+    const parsed = JSON.parse((res.content[0] as { text: string }).text);
+    const row = parsed.ranking[0];
+
+    expect(row.suppressedCount).toBeUndefined();
+    expect(row.unverifiedSuppressions).toBe(1);
+    expect(parsed.note).toContain('predate content fingerprinting');
   });
 });
 

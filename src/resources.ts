@@ -97,6 +97,7 @@ function capabilitiesMarkdown(): string {
     '2. `audit_code_resilience` the weakest file; write tests for the reported survivors.',
     '3. Re-run `audit_code_resilience` with the returned `runId` to verify those mutants are now killed.',
     '4. Use `minScore` to gate; suppress only genuinely-equivalent mutants.',
+    '5. Suppressions are fingerprinted against their source line. If a report shows `driftedSuppressions` or `unverifiedSuppressions`, those entries were NOT applied — re-check the equivalence argument and re-issue `suppress` to restore them.',
     '',
   ].join('\n');
 }

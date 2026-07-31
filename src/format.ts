@@ -278,6 +278,30 @@ function prepareGroups(result: MutationResult, opts: PrepareGroupsOpts): Prepare
 }
 
 /**
+ * The sentences that explain suppressions which were NOT applied, one per
+ * non-zero count and nothing at all when both are zero.
+ *
+ * Shared by the text report, the structured payload's `note`, and the
+ * verify-mode note so the three cannot drift apart. Each sentence says what to
+ * DO about it: an un-applied suppression is only useful feedback if the reader
+ * knows re-confirming it (re-issuing `suppress`) restores it.
+ */
+export function suppressionDriftNotes(drifted?: number, unverified?: number): string[] {
+  const notes: string[] = [];
+  if (drifted !== undefined && drifted > 0) {
+    notes.push(
+      `${drifted} suppression(s) no longer match the code they were recorded against and were NOT applied — re-confirm them with \`suppress\` (or drop them with \`unsuppress\`).`,
+    );
+  }
+  if (unverified !== undefined && unverified > 0) {
+    notes.push(
+      `${unverified} suppression(s) predate content fingerprinting and were NOT applied — re-confirm them with \`suppress\` to restore them.`,
+    );
+  }
+  return notes;
+}
+
+/**
  * Format a MutationResult as a compact, human-readable text summary.
  * Used when the caller requests `outputFormat: 'text'`.
  */
@@ -289,6 +313,10 @@ export function formatResultAsText(
     severityFloor?: Severity;
     /** When the caller asked for severityFloor without enrichment (M6). */
     floorIgnoredNote?: string;
+    /** Suppressions rejected because their fingerprint no longer matches. */
+    driftedSuppressions?: number;
+    /** Suppressions rejected because they carry no fingerprint (v1 data). */
+    unverifiedSuppressions?: number;
   } = {},
 ): string {
   // The text path ignores `prepared.worstSeverity` (a payload-only field) and
@@ -325,6 +353,13 @@ export function formatResultAsText(
   // attaches it via enrichNote, but text users got nothing (audit M6).
   if (opts.floorIgnoredNote) {
     lines.push(opts.floorIgnoredNote);
+  }
+  // Suppressions that were NOT applied. Emitted BEFORE the clean/early-return
+  // branch: a file can come back clean and still be carrying stale suppressions,
+  // and that is exactly when the reader most needs to know the score was not
+  // helped by them.
+  for (const n of suppressionDriftNotes(opts.driftedSuppressions, opts.unverifiedSuppressions)) {
+    lines.push(`Note: ${n}`);
   }
 
   if (prepared.clean) {
@@ -388,6 +423,16 @@ export interface ResultPayload {
   note: string;
   runId?: string;
   suppressedCount?: number;
+  /**
+   * Stored suppressions that were NOT applied because their content fingerprint
+   * no longer matches the source line they target (the code moved or changed).
+   */
+  driftedSuppressions?: number;
+  /**
+   * Stored suppressions that were NOT applied because they carry no fingerprint
+   * at all — v1 entries, awaiting re-confirmation.
+   */
+  unverifiedSuppressions?: number;
   gate?: GateResult;
   /** Mutants excluded from the score because the mutated code never scored (audit I3). */
   incompetent?: number;
@@ -405,6 +450,8 @@ export interface ResultPayloadOpts {
   ignoredOptions?: string[];
   runId?: string;
   suppressedCount?: number;
+  driftedSuppressions?: number;
+  unverifiedSuppressions?: number;
   gate?: GateResult;
 }
 
@@ -472,6 +519,19 @@ export function buildResultPayload(
   if (opts.suppressedCount && opts.suppressedCount > 0) {
     payload.suppressedCount = opts.suppressedCount;
     payload.note += ` ${opts.suppressedCount} equivalent mutant(s) suppressed and excluded from the score.`;
+  }
+  // Suppressions that exist but were rejected. Reported separately from
+  // `suppressedCount` because they did the opposite of suppressing: they left
+  // the mutant in the score. Both fields stay absent (and `note` untouched)
+  // when nothing drifted, so a healthy run reads exactly as it did before.
+  if (opts.driftedSuppressions && opts.driftedSuppressions > 0) {
+    payload.driftedSuppressions = opts.driftedSuppressions;
+  }
+  if (opts.unverifiedSuppressions && opts.unverifiedSuppressions > 0) {
+    payload.unverifiedSuppressions = opts.unverifiedSuppressions;
+  }
+  for (const n of suppressionDriftNotes(opts.driftedSuppressions, opts.unverifiedSuppressions)) {
+    payload.note += ` ${n}`;
   }
   if (opts.gate) payload.gate = opts.gate;
   // Surface mutants the tool could not score (e.g. cosmic-ray 'incompetent' or

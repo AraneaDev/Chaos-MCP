@@ -2,7 +2,12 @@ import { readdirSync } from 'fs';
 import { join, relative, resolve, sep } from 'path';
 import type { MutationResult } from './engines/base.js';
 import type { Severity } from './enrich.js';
-import { displayMutationScore, hasNoMutableLogic, type LineGroup } from './format.js';
+import {
+  displayMutationScore,
+  hasNoMutableLogic,
+  suppressionDriftNotes,
+  type LineGroup,
+} from './format.js';
 import { evaluateGate } from './gate.js';
 import { supportedSourceExtensions } from './utils/project-detector.js';
 
@@ -21,6 +26,16 @@ export interface TriageRow {
   runId?: string;
   /** Number of equivalent mutants suppressed for this file (from the suppressions list). */
   suppressedCount?: number;
+  /**
+   * Stored suppressions NOT applied because their content fingerprint no longer
+   * matches the source line they target (the code moved or changed).
+   */
+  driftedSuppressions?: number;
+  /**
+   * Stored suppressions NOT applied because they carry no fingerprint at all
+   * (v1 entries), awaiting re-confirmation.
+   */
+  unverifiedSuppressions?: number;
   /** Whether this file met the minScore gate threshold (only present when minScore is set). */
   passed?: boolean;
   /** True when the file has no mutable logic (zero mutants, no scope note); score is "n/a" (audit M3). */
@@ -277,6 +292,18 @@ export function buildTriagePayload(
     payload.note += ` ${unaudited.length} file(s) were not audited before the time budget ran out — raise totalTimeoutMs or narrow the paths.`;
   }
   if (scopeNote) payload.scopeNote = scopeNote;
+  // Aggregate the per-row un-applied suppressions into one sweep-level sentence
+  // each. A sweep is where a repo-wide staleness (e.g. every entry predating
+  // fingerprints) shows up, and one line per kind is enough to send the reader
+  // to the rows that carry the counts.
+  const sumOf = (pick: (r: TriageRow) => number | undefined): number =>
+    rows.reduce((sum, r) => sum + (pick(r) ?? 0), 0);
+  for (const note of suppressionDriftNotes(
+    sumOf((r) => r.driftedSuppressions),
+    sumOf((r) => r.unverifiedSuppressions),
+  )) {
+    payload.note += ` ${note}`;
+  }
   if (minScore !== undefined) {
     // `r.complete !== false` forwards partial-audit state: a row scored from
     // only some of its mutation batches describes a fraction of the file, so it
@@ -345,6 +372,12 @@ export function formatTriageAsText(
         ? 'No changed supported source files found vs the diff base.'
         : 'No supported source files found under the given paths.',
     );
+  }
+  for (const note of suppressionDriftNotes(
+    rows.reduce((sum, r) => sum + (r.driftedSuppressions ?? 0), 0),
+    rows.reduce((sum, r) => sum + (r.unverifiedSuppressions ?? 0), 0),
+  )) {
+    lines.push(`Note: ${note}`);
   }
   if (errors.length > 0) {
     lines.push('Errors:');

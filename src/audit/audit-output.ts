@@ -12,7 +12,12 @@ import { ENGINE_REGISTRY, type SupportedProjectType } from '../engines/registry.
 import type { EnvironmentInfo } from '../utils/project-detector.js';
 import type { ChaosConfig } from '../utils/config-loader.js';
 import type { ToolArgs } from '../tool-args-validation.js';
-import { formatResultAsText, buildResultPayload, type EnrichContext } from '../format.js';
+import {
+  formatResultAsText,
+  buildResultPayload,
+  suppressionDriftNotes,
+  type EnrichContext,
+} from '../format.js';
 import { evaluateGate } from '../gate.js';
 import { suggestTestFile } from '../test-file.js';
 import { applySuppressions } from './apply-suppressions.js';
@@ -24,7 +29,20 @@ import {
   type MutantKey,
 } from '../verify.js';
 import { ignoredOptionsFor, resolveMaxSurvivors, resolveSeverityFloor } from './run-options.js';
-import { loadSuppressedKeys } from './suppression-io.js';
+import { loadVerifiedSuppressions } from './suppression-io.js';
+
+/**
+ * How one file's stored suppressions were resolved for this run: how many were
+ * applied, and how many were rejected as drifted / unverified.
+ */
+export interface SuppressionCounts {
+  /** Mutants actually excluded from the score. */
+  applied: number;
+  /** Entries whose content fingerprint no longer matches their source line. */
+  drifted: number;
+  /** Entries with no fingerprint at all (v1 data), never applied. */
+  unverified: number;
+}
 
 /**
  * Build the enrichment context for the formatters, or `undefined` when the
@@ -65,7 +83,7 @@ export function formatAuditOutput(
   enrichCtx: EnrichContext | undefined,
   cfg: ChaosConfig,
   env: EnvironmentInfo,
-  suppressedCount: number,
+  suppression: SuppressionCounts,
   runId: string | undefined,
   relFromRoot: string,
 ): CallToolResult {
@@ -75,11 +93,14 @@ export function formatAuditOutput(
     // never appear as "still surviving" or "now killed" — they vanish entirely.
     // Uses the same workspace-relative key (relFromRoot) as the standard audit
     // path (Task 7) so the two modes read identical suppression entries (A9).
-    const suppressed = loadSuppressedKeys(env.workspaceRoot, relFromRoot, cfg.suppressionsPath);
+    // Only FINGERPRINT-VERIFIED suppressions filter the delta. A drifted or
+    // unverified entry leaves its mutant in both sides of the comparison, where
+    // it shows up as "still surviving" — visible, and explained by the note
+    // appended below.
+    const verdict = loadVerifiedSuppressions(env.workspaceRoot, relFromRoot, cfg.suppressionsPath);
+    const suppressed = verdict.applied;
     const rerun = applySuppressions(auditResults, suppressed).result;
-    const keptBaseline = suppressed
-      ? baselineKeys.filter((k) => !suppressed.has(`${k.line} ${k.mutator}`))
-      : baselineKeys;
+    const keptBaseline = baselineKeys.filter((k) => !suppressed.has(`${k.line} ${k.mutator}`));
     // Whole-file engines (cosmic-ray/cargo-mutants/Infection) re-run the entire
     // file in verify mode, so regressions can land on lines outside the baseline;
     // pass the engine's line-scope capability so those are counted (audit H1).
@@ -101,8 +122,19 @@ export function formatAuditOutput(
       newSurvivors: delta.newSurvivors,
       note: buildVerifyNote(delta),
     };
+    // Verify mode reports the same drift the standard report does — otherwise a
+    // stale suppression makes a mutant reappear as "still surviving" with no
+    // explanation anywhere in the response.
+    const verifyDrift = suppressionDriftNotes(verdict.drifted, verdict.unverified);
+    const verifyContent: { type: 'text'; text: string }[] = [{ type: 'text', text: verifyText }];
+    if (verifyDrift.length > 0) {
+      if (verdict.drifted > 0) verifyStructured.driftedSuppressions = verdict.drifted;
+      if (verdict.unverified > 0) verifyStructured.unverifiedSuppressions = verdict.unverified;
+      verifyStructured.note = `${verifyStructured.note as string} ${verifyDrift.join(' ')}`;
+      verifyContent.push({ type: 'text', text: verifyDrift.map((n) => `Note: ${n}`).join('\n') });
+    }
     return {
-      content: [{ type: 'text', text: verifyText }],
+      content: verifyContent,
       structuredContent: verifyStructured,
     };
   }
@@ -131,13 +163,19 @@ export function formatAuditOutput(
     suggestedTestFile: suggestion,
     ignoredOptions: ignored.length > 0 ? ignored : undefined,
     runId,
-    suppressedCount,
+    suppressedCount: suppression.applied,
+    driftedSuppressions: suppression.drifted,
+    unverifiedSuppressions: suppression.unverified,
     gate,
   });
 
   const text =
     args.outputFormat === 'text'
-      ? formatResultAsText(auditResults, enrichCtx, enrichOpts)
+      ? formatResultAsText(auditResults, enrichCtx, {
+          ...enrichOpts,
+          driftedSuppressions: suppression.drifted,
+          unverifiedSuppressions: suppression.unverified,
+        })
       : JSON.stringify(payload);
 
   const content: { type: 'text'; text: string }[] = [{ type: 'text', text }];
