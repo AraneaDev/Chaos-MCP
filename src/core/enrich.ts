@@ -92,20 +92,39 @@ const GUARD_MARKERS = [
  */
 const GUARD_SCAN_MAX_LINES = 40;
 
+/**
+ * A `switch` arm written without braces: `default:` or `case 'x':` alone on the
+ * line, with the arm's statements following it.
+ */
+const SWITCH_ARM_LABEL = /^\s*(?:case\b[^:]*|default)\s*:\s*$/;
+
+/**
+ * The end of a brace-less arm. `break`/`return`/`continue`/`throw` close it, and
+ * so does the next label or a closing brace — whichever comes first.
+ */
+const SWITCH_ARM_END = /^\s*(?:break\s*;|return\b|continue\s*;|throw\b|\}|case\b|default\s*:)/;
+
 /** Whether `line` opens, or is, an exhaustiveness guard.
  *
- * Two cases, because Stryker attributes a block mutant to the line that OPENS
+ * Three cases, because Stryker attributes a block mutant to the line that OPENS
  * the block (`default: {`) while other mutants land on the offending line
  * itself:
  *
- * - the line opens a block → scan to the matching close, capped, for a marker.
- * - it opens none → only the line itself counts.
+ * - the line opens a braced block → scan to the matching close, capped.
+ * - the line is a brace-less `case`/`default:` label → scan to the end of THAT
+ *   arm only. A switch arm needs no braces, and `default:` followed by
+ *   statements is the same guard as `default: {` — but the brace walk never
+ *   starts, so this case was missed and reported at full severity with advice
+ *   for a test that cannot be written (seen at core/estimate-heuristic.ts:48).
+ *   The scan stops at the arm's end so a REACHABLE `case` cannot borrow the
+ *   guard from a `default:` below it.
+ * - neither → only the line itself counts.
  *
- * The second case is intentionally not widened to a window around the line: a
+ * The last case is intentionally not widened to a window around the line: a
  * neighbouring `default:` arm is often a sibling of the very block being
  * judged, so a symmetric window would clear a real gap sitting next to a guard.
- * A mutant deeper inside a guard block (say on its `return undefined`) is
- * therefore not detected — a miss, not a wrong answer.
+ * A mutant deeper inside a BRACED guard block (say on its `return undefined`)
+ * is therefore still not detected — a miss, not a wrong answer.
  */
 export function looksLikeExhaustivenessGuard(line: number, sourceLines?: string[]): boolean {
   if (!sourceLines || line < 1 || line > sourceLines.length) return false;
@@ -114,11 +133,22 @@ export function looksLikeExhaustivenessGuard(line: number, sourceLines?: string[
   const first = sourceLines[line - 1];
   const depthOf = (text: string): number =>
     (text.match(/\{/g)?.length ?? 0) - (text.match(/\}/g)?.length ?? 0);
+  const last = Math.min(sourceLines.length, line - 1 + GUARD_SCAN_MAX_LINES);
 
-  if (depthOf(first) <= 0) return hasMarker(first);
+  if (depthOf(first) <= 0) {
+    if (hasMarker(first)) return true;
+    if (!SWITCH_ARM_LABEL.test(first)) return false;
+    for (let i = line; i < last; i++) {
+      const text = sourceLines[i];
+      // Marker before terminator: a guard arm ends in `break`/`return` too, and
+      // checking the terminator first would stop one line short of the call.
+      if (hasMarker(text)) return true;
+      if (SWITCH_ARM_END.test(text)) return false;
+    }
+    return false;
+  }
 
   let depth = 0;
-  const last = Math.min(sourceLines.length, line - 1 + GUARD_SCAN_MAX_LINES);
   for (let i = line - 1; i < last; i++) {
     const text = sourceLines[i];
     if (hasMarker(text)) return true;

@@ -336,3 +336,51 @@ describe('enrichGroup', () => {
     });
   });
 });
+
+describe('exhaustiveness guards without a brace block', () => {
+  // A switch arm needs no `{}`. `default:` followed by statements is the same guard as
+  // `default: {`, but the brace-walk never starts, so detection fell through to the
+  // own-line-only path and found no marker on the word `default:`. Confirmed live at
+  // core/estimate-heuristic.ts:48, which was reported high-severity with the misleading
+  // "add tests that take BOTH arms" hint.
+  const BARE_SRC = [
+    'function noisePattern(family) {', // 1
+    '  switch (family) {', // 2
+    "    case 'hash':", // 3
+    "      parts.push('#');", // 4
+    '      break;', // 5
+    '    default:', // 6
+    '      // Exhaustiveness guard, not a runtime check.', // 7
+    '      assertNeverProjectType(family);', // 8
+    "      parts.push('//');", // 9
+    '      break;', // 10
+    '  }', // 11
+    '}', // 12
+  ];
+
+  it('advises suppression for a brace-less default arm', () => {
+    const e = enrichGroup({
+      line: 6,
+      mutators: { ConditionalExpression: 1 },
+      projectType: 'typescript',
+      sourceLines: BARE_SRC,
+    });
+
+    expect(e.severity).toBe('low');
+    expect(e.why).toBe(EQUIVALENT_GUARD_SEMANTIC.why);
+  });
+
+  it('does not let a real case arm borrow a guard from a later arm', () => {
+    // The scan must stop at the end of THIS arm. `case 'hash':` is reachable code with a
+    // real test gap; a scan that ran on to the `default:` below would clear it wrongly.
+    const e = enrichGroup({
+      line: 3,
+      mutators: { ConditionalExpression: 1 },
+      projectType: 'typescript',
+      sourceLines: BARE_SRC,
+    });
+
+    expect(e.severity).toBe('high');
+    expect(e.why).toBe(MUTATOR_SEMANTICS.ConditionalExpression.why);
+  });
+});
