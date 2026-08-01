@@ -7,7 +7,7 @@
  * apart from the orchestration around them.
  */
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { toolError } from '../tool-result.js';
+import { toolError, toStructuredContent } from '../tool-result.js';
 import { ENGINE_REGISTRY, type SupportedProjectType } from '../engines/registry.js';
 import type { EnvironmentInfo } from '../utils/project-detector.js';
 import type { ChaosConfig } from '../utils/config-loader.js';
@@ -79,7 +79,7 @@ function nothingToMutateResult(
     kind: 'result',
     result: {
       content: [{ type: 'text', text }],
-      structuredContent: payload as unknown as Record<string, unknown>,
+      structuredContent: toStructuredContent(payload),
     },
   };
 }

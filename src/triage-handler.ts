@@ -29,7 +29,7 @@ import {
   resolveStrykerConcurrency,
 } from './triage-args-validation.js';
 import { resolveTriageTargets } from './triage/discover-targets.js';
-import { toolError, mapHandlerFailure } from './tool-result.js';
+import { toolError, mapHandlerFailure, toStructuredContent } from './tool-result.js';
 import {
   auditTriageFile,
   type TriageFileDeps,
@@ -308,6 +308,6 @@ function triageResult(
   const text = outputFormat === 'text' ? formatTriageAsText(payload) : JSON.stringify(payload);
   return {
     content: [{ type: 'text', text }],
-    structuredContent: payload as unknown as Record<string, unknown>,
+    structuredContent: toStructuredContent(payload),
   };
 }

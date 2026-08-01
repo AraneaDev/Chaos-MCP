@@ -2,7 +2,12 @@ import { statSync } from 'fs';
 import { cpus } from 'os';
 import type { CallToolRequest, CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { createSandbox } from './utils/sandbox.js';
-import { toolError, mapCreateSandboxError, mapHandlerFailure } from './tool-result.js';
+import {
+  toolError,
+  mapCreateSandboxError,
+  mapHandlerFailure,
+  toStructuredContent,
+} from './tool-result.js';
 import { validateFilePath } from './utils/file-path.js';
 import { validateTimeoutMs } from './tool-args-validation.js';
 import { supportedTypeOf, anchorTarget } from './audit/target.js';
@@ -196,7 +201,7 @@ export async function handleEstimateCall(
 
         return {
           content: [{ type: 'text', text: JSON.stringify(result) }],
-          structuredContent: result as unknown as Record<string, unknown>,
+          structuredContent: toStructuredContent(result),
         };
       } finally {
         await executor?.dispose();

@@ -53,6 +53,28 @@ export function mapHandlerFailure(error: unknown, ctx?: ToolContext): CallToolRe
 }
 
 /**
+ * Widen a concrete payload interface to the `structuredContent` shape the MCP
+ * SDK declares.
+ *
+ * The SDK types `CallToolResult.structuredContent` as `Record<string, unknown>`,
+ * but every payload we put there is a specific interface (`ResultPayload`,
+ * `TriagePayload`, `EstimateResult`). TypeScript will not assign an interface to
+ * an index-signature type — interfaces are open to declaration merging, so they
+ * carry no implicit index signature — hence the double cast. It widens the
+ * declared type; it never reinterprets the value, and the object handed back is
+ * the SAME object, so this is a compile-time no-op.
+ *
+ * Localising it matters: the cast was copy-pasted at four call sites (triage,
+ * estimate, audit output, and the empty-scope early return), which meant four
+ * places silently overriding the type checker and no single place saying why. A
+ * genuinely wrong payload now has one place to be caught, and the pattern is
+ * greppable instead of ambient.
+ */
+export function toStructuredContent<T extends object>(payload: T): Record<string, unknown> {
+  return payload as unknown as Record<string, unknown>;
+}
+
+/**
  * Map a `createSandbox` rejection to a consistent {@link toolError} so the three
  * callers (handler, estimate, triage) cannot drift on the cancel/error shapes
  * (C1 follow-up).

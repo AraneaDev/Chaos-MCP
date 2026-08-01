@@ -19,6 +19,7 @@ import {
   type EnrichContext,
 } from '../format.js';
 import { evaluateGate } from '../gate.js';
+import { toStructuredContent } from '../tool-result.js';
 import { suggestTestFile } from '../test-file.js';
 import { applySuppressions } from './apply-suppressions.js';
 import {
@@ -233,7 +234,7 @@ function formatStandardOutput({
     });
   }
 
-  return { content, structuredContent: payload as unknown as Record<string, unknown> };
+  return { content, structuredContent: toStructuredContent(payload) };
 }
 
 /**
