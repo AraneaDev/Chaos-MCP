@@ -8,13 +8,13 @@
  * a dedicated module under `src/audit/` (Finding 2).
  */
 import { validateFilePath } from './utils/file-path.js';
-import { anchorToWorkspace } from './utils/workspace-anchor.js';
 import type { CallToolRequest, CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import type { ToolContext } from './tool-context.js';
-import { toolError, mapCreateSandboxError } from './tool-result.js';
-import type { BaseEngine, MutationResult } from './engines/base.js';
+import { toolError, mapCreateSandboxError, mapHandlerFailure } from './tool-result.js';
+import type { MutationResult } from './engines/base.js';
 import { ENGINE_REGISTRY, makeEngine, type SupportedProjectType } from './engines/registry.js';
-import { detectProjectType, detectEnvironment, EnvironmentInfo } from './utils/project-detector.js';
+import { EnvironmentInfo } from './utils/project-detector.js';
+import { resolveAuditTarget } from './audit/target.js';
 import { createSandbox } from './utils/sandbox.js';
 import { isCancel } from './utils/cancel.js';
 import { ChaosConfig } from './utils/config-loader.js';
@@ -51,55 +51,6 @@ export function validateToolArgs(args: ToolArgs): CallToolResult | null {
   if (errors.length === 0) return null;
   if (errors.length === 1) return toolError(errors[0]);
   return toolError(`Multiple argument errors (${errors.length}):\n  - ${errors.join('\n  - ')}`);
-}
-
-/** Everything the phases downstream of path validation need about the target. */
-interface AuditTarget {
-  projectType: SupportedProjectType;
-  env: EnvironmentInfo;
-  engine: BaseEngine;
-  /** Path to mutate, expressed relative to the detected workspace root. */
-  targetFile: string;
-  /** Workspace-relative key for the run cache and the suppressions file. */
-  relFromRoot: string;
-}
-
-/**
- * Resolve the audited file into an engine + environment + workspace-relative
- * target, or a ready-to-return error for an unsupported extension.
- *
- * Takes the ALREADY-validated path rather than the raw request: `validateFilePath`
- * runs outside `handleToolCall`'s try/catch (it reports its own rejections and
- * must not be re-labelled "Chaos Engine Halted"), whereas everything here
- * touches the filesystem and is deliberately inside it.
- */
-function resolveTarget(
-  filePath: string,
-  resolvedFile: string,
-): { kind: 'error'; result: CallToolResult } | { kind: 'target'; target: AuditTarget } {
-  const projectType = detectProjectType(filePath);
-
-  if (projectType === 'unsupported') {
-    return {
-      kind: 'error',
-      result: toolError(`Error: Extension unsupported for file target ${filePath}`),
-    };
-  }
-
-  // Auto-detect the workspace environment (test runner, workspace root)
-  const env = detectEnvironment(filePath);
-  const engine = makeEngine(projectType);
-
-  // Re-anchor the target to the detected workspace root. `filePath` is
-  // relative to process.cwd(), but the sandbox copies `env.workspaceRoot`
-  // (which can be a subdirectory of cwd in a monorepo). Both the sandbox
-  // file-exists check and the engine's mutate target must therefore use the
-  // path relative to the workspace root, not to cwd. (High#1 / Med#9.)
-  // Shared with estimate + triage via `anchorToWorkspace` — the three copies of
-  // this expression could otherwise drift.
-  const { relFromRoot, targetFile } = anchorToWorkspace(env.workspaceRoot, resolvedFile, filePath);
-
-  return { kind: 'target', target: { projectType, env, engine, targetFile, relFromRoot } };
 }
 
 /**
@@ -214,9 +165,13 @@ export async function handleToolCall(
   const { resolvedFile, raw: filePath } = filePathResult.value;
 
   try {
-    const resolved = resolveTarget(filePath, resolvedFile);
-    if (resolved.kind === 'error') return resolved.result;
-    const { projectType, env, engine, targetFile, relFromRoot } = resolved.target;
+    // `validateFilePath` ran outside this try/catch (it reports its own
+    // rejections and must not be re-labelled "Chaos Engine Halted"); everything
+    // from here touches the filesystem and is deliberately inside it.
+    const target = resolveAuditTarget(filePath, resolvedFile);
+    if (!target) return toolError(`Error: Extension unsupported for file target ${filePath}`);
+    const { projectType, env, targetFile, relFromRoot } = target;
+    const engine = makeEngine(projectType);
 
     // Validate ALL tool arguments before any expensive work. Provisioning the
     // sandbox copies the whole workspace tree; doing it before validation would
@@ -428,19 +383,11 @@ export async function handleToolCall(
       sandbox.cleanup();
     }
   } catch (error: unknown) {
-    // Audit C1 follow-up: cancellation must surface as 'Operation cancelled.' —
-    // never as 'Chaos Engine Halted' — so the caller can reliably branch on the
-    // message; otherwise a deliberate cancel from the MCP client is
-    // indistinguishable from a real engine failure. The reachable path is
-    // `computeScope`, whose git calls run BEFORE the sandbox exists and now
-    // re-throw an abort instead of flattening it into a `DiffResult`; the
-    // engine-run and sandbox cancels are already caught by `runEngine` and
-    // `mapCreateSandboxError` above. Matches estimate-handler.ts and
-    // triage/audit-one.ts, which carry the identical branch.
-    if (isCancel(error, ctx)) {
-      return toolError('Operation cancelled.');
-    }
-    const message = error instanceof Error ? error.message : String(error);
-    return toolError(`Chaos Engine Halted: ${message}`);
+    // The reachable path is `computeScope`, whose git calls run BEFORE the
+    // sandbox exists and re-throw an abort instead of flattening it into a
+    // `DiffResult`; the engine-run and sandbox cancels are already caught by
+    // `runEngine` and `mapCreateSandboxError` above. `mapHandlerFailure` owns
+    // the cancel-vs-halt branch for all three tools.
+    return mapHandlerFailure(error, ctx);
   }
 }

@@ -1,15 +1,13 @@
 import { statSync } from 'fs';
 import { cpus } from 'os';
 import type { CallToolRequest, CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { detectProjectType, detectEnvironment } from './utils/project-detector.js';
 import { createSandbox } from './utils/sandbox.js';
-import { toolError, mapCreateSandboxError } from './tool-result.js';
+import { toolError, mapCreateSandboxError, mapHandlerFailure } from './tool-result.js';
 import { validateFilePath } from './utils/file-path.js';
-import { anchorToWorkspace } from './utils/workspace-anchor.js';
+import { supportedTypeOf, anchorTarget } from './audit/target.js';
 import { estimateAudit, estimateNeedsSandbox } from './estimate.js';
 import type { ChaosConfig } from './utils/config-loader.js';
 import type { ToolContext } from './tool-context.js';
-import { isCancel } from './utils/cancel.js';
 import { DEFAULT_TIMEOUT_MS } from './utils/constants.js';
 import { createExecutionSession } from './utils/execution.js';
 import { buildRunOptions, resolveAuditTimeoutMs } from './audit/run-options.js';
@@ -66,9 +64,9 @@ export async function handleEstimateCall(
   }
 
   try {
-    const projectType = detectProjectType(rawFilePath);
+    const projectType = supportedTypeOf(rawFilePath);
 
-    if (projectType === 'unsupported') {
+    if (!projectType) {
       return toolError(`Error: Extension unsupported for file target ${rawFilePath}`);
     }
 
@@ -85,12 +83,9 @@ export async function handleEstimateCall(
       );
     }
 
-    // Auto-detect the workspace environment (test runner, workspace root).
-    const env = detectEnvironment(rawFilePath);
-
-    // Re-anchor the target to the detected workspace root (the same helper
-    // handleToolCall and triage-handler use).
-    const { targetFile: relFile } = anchorToWorkspace(env.workspaceRoot, resolvedFile, rawFilePath);
+    // Detect the workspace environment and re-anchor the target onto its root
+    // (the same step handleToolCall and triage run).
+    const { env, targetFile: relFile } = anchorTarget(rawFilePath, resolvedFile, projectType);
 
     const withTiming = args.withTiming === true;
     const cfg = config ?? {};
@@ -197,15 +192,9 @@ export async function handleEstimateCall(
       sandbox?.cleanup();
     }
   } catch (error: unknown) {
-    // Audit C1 follow-up: cancellation (mid-flight estimateAudit killed by
-    // the abort signal, or an AbortError from any other source) must surface
-    // as 'Operation cancelled.' — never as 'Chaos Engine Halted' — so the
-    // caller can reliably branch on the message. Otherwise a deliberate
-    // cancel from the MCP client looks identical to a real engine failure.
-    if (isCancel(error, ctx)) {
-      return toolError('Operation cancelled.');
-    }
-    const message = error instanceof Error ? error.message : String(error);
-    return toolError(`Chaos Engine Halted: ${message}`);
+    // A mid-flight estimateAudit killed by the abort signal, or an AbortError
+    // from any other source, reaches here; `mapHandlerFailure` owns the
+    // cancel-vs-halt branch shared with the audit and triage tools.
+    return mapHandlerFailure(error, ctx);
   }
 }

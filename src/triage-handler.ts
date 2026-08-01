@@ -29,13 +29,9 @@ import {
   resolveStrykerConcurrency,
 } from './triage-args-validation.js';
 import { resolveTriageTargets } from './triage/discover-targets.js';
-import { isCancel } from './utils/cancel.js';
+import { toolError, mapHandlerFailure } from './tool-result.js';
 import { auditTriageFile, type TriageFileDeps } from './triage/audit-one.js';
 import { AuditDeadline } from './utils/deadline.js';
-
-function triageError(text: string): CallToolResult {
-  return { content: [{ type: 'text', text }], isError: true };
-}
 
 const DEFAULT_MAX_FILES = 25;
 
@@ -69,7 +65,7 @@ const TRIAGE_CLEANUP_RESERVE_MS = 2_000;
 function validateTriageArgs(args: ToolArgs): CallToolResult | null {
   for (const validate of TRIAGE_ARG_VALIDATORS) {
     const message = validate(args);
-    if (message !== null) return triageError(message);
+    if (message !== null) return toolError(message);
   }
   return null;
 }
@@ -121,7 +117,7 @@ export async function handleTriageCall(
     );
 
     // Early abort before hitting the network (git) or filesystem (discovery). (Task 6)
-    if (ctx?.signal?.aborted) return triageError('Operation cancelled.');
+    if (ctx?.signal?.aborted) return toolError('Operation cancelled.');
 
     const targets = await resolveTriageTargets({
       rootCwd,
@@ -132,7 +128,7 @@ export async function handleTriageCall(
       cleanupReserveMs: TRIAGE_CLEANUP_RESERVE_MS,
       signal: ctx?.signal,
     });
-    if (targets.kind === 'error') return triageError(targets.message);
+    if (targets.kind === 'error') return toolError(targets.message);
     const { files, discovered, skipped, scopeNote } = targets;
 
     if (files.length === 0) {
@@ -160,7 +156,7 @@ export async function handleTriageCall(
 
     // Second abort check: skip the pool entirely if already cancelled before we start.
     // (Task 6 — mirrors the pre-discovery check above.)
-    if (ctx?.signal?.aborted) return triageError('Operation cancelled.');
+    if (ctx?.signal?.aborted) return toolError('Operation cancelled.');
 
     const outcomes = await mapPool(files, poolSize, (file) => auditTriageFile(file, deps));
     const auditedRows: TriageRow[] = [];
@@ -202,14 +198,10 @@ export async function handleTriageCall(
     // libelling the workspace as "not a git work tree" (utils/git-diff.ts);
     // per-file failures are already collected by `auditTriageFile`.
     //
-    // Audit C1 follow-up: a cancel keeps the one string every abort path in
-    // this codebase reports, so a deliberate stop never reads as an engine
-    // failure. Same branch, same wording as handler.ts and estimate-handler.ts.
-    if (isCancel(error, ctx)) {
-      return triageError('Operation cancelled.');
-    }
-    const message = error instanceof Error ? error.message : String(error);
-    return triageError(`Chaos Engine Halted: ${message}`);
+    // A cancel keeps the one string every abort path in this codebase reports,
+    // so a deliberate stop never reads as an engine failure — `mapHandlerFailure`
+    // is the same branch handler.ts and estimate-handler.ts use.
+    return mapHandlerFailure(error, ctx);
   }
 }
 

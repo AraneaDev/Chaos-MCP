@@ -15,6 +15,44 @@ export function toolError(text: string): CallToolResult {
 }
 
 /**
+ * The one string every abort path in this codebase reports, so a deliberate
+ * cancel is never indistinguishable from a real engine failure and the caller
+ * can branch on it without parsing the source.
+ */
+export const CANCELLED_TEXT = 'Operation cancelled.';
+
+/**
+ * The message text for a failed call: the shared cancel string when the failure
+ * is an abort, else the error's own message.
+ *
+ * For callers that report failures in their own shape rather than as a
+ * `CallToolResult` — the triage sweep collects them into per-file rows.
+ */
+export function failureText(error: unknown, ctx?: ToolContext): string {
+  if (isCancel(error, ctx)) return CANCELLED_TEXT;
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * The outer-catch mapping shared by all three tool handlers.
+ *
+ * Cancellation must surface as {@link CANCELLED_TEXT} — never as 'Chaos Engine
+ * Halted' — so the caller can reliably branch on the message; anything else is
+ * a genuine engine failure and keeps the halted prefix. All three handlers
+ * carried this branch verbatim, each with its own copy of the comment
+ * explaining why.
+ *
+ * The cancel check runs against the error rather than the formatted text: an
+ * engine failure whose message happened to read 'Operation cancelled.' must
+ * still be reported as a halt, not silently reclassified as an abort.
+ */
+export function mapHandlerFailure(error: unknown, ctx?: ToolContext): CallToolResult {
+  if (isCancel(error, ctx)) return toolError(CANCELLED_TEXT);
+  const message = error instanceof Error ? error.message : String(error);
+  return toolError(`Chaos Engine Halted: ${message}`);
+}
+
+/**
  * Map a `createSandbox` rejection to a consistent {@link toolError} so the three
  * callers (handler, estimate, triage) cannot drift on the cancel/error shapes
  * (C1 follow-up).

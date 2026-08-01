@@ -15,17 +15,15 @@ import { resolve } from 'path';
 import { readFileSync } from 'fs';
 import { auditFile } from '../audit/audit-file.js';
 import { createSandbox } from '../utils/sandbox.js';
-import { detectProjectType, detectEnvironment } from '../utils/project-detector.js';
 import type { EnvironmentInfo, SupportedProjectType } from '../utils/project-detector.js';
 import { ENGINE_REGISTRY, makeEngine, resolvePrebuildCommand } from '../engines/registry.js';
 import { computeChangedRanges } from '../utils/git-diff.js';
-import { anchorToWorkspace } from '../utils/workspace-anchor.js';
+import { resolveAuditTargetIn } from '../audit/target.js';
 import { loadSuppressions, verifySuppressions, type StoredEntry } from '../utils/suppression.js';
 import { applySuppressions } from '../audit/apply-suppressions.js';
 import { mintRunId } from '../utils/run-cache.js';
 import { buildResultPayload, displayMutationScore, hasNoMutableLogic } from '../format.js';
-import { isCancel } from '../utils/cancel.js';
-import { mapCreateSandboxError } from '../tool-result.js';
+import { mapCreateSandboxError, failureText } from '../tool-result.js';
 import type { MutationResult } from '../engines/base.js';
 import type { ChaosConfig } from '../utils/config-loader.js';
 import type { ToolContext } from '../tool-context.js';
@@ -335,19 +333,13 @@ export async function auditTriageFile(
     // read the ranking as covering everything it asked for.
     const fileBudgetMs = deps.deadline.remainingMs(deps.cleanupReserveMs);
     if (fileBudgetMs <= 0) return { unaudited: file };
-    const projectType = detectProjectType(file);
-    if (projectType === 'unsupported') {
+    const target = resolveAuditTargetIn(deps.rootCwd, file);
+    if (!target) {
       return { error: { file, error: `Unsupported file type for ${file}` } };
     }
-    const env = detectEnvironment(file);
+    const { projectType, env, relFromRoot, targetFile } = target;
     const suppressionMap = suppressionsFor(env.workspaceRoot, deps);
     const engine = makeEngine(projectType);
-
-    const { relFromRoot, targetFile } = anchorToWorkspace(
-      env.workspaceRoot,
-      resolve(deps.rootCwd, file),
-      file,
-    );
 
     const perFileArgs = buildPerFileArgs(fileBudgetMs, projectType, deps);
     const prebuildCmd = resolvePrebuildCommand(perFileArgs, env, projectType);
@@ -423,16 +415,14 @@ export async function auditTriageFile(
       ),
     };
   } catch (error: unknown) {
-    // Audit C1 follow-up: an in-flight cancel (subprocess killed by the
-    // abort signal → ExecFailureError('ABORTED'), OR the signal flipped
-    // JUST as we entered this catch) must surface as 'Operation cancelled.'
-    // — NOT as the raw `'ABORT_ERR ...'` engine stderr text the caller
-    // can't branch on. Match the handler + estimate shapes exactly.
-    if (isCancel(error, ctx)) {
-      return { error: { file, error: 'Operation cancelled.' } };
-    }
-    const message = error instanceof Error ? error.message : String(error);
-    return { error: { file, error: message } };
+    // An in-flight cancel (subprocess killed by the abort signal →
+    // ExecFailureError('ABORTED'), OR the signal flipped JUST as we entered
+    // this catch) must surface as 'Operation cancelled.' — NOT as the raw
+    // `'ABORT_ERR ...'` engine stderr text the caller can't branch on.
+    // `failureText` is the shared cancel-or-message rule; unlike the three
+    // CallToolResult handlers, a per-file row carries no 'Chaos Engine Halted'
+    // prefix, so it uses that rule directly rather than `mapHandlerFailure`.
+    return { error: { file, error: failureText(error, ctx) } };
   } finally {
     // Advance progress counter in finally so even errored files are counted. (Task 6)
     deps.onProgress();
