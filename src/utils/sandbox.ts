@@ -12,111 +12,28 @@ import { join, resolve, sep } from 'path';
 import { tmpdir } from 'os';
 import { randomUUID } from 'crypto';
 import { warn } from './logger.js';
-import { killAllTrackedProcesses, killProcessesUnder } from './process-reaper.js';
 import {
   ALLOWED_ROOTS_ENV,
   allowedWorkspaceRoots,
   isPathInside,
   isWorkspaceRootAllowed,
 } from './path-safety.js';
-import { ALL_DEPENDENCY_DIRS } from './dependency-dirs.js';
-import { COMMON_IGNORE_DIRS } from './ignore-dirs.js';
-
-/**
- * Registry of active sandbox directories that have not yet been cleaned up.
- *
- * When the process exits unexpectedly (SIGTERM, SIGINT, crash), registered
- * handlers walk this set and remove every remaining sandbox so temp
- * directories don't leak on disk. Normal cleanup via {@link SandboxContext.cleanup}
- * removes entries from this set.
- */
-const ACTIVE_SANDBOXES = new Set<string>();
-
-/** Guards against double-registration of process exit handlers. */
-let exitHandlerRegistered = false;
-
-/**
- * Whether this module's signal handlers terminate the process themselves.
- *
- * Registering a signal handler suppresses Node's default termination, so
- * something must still end the process — but a leaf utility calling
- * `process.exit` pre-empts every other shutdown path, including the MCP
- * transport's graceful close, and drops in-flight responses. The process owner
- * can take that responsibility instead via {@link setSandboxSignalExit}; the
- * default stays true so a library or CLI consumer that installs nothing keeps
- * the previous behaviour and never hangs on a signal.
- */
-let signalExitEnabled = true;
-
-/**
- * Hand signal-driven termination to the caller (see {@link signalExitEnabled}).
- * The caller MUST then terminate the process itself and SHOULD call
- * {@link cleanupAllSandboxes} on its way out.
- */
-export function setSandboxSignalExit(enabled: boolean): void {
-  signalExitEnabled = enabled;
-}
-
-/**
- * Remove every sandbox this process still owns. Synchronous and idempotent, so
- * it is safe from an `exit` handler and safe to call more than once.
- */
-export function cleanupAllSandboxes(): void {
-  // Kill first, delete second. A mutation engine's test processes run INSIDE
-  // these directories; removing the directory out from under a live `vitest`
-  // does not stop it — it just leaves it running against a path that no longer
-  // exists. (Observed: a worker held 2 GB for 20 hours that way.)
-  killAllTrackedProcesses();
-  for (const dir of ACTIVE_SANDBOXES) {
-    try {
-      rmSync(dir, { recursive: true, force: true });
-    } catch {
-      // Best-effort — OS will reclaim tmpdir() eventually
-    }
-  }
-  ACTIVE_SANDBOXES.clear();
-}
-
-/**
- * Register process-wide handlers that remove any sandboxes left behind
- * when the process terminates unexpectedly. The handlers use only
- * synchronous operations because Node.js `exit` callbacks must be sync.
- */
-function ensureExitHandler(): void {
-  if (exitHandlerRegistered) return;
-  exitHandlerRegistered = true;
-
-  const cleanupAll = cleanupAllSandboxes;
-
-  // `process.on('exit')` fires when the event loop empties or process.exit() is
-  // called. Only synchronous operations are allowed in exit handlers.
-  process.on('exit', cleanupAll);
-
-  // SIGTERM, SIGINT, SIGHUP, and SIGQUIT: try to clean up before the OS
-  // kills the process. We call process.exit() after cleanup to let the
-  // `exit` handler also fire (it's idempotent — the set is already emptied
-  // by this point).
-  // (Audit M10: SIGHUP + SIGQUIT added — previously only SIGTERM/SIGINT
-  // were handled, so terminal-disconnect leaked sandboxes on disk.)
-  // Exit with the conventional 128 + signal-number code so a signal kill is
-  // not reported as a clean exit (0) to a supervising process.
-  const SIGNAL_NUMBERS: Record<string, number> = {
-    SIGHUP: 1,
-    SIGINT: 2,
-    SIGQUIT: 3,
-    SIGTERM: 15,
-  };
-  //
-  // The exit is skipped when the process owner has claimed shutdown via
-  // setSandboxSignalExit(false) — see that flag for why a leaf utility should
-  // not unilaterally end the process. Cleanup always runs either way.
-  for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP', 'SIGQUIT'] as const) {
-    process.on(sig, () => {
-      cleanupAll();
-      if (signalExitEnabled) process.exit(128 + SIGNAL_NUMBERS[sig]);
-    });
-  }
-}
+import {
+  buildCopyPolicy,
+  isComposerPhpAudit,
+  SYMLINK_DIRS,
+  type CopyPolicy,
+} from './sandbox/copy-policy.js';
+// Exactly ONE specifier for the registry, here and in src/index.ts: its
+// ACTIVE_SANDBOXES Set is module-level state, and a second resolvable path
+// would give the signal handlers a different Set than the one sandboxes
+// register in — see the docblock in ./sandbox/registry.ts.
+import {
+  ensureExitHandler,
+  makeCleanup,
+  registerSandbox,
+  unregisterSandbox,
+} from './sandbox/registry.js';
 
 /**
  * Context returned by the sandbox manager.
@@ -155,235 +72,6 @@ function abortError(): Error {
   const e = new Error('Sandbox creation cancelled.');
   e.name = 'AbortError';
   return e;
-}
-
-/**
- * Directories and files that should never be copied into the sandbox.
- *
- * {@link COMMON_IGNORE_DIRS} is the core every tree-walker in the codebase
- * shares; everything after it is exclusive to the sandbox copy filter and is
- * listed explicitly so the remaining drift against triage.ts / test-file.ts is
- * visible rather than buried in four hand-kept copies. Note this set also
- * carries FILE names, which the shared constant deliberately does not.
- *
- * @internal Exported for testing only — `ignore-dirs.test.ts` pins the
- * effective set byte-for-byte.
- */
-export const ALWAYS_EXCLUDE = new Set([
-  ...COMMON_IGNORE_DIRS,
-  // ── sandbox-only ──
-  '.svn',
-  '.stryker-tmp',
-  '.mutmut-cache',
-  '.pytest_cache',
-  '.tox',
-  '.env',
-  'coverage',
-  '.nyc_output',
-  '.next',
-  'target', // Rust build artifacts (excluded — NOT symlinked; audit H1)
-  // Our own derived output from a previous audit. Copying it in lets a run that
-  // never produced a log read the old one and report it as a fresh result.
-  'chaos-infection-log.json',
-]);
-
-/**
- * Directories that, when present in the workspace root, should be symlinked
- * into the sandbox rather than copied (they are large and read-only during
- * mutation runs).
- *
- * DERIVED, not hand-maintained: the union of every language's dependency
- * directories, deduped, in declaration order. A new language therefore cannot
- * ship with its dependency tree silently deep-copied into every sandbox — the
- * `DEPENDENCY_DIRS` entry it is forced to add carries the answer. Today that
- * yields exactly `['node_modules', '.venv', 'venv', 'vendor']`
- * (typescript → python → rust(none) → php), pinned by sandbox.test.ts.
- *
- * Taken from the `utils/dependency-dirs.ts` leaf rather than from
- * `engines/registry.ts#dependencyDirectories()`: the two are equal by
- * construction (the registry stamps each descriptor's `dependencyDirs` from the
- * same constant) and sandbox.test.ts pins them equal, but reaching through the
- * registry made this util import every engine class to learn four directory
- * names.
- *
- * Note: `target` (Rust build artifacts) is intentionally NOT symlinked — Rust
- * compiles into `target/`, and a symlink would let mutation runs corrupt the
- * host workspace's build cache (audit finding H1), so the Rust descriptor
- * declares no dependency dirs at all and `target` is bulk-excluded via
- * `ALWAYS_EXCLUDE` instead. Only list a directory in `dependencyDirs` when it is
- * safe to share across sandboxes.
- *
- * @internal Exported for testing only.
- */
-export const SYMLINK_DIRS: readonly string[] = ALL_DEPENDENCY_DIRS;
-
-/**
- * The single decision function for "does this path get copied into the sandbox?".
- *
- * Built once per {@link createSandbox} call and shared by the `fs.cp` filter and
- * the pre-copy size estimate, so the exclusion rules (and in particular the
- * trailing-separator / empty-pattern normalisation) exist in exactly one place.
- *
- * @internal Exported for testing only.
- */
-export interface CopyPolicy {
-  /** Whether the absolute path `src` should be copied into the sandbox. */
-  shouldCopy(src: string): boolean;
-  /**
-   * The caller's ignorePatterns after normalisation: a single trailing
-   * separator stripped and empty patterns dropped (an empty pattern matches
-   * every `split(sep)` result and would silently exclude everything).
-   */
-  normalisedExcludes: Set<string>;
-  /**
-   * Heavyweight dirs {@link CopyPolicy.shouldCopy} refused, at any depth, so
-   * Step 2 can symlink them back in. Populated as a side effect of the filter
-   * (which `fs.cp` calls synchronously per entry).
-   */
-  skippedHeavyDirs: Set<string>;
-}
-
-/** Inputs for {@link buildCopyPolicy}. */
-export interface CopyPolicyInput {
-  /** Absolute path of the audited file inside the workspace. */
-  absoluteTarget: string;
-  /**
-   * Heavyweight dirs that will be symlinked into the sandbox for THIS audit.
-   *
-   * Symlinked directories MUST be excluded from the workspace copy: Step 1 copies
-   * the tree and Step 2 symlinks these dirs into the sandbox, so if the copy also
-   * materialised them the symlink would collide with `EEXIST`. Excluding them here
-   * (rather than relying on every entry ALSO being hand-listed in ALWAYS_EXCLUDE)
-   * makes the "symlinked ⇒ never copied" invariant structural, so the two lists
-   * cannot silently drift. Regression: `vendor` was in SYMLINK_DIRS but missing
-   * from ALWAYS_EXCLUDE, so every PHP (Composer) project failed provisioning.
-   */
-  symlinkDirs: Iterable<string>;
-  /** Caller-supplied ignorePatterns (workspace-relative dir/file segments). */
-  userExcludes?: Iterable<string>;
-  /**
-   * Force-include the target file and every ancestor directory (default true).
-   *
-   * Only the copy filter wants this; see {@link estimateWorkspaceSize} for why
-   * the size estimate deliberately opts out.
-   */
-  forceIncludeTarget?: boolean;
-  /**
-   * Match user excludes against EVERY segment of `src`, not just its basename
-   * (default true).
-   *
-   * The copy filter sees each entry in isolation and must therefore reject a
-   * path whose ancestor matched. A pruned walk (the size estimate) never
-   * descends past a rejected ancestor, so it opts out to avoid ALSO matching
-   * segments of the workspace root's own absolute path.
-   */
-  matchAncestorSegments?: boolean;
-}
-
-/**
- * Build the copy/exclusion policy for one sandbox provision.
- *
- * Pure: it touches no filesystem and holds no state beyond
- * {@link CopyPolicy.skippedHeavyDirs}, so the rules can be unit-tested on plain
- * path strings without provisioning a sandbox.
- *
- * @internal Exported for testing only.
- */
-export function buildCopyPolicy({
-  absoluteTarget,
-  symlinkDirs,
-  userExcludes,
-  forceIncludeTarget = true,
-  matchAncestorSegments = true,
-}: CopyPolicyInput): CopyPolicy {
-  const symlinkDirsSet = new Set(symlinkDirs);
-
-  // Strip a single trailing separator so the common convention `["fixtures/"]`
-  // matches directory segments named `fixtures` (Live-audit L2 fix), and drop
-  // patterns that normalise to empty — they would match every split and
-  // silently exclude the entire workspace.
-  const normalisedExcludes = new Set<string>();
-  for (const pattern of userExcludes ?? []) {
-    if (pattern.length === 0) continue;
-    const normalised = pattern.endsWith(sep) ? pattern.slice(0, -1) : pattern;
-    if (normalised.length > 0) normalisedExcludes.add(normalised);
-  }
-
-  const skippedHeavyDirs = new Set<string>();
-
-  return {
-    normalisedExcludes,
-    skippedHeavyDirs,
-    shouldCopy(src: string): boolean {
-      // Force-include the target file itself and any ancestor directory. This
-      // deliberately wins over BOTH checks below: a target under a
-      // conventionally-named dir (build/, dist/, coverage/, vendor/,
-      // node_modules/) or matched by an ignorePattern would otherwise be
-      // dropped and provisioning would fail with a confusing "target not
-      // found" (Med#7). Step 2's symlink loops guard on `!existsSync(dst)`
-      // precisely because this can materialise a heavyweight dir.
-      if (forceIncludeTarget && (src === absoluteTarget || absoluteTarget.startsWith(src + sep))) {
-        return true;
-      }
-
-      const segments = src.split(sep);
-      const basename = segments[segments.length - 1] ?? '';
-
-      // Symlinked heavyweight dirs (node_modules, .venv, venv, and — except
-      // for Composer PHP audits — vendor) are materialised as symlinks in
-      // Step 2, so they must never be copied here: a copied dir would make the
-      // later symlinkSync fail with EEXIST. Dirs we deliberately COPY (vendor
-      // for PHP) are absent from this set and fall through to be copied.
-      //
-      // This matches on a path SEGMENT, so it skips these dirs at every depth.
-      // Record each one: Step 2 used to symlink only the workspace root, so a
-      // workspace layout (npm workspaces, or a PHP project shipping a Node
-      // worker) lost its NESTED dependencies from the sandbox entirely.
-      //
-      // Checked BEFORE ALWAYS_EXCLUDE because node_modules/.venv/venv appear
-      // in both lists; an ALWAYS_EXCLUDE hit first would drop them silently
-      // instead of recording them for re-linking.
-      if (symlinkDirsSet.has(basename)) {
-        skippedHeavyDirs.add(src);
-        return false;
-      }
-      if (ALWAYS_EXCLUDE.has(basename)) return false;
-
-      // Audit finding M6: segment-based matching prevents over-eager substring
-      // exclusion. Excludes only when a path segment exactly equals the
-      // pattern, not when the pattern is a substring of any path component.
-      if (matchAncestorSegments) {
-        for (const segment of segments) {
-          if (normalisedExcludes.has(segment)) return false;
-        }
-        return true;
-      }
-      return !normalisedExcludes.has(basename);
-    },
-  };
-}
-
-/**
- * Detect a Composer (PHP) audit that must COPY `vendor/` rather than symlink it.
- *
- * Composer's autoloader (vendor/composer/ClassLoader.php + autoload_*.php) derives
- * its project base dir from `__DIR__`, and PHP resolves `__DIR__` THROUGH symlinks
- * to the real path. So if `vendor/` is a symlink into the sandbox, the autoloader
- * (and the phpunit/infection bin stubs, which `require __DIR__/../autoload.php`)
- * resolve back to the ORIGINAL workspace and load the real source — not the
- * mutated sandbox copy. Coverage then attributes execution to the real files and
- * Infection reports "No source code … was executed", silently invalidating the
- * whole mutation run. Copying vendor/ keeps every `__DIR__` inside the sandbox.
- *
- * Gated on a `.php` target AND a Composer marker (composer.json or vendor/composer)
- * so non-PHP audits keep the cheap symlink for their heavyweight dirs.
- */
-function isComposerPhpAudit(targetFile: string, absoluteWorkspace: string): boolean {
-  if (!targetFile.toLowerCase().endsWith('.php')) return false;
-  return (
-    existsSync(join(absoluteWorkspace, 'composer.json')) ||
-    existsSync(join(absoluteWorkspace, 'vendor', 'composer'))
-  );
 }
 
 /**
@@ -641,28 +329,6 @@ function verifyTarget(sandboxDir: string, targetFile: string, absoluteWorkspace:
 }
 
 /**
- * Build the teardown returned to the caller as {@link SandboxContext.cleanup}.
- *
- * Best-effort by design: it runs from `finally` blocks and process shutdown,
- * where throwing would strand the remaining sandboxes.
- */
-function makeCleanup(sandboxDir: string): () => void {
-  return () => {
-    try {
-      // Reap only the engine processes running in THIS sandbox — a triage
-      // sweep tears sandboxes down while its siblings are still auditing,
-      // so a global kill here would abort the rest of the run.
-      killProcessesUnder(sandboxDir);
-      rmSync(sandboxDir, { recursive: true, force: true });
-    } catch {
-      // Best-effort — OS will reclaim tmpdir() eventually
-    } finally {
-      ACTIVE_SANDBOXES.delete(sandboxDir);
-    }
-  };
-}
-
-/**
  * Copy the workspace into a temporary sandbox directory, symlinking
  * heavyweight directories (node_modules, .venv, target) rather than copying
  * them. Returns a SandboxContext the caller must clean up.
@@ -781,8 +447,9 @@ export async function createSandbox(
   // Register for cleanup the instant the directory exists, NOT after
   // provisioning succeeds.
   //
-  // ACTIVE_SANDBOXES is the only thing cleanupAllSandboxes() walks, and that is
-  // what the exit/SIGTERM/SIGINT/SIGHUP/SIGQUIT handlers above — and
+  // The registry ./sandbox/registry.ts owns is the only thing
+  // cleanupAllSandboxes() walks, and that is what the
+  // exit/SIGTERM/SIGINT/SIGHUP/SIGQUIT handlers it installs — and
   // installShutdownHandlers' `.finally` in src/index.ts — run on their way out.
   // Registering AFTER the copy meant a signal arriving during Step 1 (by far the
   // longest phase: a full workspace tree copy, seconds on a large repo) cleaned
@@ -790,7 +457,7 @@ export async function createSandbox(
   // the `finally` below never ran and the half-copied tree leaked into tmpdir()
   // permanently. Registration is a Set.add and every cleanup path is idempotent,
   // so paying it up front costs nothing.
-  ACTIVE_SANDBOXES.add(sandboxDir);
+  registerSandbox(sandboxDir);
 
   let success = false;
   try {
@@ -822,7 +489,7 @@ export async function createSandbox(
       // Deregister only once the directory is gone, so a signal racing this
       // branch still finds the sandbox in the registry and removes it. A second
       // rmSync on an already-removed path is a no-op under `force: true`.
-      ACTIVE_SANDBOXES.delete(sandboxDir);
+      unregisterSandbox(sandboxDir);
     }
   }
 }

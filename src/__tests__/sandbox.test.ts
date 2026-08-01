@@ -55,7 +55,8 @@ import type { PathLike } from 'fs';
 import { cp } from 'fs/promises';
 import { tmpdir } from 'os';
 import { resolve, join, sep } from 'path';
-import { buildCopyPolicy, createSandbox, SYMLINK_DIRS, SandboxContext } from '../utils/sandbox.js';
+import { createSandbox, SandboxContext } from '../utils/sandbox.js';
+import { buildCopyPolicy, SYMLINK_DIRS } from '../utils/sandbox/copy-policy.js';
 import { ENGINE_REGISTRY, dependencyDirectories } from '../engines/registry.js';
 import { killProcessesUnder, killAllTrackedProcesses } from '../utils/process-reaper.js';
 import { ALLOWED_ROOTS_ENV } from '../utils/path-safety.js';
@@ -1244,6 +1245,9 @@ describe('createSandbox', () => {
     // exists to prevent. Cleanup must still happen; only the exit is withheld.
     vi.resetModules();
     const fresh = await import('../utils/sandbox.js');
+    // Same reset, so this resolves to the very module instance `fresh` just
+    // pulled in — the one whose ACTIVE_SANDBOXES the handlers below walk.
+    const freshRegistry = await import('../utils/sandbox/registry.js');
     const onSpy = vi.spyOn(process, 'on');
     const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
 
@@ -1254,7 +1258,7 @@ describe('createSandbox', () => {
     mockCp.mockResolvedValue(undefined as never);
     await fresh.createSandbox('src/utils/math.ts', TEST_PROJECT);
 
-    fresh.setSandboxSignalExit(false);
+    freshRegistry.setSandboxSignalExit(false);
 
     const sigCall = onSpy.mock.calls.find((c) => c[0] === 'SIGTERM');
     if (!sigCall) throw new Error('SIGTERM handler was not registered');
@@ -1269,7 +1273,7 @@ describe('createSandbox', () => {
     );
     expect(exitSpy).not.toHaveBeenCalled();
 
-    fresh.setSandboxSignalExit(true);
+    freshRegistry.setSandboxSignalExit(true);
     exitSpy.mockRestore();
   });
 
@@ -1315,10 +1319,20 @@ describe('cleanupAllSandboxes', () => {
    * Fresh module per case: the active-sandbox registry is module-level state,
    * so a leaked entry from an earlier test would make these assertions pass for
    * the wrong reason.
+   *
+   * Both imports happen after ONE `resetModules()`, so `utils/sandbox.js` and
+   * `utils/sandbox/registry.js` resolve to the same fresh pair — the provisioner
+   * registers into exactly the Set `cleanupAllSandboxes` then walks.
    */
-  const freshModule = async (): Promise<typeof import('../utils/sandbox.js')> => {
+  const freshModule = async (): Promise<
+    typeof import('../utils/sandbox.js') & typeof import('../utils/sandbox/registry.js')
+  > => {
     vi.resetModules();
-    return import('../utils/sandbox.js');
+    const [sandbox, registry] = await Promise.all([
+      import('../utils/sandbox.js'),
+      import('../utils/sandbox/registry.js'),
+    ]);
+    return { ...sandbox, ...registry };
   };
 
   const armMocks = (dirs: string[]): void => {

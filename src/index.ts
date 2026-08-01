@@ -23,7 +23,7 @@ import { makeToolContext } from './tool-context.js';
 import { listResources, readResource } from './resources.js';
 import { listPrompts, getPrompt } from './prompts.js';
 import { ChaosConfig } from './utils/config-loader.js';
-import { cleanupAllSandboxes, setSandboxSignalExit } from './utils/sandbox.js';
+import { cleanupAllSandboxes, setSandboxSignalExit } from './utils/sandbox/registry.js';
 import { runCli } from './cli.js';
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';

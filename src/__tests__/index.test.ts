@@ -98,8 +98,8 @@ vi.mock('../prompts.js', () => ({
 // Partial mock: the real implementations still run (the shutdown path must
 // genuinely clean sandboxes up), but wrapping them makes the handoff assertable
 // — the sandbox module exposes no getter for its signal-exit flag.
-vi.mock('../utils/sandbox.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../utils/sandbox.js')>();
+vi.mock('../utils/sandbox/registry.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../utils/sandbox/registry.js')>();
   return {
     ...actual,
     setSandboxSignalExit: vi.fn(actual.setSandboxSignalExit),
@@ -108,7 +108,7 @@ vi.mock('../utils/sandbox.js', async (importOriginal) => {
 });
 
 import { startServer, APP_VERSION, installShutdownHandlers } from '../index.js';
-import { setSandboxSignalExit, cleanupAllSandboxes } from '../utils/sandbox.js';
+import { setSandboxSignalExit, cleanupAllSandboxes } from '../utils/sandbox/registry.js';
 
 const mockSetSandboxSignalExit = vi.mocked(setSandboxSignalExit);
 const mockCleanupAllSandboxes = vi.mocked(cleanupAllSandboxes);
