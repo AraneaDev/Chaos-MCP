@@ -836,7 +836,7 @@ describe('supported-extension prose', () => {
   it('renders the audit filePath list byte-identically to the hand-written prose', () => {
     expect(AUDIT.filePath.description).toBe(
       'Workspace-relative path to the file to audit. ' +
-        'Must end in .ts, .js, .tsx, .jsx, .py, .rs, or .php. ' +
+        'Must end in .ts, .js, .tsx, .jsx, .mjs, .cjs, .mts, .cts, .py, .rs, or .php. ' +
         'Example: "src/utils/math.ts"',
     );
   });

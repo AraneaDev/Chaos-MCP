@@ -17,7 +17,7 @@ import {
   type TriageRow,
   type TriageError,
 } from '../triage.js';
-import { supportedSourceExtensions } from '../utils/project-detector.js';
+import { supportedSourceExtensions, detectProjectType } from '../utils/project-detector.js';
 
 const mr = (over: Partial<MutationResult>): MutationResult => ({
   target: 'f',
@@ -91,14 +91,53 @@ describe('isSupportedSourceFile', () => {
     // so — the tool just returned an empty leaderboard. It now derives from the
     // same registry the engines do, and this asserts the two agree.
     const exts = supportedSourceExtensions();
-    expect(exts).toEqual(['.ts', '.js', '.tsx', '.jsx', '.py', '.rs', '.php']);
+    expect(exts).toEqual([
+      '.ts',
+      '.js',
+      '.tsx',
+      '.jsx',
+      '.mjs',
+      '.cjs',
+      '.mts',
+      '.cts',
+      '.py',
+      '.rs',
+      '.php',
+    ]);
     for (const ext of exts) {
       expect(isSupportedSourceFile(`src/widget${ext}`)).toBe(true);
     }
   });
 
+  it('discovers exactly what an audit accepts, for any path', () => {
+    // The structural guarantee that replaces the old hand-kept list: discovery
+    // and `audit_code_resilience` now ask `detectProjectType` the same
+    // question, so neither can advertise a file the other refuses. Includes the
+    // ESM/CJS variants, which used to be auditable but undiscoverable.
+    const names = [
+      'src/a.ts',
+      'src/a.mts',
+      'src/a.cts',
+      'src/a.mjs',
+      'src/a.cjs',
+      'src/a.jsx',
+      'src/a.py',
+      'src/a.rs',
+      'src/a.php',
+      'src/a.go',
+      'src/a.md',
+      'README',
+    ];
+    const auditable = names.map((n) => detectProjectType(n) !== 'unsupported');
+    const discoverable = names.map((n) => isSupportedSourceFile(n));
+    expect(discoverable).toEqual(auditable);
+  });
+
   it('does not widen discovery beyond the registry', () => {
-    for (const ext of ['.go', '.rb', '.java', '.md', '.mjs']) {
+    // `.mjs` used to be in this list, which encoded the bug as intent: it IS in
+    // the registry (`matches` accepts it), so refusing to discover it made
+    // triage disagree with the audit tool about which files exist.
+    for (const ext of ['.go', '.rb', '.java', '.md']) {
       expect(isSupportedSourceFile(`src/widget${ext}`)).toBe(false);
     }
   });

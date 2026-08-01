@@ -94,16 +94,20 @@ export interface LanguageDetector {
   matches: (filePath: string) => boolean;
   /**
    * Source-file extensions this language owns, most idiomatic first, lowercase
-   * and dot-prefixed. Single source of truth for every "which files can be
-   * audited" list in the codebase — triage discovery
-   * (`supportedSourceExtensions`) and the MCP tool-schema prose both derive
-   * from it, so a new language cannot ship with triage silently unable to
-   * discover its files.
+   * and dot-prefixed. This is the PROSE set: it is what the MCP tool schema
+   * enumerates when it tells the calling model which files can be audited.
    *
-   * Intentionally NOT the same predicate as {@link LanguageDetector.matches}:
-   * `matches` is deliberately wider for TypeScript (it also accepts `.mjs`,
-   * `.cjs`, `.mts`, `.cts`), and narrowing it to this list would change which
-   * files detect as a supported project. This list is the discovery/prose set.
+   * It is NOT the discovery predicate. Both triage discovery
+   * (`triage/discover-files.ts`) and the audit tool gate on
+   * {@link LanguageDetector.matches} via `detectProjectType`, so they agree by
+   * construction. This list used to serve both, and the two diverged: `matches`
+   * accepts `.mjs`/`.cjs`/`.mts`/`.cts` and this list did not, so a pure-ESM
+   * package was auditable file-by-file while a sweep over it reported "No
+   * supported source files found".
+   *
+   * Keep it in step with `matches` anyway — an extension missing here is one
+   * the schema never advertises, so a model has no reason to ask for it. Prefer
+   * {@link LanguageDetector.primaryExtensions} where prose needs to stay short.
    */
   extensions: readonly string[];
   /**

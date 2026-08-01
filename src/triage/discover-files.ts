@@ -18,15 +18,7 @@
 import { readdirSync } from 'fs';
 import { join, relative, resolve, sep } from 'path';
 import { COMMON_IGNORE_DIRS } from '../utils/ignore-dirs.js';
-import { supportedSourceExtensions } from '../utils/project-detector.js';
-
-/**
- * Auditable source extensions, derived from the per-language detection registry
- * rather than restated here. Restating them meant a newly added language was
- * invisible to triage discovery with no compile error to say so — the tool just
- * returned an empty leaderboard (audit F15).
- */
-const SUPPORTED_EXT = supportedSourceExtensions();
+import { detectProjectType } from '../utils/project-detector.js';
 /**
  * Directory names discovery never descends into.
  *
@@ -92,10 +84,20 @@ function toPosix(path: string): string {
 /** True if a path is a mutation-testable source file (supported ext, not a test). */
 export function isSupportedSourceFile(path: string): boolean {
   const normalised = toPosix(path);
-  // Extensions are compared case-insensitively: on the case-insensitive
-  // filesystems where `Foo.PHP` is an ordinary filename, it is still PHP.
-  const lower = normalised.toLowerCase();
-  if (!SUPPORTED_EXT.some((ext) => lower.endsWith(ext))) return false;
+  // Ask the SAME question `audit_code_resilience` asks. This used to test the
+  // path against `supportedSourceExtensions()`, which is the narrower prose
+  // list, while the audit tool gates on `detectProjectType` — so the two tools
+  // disagreed about which files exist. Concretely: `matches` accepts `.mjs`,
+  // `.cjs`, `.mts` and `.cts`, the prose list does not, and `'x.mts'
+  // .endsWith('.ts')` is false — so `triage_test_coverage` reported "No
+  // supported source files found" for a pure-ESM package whose files
+  // `audit_code_resilience` audited perfectly well.
+  //
+  // Delegating makes the two agree BY CONSTRUCTION rather than by keeping two
+  // lists in step, which is the failure this whole class of finding is about.
+  // `detectProjectType` lowercases internally, so the case-insensitivity that
+  // makes `Foo.PHP` PHP on a case-insensitive filesystem is preserved.
+  if (detectProjectType(normalised) === 'unsupported') return false;
   if (TEST_FILE_RE.test(normalised)) return false;
   return true;
 }

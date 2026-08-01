@@ -178,7 +178,11 @@ export function detectRawJsRunner(workspaceRoot: string): string {
 
 export const typescriptDetector: LanguageDetector = {
   matches: (p) => /\.(c|m)?[jt]sx?$/.test(p),
-  extensions: ['.ts', '.js', '.tsx', '.jsx'],
+  // The ESM/CJS variants are listed so the tool schema advertises them: they
+  // have always been auditable (`matches` accepts them) but went unmentioned,
+  // and a model does not ask for a file type the description omits.
+  // `primaryExtensions` keeps the space-constrained prose short.
+  extensions: ['.ts', '.js', '.tsx', '.jsx', '.mjs', '.cjs', '.mts', '.cts'],
   primaryExtensions: ['.ts', '.js'],
   markers: JS_ROOT_MARKERS,
   testRunner: detectJsTestRunner,

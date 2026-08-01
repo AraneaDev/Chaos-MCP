@@ -1553,15 +1553,24 @@ describe('detectRawPhpRunner', () => {
 // ─── Extension registry accessors (audit F15) ───────────────────────────────
 
 describe('supportedSourceExtensions', () => {
-  it('returns exactly the seven auditable extensions, in detection order', () => {
-    // Pinned literally: this list IS the contract that triage discovery and the
-    // MCP tool-schema prose derive from, and it must not drift silently while
-    // the four supported languages are unchanged.
+  it('returns exactly the eleven auditable extensions, in detection order', () => {
+    // Pinned literally: this list IS the contract the MCP tool-schema prose
+    // derives from, and it must not drift silently while the four supported
+    // languages are unchanged.
+    //
+    // The ESM/CJS variants were always auditable — `matches` accepts them — but
+    // were absent here, so the schema never advertised them. Discovery no
+    // longer derives from this list (it gates on `detectProjectType`), but the
+    // two must still agree or the schema under-reports what the tools accept.
     expect(supportedSourceExtensions()).toEqual([
       '.ts',
       '.js',
       '.tsx',
       '.jsx',
+      '.mjs',
+      '.cjs',
+      '.mts',
+      '.cts',
       '.py',
       '.rs',
       '.php',
