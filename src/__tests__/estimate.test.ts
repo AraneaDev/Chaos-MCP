@@ -855,3 +855,56 @@ describe('estimateAudit signal forwarding', () => {
     );
   });
 });
+
+/**
+ * `--file` takes a GLOB, not a literal path. The audit path escapes it; this
+ * estimate path must too, and for a sharper reason: it labels its answer
+ * `fidelity: 'exact'`, so a glob that selects the wrong file (or no file at all,
+ * which cargo-mutants reports with exit 0) is returned as a confident count
+ * rather than degrading to the heuristic.
+ */
+describe('estimateAudit escapes the cargo-mutants --file glob', () => {
+  const listArgv = (): unknown[] => {
+    const call = mockInvoke.mock.calls.at(-1);
+    if (call === undefined) throw new Error('invokeMutationTool was never called');
+    return call[2] as unknown[];
+  };
+
+  const estimateRust = async (relFile: string) => {
+    mockInvoke.mockResolvedValueOnce({
+      stdout: 'src/lib.rs:1:1: replace foo -> bar\n',
+      stderr: '',
+    } as never);
+    return estimateAudit({
+      absFile: `/ws/${relFile}`,
+      relFile,
+      projectType: 'rust',
+      workDir: '/sandbox',
+    });
+  };
+
+  it.each([
+    ['src/parser/token[0].rs', 'src/parser/token[[]0[]].rs'],
+    ['src/a*b.rs', 'src/a[*]b.rs'],
+    ['src/q?.rs', 'src/q[?].rs'],
+    ['src/br{ace}.rs', 'src/br[{]ace[}].rs'],
+    ['a*b*c.rs', 'a[*]b[*]c.rs'],
+  ])('passes %s to --file as %s', async (relFile, escaped) => {
+    await estimateRust(relFile);
+    expect(listArgv()).toEqual(['mutants', '--list', '--file', escaped]);
+  });
+
+  it('leaves ordinary paths byte-for-byte identical', async () => {
+    // Every Rust estimate goes through the escape; rewriting the common case to
+    // fix the rare one would be a worse bug than the one being fixed.
+    await estimateRust('src/lib.rs');
+    expect(listArgv()).toEqual(['mutants', '--list', '--file', 'src/lib.rs']);
+  });
+
+  it('reports the UNESCAPED path as `target` — that is display data, not a glob', async () => {
+    const r = await estimateRust('src/parser/token[0].rs');
+    expect(r.target).toBe('src/parser/token[0].rs');
+    expect(r.fidelity).toBe('exact');
+    expect(r.mutants).toBe(1);
+  });
+});

@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import type { EnvironmentInfo, SupportedProjectType } from './utils/project-detector.js';
 import { estimateHeuristic } from './estimate-heuristic.js';
 import { invokeMutationTool, MutationToolStartupError } from './utils/exec-classify.js';
+import { escapeCargoFileGlob } from './engines/rust.js';
 import { runShell } from './utils/exec.js';
 import { isCancel } from './utils/cancel.js';
 import { resolveBaselineTestCommand, projectTimingRange } from './baseline-timing.js';
@@ -130,7 +131,16 @@ async function computeCount(opts: EstimateOptions): Promise<EstimateResult> {
       const res = await invokeMutationTool(
         'cargo-mutants',
         'cargo',
-        ['mutants', '--list', '--file', opts.relFile],
+        // `--file` takes a GLOBSET PATTERN, not a literal path, so the same
+        // escape the audit path uses (engines/rust.ts) is mandatory here.
+        // Unescaped, `src/parser/token[0].rs` makes `[0]` a character class and
+        // the glob selects `src/parser/token0.rs` — a DIFFERENT file — or, far
+        // more often, nothing at all, and cargo-mutants still exits 0. Because
+        // this branch labels its result `fidelity: 'exact'`, a miss does not
+        // degrade to the heuristic: it returns a confident `mutants: 0`, and the
+        // timing projected from it is silently zero-cost. See the docblock on
+        // `escapeCargoFileGlob` for the verified cargo-mutants 27.1.0 incident.
+        ['mutants', '--list', '--file', escapeCargoFileGlob(opts.relFile)],
         {
           cwd: opts.workDir,
           timeoutMs: opts.timeoutMs ?? ESTIMATE_TIMEOUT_MS,
