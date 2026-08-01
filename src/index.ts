@@ -65,7 +65,7 @@ export async function startServer(
 ): Promise<void> {
   const server = new Server(
     {
-      name: 'chaos-mcp',
+      name: 'chaos',
       version: APP_VERSION,
     },
     {

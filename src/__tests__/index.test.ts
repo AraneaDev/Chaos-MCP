@@ -161,10 +161,10 @@ describe('startServer', () => {
     }
   });
 
-  it('constructs the MCP server with the chaos-mcp name and synced version', async () => {
+  it('constructs the MCP server with the chaos name and synced version', async () => {
     await startServer(undefined, NO_SIGNAL_HANDLERS);
     expect(sdk.serverCtor).toHaveBeenCalledWith(
-      { name: 'chaos-mcp', version: APP_VERSION },
+      { name: 'chaos', version: APP_VERSION },
       { capabilities: { tools: {}, resources: {}, prompts: {} } },
     );
   });
