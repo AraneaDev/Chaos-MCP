@@ -1,12 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { lstatSync, readdirSync, realpathSync } from 'node:fs';
 import { sep } from 'node:path';
 import type { SupportedProjectType } from './project-detector.js';
 import type { ContainerConfig } from './config-loader.js';
 import { ExecFailureError, type ExecResult } from './exec-error.js';
 import { runShell, runShellCommand } from './exec.js';
 import { warn } from './logger.js';
-import { ALL_DEPENDENCY_DIRS } from './dependency-dirs.js';
+import { buildCreateArgs, changedEnvironment } from './container/args.js';
 
 export type ExecutionMode = 'native' | 'container' | 'auto';
 
@@ -29,26 +28,14 @@ export interface ExecutionSession {
 
 export const CONTAINER_IMAGE_VERSION = '1.6.0'; // x-release-please-version
 
-const DEFAULT_IMAGES: Record<SupportedProjectType, string> = {
+/** @internal Exported for utils/container/doctor.ts and tests. */
+export const DEFAULT_IMAGES: Record<SupportedProjectType, string> = {
   typescript: `ghcr.io/araneadev/chaos-mcp-typescript:v${CONTAINER_IMAGE_VERSION}`,
   python: `ghcr.io/araneadev/chaos-mcp-python:v${CONTAINER_IMAGE_VERSION}`,
   rust: `ghcr.io/araneadev/chaos-mcp-rust:v${CONTAINER_IMAGE_VERSION}`,
   php: `ghcr.io/araneadev/chaos-mcp-php:v${CONTAINER_IMAGE_VERSION}`,
 };
 
-/**
- * Host dependency trees that the sandbox may represent as symlinks.
- *
- * Derived from {@link ALL_DEPENDENCY_DIRS} rather than hand-written, so this and
- * `SYMLINK_DIRS` in utils/sandbox.ts cannot drift: a language whose descriptor
- * gains a dependency directory automatically gets its bind-mount here. Both the
- * CONTENTS and the ORDER matter — this list fixes the order of the generated
- * `--mount` argv — so execution.test.ts pins the derived value against the
- * registry's own `dependencyDirectories()` the way sandbox.test.ts does.
- *
- * @internal Exported for testing only.
- */
-export const SHARED_DEPENDENCY_DIRS: readonly string[] = ALL_DEPENDENCY_DIRS;
 /**
  * Positive runtime probes, with the time each was taken.
  *
@@ -88,87 +75,6 @@ class NativeExecutionSession implements ExecutionSession {
   }
 }
 
-function changedEnvironment(env: NodeJS.ProcessEnv | undefined): [string, string][] {
-  if (!env) return [];
-  const result: [string, string][] = [];
-  for (const [key, value] of Object.entries(env)) {
-    if (value !== undefined && value !== process.env[key]) result.push([key, value]);
-  }
-  return result;
-}
-
-function mountArg(source: string, target: string, readonly = false): string {
-  if (source.includes(',') || target.includes(',')) {
-    throw new Error('Container execution does not support bind-mount paths containing commas.');
-  }
-  return `type=bind,src=${source},dst=${target}${readonly ? ',readonly' : ''}`;
-}
-
-/**
- * Every `<virtualenv>/lib/python*` site-packages directory, in the order the
- * filesystem yields them. An unreadable or absent `lib` yields no paths: the
- * engine surfaces missing project dependencies through its normal error path
- * rather than failing container creation here.
- *
- * Exported for tests.
- */
-export function discoverSitePackages(virtualenvPath: string): string[] {
-  const sitePackages: string[] = [];
-  try {
-    for (const entry of readdirSync(`${virtualenvPath}/lib`, { withFileTypes: true })) {
-      if (!entry.isDirectory() || !entry.name.startsWith('python')) continue;
-      sitePackages.push(`${virtualenvPath}/lib/${entry.name}/site-packages`);
-    }
-  } catch {
-    // The engine will surface missing project dependencies normally.
-  }
-  return sitePackages;
-}
-
-/**
- * `--env` pairs exposing a symlinked Python virtualenv to the container, or no
- * arguments when the project has none.
- */
-function pythonEnvArgs(dependencyTargets: Map<string, string>): string[] {
-  const virtualenv = dependencyTargets.get('.venv') ?? dependencyTargets.get('venv');
-  if (!virtualenv) return [];
-  const args: string[] = [];
-  const sitePackages = discoverSitePackages(virtualenv);
-  if (sitePackages.length > 0) {
-    args.push('--env', `PYTHONPATH=${sitePackages.sort().join(':')}`);
-  }
-  // Keep the image's pinned Python and mutation engine ahead of project
-  // scripts, while still exposing console scripts installed by the project.
-  args.push(
-    '--env',
-    `PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${virtualenv}/bin`,
-  );
-  return args;
-}
-
-/**
- * Read-only bind mounts for the host dependency trees the sandbox represents as
- * symlinks, plus the resolved target of each one so the caller can derive
- * language-specific environment from them.
- */
-function dependencyMountArgs(workDir: string): { args: string[]; targets: Map<string, string> } {
-  const args: string[] = [];
-  const targets = new Map<string, string>();
-  for (const dir of SHARED_DEPENDENCY_DIRS) {
-    try {
-      const candidate = `${workDir}/${dir}`;
-      if (!lstatSync(candidate).isSymbolicLink()) continue;
-      const target = realpathSync(candidate);
-      targets.set(dir, target);
-      args.push('--mount', mountArg(target, target, true));
-    } catch {
-      // Missing or unreadable dependency directories remain absent in the
-      // container; the engine will surface its normal dependency error.
-    }
-  }
-  return { args, targets };
-}
-
 class ContainerExecutionSession implements ExecutionSession {
   readonly kind = 'container' as const;
   private readonly name = `chaos-mcp-${process.pid}-${randomUUID().slice(0, 12)}`;
@@ -193,68 +99,7 @@ class ContainerExecutionSession implements ExecutionSession {
   }
 
   private createArgs(): string[] {
-    const args = [
-      'create',
-      '--name',
-      this.name,
-      '--label',
-      'io.chaos-mcp.runner=true',
-      '--label',
-      `io.chaos-mcp.language=${this.language}`,
-      '--workdir',
-      '/workspace',
-      '--mount',
-      mountArg(this.workDir, '/workspace'),
-      '--read-only',
-      // With a read-only root filesystem, /tmp is the ONLY writable scratch the
-      // whole toolchain has: Cargo's registry, npm's cache, Infection's temp
-      // dir, and every per-mutant working file land here. 512 MiB was too tight
-      // for a Cargo registry download, so the size is a configurable default.
-      '--tmpfs',
-      `/tmp:rw,exec,nosuid,nodev,size=${this.config.tmpfsSizeMb ?? 2048}m`,
-      '--cap-drop',
-      'ALL',
-      '--security-opt',
-      'no-new-privileges',
-      '--pids-limit',
-      String(this.config.pidsLimit ?? 512),
-      '--network',
-      this.config.network ?? 'bridge',
-    ];
-
-    args.push('--cpus', String(this.config.cpus ?? 2));
-    args.push('--memory', `${this.config.memoryMb ?? 4096}m`);
-    const uid = process.getuid?.();
-    const gid = process.getgid?.();
-    if (uid !== undefined && gid !== undefined) args.push('--user', `${uid}:${gid}`);
-
-    const dependencies = dependencyMountArgs(this.workDir);
-    args.push(...dependencies.args);
-    if (this.language === 'python') args.push(...pythonEnvArgs(dependencies.targets));
-
-    args.push(
-      '--env',
-      'HOME=/tmp/chaos-home',
-      '--env',
-      'XDG_CACHE_HOME=/tmp/chaos-cache',
-      // Redirect every toolchain cache onto the writable tmpfs. The root
-      // filesystem is read-only and the host dependency trees are mounted
-      // read-only, so a tool that writes to its default cache location fails to
-      // start: the rust image pins CARGO_HOME=/usr/local/cargo (read-only root)
-      // and cargo needs to write its registry and .package-cache lock, and npm
-      // and Composer are the same story one directory over.
-      '--env',
-      'CARGO_HOME=/tmp/chaos-cargo',
-      '--env',
-      'npm_config_cache=/tmp/chaos-npm',
-      '--env',
-      'COMPOSER_HOME=/tmp/chaos-composer-home',
-      this.image,
-      'sh',
-      '-c',
-      'while :; do sleep 3600; done',
-    );
-    return args;
+    return buildCreateArgs(this.name, this.workDir, this.language, this.config, this.image);
   }
 
   private async ensureStarted(): Promise<void> {
@@ -434,55 +279,4 @@ export async function createExecutionSession(
 
 export function defaultContainerImage(language: SupportedProjectType): string {
   return DEFAULT_IMAGES[language];
-}
-
-export interface ContainerDoctorReport {
-  runtime: string;
-  available: boolean;
-  serverVersion?: string;
-  mode: ExecutionMode;
-  images: Record<SupportedProjectType, { image: string; present: boolean }>;
-}
-
-/** Read-only runtime/image diagnostics used by the CLI doctor command. */
-export async function inspectContainerRuntime(
-  config: ContainerConfig | undefined,
-): Promise<ContainerDoctorReport> {
-  const runtime = config?.runtime ?? 'docker';
-  const images = Object.fromEntries(
-    (Object.keys(DEFAULT_IMAGES) as SupportedProjectType[]).map((language) => [
-      language,
-      {
-        image: config?.images?.[language] ?? DEFAULT_IMAGES[language],
-        present: false,
-      },
-    ]),
-  ) as ContainerDoctorReport['images'];
-  let version: ExecResult;
-  try {
-    version = await runShell(runtime, ['version', '--format', '{{.Server.Version}}'], {
-      timeoutMs: config?.startupTimeoutMs ?? 10_000,
-      killTree: true,
-    });
-  } catch {
-    return { runtime, available: false, mode: config?.mode ?? 'native', images };
-  }
-  for (const language of Object.keys(images) as SupportedProjectType[]) {
-    try {
-      await runShell(runtime, ['image', 'inspect', images[language].image], {
-        timeoutMs: config?.startupTimeoutMs ?? 10_000,
-        killTree: true,
-      });
-      images[language].present = true;
-    } catch {
-      // Missing images are reported, not pulled or treated as a doctor crash.
-    }
-  }
-  return {
-    runtime,
-    available: true,
-    serverVersion: version.stdout.trim(),
-    mode: config?.mode ?? 'native',
-    images,
-  };
 }

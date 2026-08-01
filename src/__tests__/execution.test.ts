@@ -29,11 +29,7 @@ import {
   CONTAINER_IMAGE_VERSION,
   createExecutionSession,
   defaultContainerImage,
-  discoverSitePackages,
-  inspectContainerRuntime,
-  SHARED_DEPENDENCY_DIRS,
 } from '../utils/execution.js';
-import { dependencyDirectories } from '../engines/registry.js';
 import { warn } from '../utils/logger.js';
 
 const ok = (stdout = '') => ({ stdout, stderr: '', exit: 0, signal: null }) as const;
@@ -911,18 +907,6 @@ describe('execution sessions', () => {
     });
   });
 
-  it('derives SHARED_DEPENDENCY_DIRS from the engine registry with the list unchanged', () => {
-    // This used to be a THIRD verbatim copy of the dependency-dir list (after
-    // EngineDescriptor.dependencyDirs and utils/sandbox.ts's SYMLINK_DIRS), so a
-    // new language's dependency tree would never get bind-mounted. It is now
-    // derived from the same data the registry exposes. Both halves matter:
-    //   1. the rendered list is byte-for-byte what it was before, IN ORDER —
-    //      that order fixes the order of the generated `--mount` argv;
-    //   2. it really is the registry's union, not a coincidence.
-    expect(SHARED_DEPENDENCY_DIRS).toEqual(['node_modules', '.venv', 'venv', 'vendor']);
-    expect(SHARED_DEPENDENCY_DIRS).toEqual(dependencyDirectories());
-  });
-
   it('mounts every supported symlinked dependency tree read-only', async () => {
     const root = mkdtempSync(join(tmpdir(), 'chaos-execution-deps-'));
     const workDir = join(root, 'sandbox');
@@ -1090,165 +1074,5 @@ describe('execution sessions', () => {
     expect(createArgs).toContain(
       `PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${virtualenv}/bin`,
     );
-  });
-
-  it('reports runtime and all four local image states without pulling', async () => {
-    vi.mocked(runShell)
-      .mockResolvedValueOnce(ok('27.0.0\n'))
-      .mockResolvedValueOnce(ok())
-      .mockRejectedValueOnce(new Error('python image missing'))
-      .mockResolvedValueOnce(ok())
-      .mockResolvedValueOnce(ok());
-
-    const report = await inspectContainerRuntime({
-      mode: 'container',
-      images: { python: 'custom/python:test' },
-    });
-
-    expect(report).toMatchObject({
-      runtime: 'docker',
-      available: true,
-      serverVersion: '27.0.0',
-      mode: 'container',
-    });
-    expect(report.images.typescript.present).toBe(true);
-    expect(report.images.python).toEqual({
-      image: 'custom/python:test',
-      present: false,
-    });
-    expect(report.images.rust.present).toBe(true);
-    expect(report.images.php.present).toBe(true);
-    expect(vi.mocked(runShell).mock.calls.some((call) => call[1]?.[0] === 'pull')).toBe(false);
-    expect(
-      vi
-        .mocked(runShell)
-        .mock.calls.slice(1)
-        .map((call) => call[1]),
-    ).toEqual([
-      ['image', 'inspect', defaultContainerImage('typescript')],
-      ['image', 'inspect', 'custom/python:test'],
-      ['image', 'inspect', defaultContainerImage('rust')],
-      ['image', 'inspect', defaultContainerImage('php')],
-    ]);
-    for (const call of vi.mocked(runShell).mock.calls.slice(1)) {
-      expect(call[2]).toEqual({ timeoutMs: 10_000, killTree: true });
-    }
-  });
-
-  it('reports defaults when the runtime is available without explicit config', async () => {
-    vi.mocked(runShell).mockResolvedValue(ok('27.0.0'));
-
-    const report = await inspectContainerRuntime(undefined);
-
-    expect(report.mode).toBe('native');
-    expect(report.runtime).toBe('docker');
-    expect(Object.values(report.images).every((image) => image.present)).toBe(true);
-  });
-
-  it('reports an unavailable runtime without inspecting images', async () => {
-    vi.mocked(runShell).mockRejectedValueOnce(new Error('daemon unavailable'));
-
-    const report = await inspectContainerRuntime(undefined);
-
-    expect(report).toEqual({
-      runtime: 'docker',
-      available: false,
-      mode: 'native',
-      images: {
-        typescript: {
-          image: defaultContainerImage('typescript'),
-          present: false,
-        },
-        python: { image: defaultContainerImage('python'), present: false },
-        rust: { image: defaultContainerImage('rust'), present: false },
-        php: { image: defaultContainerImage('php'), present: false },
-      },
-    });
-    expect(vi.mocked(runShell).mock.calls[0]).toEqual([
-      'docker',
-      ['version', '--format', '{{.Server.Version}}'],
-      { timeoutMs: 10_000, killTree: true },
-    ]);
-    expect(runShell).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe('discoverSitePackages', () => {
-  const tempDirs: string[] = [];
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  afterEach(() => {
-    for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-  });
-
-  function virtualenv(prefix: string): string {
-    const dir = mkdtempSync(join(tmpdir(), `chaos-sitepkgs-${prefix}-`));
-    tempDirs.push(dir);
-    return dir;
-  }
-
-  it('collects one site-packages path per python* interpreter directory', () => {
-    const venv = virtualenv('multi');
-    mkdirSync(join(venv, 'lib', 'python3.13', 'site-packages'), { recursive: true });
-    mkdirSync(join(venv, 'lib', 'python3.9', 'site-packages'), { recursive: true });
-
-    expect(discoverSitePackages(venv).sort()).toEqual([
-      `${venv}/lib/python3.13/site-packages`,
-      `${venv}/lib/python3.9/site-packages`,
-    ]);
-  });
-
-  it('reports a site-packages path even when that directory does not exist yet', () => {
-    const venv = virtualenv('bare-interpreter');
-    mkdirSync(join(venv, 'lib', 'python3.12'), { recursive: true });
-
-    expect(discoverSitePackages(venv)).toEqual([`${venv}/lib/python3.12/site-packages`]);
-  });
-
-  it('ignores non-directory entries and directories not named python*', () => {
-    const venv = virtualenv('filtered');
-    mkdirSync(join(venv, 'lib', 'not-python', 'site-packages'), { recursive: true });
-    mkdirSync(join(venv, 'lib', 'pypy3.10'), { recursive: true });
-    writeFileSync(join(venv, 'lib', 'python-file'), '');
-
-    expect(discoverSitePackages(venv)).toEqual([]);
-  });
-
-  it('returns paths in the order the filesystem yields them, without sorting', () => {
-    const venv = virtualenv('order');
-    vi.mocked(readdirSync).mockReturnValueOnce([
-      { name: 'python3.9', isDirectory: () => true },
-      { name: 'python3.13', isDirectory: () => true },
-      { name: 'python3.11', isDirectory: () => true },
-    ] as unknown as ReturnType<typeof readdirSync>);
-
-    expect(discoverSitePackages(venv)).toEqual([
-      `${venv}/lib/python3.9/site-packages`,
-      `${venv}/lib/python3.13/site-packages`,
-      `${venv}/lib/python3.11/site-packages`,
-    ]);
-    expect(vi.mocked(readdirSync).mock.calls[0]).toEqual([`${venv}/lib`, { withFileTypes: true }]);
-  });
-
-  it('yields nothing for an empty lib directory', () => {
-    const venv = virtualenv('empty');
-    mkdirSync(join(venv, 'lib'));
-
-    expect(discoverSitePackages(venv)).toEqual([]);
-  });
-
-  it('swallows an unreadable or missing lib directory instead of throwing', () => {
-    const venv = virtualenv('missing-lib');
-
-    expect(discoverSitePackages(venv)).toEqual([]);
-    expect(discoverSitePackages(join(venv, 'no-such-virtualenv'))).toEqual([]);
-
-    vi.mocked(readdirSync).mockImplementationOnce(() => {
-      throw new Error('EACCES: permission denied');
-    });
-    expect(discoverSitePackages(venv)).toEqual([]);
   });
 });

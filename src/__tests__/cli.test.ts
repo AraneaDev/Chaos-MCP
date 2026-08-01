@@ -11,14 +11,14 @@ vi.mock('../utils/logger.js', () => ({
   log: vi.fn(),
   isVerbose: vi.fn(() => false),
 }));
-vi.mock('../utils/execution.js', () => ({
+vi.mock('../utils/container/doctor.js', () => ({
   inspectContainerRuntime: vi.fn(),
 }));
 
 import { checkNodeVersion, buildHelpText, runCli, MIN_NODE_VERSION } from '../cli.js';
 import { loadConfig, validateConfig } from '../utils/config-loader.js';
 import { enableVerbose, isVerbose, log } from '../utils/logger.js';
-import { inspectContainerRuntime } from '../utils/execution.js';
+import { inspectContainerRuntime } from '../utils/container/doctor.js';
 
 const mockLoadConfig = vi.mocked(loadConfig);
 const mockValidateConfig = vi.mocked(validateConfig);

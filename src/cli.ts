@@ -1,6 +1,6 @@
 import { loadConfig, validateConfig, ChaosConfig } from './utils/config-loader.js';
 import { enableVerbose, log, isVerbose } from './utils/logger.js';
-import { inspectContainerRuntime } from './utils/execution.js';
+import { inspectContainerRuntime } from './utils/container/doctor.js';
 
 /**
  * Minimum Node.js version required by Chaos-MCP.
