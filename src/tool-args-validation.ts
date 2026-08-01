@@ -195,6 +195,37 @@ function validateEnrichArg(args: ToolArgs): string | null {
   return null;
 }
 
+/**
+ * dryRun: must be a boolean when present.
+ *
+ * `resolveRunOptions` reads it as `typeof args.dryRun === 'boolean' ? … : cfg`,
+ * so a near-miss like `"true"` (a plausible client emission for a boolean
+ * flag) falls through to config → undefined → `--dryRunOnly` is never passed.
+ * The caller who asked for a cheap pre-flight then silently pays for a FULL
+ * mutation run with no error to explain it. Rejecting here turns the most
+ * expensive possible misread into an immediate, fixable message.
+ */
+function validateDryRunArg(args: ToolArgs): string | null {
+  if (args.dryRun !== undefined && typeof args.dryRun !== 'boolean') {
+    return 'dryRun must be a boolean. Example: true.';
+  }
+  return null;
+}
+
+/**
+ * incremental: must be a boolean when present.
+ *
+ * Same silent-fallback shape as `dryRun` above — a non-boolean drops to config
+ * → undefined, so the incremental cache is never engaged and the caller pays
+ * full price for a run they expected to reuse prior results.
+ */
+function validateIncrementalArg(args: ToolArgs): string | null {
+  if (args.incremental !== undefined && typeof args.incremental !== 'boolean') {
+    return 'incremental must be a boolean. Example: true.';
+  }
+  return null;
+}
+
 /** maxSurvivors: integer >= 1 when present. */
 function validateMaxSurvivorsArg(args: ToolArgs): string | null {
   if (
@@ -341,6 +372,8 @@ export const TOOL_ARG_VALIDATORS: ((args: ToolArgs) => string | null)[] = [
   validateDiffBaseArg,
   validateBaselineArg,
   validateEnrichArg,
+  validateDryRunArg,
+  validateIncrementalArg,
   validateMaxSurvivorsArg,
   validateSeverityFloorArg,
   validateOutputFormatArg,

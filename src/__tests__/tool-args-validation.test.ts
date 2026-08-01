@@ -380,6 +380,33 @@ describe('validateToolArgs — enrich / maxSurvivors / severityFloor / outputFor
   });
 });
 
+describe('validateToolArgs — dryRun / incremental', () => {
+  // Both resolve via `typeof args.x === 'boolean' ? … : cfg`, so an unrejected
+  // near-miss ("true", 1) reads as "not supplied" and silently escalates a
+  // cheap pre-flight into a full mutation run. `false` must stay accepted —
+  // it is a meaningful opt-out, not an absent value.
+  it('requires dryRun to be a boolean', () => {
+    const ERR = 'dryRun must be a boolean. Example: true.';
+    expect(message({})).toBeNull();
+    expect(message({ dryRun: true })).toBeNull();
+    expect(message({ dryRun: false })).toBeNull();
+    expect(message({ dryRun: 'true' })).toBe(ERR);
+    expect(message({ dryRun: 1 })).toBe(ERR);
+    expect(message({ dryRun: 0 })).toBe(ERR);
+    expect(message({ dryRun: null })).toBe(ERR);
+  });
+
+  it('requires incremental to be a boolean', () => {
+    const ERR = 'incremental must be a boolean. Example: true.';
+    expect(message({})).toBeNull();
+    expect(message({ incremental: true })).toBeNull();
+    expect(message({ incremental: false })).toBeNull();
+    expect(message({ incremental: 'false' })).toBe(ERR);
+    expect(message({ incremental: 0 })).toBe(ERR);
+    expect(message({ incremental: null })).toBe(ERR);
+  });
+});
+
 describe('validateToolArgs — runId', () => {
   const SHAPE_ERR =
     'runId must be a non-empty string returned by a prior audit. Example: "a1b2c3d4".';
