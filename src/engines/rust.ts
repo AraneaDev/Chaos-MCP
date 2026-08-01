@@ -105,6 +105,20 @@ export class RustEngine extends BaseEngine {
       // a typed ExecFailureError back for the rust-specific handling below.
       const execErr = this.toExecFailure(error, 'cargo-mutants');
 
+      // Cancellation FIRST — before the rewrap below.
+      //
+      // `invokeMutationTool` deliberately rethrows an abort as the raw
+      // `ExecFailureError` with `code: 'ABORTED'` so `isCancel` can still
+      // recognise it ("Rethrow the classified error untouched so the code (and
+      // `isCancel`) survive", utils/exec-classify.ts); python.ts guards the same
+      // way for the same reason. A killed child arrives here with empty stdout,
+      // so without this branch a deliberate stop came back wearing the phantom
+      // diagnosis `cargo-mutants failed (exit null) with no parseable output …
+      // run \`cargo test\``, and the marker `isCancel` keys on was gone. Callers
+      // with a request context are rescued by `ctx.signal.aborted`; `computeCount`
+      // in estimate.ts has none.
+      if (execErr.code === 'ABORTED') throw execErr;
+
       // Non-zero exit: cargo-mutants exits non-zero when mutants survive OR
       // when the baseline `cargo test` itself fails. If stdout is empty we
       // treat it as a baseline failure (no mutants parsed out); otherwise

@@ -55,6 +55,22 @@ export function classifyStrykerFailure(
   filePath: string,
   reportExists: boolean,
 ): void {
+  // Cancellation FIRST — before every branch below.
+  //
+  // `invokeMutationTool` deliberately rethrows an abort as the raw
+  // `ExecFailureError` with `code: 'ABORTED'` so `isCancel` can still
+  // recognise it — "Rethrow the classified error untouched so the code (and
+  // `isCancel`) survive", utils/exec-classify.ts. python.ts guards the same way
+  // for the same reason. Without this branch an aborted run — `exit: null`, no stderr —
+  // matched nothing here and fell out the BOTTOM as a recoverable exit, so
+  // `runOnce` went on to harvest the incremental file (publishing an aborted
+  // run's partial state into the host cache) and then threw the phantom
+  // `Stryker JSON report not found at …`. Consumers survive today only because
+  // `isCancel` short-circuits on `ctx.signal.aborted`; a ctx-less caller, and
+  // `runBatched` — which classifies by TYPE precisely because prose-sniffing
+  // proved wrong — would see the bug.
+  if (error instanceof ExecFailureError && error.code === 'ABORTED') throw error;
+
   // Startup-class failures (not-installed / timeout / signal crash) are
   // wrapped in MutationToolStartupError by the helper. Surface verbatim.
   if (error instanceof MutationToolStartupError) {

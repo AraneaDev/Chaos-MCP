@@ -669,6 +669,25 @@ describe('RustEngine', () => {
     await expect(engine.run('src/test.rs')).rejects.toThrow(/run `cargo test`/);
   });
 
+  it('rethrows an ABORTED exec failure untouched so isCancel still sees it', async () => {
+    // `invokeMutationTool` goes out of its way to rethrow a cancellation as the
+    // raw ExecFailureError (utils/exec-classify.ts) precisely so
+    // `code === 'ABORTED'` survives; python.ts guards the same way. A killed
+    // child brings back empty stdout, so without the guard the cancel was
+    // rewrapped as the phantom baseline diagnosis "cargo-mutants failed (exit
+    // null) with no parseable output … run `cargo test`" — and a caller with no
+    // request context (`computeCount` in estimate.ts) has nothing else to key on.
+    const aborted = makeExecFailure({ code: 'ABORTED', signal: 'SIGKILL', exit: null });
+    mockRunShell.mockRejectedValue(aborted);
+
+    const error = await engine.run('src/test.rs').catch((e: unknown) => e);
+
+    expect(error).toBe(aborted);
+    expect(error).toBeInstanceOf(ExecFailureError);
+    expect((error as ExecFailureError).code).toBe('ABORTED');
+    expect((error as Error).message).not.toMatch(/no parseable output/);
+  });
+
   it('treats whitespace-only stdout as a baseline failure, not a zero-mutant run', async () => {
     // A `!stdout` check passes whitespace-only stdout ("\n") through as truthy,
     // so the text parser runs on output containing no mutants and reports

@@ -746,6 +746,26 @@ describe('TypeScriptEngine', () => {
     await expect(engine.run('src/test.ts')).rejects.toThrow(/crashed unexpectedly.*SIGSEGV/);
   });
 
+  it('propagates an ABORTED exec failure out of the engine unchanged', async () => {
+    // A cancelled run arrives as the raw ExecFailureError with `code: 'ABORTED'`
+    // (`invokeMutationTool` rethrows it untouched so `isCancel` still works).
+    // It used to match no branch of classifyStrykerFailure — `exit: null`, no
+    // stderr — and fall out the bottom as a "recoverable" exit, so the engine
+    // went on to parseReport and reported `Stryker JSON report not found at …`
+    // for a run the caller had deliberately stopped.
+    mockExistsSync.mockImplementation((p: PathLike) => !String(p).endsWith('mutation.json'));
+    const aborted = makeExecFailure({ code: 'ABORTED', signal: 'SIGKILL', exit: null });
+    mockRunShell.mockRejectedValue(aborted);
+
+    const error = await engine.run('src/test.ts').catch((e: unknown) => e);
+
+    // Same error object, so the marker every cancel check keys on survives.
+    expect(error).toBe(aborted);
+    expect(error).toBeInstanceOf(ExecFailureError);
+    expect((error as ExecFailureError).code).toBe('ABORTED');
+    expect((error as Error).message).not.toMatch(/Stryker JSON report not found/);
+  });
+
   // ─── RunOptions tests ───────────────────────────────────────────────────
 
   it('uses testRunner from RunOptions', async () => {
@@ -2123,6 +2143,16 @@ describe('classifyStrykerFailure', () => {
       return caught;
     }
   };
+
+  it('rethrows an ABORTED ExecFailureError untouched, ahead of every other branch', () => {
+    // The marker `isCancel` keys on only survives if the SAME object comes back
+    // out. Ordered first because an aborted child otherwise looks like an
+    // ordinary `exit: null` failure and is waved through to parseReport.
+    const aborted = makeExecFailure({ code: 'ABORTED', signal: 'SIGKILL', exit: null });
+    expect(thrownBy(aborted)).toBe(aborted);
+    // Even with a report on disk it is still a cancel, never a recoverable exit.
+    expect(thrownBy(aborted, 'src/app.ts', true)).toBe(aborted);
+  });
 
   it('re-types a startup TIMEOUT as StrykerTimeoutError, preserving message and cause', () => {
     const startup = new MutationToolStartupError('StrykerJS', 'StrykerJS timed out after 5000ms.');
