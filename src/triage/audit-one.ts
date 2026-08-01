@@ -342,7 +342,13 @@ export async function auditTriageFile(
     const engine = makeEngine(projectType);
 
     const perFileArgs = buildPerFileArgs(fileBudgetMs, projectType, deps);
-    const prebuildCmd = resolvePrebuildCommand(perFileArgs, env, projectType);
+    // `undefined`, not `perFileArgs.prebuildCommand`: triage has never accepted
+    // a caller-supplied prebuildCommand — `buildPerFileArgs` constructs the bag
+    // from scratch with three keys and that is not one of them — so only the
+    // registry's auto-prebuild (Rust's `cargo check`) can apply here. Reading it
+    // off the bag would have been dead code that implied an ungated path for an
+    // argument `resolveGatedPrebuild` gates everywhere else (audit Med#10).
+    const prebuildCmd = resolvePrebuildCommand(undefined, env, projectType);
     const scope = await resolveDiffScope(targetFile, env, projectType, fileBudgetMs, deps);
 
     // audit C1: await the async createSandbox; forward the abort signal so

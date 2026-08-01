@@ -44,19 +44,20 @@ function languagesJson(): string {
       // audit finding 38).
       engine: entry.displayName,
       supportsLineScope: entry.supportsLineScope,
-      estimateFidelity: key === 'rust' ? 'exact' : 'approx',
-      // `estimateFidelity` mirrors `EstimateResult.fidelity` verbatim so a
-      // client can compare the two, but a bare 'exact' reads as "this is the
-      // audit's total", which it is not: `cargo mutants --list` enumerates
-      // mutants that will not compile, and engines/rust.ts excludes those from
-      // `totalMutants` and reports them as `incompetent`. Qualify it in place
-      // rather than weakening the enum value (estimate.ts:basis/note).
-      ...(key === 'rust'
-        ? {
-            estimateFidelityNote:
-              'Exact for the mutants cargo-mutants --list GENERATES; the audit scores fewer, ' +
-              'excluding unviable ones from its denominator as `incompetent`.',
-          }
+      // Both come from the registry, which is also what estimate.ts's
+      // `computeCount` stamps onto `EstimateResult.fidelity` and what
+      // `estimateNeedsSandbox` gates on — so this resource cannot advertise a
+      // fidelity the estimate does not actually deliver. It used to re-derive
+      // `key === 'rust'` here, in a file that has no idea how the count is made.
+      estimateFidelity: entry.estimateFidelity,
+      // A bare 'exact' reads as "this is the audit's total", which it is not:
+      // `cargo mutants --list` enumerates mutants that will not compile, and
+      // engines/rust.ts excludes those from `totalMutants` and reports them as
+      // `incompetent`. Qualify it in place rather than weakening the enum value
+      // (estimate.ts:basis/note). The sentence is the engine's, so it lives on
+      // the descriptor; 'approx' needs no caveat and carries none.
+      ...(entry.estimateFidelityNote !== undefined
+        ? { estimateFidelityNote: entry.estimateFidelityNote }
         : {}),
       configKey: entry.configKey,
       autoPrebuild: Boolean(entry.prebuild),

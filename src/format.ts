@@ -9,6 +9,7 @@
 
 import type { MutationResult } from './engines/base.js';
 import type { SupportedProjectType } from './utils/project-detector.js';
+import { ENGINE_REGISTRY } from './engines/registry.js';
 import { enrichGroup, SEVERITY_RANK, type Severity, type Enrichment } from './enrich.js';
 import type { GateResult } from './gate.js';
 import { warn } from './utils/logger.js';
@@ -300,11 +301,19 @@ export interface PreparedGroups {
  * caller's tooling. The old wording sent a PHP user off to look for a better
  * mutation tool when every PHP mutant was unknown for want of a lookup table
  * (audit: PHP severities all `unknown` under a factually false note).
+ *
+ * Which languages get the tool-blaming version is therefore a per-ENGINE fact,
+ * and it is declared as one: `unclassifiedMutatorNote` on the engine registry's
+ * descriptor. Absent — the honest default — the generic wording below applies,
+ * which is the correct explanation for every engine that names its operators.
+ * This used to be an `=== 'rust'` branch here, in a formatting module with no
+ * knowledge of any engine's output shape.
  */
 function unclassifiedNote(projectType: SupportedProjectType): string {
-  if (projectType === 'rust') {
-    return 'some mutants could not be classified — cargo-mutants reports a free-text description rather than a per-mutant operator, and this one carried no recognizable operator (severity reported as "unknown").';
-  }
+  // `?.`: an unrecognised projectType must still get the generic sentence, as
+  // it did when this was an `=== 'rust'` branch.
+  const engineNote = ENGINE_REGISTRY[projectType]?.unclassifiedMutatorNote;
+  if (engineNote !== undefined) return engineNote;
   return `some mutants could not be classified — their ${projectType} operator name is not one this server maps to a severity category (severity reported as "unknown"). The line still deserves a look; only its risk ranking is missing.`;
 }
 

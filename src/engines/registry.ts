@@ -15,7 +15,6 @@ import type {
 } from '../utils/project-detector.js';
 import type { EngineConfigKey } from '../utils/config-loader.js';
 import { DEPENDENCY_DIRS } from '../utils/dependency-dirs.js';
-import type { ToolArgs } from '../tool-args-validation.js';
 
 /**
  * Re-exported from the detection leaf so existing `from './registry.js'`
@@ -154,6 +153,62 @@ export interface EngineDescriptor {
    * this direction never has to import the table upward.
    */
   canonicalizeMutator?: (rawMutator: string, changeText?: string) => string;
+
+  /**
+   * Whether `estimate_audit` can report an EXACT mutant count for this language,
+   * or only a source-parse approximation.
+   *
+   * `'exact'` means one thing very specifically: the estimate path shells the
+   * engine's own mutant-ENUMERATION command (today only `cargo mutants --list`)
+   * instead of counting constructs in the source text. Three consumers derive
+   * from that single fact and must not re-decide it by naming a language:
+   *
+   *  - `computeCount` (estimate.ts) dispatches the exact path on it, and stamps
+   *    the resulting `EstimateResult.fidelity`.
+   *  - `estimateNeedsSandbox` (estimate.ts) provisions a sandbox for it —
+   *    enumerating requires a subprocess with a workspace, and `computeCount`
+   *    silently degrades to the heuristic when `workDir` is absent. The two are
+   *    the same condition BY CONSTRUCTION, not by coincidence: the exact path IS
+   *    the subprocess path. A future language that reached `'exact'` by parsing
+   *    source in-process would need its own branch in `computeCount` AND would
+   *    break that equivalence — split the two functions again if that happens.
+   *  - the `chaos://languages` resource reports it verbatim to clients.
+   *
+   * Declaring `'exact'` without adding an exact-count branch to `computeCount`
+   * runs cargo-mutants against a non-Rust file; `'approx'` is the correct and
+   * honest default for a new language.
+   */
+  estimateFidelity: 'exact' | 'approx';
+
+  /**
+   * Qualifier published alongside an `'exact'` claim in `chaos://languages`,
+   * saying exact AT WHAT. Only meaningful with `estimateFidelity: 'exact'`;
+   * `'approx'` is already a caveat and needs none.
+   *
+   * Per-language prose, not derivable: a bare `'exact'` reads as "this is the
+   * audit's denominator", and for cargo-mutants it is not — `--list` enumerates
+   * mutants that will not compile, which engines/rust.ts excludes from
+   * `totalMutants` and reports as `incompetent`. Another engine's `--list` could
+   * be exact in a different way, so the sentence belongs to the engine.
+   */
+  estimateFidelityNote?: string;
+
+  /**
+   * Why THIS engine's mutants can come back with severity `'unknown'`, when the
+   * reason is a limitation of the engine's own output rather than a gap in this
+   * server's tables. Rendered by `unclassifiedNote` in format.ts; when absent
+   * the caller emits the generic "this operator name is not one we map" wording,
+   * which is the correct explanation for every engine that names its operators.
+   *
+   * Deliberately NOT derived from {@link EngineDescriptor.estimateFidelity},
+   * even though Rust is today the only language with either. The two facts are
+   * independent: `estimateFidelity` is about cargo-mutants having a `--list`
+   * subcommand, this is about cargo-mutants having no per-mutant operator field.
+   * An engine could easily have one and not the other, and deriving it would
+   * tell that engine's users their tool hides information it in fact reports —
+   * the exact factually-false note this replaced (see `unclassifiedNote`).
+   */
+  unclassifiedMutatorNote?: string;
 }
 
 /**
@@ -174,6 +229,7 @@ export const ENGINE_REGISTRY: Record<SupportedProjectType, EngineDescriptor> = {
     syntaxFamily: 'c',
     displayName: 'StrykerJS',
     label: 'TypeScript/JavaScript',
+    estimateFidelity: 'approx',
     // StrykerJS's mutator names ARE the canonical vocabulary — the other three
     // engines normalize onto them — so the identity is the whole translation.
     // The caller still rejects a name that is not in `MUTATOR_SEMANTICS`, which
@@ -189,6 +245,7 @@ export const ENGINE_REGISTRY: Record<SupportedProjectType, EngineDescriptor> = {
     syntaxFamily: 'python',
     displayName: 'cosmic-ray',
     label: 'Python',
+    estimateFidelity: 'approx',
     canonicalizeMutator: canonicalizePythonMutator,
   },
   rust: {
@@ -201,6 +258,18 @@ export const ENGINE_REGISTRY: Record<SupportedProjectType, EngineDescriptor> = {
     syntaxFamily: 'c',
     displayName: 'cargo-mutants',
     label: 'Rust',
+    // The one engine with a mutant-enumeration subcommand (`cargo mutants
+    // --list`), hence the only 'exact' — and hence the only language whose
+    // estimate has to provision a sandbox without being asked for timing.
+    estimateFidelity: 'exact',
+    estimateFidelityNote:
+      'Exact for the mutants cargo-mutants --list GENERATES; the audit scores fewer, ' +
+      'excluding unviable ones from its denominator as `incompetent`.',
+    // cargo-mutants reports a free-text change description and no operator
+    // field, so an unclassified Rust mutant is the TOOL's limit, not this
+    // server's missing table entry. Unrelated to `estimateFidelity` above.
+    unclassifiedMutatorNote:
+      'some mutants could not be classified — cargo-mutants reports a free-text description rather than a per-mutant operator, and this one carried no recognizable operator (severity reported as "unknown").',
     canonicalizeMutator: canonicalizeRustMutator,
   },
   php: {
@@ -212,6 +281,7 @@ export const ENGINE_REGISTRY: Record<SupportedProjectType, EngineDescriptor> = {
     syntaxFamily: 'php',
     displayName: 'Infection',
     label: 'PHP',
+    estimateFidelity: 'approx',
     canonicalizeMutator: canonicalizePhpMutator,
   },
 };
@@ -237,18 +307,25 @@ export function makeEngine(projectType: SupportedProjectType): BaseEngine {
 }
 
 /**
- * Resolve the prebuild command: explicit args win, then fall back to smart
+ * Resolve the prebuild command: an explicit one wins, then fall back to smart
  * defaults based on the detected package manager / language. Returns `null`
  * when no prebuild is needed.
+ *
+ * `explicit` is the caller-supplied command, ALREADY extracted and validated
+ * (non-blank string or `undefined`) by whoever owns the tool arguments. This
+ * used to take the whole `ToolArgs` bag and read `args.prebuildCommand` by
+ * string key — the engine layer's only upward import, and one that bought no
+ * type safety at all, since `ToolArgs` is `Record<string, unknown>`: renaming
+ * the schema property would have silently stopped honouring it with no compile
+ * error. The handler layer now names that property, and the string appears in
+ * exactly the layer that defines it.
  */
 export function resolvePrebuildCommand(
-  args: ToolArgs,
+  explicit: string | undefined,
   env: EnvironmentInfo,
   projectType: ProjectType,
 ): string | null {
-  if (typeof args.prebuildCommand === 'string' && args.prebuildCommand.trim().length > 0) {
-    return args.prebuildCommand;
-  }
+  if (explicit !== undefined) return explicit;
   // Python dependency installers (`uv sync` / `poetry install`) are intentionally
   // NOT auto-run: `.venv` is symlinked into the sandbox from the host, so an
   // install would mutate the user's real virtual environment (High#2). The
@@ -285,12 +362,13 @@ export function resolvePrebuildCommand(
  *     `SHARED_DEPENDENCY_DIRS` (utils/execution.ts, container bind-mounts) are
  *     DERIVED from it. Declare `[]` for a language whose big directory is build
  *     OUTPUT rather than a shareable cache — see Rust and audit H1.
- *  3. engines/registry.ts — this `Record`. Every `EngineDescriptor` field is
- *     mandatory, and four consumers are DERIVED from them, so they cannot go
- *     stale: `SYMLINK_DIRS` in utils/sandbox.ts (`dependencyDirs`), comment /
- *     string stripping in estimate-heuristic.ts (`syntaxFamily`), the
+ *  3. engines/registry.ts — this `Record`. Every non-optional `EngineDescriptor`
+ *     field is mandatory, and six consumers are DERIVED from them, so they
+ *     cannot go stale: `SYMLINK_DIRS` in utils/sandbox.ts (`dependencyDirs`),
+ *     comment / string stripping in estimate-heuristic.ts (`syntaxFamily`), the
  *     `chaos://languages` resource and the `audit_code_resilience` description
- *     (`displayName` + `label`).
+ *     (`displayName` + `label`), and BOTH the exact-count dispatch and the
+ *     sandbox precondition in estimate.ts (`estimateFidelity`).
  *  4. utils/config/types.ts — `EngineConfigKey`, because `configKey` above must
  *     name a real config section (a new section also needs its own type there).
  *  5. utils/execution.ts — `DEFAULT_IMAGES` (`Record<SupportedProjectType, …>`):
@@ -305,9 +383,17 @@ export function resolvePrebuildCommand(
  *     (unvalidated keys are accepted and then ignored).
  * 10. utils/execution.ts — the python-only virtualenv env args. The container
  *     bind-mount list is no longer a hand-written copy; it derives from (2).
- * 11. resources.ts (`estimateFidelity`) and estimate.ts — both branch on
- *     `=== 'rust'` to mean "exact mutant count"; a new language silently
- *     reports "approx".
+ * 11. estimate.ts — `computeCount`, and ONLY if you set `estimateFidelity:
+ *     'exact'` above. The field itself is now the single source of truth for
+ *     "the mutant count is exact": `estimateNeedsSandbox`, the `fidelity` on
+ *     `EstimateResult`, and the `chaos://languages` resource all read it, and
+ *     none of them names a language any more. What is still hand-written is the
+ *     exact-count IMPLEMENTATION — `computeCount` has one branch, and it shells
+ *     `cargo mutants --list`. Leave `estimateFidelity: 'approx'` (the honest
+ *     default) and there is nothing to do here. Likewise `estimateFidelityNote`
+ *     and `unclassifiedMutatorNote`: both are optional per-engine prose, and
+ *     omitting them yields the correct generic wording rather than a wrong
+ *     borrowed one.
  * 12. engines/<lang>/canonicalize.ts — the mutator-name → canonical-category
  *     translation, wired in via the OPTIONAL `canonicalizeMutator` above.
  *     Without it the language reports severity "unknown" for every survivor —

@@ -39,6 +39,25 @@ export function isPrebuildAllowed(cfg: ChaosConfig): boolean {
 }
 
 /**
+ * The caller-supplied `prebuildCommand` tool argument, or `undefined` when
+ * absent or blank (a whitespace-only string is treated as "not supplied", and
+ * the value is returned VERBATIM — untrimmed — when it is supplied).
+ *
+ * This is the one place the argument's spelling is read. It used to live inside
+ * `resolvePrebuildCommand` in engines/registry.ts, which meant the engine layer
+ * imported `ToolArgs` from the handler layer for a `Record<string, unknown>`
+ * index access: no type safety whatsoever, and renaming the schema property
+ * would have silently stopped honouring it with no compile error. Two callers
+ * need the answer — the resolver below and the `allowPrebuild` gate — so both
+ * take it from here and cannot disagree about what "explicit" means.
+ */
+function explicitPrebuildCommand(args: ToolArgs): string | undefined {
+  return typeof args.prebuildCommand === 'string' && args.prebuildCommand.trim().length > 0
+    ? args.prebuildCommand
+    : undefined;
+}
+
+/**
  * Resolve the prebuild command and apply the opt-in gate: an EXPLICIT
  * `prebuildCommand` runs an arbitrary shell command that can reach outside the
  * sandbox, so it is refused unless the operator enabled it (see
@@ -51,10 +70,10 @@ export function resolveGatedPrebuild(
   projectType: SupportedProjectType,
   cfg: ChaosConfig,
 ): { ok: true; prebuildCmd: string | null } | { ok: false; message: string } {
-  const prebuildCmd = resolvePrebuildCommand(args, env, projectType);
+  const explicit = explicitPrebuildCommand(args);
+  const prebuildCmd = resolvePrebuildCommand(explicit, env, projectType);
   if (prebuildCmd !== null) {
-    const prebuildExplicit =
-      typeof args.prebuildCommand === 'string' && args.prebuildCommand.trim().length > 0;
+    const prebuildExplicit = explicit !== undefined;
     if (prebuildExplicit && !isPrebuildAllowed(cfg)) {
       return {
         ok: false,

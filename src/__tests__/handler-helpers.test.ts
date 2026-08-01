@@ -5,7 +5,12 @@ vi.mock('fs', () => ({ existsSync: vi.fn(() => false) }));
 
 import { existsSync } from 'fs';
 import { validateToolArgs } from '../handler.js';
-import { buildRunOptions, resolveAuditTimeoutMs, isPrebuildAllowed } from '../audit/run-options.js';
+import {
+  buildRunOptions,
+  resolveAuditTimeoutMs,
+  isPrebuildAllowed,
+  resolveGatedPrebuild,
+} from '../audit/run-options.js';
 import { auditFile } from '../audit/audit-file.js';
 import { buildVitestRelatedCommand, quoteCommandArg } from '../utils/shell-quote.js';
 import { resolvePrebuildCommand } from '../engines/registry.js';
@@ -511,12 +516,16 @@ describe('buildRunOptions', () => {
 });
 
 describe('resolvePrebuildCommand', () => {
-  it('returns an explicit prebuildCommand verbatim', () => {
-    expect(resolvePrebuildCommand({ prebuildCommand: 'make' }, env(), 'typescript')).toBe('make');
+  it('returns an explicit prebuild command verbatim', () => {
+    expect(resolvePrebuildCommand('make', env(), 'typescript')).toBe('make');
   });
 
-  it('ignores a blank explicit prebuildCommand and falls through', () => {
-    expect(resolvePrebuildCommand({ prebuildCommand: '   ' }, env(), 'typescript')).toBeNull();
+  it('falls through to the registry default when no explicit command is given', () => {
+    // The signature takes the ALREADY-extracted command, not the ToolArgs bag:
+    // the engine layer no longer knows that the MCP argument is spelled
+    // `prebuildCommand`. Blank-means-absent now happens at the caller — see the
+    // `resolveGatedPrebuild` suite below.
+    expect(resolvePrebuildCommand(undefined, env(), 'typescript')).toBeNull();
   });
 
   it('does NOT auto-install for a uv Python project', () => {
@@ -524,14 +533,18 @@ describe('resolvePrebuildCommand', () => {
     // which is a symlink to the host's `.venv` — corrupting the real workspace.
     // The host's existing (symlinked) environment is already in place.
     expect(
-      resolvePrebuildCommand({}, env({ projectType: 'python', packageManager: 'uv' }), 'python'),
+      resolvePrebuildCommand(
+        undefined,
+        env({ projectType: 'python', packageManager: 'uv' }),
+        'python',
+      ),
     ).toBeNull();
   });
 
   it('does NOT auto-install for a poetry Python project', () => {
     expect(
       resolvePrebuildCommand(
-        {},
+        undefined,
         env({ projectType: 'python', packageManager: 'poetry' }),
         'python',
       ),
@@ -540,14 +553,72 @@ describe('resolvePrebuildCommand', () => {
 
   it('returns "cargo check" for Rust when Cargo.toml exists', () => {
     mockExistsSync.mockImplementation((p) => String(p).endsWith('Cargo.toml'));
-    expect(resolvePrebuildCommand({}, env({ projectType: 'rust' }), 'rust')).toBe('cargo check');
+    expect(resolvePrebuildCommand(undefined, env({ projectType: 'rust' }), 'rust')).toBe(
+      'cargo check',
+    );
   });
 
   it('returns null for a plain TypeScript or pip Python project', () => {
-    expect(resolvePrebuildCommand({}, env(), 'typescript')).toBeNull();
+    expect(resolvePrebuildCommand(undefined, env(), 'typescript')).toBeNull();
     expect(
-      resolvePrebuildCommand({}, env({ projectType: 'python', packageManager: 'pip' }), 'python'),
+      resolvePrebuildCommand(
+        undefined,
+        env({ projectType: 'python', packageManager: 'pip' }),
+        'python',
+      ),
     ).toBeNull();
+  });
+});
+
+describe('resolveGatedPrebuild — explicit-argument extraction', () => {
+  // The `typeof … === 'string' && trim().length > 0` check moved OUT of
+  // engines/registry.ts and into the handler layer that owns the argument name.
+  // These pin that the move kept every behaviour of the old in-engine version.
+  let saved: string | undefined;
+  beforeEach(() => {
+    saved = process.env.CHAOS_MCP_ALLOW_PREBUILD;
+    delete process.env.CHAOS_MCP_ALLOW_PREBUILD;
+  });
+  afterEach(() => {
+    if (saved === undefined) delete process.env.CHAOS_MCP_ALLOW_PREBUILD;
+    else process.env.CHAOS_MCP_ALLOW_PREBUILD = saved;
+  });
+
+  it('passes an explicit prebuildCommand through verbatim when allowed', () => {
+    expect(
+      resolveGatedPrebuild({ prebuildCommand: '  make  ' }, env(), 'typescript', {
+        allowPrebuild: true,
+      }),
+    ).toEqual({ ok: true, prebuildCmd: '  make  ' });
+  });
+
+  it('treats a whitespace-only prebuildCommand as absent — not explicit, not gated', () => {
+    // Blank must fall through to the registry default (null here) rather than
+    // trip the allowPrebuild gate: it is not a caller-supplied command.
+    expect(resolveGatedPrebuild({ prebuildCommand: '   ' }, env(), 'typescript', {})).toEqual({
+      ok: true,
+      prebuildCmd: null,
+    });
+  });
+
+  it('treats a non-string prebuildCommand as absent', () => {
+    expect(resolveGatedPrebuild({ prebuildCommand: 42 }, env(), 'typescript', {})).toEqual({
+      ok: true,
+      prebuildCmd: null,
+    });
+  });
+
+  it('refuses an explicit prebuildCommand when allowPrebuild is off', () => {
+    const res = resolveGatedPrebuild({ prebuildCommand: 'make' }, env(), 'typescript', {});
+    expect(res.ok).toBe(false);
+  });
+
+  it('does NOT gate the registry auto-prebuild, which is not caller-supplied', () => {
+    mockExistsSync.mockImplementation((p) => String(p).endsWith('Cargo.toml'));
+    expect(resolveGatedPrebuild({}, env({ projectType: 'rust' }), 'rust', {})).toEqual({
+      ok: true,
+      prebuildCmd: 'cargo check',
+    });
   });
 });
 

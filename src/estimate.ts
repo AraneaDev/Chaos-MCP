@@ -3,6 +3,7 @@ import type { EnvironmentInfo, SupportedProjectType } from './utils/project-dete
 import { estimateHeuristic } from './estimate-heuristic.js';
 import { invokeMutationTool, MutationToolStartupError } from './utils/exec-classify.js';
 import { escapeCargoFileGlob } from './engines/rust.js';
+import { ENGINE_REGISTRY } from './engines/registry.js';
 import { runShell } from './utils/exec.js';
 import { isCancel } from './utils/cancel.js';
 import { resolveBaselineTestCommand, projectTimingRange } from './baseline-timing.js';
@@ -68,13 +69,30 @@ const ESTIMATE_TIMEOUT_MS = 60_000;
 
 /**
  * Returns true when a sandbox must be provisioned before calling `estimateAudit`.
- * Rust always needs one (for `cargo mutants --list`); timing needs one for any language.
+ *
+ * Two independent reasons, OR'd:
+ *  - `withTiming` runs the baseline test suite, which needs a workspace for any
+ *    language.
+ *  - an `estimateFidelity: 'exact'` language (Rust) needs one even without
+ *    timing, because "exact" means `computeCount` shells the engine's own
+ *    enumeration command. That is the SAME condition, not a coincidence that
+ *    happens to select Rust twice: `computeCount` dispatches its subprocess path
+ *    on the very same registry field, and degrades to the heuristic when
+ *    `workDir` is absent. Reading `=== 'rust'` here and there separately is what
+ *    let the two drift.
+ *
+ * If a language ever reaches `'exact'` WITHOUT a subprocess (an in-process AST
+ * counter), it would need its own branch in `computeCount` and this equivalence
+ * would break — split the two conditions then, not before.
  */
 export function estimateNeedsSandbox(
   projectType: SupportedProjectType,
   withTiming: boolean,
 ): boolean {
-  return withTiming || projectType === 'rust';
+  // `?.` because `projectType` reaches here from JSON-RPC arguments: an
+  // unrecognised value must fall back to "heuristic, no sandbox" exactly as the
+  // old `=== 'rust'` comparison did, not throw on a missing descriptor.
+  return withTiming || ENGINE_REGISTRY[projectType]?.estimateFidelity === 'exact';
 }
 
 /** Heuristic estimate from the file's source. Read failure → 0 with a note. */
@@ -116,13 +134,28 @@ function countCargoMutants(stdout: string): number {
  * Compute the mutant count for a file without running the test suite.
  * Non-startup ExecFailureErrors from cargo-mutants propagate to the caller.
  *
- * - Rust + workDir: runs `cargo mutants --list --file <relFile>` for an exact count.
- *   Falls back to heuristic if cargo-mutants is not installed.
- * - Rust without workDir: heuristic fallback (caller should have provisioned a sandbox).
- * - TS / Python: reads `absFile` and applies the source-parse heuristic.
+ * The exact/approx split is the registry's `estimateFidelity`, not a language
+ * name — the same field `estimateNeedsSandbox` and `chaos://languages` read, so
+ * the three cannot disagree about whether a count is exact.
+ *
+ * - `'exact'` + workDir: runs the engine's enumeration command for an exact count.
+ *   Only cargo-mutants (Rust) has one, so that is the single branch below; a new
+ *   language declaring `'exact'` must add its own. Falls back to the heuristic
+ *   if the tool is not installed.
+ * - `'exact'` without workDir: heuristic fallback (caller should have provisioned
+ *   a sandbox — `estimateNeedsSandbox` says so for exactly these languages).
+ * - `'approx'` (TS / Python / PHP): reads `absFile` and applies the source-parse
+ *   heuristic. `heuristicEstimate` hardcodes `fidelity: 'approx'` on purpose: it
+ *   is approximate BY CONSTRUCTION, so the two fallbacks above must report
+ *   'approx' too rather than inheriting the language's advertised 'exact'.
  */
 async function computeCount(opts: EstimateOptions): Promise<EstimateResult> {
-  if (opts.projectType === 'rust') {
+  // Read once, and with `?.`: an unrecognised `projectType` off the wire has to
+  // reach the heuristic rather than throw, which is what the old `=== 'rust'`
+  // comparison did. Reading it once also means the branch and the `fidelity` it
+  // stamps below cannot disagree.
+  const fidelity = ENGINE_REGISTRY[opts.projectType]?.estimateFidelity;
+  if (fidelity === 'exact') {
     if (opts.workDir === undefined) {
       // Defensive: caller should have provisioned a sandbox for Rust.
       return heuristicEstimate(opts, ' (no sandbox; cargo-mutants skipped)');
@@ -150,9 +183,9 @@ async function computeCount(opts: EstimateOptions): Promise<EstimateResult> {
       );
       return {
         target: opts.relFile,
-        language: 'rust',
+        language: opts.projectType,
         mutants: countCargoMutants(res.stdout),
-        fidelity: 'exact',
+        fidelity,
         basis: 'cargo-mutants --list (generated mutants)',
         // The count is exact for GENERATED mutants — which is the right input
         // for TIMING, because an unviable mutant still costs a compile — but it
@@ -187,7 +220,7 @@ async function computeCount(opts: EstimateOptions): Promise<EstimateResult> {
     }
   }
 
-  // TypeScript / Python — heuristic from source.
+  // Every 'approx' language (TypeScript / Python / PHP) — heuristic from source.
   return heuristicEstimate(opts);
 }
 
