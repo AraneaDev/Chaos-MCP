@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { canonicalizeMutator, MUTATOR_SEMANTICS } from '../enrich.js';
+import { canonicalizeMutator, MUTATOR_SEMANTICS } from '../core/enrich.js';
 
 describe('canonicalizeMutator', () => {
   it('maps StrykerJS canonical names directly for typescript', () => {

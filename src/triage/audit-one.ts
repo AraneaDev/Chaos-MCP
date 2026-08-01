@@ -22,15 +22,15 @@ import { resolveAuditTargetIn } from '../audit/target.js';
 import { loadSuppressions, verifySuppressions, type StoredEntry } from '../utils/suppression.js';
 import { applySuppressions } from '../audit/apply-suppressions.js';
 import { mintRunId } from '../utils/run-cache.js';
-import { buildResultPayload } from '../format.js';
-import { displayMutationScore, hasNoMutableLogic } from '../score-semantics.js';
-import { mapCreateSandboxError, failureText } from '../tool-result.js';
+import { buildResultPayload } from '../core/format.js';
+import { displayMutationScore, hasNoMutableLogic } from '../core/score-semantics.js';
+import { mapCreateSandboxError, failureText } from '../core/tool-result.js';
 import type { MutationResult } from '../engines/base.js';
 import type { ChaosConfig } from '../utils/config-loader.js';
-import type { ToolContext } from '../tool-context.js';
-import type { ToolArgs } from '../tool-args-validation.js';
+import type { ToolContext } from '../core/tool-context.js';
+import type { ToolArgs } from '../core/tool-args-validation.js';
 import type { AuditDeadline } from '../utils/deadline.js';
-import type { TriageRow, TriageError } from '../triage.js';
+import type { TriageRow, TriageError } from '../core/triage.js';
 
 /**
  * What one file contributed to the sweep: a ranked row, a per-file failure, or

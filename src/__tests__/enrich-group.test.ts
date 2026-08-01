@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { enrichGroup, MUTATOR_SEMANTICS, UNKNOWN_SEMANTIC } from '../enrich.js';
+import { enrichGroup, MUTATOR_SEMANTICS, UNKNOWN_SEMANTIC } from '../core/enrich.js';
 
 const SRC = [
   'function clamp(a, b) {', // 1

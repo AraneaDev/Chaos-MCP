@@ -29,7 +29,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { saveRun, loadRun, mintRunId, workspaceFingerprint } from '../utils/run-cache.js';
-import { buildResultPayload } from '../format.js';
+import { buildResultPayload } from '../core/format.js';
 
 let dir: string;
 beforeEach(() => {

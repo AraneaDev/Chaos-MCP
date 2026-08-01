@@ -17,19 +17,19 @@ import {
   formatTriageAsText,
   type TriageRow,
   type TriageError,
-} from './triage.js';
+} from './core/triage.js';
 import { mapPool } from './utils/pool.js';
 import type { ChaosConfig } from './utils/config-loader.js';
-import type { ToolContext } from './tool-context.js';
-import type { ToolArgs } from './tool-args-validation.js';
+import type { ToolContext } from './core/tool-context.js';
+import type { ToolArgs } from './core/tool-args-validation.js';
 import {
   TRIAGE_ARG_VALIDATORS,
   hasTriagePaths,
   hasTriageDiffBase,
   resolveStrykerConcurrency,
-} from './triage-args-validation.js';
+} from './core/triage-args-validation.js';
 import { resolveTriageTargets } from './triage/discover-targets.js';
-import { toolError, mapHandlerFailure, toStructuredContent } from './tool-result.js';
+import { toolError, mapHandlerFailure, toStructuredContent } from './core/tool-result.js';
 import {
   auditTriageFile,
   type TriageFileDeps,

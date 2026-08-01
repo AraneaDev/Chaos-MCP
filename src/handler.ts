@@ -9,8 +9,8 @@
  */
 import { validateFilePath } from './utils/file-path.js';
 import type { CallToolRequest, CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import type { ToolContext } from './tool-context.js';
-import { toolError, mapCreateSandboxError, mapHandlerFailure } from './tool-result.js';
+import type { ToolContext } from './core/tool-context.js';
+import { toolError, mapCreateSandboxError, mapHandlerFailure } from './core/tool-result.js';
 import type { MutationResult } from './engines/base.js';
 import { ENGINE_REGISTRY, makeEngine, type SupportedProjectType } from './engines/registry.js';
 import { EnvironmentInfo } from './utils/project-detector.js';
@@ -19,7 +19,7 @@ import { createSandbox } from './utils/sandbox.js';
 import { isCancel } from './utils/cancel.js';
 import { ChaosConfig } from './utils/config-loader.js';
 import { log, isVerbose } from './utils/logger.js';
-import { ToolArgs, TOOL_ARG_VALIDATORS } from './tool-args-validation.js';
+import { ToolArgs, TOOL_ARG_VALIDATORS } from './core/tool-args-validation.js';
 import { mintRunIdSafely } from './audit/run-id.js';
 import { AuditDeadline } from './utils/deadline.js';
 import { resolveAuditTimeoutMs, resolveGatedPrebuild } from './audit/run-options.js';

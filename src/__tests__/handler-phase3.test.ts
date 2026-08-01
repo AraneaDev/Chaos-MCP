@@ -4,7 +4,7 @@ import type { CallToolRequest } from '@modelcontextprotocol/sdk/types.js';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { computeVerifyDelta } from '../verify.js';
+import { computeVerifyDelta } from '../core/verify.js';
 import { applySuppressions } from '../audit/apply-suppressions.js';
 
 // ── Mocks (mirror handler.test.ts so handleToolCall can run with a stub engine) ──

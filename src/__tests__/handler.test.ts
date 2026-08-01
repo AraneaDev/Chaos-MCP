@@ -43,8 +43,9 @@ vi.mock('fs', async () => {
 // on disk, so the real workspace scan would always report "no Python tests".
 // Default it to true; the pre-flight itself is covered in test-file.test.ts and
 // by the dedicated case below.
-vi.mock('../test-file.js', async () => {
-  const actual = await vi.importActual<typeof import('../test-file.js')>('../test-file.js');
+vi.mock('../core/test-file.js', async () => {
+  const actual =
+    await vi.importActual<typeof import('../core/test-file.js')>('../core/test-file.js');
   return {
     ...actual,
     // The default lives in the `vi.fn(impl)` constructor rather than a chained
@@ -78,7 +79,7 @@ vi.mock('../utils/logger.js', () => ({
 
 import { handleToolCall } from '../index.js';
 import { validateToolArgs } from '../handler.js';
-import { mapCreateSandboxError } from '../tool-result.js';
+import { mapCreateSandboxError } from '../core/tool-result.js';
 import { TypeScriptEngine } from '../engines/typescript.js';
 import { RustEngine } from '../engines/rust.js';
 import { detectEnvironment } from '../utils/project-detector.js';
@@ -87,7 +88,7 @@ import { runShellCommand } from '../utils/exec.js';
 import { isVerbose, log } from '../utils/logger.js';
 import { existsSync } from 'fs';
 import { computeChangedRanges } from '../utils/git-diff.js';
-import { workspaceHasPythonTests } from '../test-file.js';
+import { workspaceHasPythonTests } from '../core/test-file.js';
 
 const MockTSEngine = vi.mocked(TypeScriptEngine);
 const MockRustEngine = vi.mocked(RustEngine);

@@ -2,7 +2,11 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { suggestTestFile, findPythonTestSelection, workspaceHasPythonTests } from '../test-file.js';
+import {
+  suggestTestFile,
+  findPythonTestSelection,
+  workspaceHasPythonTests,
+} from '../core/test-file.js';
 import type { SupportedProjectType } from '../utils/project-detector.js';
 
 let root: string;

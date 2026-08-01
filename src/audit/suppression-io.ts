@@ -13,11 +13,11 @@
  * call shape. Wiring triage up is deliberately left to the triage decomposition.
  */
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import type { ToolArgs } from '../tool-args-validation.js';
-import type { ToolContext } from '../tool-context.js';
+import type { ToolArgs } from '../core/tool-args-validation.js';
+import type { ToolContext } from '../core/tool-context.js';
 import type { MutationResult } from '../engines/base.js';
-import type { MutantKey } from '../verify.js';
-import { toolError } from '../tool-result.js';
+import type { MutantKey } from '../core/verify.js';
+import { toolError } from '../core/tool-result.js';
 import { applySuppressions } from './apply-suppressions.js';
 
 /**

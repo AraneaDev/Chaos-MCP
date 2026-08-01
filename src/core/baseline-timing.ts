@@ -2,7 +2,7 @@ import {
   assertNeverProjectType,
   type EnvironmentInfo,
   type SupportedProjectType,
-} from './utils/project-detector.js';
+} from '../utils/project-detector.js';
 
 export interface BaselineCommand {
   command: string;

@@ -6,7 +6,7 @@ import {
   buildVerifyNote,
   formatVerifyResultAsJson,
   formatVerifyResultAsText,
-} from '../verify.js';
+} from '../core/verify.js';
 import type { MutationResult } from '../engines/base.js';
 
 const result = (vulns: { line: number; mutator: string }[]): MutationResult => ({

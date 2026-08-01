@@ -3,7 +3,7 @@ import { cpus } from 'os';
 import type { CallToolRequest } from '@modelcontextprotocol/sdk/types.js';
 
 // Mock estimate functions before importing the handler.
-vi.mock('../estimate.js', () => ({
+vi.mock('../core/estimate.js', () => ({
   estimateAudit: vi.fn(),
   estimateNeedsSandbox: vi.fn(() => false),
 }));
@@ -48,7 +48,7 @@ vi.mock('fs', async () => {
 
 import { statSync } from 'fs';
 import { handleEstimateCall, resolveEstimateConcurrency } from '../estimate-handler.js';
-import { estimateAudit, estimateNeedsSandbox } from '../estimate.js';
+import { estimateAudit, estimateNeedsSandbox } from '../core/estimate.js';
 import { detectEnvironment } from '../utils/project-detector.js';
 import { createSandbox } from '../utils/sandbox.js';
 import { createExecutionSession } from '../utils/execution.js';

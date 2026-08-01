@@ -17,8 +17,8 @@ import {
 } from '../engines/registry.js';
 import type { detectProjectType, EnvironmentInfo } from '../utils/project-detector.js';
 import type { ChaosConfig } from '../utils/config-loader.js';
-import type { ToolArgs } from '../tool-args-validation.js';
-import type { Severity } from '../enrich.js';
+import type { ToolArgs } from '../core/tool-args-validation.js';
+import type { Severity } from '../core/enrich.js';
 import { incrementalCachePath } from '../utils/incremental-cache.js';
 import { buildVitestRelatedCommand } from '../utils/shell-quote.js';
 import { DEFAULT_TIMEOUT_MS } from '../utils/constants.js';

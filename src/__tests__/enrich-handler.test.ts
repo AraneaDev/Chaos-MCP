@@ -6,7 +6,7 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { validateToolArgs } from '../handler.js';
 import { buildEnrichContext } from '../audit/audit-output.js';
-import { TOOL_DEFINITION } from '../tool-schema.js';
+import { TOOL_DEFINITION } from '../core/tool-schema.js';
 
 describe('enrich schema + validation', () => {
   it('declares enrich as a boolean in the tool schema', () => {

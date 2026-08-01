@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { resolve, join, delimiter } from 'node:path';
 import { validateFilePath, describeBoundary } from '../utils/file-path.js';
-import { toolError } from '../tool-result.js';
+import { toolError } from '../core/tool-result.js';
 import { ALLOWED_ROOTS_ENV } from '../utils/path-safety.js';
 
 /** Restore the ambient environment so cases cannot leak into one another. */

@@ -7,11 +7,11 @@ vi.mock('../utils/logger.js', async (importOriginal) => {
   return { ...actual, warn: vi.fn() };
 });
 
-import { buildResultPayload } from '../format.js';
+import { buildResultPayload } from '../core/format.js';
 import { warn } from '../utils/logger.js';
 
 const mockWarn = vi.mocked(warn);
-import { evaluateGate } from '../gate.js';
+import { evaluateGate } from '../core/gate.js';
 import type { MutationResult } from '../engines/base.js';
 
 function result(overrides: Partial<MutationResult> = {}): MutationResult {

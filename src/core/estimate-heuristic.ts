@@ -1,5 +1,5 @@
-import { assertNeverProjectType, type SupportedProjectType } from './utils/project-detector.js';
-import { ENGINE_REGISTRY, type SyntaxFamily } from './engines/registry.js';
+import { assertNeverProjectType, type SupportedProjectType } from '../utils/project-detector.js';
+import { ENGINE_REGISTRY, type SyntaxFamily } from '../engines/registry.js';
 
 export interface HeuristicResult {
   mutants: number;

@@ -16,7 +16,7 @@ import {
   buildTriagePayload,
   type TriageRow,
   type TriageError,
-} from '../triage.js';
+} from '../core/triage.js';
 import { supportedSourceExtensions, detectProjectType } from '../utils/project-detector.js';
 
 const mr = (over: Partial<MutationResult>): MutationResult => ({

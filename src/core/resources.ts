@@ -1,4 +1,4 @@
-import { ENGINE_REGISTRY, type SupportedProjectType } from './engines/registry.js';
+import { ENGINE_REGISTRY, type SupportedProjectType } from '../engines/registry.js';
 
 export interface ResourceListing {
   uri: string;

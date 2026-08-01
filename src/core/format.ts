@@ -7,13 +7,13 @@
  * collapse duplicate mutators to counts, and state the explanation once.
  */
 
-import type { MutationResult } from './engines/base.js';
-import type { SupportedProjectType } from './utils/project-detector.js';
-import { ENGINE_REGISTRY } from './engines/registry.js';
+import type { MutationResult } from '../engines/base.js';
+import type { SupportedProjectType } from '../utils/project-detector.js';
+import { ENGINE_REGISTRY } from '../engines/registry.js';
 import { enrichGroup, SEVERITY_RANK, type Severity, type Enrichment } from './enrich.js';
 import type { GateResult } from './gate.js';
-import { warn } from './utils/logger.js';
-import { isNoCoverage } from './utils/no-coverage.js';
+import { warn } from '../utils/logger.js';
+import { isNoCoverage } from '../utils/no-coverage.js';
 // Score/suppression vocabulary lives in its own leaf module: `triage.ts` renders
 // an independent leaderboard and needs the same meanings without importing this
 // renderer. Import direction is one-way — score-semantics.ts never imports here.

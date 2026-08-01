@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { COMMON_IGNORE_DIRS } from '../utils/ignore-dirs.js';
 import { ALWAYS_EXCLUDE } from '../utils/sandbox/copy-policy.js';
 import { IGNORE_DIRS } from '../triage/discover-files.js';
-import { TEST_SEARCH_SKIP, PYTHON_TEST_IGNORE_DIRS } from '../test-file.js';
+import { TEST_SEARCH_SKIP, PYTHON_TEST_IGNORE_DIRS } from '../core/test-file.js';
 
 /**
  * Regression guard for Finding #7: four hand-maintained "directories to skip"

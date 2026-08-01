@@ -12,8 +12,8 @@
  * against cargo-mutants' change descriptions) and now lives beside that engine,
  * reached through `EngineDescriptor.canonicalizeMutator`.
  */
-import type { SupportedProjectType } from './utils/project-detector.js';
-import { ENGINE_REGISTRY } from './engines/registry.js';
+import type { SupportedProjectType } from '../utils/project-detector.js';
+import { ENGINE_REGISTRY } from '../engines/registry.js';
 
 export type Severity = 'high' | 'medium' | 'low' | 'unknown';
 

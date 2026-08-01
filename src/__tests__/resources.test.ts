@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { listResources, readResource } from '../resources.js';
+import { listResources, readResource } from '../core/resources.js';
 import { ENGINE_REGISTRY } from '../engines/registry.js';
 
 describe('resources', () => {

@@ -1,5 +1,5 @@
 import { validateMinScore } from './gate.js';
-import { MAX_TIMEOUT_MS } from './utils/constants.js';
+import { MAX_TIMEOUT_MS } from '../utils/constants.js';
 
 /** Tool-call arguments object (untyped MCP payload). */
 export type ToolArgs = Record<string, unknown>;

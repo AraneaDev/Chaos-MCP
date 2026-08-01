@@ -3,10 +3,10 @@ import {
   TOOL_DEFINITION,
   TRIAGE_TOOL_DEFINITION,
   ESTIMATE_TOOL_DEFINITION,
-} from '../tool-schema.js';
+} from '../core/tool-schema.js';
 import { supportedSourceExtensions } from '../utils/project-detector.js';
 import { ENGINE_REGISTRY } from '../engines/registry.js';
-import type { ResultPayload } from '../format.js';
+import type { ResultPayload } from '../core/format.js';
 
 describe('TOOL_DEFINITION contract', () => {
   it('exposes the audit_code_resilience tool with an object input schema', () => {

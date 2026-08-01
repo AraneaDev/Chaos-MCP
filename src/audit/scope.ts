@@ -7,16 +7,16 @@
  * apart from the orchestration around them.
  */
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { toolError, toStructuredContent } from '../tool-result.js';
+import { toolError, toStructuredContent } from '../core/tool-result.js';
 import { ENGINE_REGISTRY, type SupportedProjectType } from '../engines/registry.js';
 import type { EnvironmentInfo } from '../utils/project-detector.js';
 import type { ChaosConfig } from '../utils/config-loader.js';
-import type { ToolArgs } from '../tool-args-validation.js';
-import { formatResultAsText, buildResultPayload } from '../format.js';
-import { evaluateGate } from '../gate.js';
+import type { ToolArgs } from '../core/tool-args-validation.js';
+import { formatResultAsText, buildResultPayload } from '../core/format.js';
+import { evaluateGate } from '../core/gate.js';
 import { computeChangedRanges, type GitOptions } from '../utils/git-diff.js';
 import { loadRun, workspaceFingerprint } from '../utils/run-cache.js';
-import { parseBaseline, type BaselineInput, type MutantKey } from '../verify.js';
+import { parseBaseline, type BaselineInput, type MutantKey } from '../core/verify.js';
 import type { AuditDeadline } from '../utils/deadline.js';
 
 /**

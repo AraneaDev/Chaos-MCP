@@ -30,8 +30,8 @@ vi.mock('../utils/exec.js', async (importOriginal) => ({
 import { invokeMutationTool, MutationToolStartupError } from '../utils/exec-classify.js';
 import { runShell } from '../utils/exec.js';
 import { ExecFailureError } from '../utils/exec-error.js';
-import { estimateAudit, estimateNeedsSandbox } from '../estimate.js';
-import { projectTimingRange } from '../baseline-timing.js';
+import { estimateAudit, estimateNeedsSandbox } from '../core/estimate.js';
+import { projectTimingRange } from '../core/baseline-timing.js';
 import type { EnvironmentInfo } from '../utils/project-detector.js';
 
 const mockInvoke = vi.mocked(invokeMutationTool);

@@ -10,11 +10,11 @@
 import type { BaseEngine, MutationResult } from '../engines/base.js';
 import type { EnvironmentInfo } from '../utils/project-detector.js';
 import type { ChaosConfig } from '../utils/config-loader.js';
-import type { ToolArgs } from '../tool-args-validation.js';
+import type { ToolArgs } from '../core/tool-args-validation.js';
 import { createExecutionSession } from '../utils/execution.js';
 import { runShellCommand } from '../utils/exec.js';
 import { log, isVerbose } from '../utils/logger.js';
-import { findPythonTestSelection, workspaceHasPythonTests } from '../test-file.js';
+import { findPythonTestSelection, workspaceHasPythonTests } from '../core/test-file.js';
 import { buildRunOptions, type ProjectType } from './run-options.js';
 
 /**

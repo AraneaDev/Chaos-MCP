@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { validateToolArgs } from '../handler.js';
-import type { ToolArgs } from '../tool-args-validation.js';
+import type { ToolArgs } from '../core/tool-args-validation.js';
 
 /**
  * Boundary coverage for every per-argument validator in tool-args-validation.ts.

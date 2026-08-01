@@ -1,4 +1,4 @@
-import type { MutationResult } from './engines/base.js';
+import type { MutationResult } from '../engines/base.js';
 import type { Severity } from './enrich.js';
 import {
   displayMutationScore,

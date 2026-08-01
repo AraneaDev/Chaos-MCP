@@ -7,13 +7,13 @@ import {
   mapCreateSandboxError,
   mapHandlerFailure,
   toStructuredContent,
-} from './tool-result.js';
+} from './core/tool-result.js';
 import { validateFilePath } from './utils/file-path.js';
-import { validateTimeoutMs } from './tool-args-validation.js';
+import { validateTimeoutMs } from './core/tool-args-validation.js';
 import { supportedTypeOf, anchorTarget } from './audit/target.js';
-import { estimateAudit, estimateNeedsSandbox } from './estimate.js';
+import { estimateAudit, estimateNeedsSandbox } from './core/estimate.js';
 import type { ChaosConfig } from './utils/config-loader.js';
-import type { ToolContext } from './tool-context.js';
+import type { ToolContext } from './core/tool-context.js';
 import { DEFAULT_TIMEOUT_MS } from './utils/constants.js';
 import { createExecutionSession } from './utils/execution.js';
 import { buildRunOptions, resolveAuditTimeoutMs } from './audit/run-options.js';

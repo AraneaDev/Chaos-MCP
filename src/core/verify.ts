@@ -1,4 +1,4 @@
-import type { MutationResult } from './engines/base.js';
+import type { MutationResult } from '../engines/base.js';
 
 /** A prior run's reported survivor/noCoverage arrays, passed back to verify. */
 export interface BaselineInput {

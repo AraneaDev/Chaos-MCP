@@ -8,7 +8,7 @@
  */
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import type { ToolContext } from './tool-context.js';
-import { isCancel } from './utils/cancel.js';
+import { isCancel } from '../utils/cancel.js';
 
 export function toolError(text: string): CallToolResult {
   return { content: [{ type: 'text', text }], isError: true };

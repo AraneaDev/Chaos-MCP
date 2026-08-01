@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { listPrompts, getPrompt } from '../prompts.js';
+import { listPrompts, getPrompt } from '../core/prompts.js';
 
 /**
  * Drill into the rendered message of a harden_file prompt and return the

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { estimateHeuristic } from '../estimate-heuristic.js';
+import { estimateHeuristic } from '../core/estimate-heuristic.js';
 import { ENGINE_REGISTRY } from '../engines/registry.js';
 import type { SupportedProjectType } from '../utils/project-detector.js';
 

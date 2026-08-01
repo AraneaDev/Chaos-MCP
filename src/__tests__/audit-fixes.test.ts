@@ -22,9 +22,9 @@ import { readFileSync as readPkg } from 'node:fs';
 
 import { validateToolArgs } from '../handler.js';
 import { applySuppressions } from '../audit/apply-suppressions.js';
-import { hasNoMutableLogic } from '../score-semantics.js';
+import { hasNoMutableLogic } from '../core/score-semantics.js';
 import { isNoCoverage } from '../utils/no-coverage.js';
-import { projectTimingRange } from '../baseline-timing.js';
+import { projectTimingRange } from '../core/baseline-timing.js';
 import { isRepoTestCommandAllowed, resolveTestCommand } from '../engines/python.js';
 import {
   INCREMENTAL_FILE_NAME,

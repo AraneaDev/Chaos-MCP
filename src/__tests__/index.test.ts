@@ -38,7 +38,7 @@ vi.mock('@modelcontextprotocol/sdk/server/stdio.js', () => ({
   }),
 }));
 
-vi.mock('../tool-schema.js', () => ({
+vi.mock('../core/tool-schema.js', () => ({
   TOOL_DEFINITION: { name: 'audit_code_resilience' },
   TRIAGE_TOOL_DEFINITION: { name: 'triage_test_coverage' },
   ESTIMATE_TOOL_DEFINITION: { name: 'estimate_audit' },
@@ -54,13 +54,13 @@ vi.mock('../cli.js', () => ({ runCli: vi.fn() }));
 
 // Fixed ctx returned by makeToolContext; used to assert handlers receive it.
 const FIXED_CTX = { signal: undefined };
-vi.mock('../tool-context.js', () => ({
+vi.mock('../core/tool-context.js', () => ({
   makeToolContext: vi.fn(() => FIXED_CTX),
 }));
 
 // Minimal stubs so the resource/prompt modules can be imported without touching
 // the real engine registry or file system.
-vi.mock('../resources.js', () => ({
+vi.mock('../core/resources.js', () => ({
   listResources: vi.fn(() => [
     {
       uri: 'chaos://languages',
@@ -84,7 +84,7 @@ vi.mock('../resources.js', () => ({
   readResource: vi.fn((uri: string) => ({ uri, mimeType: 'application/json', text: '{}' })),
 }));
 
-vi.mock('../prompts.js', () => ({
+vi.mock('../core/prompts.js', () => ({
   listPrompts: vi.fn(() => [
     { name: 'harden_file', description: 'Harden a file.', arguments: [] },
     { name: 'triage_changes', description: 'Triage changed files.', arguments: [] },
@@ -124,13 +124,13 @@ import {
   TOOL_DEFINITION,
   TRIAGE_TOOL_DEFINITION,
   ESTIMATE_TOOL_DEFINITION,
-} from '../tool-schema.js';
+} from '../core/tool-schema.js';
 import { handleToolCall } from '../handler.js';
 import { handleTriageCall } from '../triage-handler.js';
 import { handleEstimateCall } from '../estimate-handler.js';
-import { makeToolContext } from '../tool-context.js';
-import { listResources, readResource } from '../resources.js';
-import { listPrompts, getPrompt } from '../prompts.js';
+import { makeToolContext } from '../core/tool-context.js';
+import { listResources, readResource } from '../core/resources.js';
+import { listPrompts, getPrompt } from '../core/prompts.js';
 
 describe('startServer', () => {
   beforeEach(() => {

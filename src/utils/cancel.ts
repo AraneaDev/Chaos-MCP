@@ -1,4 +1,4 @@
-import type { ToolContext } from '../tool-context.js';
+import type { ToolContext } from '../core/tool-context.js';
 import { ExecFailureError } from './exec-error.js';
 
 /**

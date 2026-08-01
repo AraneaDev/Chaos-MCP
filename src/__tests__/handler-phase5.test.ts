@@ -73,7 +73,7 @@ import { detectEnvironment } from '../utils/project-detector.js';
 import { createSandbox } from '../utils/sandbox.js';
 import { computeChangedRanges } from '../utils/git-diff.js';
 import { ExecFailureError } from '../utils/exec-error.js';
-import type { ToolContext } from '../tool-context.js';
+import type { ToolContext } from '../core/tool-context.js';
 
 const MockTSEngine = vi.mocked(TypeScriptEngine);
 const mockDetectEnv = vi.mocked(detectEnvironment);

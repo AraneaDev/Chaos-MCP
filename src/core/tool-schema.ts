@@ -5,9 +5,9 @@
  * from request handling, formatting, and server bootstrap.
  */
 
-import { MAX_TIMEOUT_MS } from './utils/constants.js';
-import { primarySourceExtensions, supportedSourceExtensions } from './utils/project-detector.js';
-import { ENGINE_REGISTRY, type SupportedProjectType } from './engines/registry.js';
+import { MAX_TIMEOUT_MS } from '../utils/constants.js';
+import { primarySourceExtensions, supportedSourceExtensions } from '../utils/project-detector.js';
+import { ENGINE_REGISTRY, type SupportedProjectType } from '../engines/registry.js';
 
 /**
  * `['a', 'b', 'c']` → `'a, b, <conj> c'` (Oxford comma, conjunction before the

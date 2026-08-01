@@ -4,8 +4,8 @@ import type { CallToolRequest } from '@modelcontextprotocol/sdk/types.js';
 import type { MutationResult } from '../engines/base.js';
 // `resolveStrykerConcurrency` moved out of triage-handler.ts with the argument
 // prelude it belongs to (Finding 3 decomposition); the import follows it there.
-import { resolveStrykerConcurrency } from '../triage-args-validation.js';
-import type { TriageRow } from '../triage.js';
+import { resolveStrykerConcurrency } from '../core/triage-args-validation.js';
+import type { TriageRow } from '../core/triage.js';
 import type { TriageAuditOutcome } from '../triage/audit-one.js';
 import { ALLOWED_ROOTS_ENV } from '../utils/path-safety.js';
 import { ExecFailureError } from '../utils/exec-error.js';
@@ -785,8 +785,10 @@ describe('handleTriageCall', () => {
   describe('row enrichment', () => {
     it('reads the real source so inlined survivors carry context lines', async () => {
       // The source read is what turns a bare line number into something a
-      // reader can act on. Point at a file that genuinely exists.
-      mockDiscover.mockReturnValue({ files: ['src/gate.ts'], discovered: 1, skipped: 0 });
+      // reader can act on. Point at a file that genuinely exists — this asserts
+      // against the real tree, so moving the target file breaks it (as the
+      // src/core/ move did).
+      mockDiscover.mockReturnValue({ files: ['src/core/gate.ts'], discovered: 1, skipped: 0 });
       mockAuditFile.mockResolvedValue(
         mrOf({
           vulnerabilities: [{ line: 3, mutator: 'ConditionalExpression', description: 'survived' }],

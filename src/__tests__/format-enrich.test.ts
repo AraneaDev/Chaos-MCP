@@ -1,6 +1,6 @@
 // src/__tests__/format-enrich.test.ts
 import { describe, it, expect } from 'vitest';
-import { formatResultAsJson, formatResultAsText } from '../format.js';
+import { formatResultAsJson, formatResultAsText } from '../core/format.js';
 import type { MutationResult } from '../engines/base.js';
 
 const RESULT: MutationResult = {

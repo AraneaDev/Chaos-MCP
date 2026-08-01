@@ -16,7 +16,7 @@ import { computeScope } from '../audit/scope.js';
 import { auditFile } from '../audit/audit-file.js';
 import { saveRun } from '../utils/run-cache.js';
 import type { EnvironmentInfo } from '../utils/project-detector.js';
-import type { ToolArgs } from '../tool-args-validation.js';
+import type { ToolArgs } from '../core/tool-args-validation.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 
 const mockDiff = vi.mocked(computeChangedRanges);

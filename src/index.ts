@@ -15,13 +15,13 @@ import {
   TOOL_DEFINITION,
   TRIAGE_TOOL_DEFINITION,
   ESTIMATE_TOOL_DEFINITION,
-} from './tool-schema.js';
+} from './core/tool-schema.js';
 import { handleToolCall } from './handler.js';
 import { handleTriageCall } from './triage-handler.js';
 import { handleEstimateCall } from './estimate-handler.js';
-import { makeToolContext } from './tool-context.js';
-import { listResources, readResource } from './resources.js';
-import { listPrompts, getPrompt } from './prompts.js';
+import { makeToolContext } from './core/tool-context.js';
+import { listResources, readResource } from './core/resources.js';
+import { listPrompts, getPrompt } from './core/prompts.js';
 import { ChaosConfig } from './utils/config-loader.js';
 import { cleanupAllSandboxes, setSandboxSignalExit } from './utils/sandbox/registry.js';
 import { runCli } from './cli.js';
@@ -32,7 +32,7 @@ import { fileURLToPath } from 'node:url';
 // working after the index.ts split. handleToolCall and TOOL_DEFINITION now live
 // in dedicated modules; APP_VERSION stays here (see note below).
 export { handleToolCall } from './handler.js';
-export { TOOL_DEFINITION } from './tool-schema.js';
+export { TOOL_DEFINITION } from './core/tool-schema.js';
 
 /**
  * Application version, synced with package.json.

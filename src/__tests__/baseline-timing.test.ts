@@ -3,7 +3,7 @@ import {
   resolveBaselineTestCommand,
   projectEstimatedMs,
   projectTimingRange,
-} from '../baseline-timing.js';
+} from '../core/baseline-timing.js';
 import type { EnvironmentInfo, SupportedProjectType } from '../utils/project-detector.js';
 
 const env = (over: Partial<EnvironmentInfo> = {}): EnvironmentInfo =>

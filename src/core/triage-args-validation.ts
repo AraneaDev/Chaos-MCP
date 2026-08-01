@@ -16,9 +16,9 @@
  */
 import { resolve } from 'path';
 import { validateMinScore } from './gate.js';
-import { isPathPermitted } from './utils/path-safety.js';
-import { describeBoundary } from './utils/file-path.js';
-import { MAX_TIMEOUT_MS } from './utils/constants.js';
+import { isPathPermitted } from '../utils/path-safety.js';
+import { describeBoundary } from '../utils/file-path.js';
+import { MAX_TIMEOUT_MS } from '../utils/constants.js';
 import type { ToolArgs } from './tool-args-validation.js';
 
 /**

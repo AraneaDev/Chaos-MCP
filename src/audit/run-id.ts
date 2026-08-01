@@ -10,9 +10,9 @@
 import type { MutationResult } from '../engines/base.js';
 import type { SupportedProjectType } from '../engines/registry.js';
 import type { ChaosConfig } from '../utils/config-loader.js';
-import type { MutantKey } from '../verify.js';
+import type { MutantKey } from '../core/verify.js';
 import { mintRunId } from '../utils/run-cache.js';
-import { buildResultPayload } from '../format.js';
+import { buildResultPayload } from '../core/format.js';
 
 /**
  * Mint a runId for non-verify runs so the caller can verify later by id.

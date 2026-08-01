@@ -18,7 +18,7 @@
  * exactly how such a cycle appears.
  */
 
-import type { MutationResult } from './engines/base.js';
+import type { MutationResult } from '../engines/base.js';
 
 /**
  * Does a zero-mutant result prove the file has no mutable logic?

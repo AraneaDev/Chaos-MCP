@@ -1,13 +1,13 @@
 import { readFileSync } from 'node:fs';
-import type { EnvironmentInfo, SupportedProjectType } from './utils/project-detector.js';
+import type { EnvironmentInfo, SupportedProjectType } from '../utils/project-detector.js';
 import { estimateHeuristic } from './estimate-heuristic.js';
-import { invokeMutationTool, MutationToolStartupError } from './utils/exec-classify.js';
-import { escapeCargoFileGlob } from './engines/rust.js';
-import { ENGINE_REGISTRY } from './engines/registry.js';
-import { runShell } from './utils/exec.js';
-import { isCancel } from './utils/cancel.js';
+import { invokeMutationTool, MutationToolStartupError } from '../utils/exec-classify.js';
+import { escapeCargoFileGlob } from '../engines/rust.js';
+import { ENGINE_REGISTRY } from '../engines/registry.js';
+import { runShell } from '../utils/exec.js';
+import { isCancel } from '../utils/cancel.js';
 import { resolveBaselineTestCommand, projectTimingRange } from './baseline-timing.js';
-import type { ExecutionSession } from './utils/execution.js';
+import type { ExecutionSession } from '../utils/execution.js';
 
 export type Fidelity = 'exact' | 'approx';
 

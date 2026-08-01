@@ -4,9 +4,9 @@ import {
   formatResultAsJson,
   buildResultPayload,
   type ResultPayload,
-} from '../format.js';
-import { hasNoMutableLogic, displayMutationScore } from '../score-semantics.js';
-import { evaluateGate } from '../gate.js';
+} from '../core/format.js';
+import { hasNoMutableLogic, displayMutationScore } from '../core/score-semantics.js';
+import { evaluateGate } from '../core/gate.js';
 import type { MutationResult } from '../engines/base.js';
 
 type Vuln = MutationResult['vulnerabilities'][number];

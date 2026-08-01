@@ -11,8 +11,8 @@ vi.mock('../utils/exec.js', async (importOriginal) => {
   return { ...actual, runShellCommand: vi.fn() };
 });
 
-vi.mock('../test-file.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../test-file.js')>();
+vi.mock('../core/test-file.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../core/test-file.js')>();
   return {
     ...actual,
     workspaceHasPythonTests: vi.fn(() => ({ found: true, depthLimited: false })),

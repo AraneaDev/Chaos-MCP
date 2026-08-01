@@ -1,7 +1,7 @@
 import { existsSync, readdirSync } from 'fs';
 import { join, dirname, basename, extname, relative, sep } from 'path';
-import { COMMON_IGNORE_DIRS } from './utils/ignore-dirs.js';
-import { assertNeverProjectType, type SupportedProjectType } from './utils/project-detector.js';
+import { COMMON_IGNORE_DIRS } from '../utils/ignore-dirs.js';
+import { assertNeverProjectType, type SupportedProjectType } from '../utils/project-detector.js';
 
 /**
  * Candidate test-file paths (workspace-root-relative) for a target, in priority

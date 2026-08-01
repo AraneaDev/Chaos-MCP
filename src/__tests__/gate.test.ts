@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { evaluateGate, validateMinScore } from '../gate.js';
+import { evaluateGate, validateMinScore } from '../core/gate.js';
 
 describe('evaluateGate', () => {
   it('passes when score >= minScore', () => {

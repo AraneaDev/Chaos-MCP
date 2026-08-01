@@ -11,12 +11,12 @@ import type { MutationResult } from '../engines/base.js';
 import { type SupportedProjectType } from '../engines/registry.js';
 import type { EnvironmentInfo } from '../utils/project-detector.js';
 import type { ChaosConfig } from '../utils/config-loader.js';
-import type { ToolArgs } from '../tool-args-validation.js';
-import { formatResultAsText, buildResultPayload, type EnrichContext } from '../format.js';
-import { suppressionDriftNotes } from '../score-semantics.js';
-import { evaluateGate } from '../gate.js';
-import { toStructuredContent } from '../tool-result.js';
-import { suggestTestFile } from '../test-file.js';
+import type { ToolArgs } from '../core/tool-args-validation.js';
+import { formatResultAsText, buildResultPayload, type EnrichContext } from '../core/format.js';
+import { suppressionDriftNotes } from '../core/score-semantics.js';
+import { evaluateGate } from '../core/gate.js';
+import { toStructuredContent } from '../core/tool-result.js';
+import { suggestTestFile } from '../core/test-file.js';
 import { applySuppressions } from './apply-suppressions.js';
 import {
   computeVerifyDelta,
@@ -24,7 +24,7 @@ import {
   formatVerifyResultAsText,
   buildVerifyNote,
   type MutantKey,
-} from '../verify.js';
+} from '../core/verify.js';
 import { ignoredOptionsFor, resolveMaxSurvivors, resolveSeverityFloor } from './run-options.js';
 import { loadVerifiedSuppressions, type SuppressionCounts } from './suppression-io.js';
 

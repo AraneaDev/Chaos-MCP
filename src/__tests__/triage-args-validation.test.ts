@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { TRIAGE_ARG_VALIDATORS } from '../triage-args-validation.js';
+import { TRIAGE_ARG_VALIDATORS } from '../core/triage-args-validation.js';
 import { MAX_TIMEOUT_MS } from '../utils/constants.js';
-import type { ToolArgs } from '../tool-args-validation.js';
+import type { ToolArgs } from '../core/tool-args-validation.js';
 
 /** Run the ordered table exactly as `validateTriageArgs` does: first failure wins. */
 const firstError = (args: ToolArgs): string | null => {
