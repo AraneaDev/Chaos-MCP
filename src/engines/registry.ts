@@ -5,6 +5,9 @@ import { TypeScriptEngine } from './typescript.js';
 import { PythonEngine } from './python.js';
 import { RustEngine } from './rust.js';
 import { PhpEngine } from './php.js';
+import { canonicalizePythonMutator } from './python/canonicalize.js';
+import { canonicalizeRustMutator } from './rust/canonicalize.js';
+import { canonicalizePhpMutator } from './php/canonicalize.js';
 import type {
   EnvironmentInfo,
   ProjectType,
@@ -122,6 +125,35 @@ export interface EngineDescriptor {
    * "Supports X (engine), …" prose.
    */
   label: string;
+
+  /**
+   * Translate ONE mutant of this engine's wire vocabulary into a canonical
+   * mutator category — a key of `MUTATOR_SEMANTICS` in enrich.ts — or the
+   * literal `'unknown'` when nothing matches.
+   *
+   * Lives here because every such table decodes exactly one tool's output and is
+   * versioned against that tool: the PHP map is pinned to Infection 0.27–0.34,
+   * the range `php.ts`'s parser declares it reads, and the Rust rules strip
+   * cargo-mutants' `->` arrow. Held two layers up in enrich.ts, PHP simply had
+   * no branch, so every PHP mutant reported severity `unknown` while the output
+   * claimed enrichment had run and a `severityFloor` filtered out 100% of groups
+   * (audit: PHP severities all `unknown`). The engine knew; the consumer did not.
+   *
+   * `rawMutator` is the operator name the engine's parser stored verbatim;
+   * `changeText` is the joined change description, which is the ONLY operator
+   * evidence for cargo-mutants (it exposes no operator field) and must be the
+   * complete set, not a display-capped one.
+   *
+   * OPTIONAL, and omitting it is the honest default for a new language: the
+   * caller falls back to `'unknown'`, i.e. no severity and a why/hint saying so,
+   * rather than borrowing another engine's table. That matters because the name
+   * spaces collide — `TrueValue` is a real Infection mutator that also matches
+   * Python's `/True|False|Boolean/i` rule — and a cross-engine match invents a
+   * confident severity out of a coincidence. Returning a name that is NOT in
+   * `MUTATOR_SEMANTICS` is also treated as `'unknown'`; the caller re-checks, so
+   * this direction never has to import the table upward.
+   */
+  canonicalizeMutator?: (rawMutator: string, changeText?: string) => string;
 }
 
 /**
@@ -142,6 +174,11 @@ export const ENGINE_REGISTRY: Record<SupportedProjectType, EngineDescriptor> = {
     syntaxFamily: 'c',
     displayName: 'StrykerJS',
     label: 'TypeScript/JavaScript',
+    // StrykerJS's mutator names ARE the canonical vocabulary — the other three
+    // engines normalize onto them — so the identity is the whole translation.
+    // The caller still rejects a name that is not in `MUTATOR_SEMANTICS`, which
+    // is what keeps a custom Stryker plugin's mutator out of the table.
+    canonicalizeMutator: (rawMutator) => rawMutator,
   },
   python: {
     make: () => new PythonEngine(),
@@ -152,6 +189,7 @@ export const ENGINE_REGISTRY: Record<SupportedProjectType, EngineDescriptor> = {
     syntaxFamily: 'python',
     displayName: 'cosmic-ray',
     label: 'Python',
+    canonicalizeMutator: canonicalizePythonMutator,
   },
   rust: {
     make: () => new RustEngine(),
@@ -163,6 +201,7 @@ export const ENGINE_REGISTRY: Record<SupportedProjectType, EngineDescriptor> = {
     syntaxFamily: 'c',
     displayName: 'cargo-mutants',
     label: 'Rust',
+    canonicalizeMutator: canonicalizeRustMutator,
   },
   php: {
     make: () => new PhpEngine(),
@@ -173,6 +212,7 @@ export const ENGINE_REGISTRY: Record<SupportedProjectType, EngineDescriptor> = {
     syntaxFamily: 'php',
     displayName: 'Infection',
     label: 'PHP',
+    canonicalizeMutator: canonicalizePhpMutator,
   },
 };
 
@@ -268,7 +308,10 @@ export function resolvePrebuildCommand(
  * 11. resources.ts (`estimateFidelity`) and estimate.ts — both branch on
  *     `=== 'rust'` to mean "exact mutant count"; a new language silently
  *     reports "approx".
- * 12. enrich.ts — per-language severity/hint enrichment; without a branch the
- *     language reports severity "unknown". Plus the Docker image, CI matrix,
- *     and README/CONTRIBUTING tables.
+ * 12. engines/<lang>/canonicalize.ts — the mutator-name → canonical-category
+ *     translation, wired in via the OPTIONAL `canonicalizeMutator` above.
+ *     Without it the language reports severity "unknown" for every survivor —
+ *     honest, but useless. (This used to live in enrich.ts, which is exactly how
+ *     PHP shipped with no branch at all.) Plus the Docker image, CI matrix, and
+ *     README/CONTRIBUTING tables.
  */
