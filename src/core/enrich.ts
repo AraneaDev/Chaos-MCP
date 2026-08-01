@@ -48,6 +48,87 @@ export const UNKNOWN_SEMANTIC = {
 };
 
 /**
+ * Copy for a mutant sitting in an unreachable exhaustiveness guard.
+ *
+ * A `default:` arm whose subject is narrowed to `never` cannot be entered by any
+ * runtime input, so every mutant in it is equivalent: emptying the block or
+ * forcing the branch changes nothing observable. The category table would rate
+ * those `high` and tell the caller to "take BOTH the true and the false branch",
+ * which is advice for a test that cannot be written — the only way in is to cast
+ * an invalid value past the type system, defeating the guard the block exists to
+ * provide. Found by auditing this server with itself: `core/baseline-timing.ts`
+ * scored 98.11% on two such mutants, its only survivors.
+ *
+ * `low` rather than a fourth severity: `Regex` already uses `low` to mean "often
+ * equivalent", and it sorts these below real gaps instead of leading with them.
+ */
+export const EQUIVALENT_GUARD_SEMANTIC = {
+  severity: 'low' as const,
+  why: 'this line is inside an exhaustiveness guard whose subject is narrowed to `never`, so no runtime input reaches it; the mutant is equivalent rather than a test gap.',
+  hint: 'do not write a test for this — reaching it requires casting an invalid value past the type system. Suppress it as equivalent (`suppress: [{ line, mutator, reason }]`) so it stops counting against the score.',
+};
+
+/**
+ * Markers that identify an exhaustiveness guard, kept deliberately narrow.
+ *
+ * Both forms in use here are covered: the helper call
+ * (`assertNeverProjectType(x)` in core/) and the never-typed assignment
+ * (`const unhandled: never = diff` in audit/scope.ts and triage/audit-one.ts).
+ * Generic idioms like `throw new Error('unreachable')` are NOT matched on
+ * purpose: a throwing guard can sit on a reachable error path that genuinely
+ * should be tested, and advising suppression there would hide a real gap. A
+ * missed guard keeps the ordinary (merely unhelpful) advice; a false match
+ * actively misleads, so this errs toward missing.
+ */
+const GUARD_MARKERS = [
+  /\bassertNever[A-Za-z0-9_]*\s*\(/,
+  /\bassertUnreachable\s*\(/,
+  /:\s*never\s*=/,
+];
+
+/**
+ * Ceiling on the guard scan, so an unbalanced brace (or a `{` inside a string,
+ * which this deliberately does not parse) cannot walk the rest of the file.
+ */
+const GUARD_SCAN_MAX_LINES = 40;
+
+/** Whether `line` opens, or is, an exhaustiveness guard.
+ *
+ * Two cases, because Stryker attributes a block mutant to the line that OPENS
+ * the block (`default: {`) while other mutants land on the offending line
+ * itself:
+ *
+ * - the line opens a block → scan to the matching close, capped, for a marker.
+ * - it opens none → only the line itself counts.
+ *
+ * The second case is intentionally not widened to a window around the line: a
+ * neighbouring `default:` arm is often a sibling of the very block being
+ * judged, so a symmetric window would clear a real gap sitting next to a guard.
+ * A mutant deeper inside a guard block (say on its `return undefined`) is
+ * therefore not detected — a miss, not a wrong answer.
+ */
+export function looksLikeExhaustivenessGuard(line: number, sourceLines?: string[]): boolean {
+  if (!sourceLines || line < 1 || line > sourceLines.length) return false;
+  const hasMarker = (text: string): boolean => GUARD_MARKERS.some((m) => m.test(text));
+
+  const first = sourceLines[line - 1];
+  const depthOf = (text: string): number =>
+    (text.match(/\{/g)?.length ?? 0) - (text.match(/\}/g)?.length ?? 0);
+
+  if (depthOf(first) <= 0) return hasMarker(first);
+
+  let depth = 0;
+  const last = Math.min(sourceLines.length, line - 1 + GUARD_SCAN_MAX_LINES);
+  for (let i = line - 1; i < last; i++) {
+    const text = sourceLines[i];
+    if (hasMarker(text)) return true;
+    depth += depthOf(text);
+    if (depth <= 0) return false;
+  }
+  return false;
+}
+
+/**
  * Canonical category → semantics. Category names follow StrykerJS's mutator
  * names (the richest engine); other engines normalize onto these keys.
  */
@@ -236,6 +317,17 @@ export function enrichGroup(input: EnrichGroupInput): Enrichment {
   }
 
   const context = buildContext(input.line, input.sourceLines);
+  // Ahead of the category verdict, and ahead of the `unknown` fallback too: an
+  // unreachable guard is equivalent whatever its operator was, so the actionable
+  // answer is "suppress" even when the mutator could not be classified.
+  if (looksLikeExhaustivenessGuard(input.line, input.sourceLines)) {
+    return {
+      severity: EQUIVALENT_GUARD_SEMANTIC.severity,
+      why: EQUIVALENT_GUARD_SEMANTIC.why,
+      hint: EQUIVALENT_GUARD_SEMANTIC.hint,
+      context,
+    };
+  }
   if (!best) {
     return { severity: 'unknown', why: UNKNOWN_SEMANTIC.why, hint: UNKNOWN_SEMANTIC.hint, context };
   }
