@@ -226,7 +226,15 @@ export async function handleTriageCall(
       deadline,
       cleanupReserveMs: TRIAGE_CLEANUP_RESERVE_MS,
       ctx,
-      onProgress: () => ctx?.reportProgress?.(++done, total, `audited ${done}/${total}`),
+      // Progress stops the moment the request is abandoned. A cancelled sweep
+      // still runs one `onProgress` per file — `auditTriageFile` reports in a
+      // `finally`, and the files it skips on the abort check report too — so
+      // without this gate a cancelled request keeps receiving `audited N/25`
+      // notifications for work nobody is waiting for, right up to 25/25.
+      onProgress: () => {
+        if (ctx?.signal?.aborted) return;
+        ctx?.reportProgress?.(++done, total, `audited ${done}/${total}`);
+      },
     };
 
     // Second abort check: skip the pool entirely if already cancelled before we start.
@@ -234,6 +242,21 @@ export async function handleTriageCall(
     if (ctx?.signal?.aborted) return toolError('Operation cancelled.');
 
     const outcomes = await mapPool(files, poolSize, (file) => auditTriageFile(file, deps));
+
+    // Defensive post-run cancellation check (Finding 6), the sibling of the one
+    // in estimate-handler.ts.
+    //
+    // The catch below is the ONLY place `isCancel` runs, and a cancel landing
+    // DURING the pool can never enter it: `mapPool` does not reject (it stores a
+    // throw in the result slot, utils/pool.ts) and `auditTriageFile` is
+    // documented never to throw — it turns a per-file cancel into an `{ error }`
+    // outcome. So the sweep fell straight through to the ranking below and
+    // handed the caller a NON-isError leaderboard — gate verdict included —
+    // computed over only the files that happened to finish before the stop.
+    // A partial gate is worse than no gate: `gate.passed` would be read as a
+    // verdict on the whole selection.
+    if (ctx?.signal?.aborted) return toolError('Operation cancelled.');
+
     const { rows, errors, unaudited } = partitionOutcomes(outcomes);
 
     const ranking = rows.slice().sort(compareTriageRows);

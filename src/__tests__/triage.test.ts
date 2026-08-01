@@ -204,15 +204,23 @@ describe('rankResults', () => {
     expect(row.noMutableLogic).toBe(true);
   });
 
-  it('does NOT substitute "n/a" when a zero-mutant result carries a scopeNote', () => {
+  // REWRITTEN (Finding 7): the assertion used to be `toBe('100.00%')`, on the
+  // reasoning that "a scoped zero is a real run, left as-is". The run is real;
+  // the SCORE is not. `formatMutationScore(0, 0)` renders the empty denominator
+  // as "100.00%", so a diff with no changed lines was ranked as the safest file
+  // in the sweep on the strength of a percentage nothing was measured for.
+  // `displayMutationScore` now reports "n/a" for every zero-mutant result. What
+  // this test legitimately pinned — that a scoped zero is NOT the same thing as
+  // "this file has no mutable logic" — is unchanged and still asserted below:
+  // `hasNoMutableLogic` keeps its narrower meaning and the row stays unflagged.
+  it('substitutes "n/a" for a zero-mutant result with a scopeNote, without flagging noMutableLogic', () => {
     const [row] = rankResults([
       {
         file: 'a.ts',
         result: mr({ totalMutants: 0, mutationScore: '100.00%', scopeNote: 'no changed lines' }),
       },
     ]);
-    // A scoped zero (e.g. diff no-change) is a real run, left as-is.
-    expect(row.mutationScore).toBe('100.00%');
+    expect(row.mutationScore).toBe('n/a');
     expect(row.noMutableLogic).toBeUndefined();
   });
 

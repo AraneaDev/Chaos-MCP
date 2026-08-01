@@ -704,10 +704,17 @@ describe('handleTriageCall', () => {
   });
 
   describe('cancellation', () => {
-    it('reports a per-file cancel when the signal trips between files', async () => {
+    it('stops starting new files when the signal trips between them', async () => {
       // The per-file pre-check exists so a cancelled sweep stops starting NEW
-      // files instead of running the queue to completion. Serial pool so the
-      // second file is guaranteed to see the abort.
+      // files instead of running the queue to completion — hence auditFile runs
+      // exactly once. Serial pool so the second file is guaranteed to see the
+      // abort.
+      //
+      // What the CALLER sees is now the post-pool check (Finding 6): a sweep
+      // abandoned mid-pool reports the cancel, where it used to render b.ts's
+      // per-file `{ error: 'Operation cancelled.' }` inside a success-shaped
+      // leaderboard. The per-file outcome is still produced; it is simply no
+      // longer what gets returned.
       const controller = new AbortController();
       mockDiscover.mockReturnValue({ files: ['a.ts', 'b.ts'], discovered: 2, skipped: 0 });
       mockAuditFile.mockImplementationOnce(() => {
@@ -719,10 +726,59 @@ describe('handleTriageCall', () => {
       const res = await handleTriageCall(req({ paths: ['src'], fileConcurrency: 1 }), undefined, {
         signal: controller.signal,
       });
-      const payload = JSON.parse(txt(res)) as { errors: { file: string; error: string }[] };
 
-      expect(payload.errors).toContainEqual({ file: 'b.ts', error: 'Operation cancelled.' });
+      expect(res.isError).toBe(true);
+      expect(txt(res)).toBe('Operation cancelled.');
       expect(mockAuditFile).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns a cancel, not a partial ranking, when the signal trips DURING the pool', async () => {
+      // The one cancel window the handler's catch can NEVER see: `mapPool` does
+      // not reject (a throw is stored in the result slot) and `auditTriageFile`
+      // does not throw, so nothing routes a mid-pool abort to `mapHandlerFailure`.
+      // Without the post-pool check the sweep fell through to the ranking and
+      // returned a NON-isError leaderboard — `gate.passed` included — computed
+      // over only the files that finished before the stop (Finding 6).
+      const controller = new AbortController();
+      mockDiscover.mockReturnValue({ files: ['a.ts'], discovered: 1, skipped: 0 });
+      mockAuditFile.mockImplementation(() => {
+        controller.abort();
+        return Promise.resolve(mrOf({ mutationScore: '50.00%', survived: 5 }));
+      });
+
+      const res = await handleTriageCall(req({ paths: ['src'], minScore: 80 }), undefined, {
+        signal: controller.signal,
+      });
+
+      // The file WAS audited — the abort landed while the pool was running.
+      expect(mockAuditFile).toHaveBeenCalledTimes(1);
+      expect(res.isError).toBe(true);
+      expect(txt(res)).toBe('Operation cancelled.');
+      // No ranking, and above all no gate verdict over a partial file set.
+      expect(res.structuredContent).toBeUndefined();
+      expect(txt(res)).not.toContain('gate');
+    });
+
+    it('reports no further progress once the request is abandoned', async () => {
+      // Every file still runs `onProgress` in a `finally` — including the ones
+      // the abort check skips — so an ungated callback kept pushing
+      // `audited N/3` notifications at a caller that had already walked away.
+      // Serial pool: a.ts completes normally (1 report), b.ts aborts mid-audit,
+      // c.ts is skipped; neither of the last two may report.
+      const controller = new AbortController();
+      mockDiscover.mockReturnValue({ files: ['a.ts', 'b.ts', 'c.ts'], discovered: 3, skipped: 0 });
+      mockAuditFile.mockResolvedValueOnce(mrOf({}));
+      mockAuditFile.mockImplementationOnce(() => {
+        controller.abort();
+        return Promise.resolve(mrOf({}));
+      });
+      mockAuditFile.mockResolvedValue(mrOf({}));
+      const ctx = { signal: controller.signal, reportProgress: vi.fn() };
+
+      await handleTriageCall(req({ paths: ['src'], fileConcurrency: 1 }), undefined, ctx);
+
+      expect(ctx.reportProgress).toHaveBeenCalledTimes(1);
+      expect(ctx.reportProgress).toHaveBeenCalledWith(1, 3, 'audited 1/3');
     });
 
     it('reports a cancelled sandbox as a cancel, not a provisioning failure', async () => {
@@ -881,6 +937,41 @@ describe('handleTriageCall', () => {
     it('mints a row runId on the happy path', async () => {
       mockDiscover.mockReturnValue({ files: ['a.ts'], discovered: 1, skipped: 0 });
       mockAuditFile.mockResolvedValue(mrOf({}));
+
+      const res = await handleTriageCall(req({ paths: ['src'] }));
+      const row = (JSON.parse(txt(res)) as { ranking: { runId?: string }[] }).ranking[0];
+
+      expect(row.runId).toMatch(/^[0-9a-f]{8}$/);
+    });
+
+    // ── Finding 3: a SCOPED row must not hand back a verify baseline ──
+    it('withholds the row runId when the row was scored on changed lines only', async () => {
+      // `triage_test_coverage { diffBase }` scores each file on its changed
+      // lines. Verify re-runs the WHOLE file and reports every fresh survivor
+      // outside the baseline as a `newSurvivor` — "your change introduced these
+      // uncaught mutants" — so a line-scoped baseline libels every pre-existing
+      // survivor on an unchanged line as a regression the caller just caused.
+      mockDiscover.mockReturnValue({ files: ['a.ts'], discovered: 1, skipped: 0 });
+      mockAuditFile.mockResolvedValue(mrOf({ scopeKind: 'scoped' }));
+
+      const res = await handleTriageCall(req({ paths: ['src'] }));
+      const row = (JSON.parse(txt(res)) as { ranking: Record<string, unknown>[] }).ranking[0];
+
+      expect(res.isError).toBeUndefined();
+      expect(Object.keys(row)).not.toContain('runId');
+      expect(mockMintRunId).not.toHaveBeenCalled();
+      // The row itself is unaffected — only the verify token is withheld.
+      expect(row.mutationScore).toBe('80.00%');
+    });
+
+    it('still mints for a BATCHED whole-file row, whose batches are an implementation detail', async () => {
+      // `engines/typescript/batches.ts` reports the REQUESTED scope, so a large
+      // file covered in several batches is `'whole-file'` and its baseline is
+      // a sound one to verify against. Pins the guard to `=== 'scoped'`.
+      mockDiscover.mockReturnValue({ files: ['a.ts'], discovered: 1, skipped: 0 });
+      mockAuditFile.mockResolvedValue(
+        mrOf({ scopeKind: 'whole-file', scopeNote: 'Completed 4 bounded mutation batches.' }),
+      );
 
       const res = await handleTriageCall(req({ paths: ['src'] }));
       const row = (JSON.parse(txt(res)) as { ranking: { runId?: string }[] }).ranking[0];

@@ -39,6 +39,11 @@ import type { TriageRow, TriageError } from '../core/triage.js';
  * "Unaudited" is deliberately neither of the other two — nothing went wrong and
  * nothing was measured, so the caller can re-run for the remainder instead of
  * reading the ranking as covering everything they asked for.
+ *
+ * It covers two moments, both "never started": before any work was done for the
+ * file, and after provisioning (diff scoping + the sandbox copy) spent what was
+ * left, which is why the budget is re-read once the sandbox exists rather than
+ * trusted from before it.
  */
 export type TriageAuditOutcome =
   | { row: TriageRow }
@@ -236,13 +241,28 @@ function buildTriageRow(input: RowInput, deps: TriageFileDeps): TriageRow {
   // (the documented cross-tool flow). `audit/scope.ts` now refuses a hash-less
   // entry, so a row minted without this would hand the caller a runId that no
   // verify could ever accept.
+  //
+  // NOT minted for a SCOPED row (Finding 3). `triage_test_coverage { diffBase }`
+  // audits each file on its CHANGED LINES only, and a runId's only use is as a
+  // verify baseline — but verify re-runs the whole file and reports every fresh
+  // survivor that is not in the baseline as a `newSurvivor`, worded "your change
+  // introduced these uncaught mutants" (`core/prompts.ts`, the `triage_changes`
+  // flow). Handing back a line-scoped baseline therefore libels every
+  // PRE-EXISTING survivor on an unchanged line as a regression the caller just
+  // caused. Withholding the id is the honest answer: the row still carries its
+  // score and survivors, and the caller can re-audit the file whole-file to get
+  // a baseline that can be verified. Same rule, same reasoning and the same
+  // `scopeKind === 'scoped'` test as `audit/run-id.ts` — see the long comment
+  // there for why that test is exact rather than approximate.
   let rowRunId: string | undefined;
   try {
-    rowRunId = mintRunId(buildResultPayload(result, {}), input.relFromRoot, projectType, {
-      ttlMs: deps.cfg.runCacheTtlMs,
-      max: deps.cfg.runCacheMax,
-      workspaceRoot: input.workspaceRoot,
-    });
+    if (result.scopeKind !== 'scoped') {
+      rowRunId = mintRunId(buildResultPayload(result, {}), input.relFromRoot, projectType, {
+        ttlMs: deps.cfg.runCacheTtlMs,
+        max: deps.cfg.runCacheMax,
+        workspaceRoot: input.workspaceRoot,
+      });
+    }
   } catch {
     rowRunId = undefined;
   }
@@ -291,6 +311,16 @@ function suppressionsFor(workspaceRoot: string, deps: TriageFileDeps): Map<strin
   return loaded;
 }
 
+/**
+ * The smallest slice of the sweep's budget worth starting an engine with.
+ *
+ * Mirrors `MIN_ENGINE_BUDGET_MS` in `handler.ts`, which applies the same floor
+ * to the single-file audit tool. It is restated rather than imported because
+ * that constant is local to `reserveEngineBudget` and the handler is not a
+ * dependency of this module.
+ */
+const MIN_ENGINE_BUDGET_MS = 1_000;
+
 /** The per-file arguments handed to the shared `auditFile` core. */
 function buildPerFileArgs(
   fileBudgetMs: number,
@@ -332,6 +362,12 @@ export async function auditTriageFile(
     // error (nothing went wrong) nor a result (nothing was measured) — report
     // it as unaudited so the caller can re-run for the remainder rather than
     // read the ranking as covering everything it asked for.
+    //
+    // This is the FIRST of two reads. It only bounds the pre-engine work (the
+    // git calls in `resolveDiffScope`); the engine's own timeout comes from a
+    // SECOND read taken after the sandbox copy, because everything between the
+    // two — up to four git calls and a full workspace copy — spends wall-clock
+    // this number does not know about. See the re-read below.
     const fileBudgetMs = deps.deadline.remainingMs(deps.cleanupReserveMs);
     if (fileBudgetMs <= 0) return { unaudited: file };
     const target = resolveAuditTargetIn(deps.rootCwd, file);
@@ -342,9 +378,8 @@ export async function auditTriageFile(
     const suppressionMap = suppressionsFor(env.workspaceRoot, deps);
     const engine = makeEngine(projectType);
 
-    const perFileArgs = buildPerFileArgs(fileBudgetMs, projectType, deps);
-    // `undefined`, not `perFileArgs.prebuildCommand`: triage has never accepted
-    // a caller-supplied prebuildCommand — `buildPerFileArgs` constructs the bag
+    // `undefined`, not a value off the args bag: triage has never accepted a
+    // caller-supplied prebuildCommand — `buildPerFileArgs` constructs the bag
     // from scratch with three keys and that is not one of them — so only the
     // registry's auto-prebuild (Rust's `cargo check`) can apply here. Reading it
     // off the bag would have been dead code that implied an ungated path for an
@@ -372,6 +407,22 @@ export async function auditTriageFile(
     }
     let result: MutationResult;
     try {
+      // Re-read the budget now that provisioning is done (audit Med#9). The
+      // first read happened before up to four git calls (each clamped to
+      // min(15s, fileBudgetMs)) and before the whole untimed workspace copy, so
+      // handing it to the engine promised time the sweep no longer has —
+      // multiplied by every worker in flight. This read is the one the engine
+      // is actually held to.
+      //
+      // Falling under the floor lands in the SAME "unaudited" bucket as a file
+      // that never started: nothing went wrong and nothing was measured, so the
+      // caller can re-run for the remainder rather than read the ranking as
+      // covering everything it asked for. Starting an engine that provably
+      // cannot finish would instead spend the reserve and report a failure.
+      // The `finally` below still cleans the sandbox up on this path.
+      const engineBudgetMs = deps.deadline.remainingMs(deps.cleanupReserveMs);
+      if (engineBudgetMs < MIN_ENGINE_BUDGET_MS) return { unaudited: file };
+      const perFileArgs = buildPerFileArgs(engineBudgetMs, projectType, deps);
       result = await auditFile({
         targetFile,
         env,
