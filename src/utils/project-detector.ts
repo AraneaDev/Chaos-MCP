@@ -1,77 +1,51 @@
-import { existsSync, readFileSync } from 'fs';
+/**
+ * Workspace detection: which language a target file belongs to, where its
+ * workspace root is, and how its tests are run.
+ *
+ * This module is the ASSEMBLY POINT and nothing else. It owns the parts that
+ * are genuinely language-independent — the extension dispatch, the upward walk
+ * for a root marker, and the `EnvironmentInfo` composition — while each
+ * language's own signals live in `utils/detectors/<language>.ts` behind the
+ * `LanguageDetector` seam. Adding a language is a new detector module plus one
+ * line in {@link LANGUAGE_DETECTORS}, rather than six edits scattered through a
+ * 750-line file.
+ *
+ * The per-language `detect*` functions are re-exported here because they are
+ * the surface the test suite and the engines already import; the split moved
+ * where they live, not what the module offers.
+ */
+import { existsSync } from 'fs';
 import { resolve, dirname, join } from 'path';
 import { workspaceRootBoundary } from './path-safety.js';
+import type { LanguageDetector, ProjectType, SupportedProjectType } from './detectors/types.js';
+import { typescriptDetector } from './detectors/typescript.js';
+import { pythonDetector } from './detectors/python.js';
+import { rustDetector } from './detectors/rust.js';
+import { phpDetector } from './detectors/php.js';
+import type { EnvironmentInfo } from './detectors/types.js';
 
-/**
- * Supported project types for mutation testing.
- */
-export type ProjectType = 'typescript' | 'python' | 'rust' | 'php' | 'unsupported';
+export type { ProjectType, SupportedProjectType, EnvironmentInfo };
+export { assertNeverProjectType } from './detectors/types.js';
+export { detectJsTestRunner, detectRawJsRunner } from './detectors/typescript.js';
+export {
+  detectPythonTestRunner,
+  detectRawPythonRunner,
+  detectPythonPackageManager,
+} from './detectors/python.js';
+export { detectRustTestRunner, detectRawRustRunner } from './detectors/rust.js';
+export { detectPhpTestRunner, detectRawPhpRunner } from './detectors/php.js';
 
-/**
- * The project types that map to a real mutation engine (everything but
- * 'unsupported').
- *
- * Declared here, in the detection leaf, rather than next to the engine registry
- * that consumes it: `utils/execution.ts` needs this type, and importing it from
- * `engines/registry.ts` made a utility depend on the engine layer — closing an
- * 8-module import cycle (exec-classify → execution → registry → engines →
- * exec-classify). `engines/registry.ts` re-exports it for existing callers.
- */
-export type SupportedProjectType = Exclude<ProjectType, 'unsupported'>;
+// ─── Per-language detection registry ─────────────────────────────────────────
 
-/**
- * Compile-time exhaustiveness guard for {@link SupportedProjectType} switches.
- *
- * Call it from a `default:` clause whose subject has been narrowed to `never`.
- * Adding a member to {@link ProjectType} then turns every unhandled switch into
- * a COMPILE error instead of a silent fallback (audit F15: seven of the eleven
- * sites a new language touches failed silently).
- *
- * Deliberately a no-op at runtime, NOT a throw: the call sites it guards all
- * have a safe fallback value today, and turning a silent fallback into a
- * runtime crash would change behaviour. The value is the compile error.
- */
-export function assertNeverProjectType(value: never): void {
-  void value;
-}
+const LANGUAGE_DETECTORS: Record<SupportedProjectType, LanguageDetector> = {
+  typescript: typescriptDetector,
+  python: pythonDetector,
+  rust: rustDetector,
+  php: phpDetector,
+};
 
-/**
- * Structured environment information resolved from workspace signals.
- * Carries everything the mutation engines need to configure themselves.
- */
-export interface EnvironmentInfo {
-  /** Language family of the target file */
-  projectType: ProjectType;
-
-  /**
-   * The test runner name to pass to the mutation engine.
-   *
-   * For JS/TS (Stryker-compatible): 'vitest' | 'jest' | 'mocha' | 'jasmine' | 'command'
-   * For Python (Mutmut-compatible): 'pytest' | 'unittest' | custom command string
-   *
-   * Runners without native Stryker plugins (bun, ava, node:test) map to 'command'.
-   */
-  testRunner: string;
-
-  /**
-   * The raw runner detected from workspace signals, before mapping to a
-   * Stryker/mutmut-compatible value. Useful for diagnostics.
-   *
-   * Example: when bun is detected, `testRunner` will be 'command' but
-   * `detectedRunner` will be 'bun'.
-   */
-  detectedRunner: string;
-
-  /**
-   * Detected Python package manager ('pip', 'uv', 'poetry', or '' for non-Python).
-   * Surfaces the project's dependency manager for diagnostics and future
-   * prebuild-command defaults.
-   */
-  packageManager: string;
-
-  /** Absolute path to the resolved workspace root directory */
-  workspaceRoot: string;
-}
+/** Detection order — preserves the original typescript→python→rust sequence. */
+const LANGUAGE_DETECTOR_TYPES = Object.keys(LANGUAGE_DETECTORS) as SupportedProjectType[];
 
 // ─── File-extension detection (preserved from original) ──────────────────────
 
@@ -106,24 +80,6 @@ export function detectProjectType(filePath: string): ProjectType {
 
 /** Maximum number of parent directories to traverse when searching for a workspace root. */
 const MAX_WALK_DEPTH = 10;
-
-/** Marker files that indicate a JS/TS project root. */
-const JS_ROOT_MARKERS = ['package.json'] as const;
-
-/** Marker files that indicate a Rust project root. */
-const RUST_ROOT_MARKERS = ['Cargo.toml'] as const;
-
-/** Marker files that indicate a PHP project root. */
-const PHP_ROOT_MARKERS = ['composer.json'] as const;
-
-/** Marker files that indicate a Python project root. */
-const PY_ROOT_MARKERS = [
-  'pyproject.toml',
-  'setup.py',
-  'setup.cfg',
-  'uv.lock',
-  'poetry.lock',
-] as const;
 
 /**
  * Walk upward from `startDir` looking for a directory containing one of the
@@ -166,508 +122,7 @@ export function resolveWorkspaceRoot(
   return resolve(startDir);
 }
 
-// ─── JS/TS test runner detection ─────────────────────────────────────────────
-
-/** Config files whose presence unambiguously identifies a test runner. */
-const JS_CONFIG_SIGNALS: { files: string[]; runner: string }[] = [
-  {
-    files: ['vitest.config.ts', 'vitest.config.js', 'vitest.config.mts', 'vitest.config.mjs'],
-    runner: 'vitest',
-  },
-  {
-    files: ['jest.config.ts', 'jest.config.js', 'jest.config.mjs', 'jest.config.cjs'],
-    runner: 'jest',
-  },
-  {
-    files: ['.mocharc.yml', '.mocharc.yaml', '.mocharc.json', '.mocharc.js', '.mocharc.cjs'],
-    runner: 'mocha',
-  },
-  {
-    files: ['jasmine.json', 'spec/support/jasmine.json'],
-    runner: 'jasmine',
-  },
-];
-
-/**
- * Read and parse a JSON file, returning `null` on any failure.
- * @internal
- */
-function readJsonSafe(filePath: string): Record<string, unknown> | null {
-  try {
-    const raw = readFileSync(filePath, 'utf-8');
-    return JSON.parse(raw) as Record<string, unknown>;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Shared low-level runner detection that returns the raw runner name.
- * Callers should use {@link detectJsTestRunner} for Stryker-compatible values.
- *
- * Returns 'bun' or 'node:test' etc. when those runners are detected.
- *
- * @internal
- */
-function detectJsRunnerRaw(workspaceRoot: string): string {
-  // ── Priority 1: config files ──
-  for (const signal of JS_CONFIG_SIGNALS) {
-    for (const file of signal.files) {
-      if (existsSync(join(workspaceRoot, file))) {
-        return signal.runner;
-      }
-    }
-  }
-
-  // ── Priority 1.5: bunfig.toml or bun.lockb (bun project signals) ──
-  if (
-    existsSync(join(workspaceRoot, 'bunfig.toml')) ||
-    existsSync(join(workspaceRoot, 'bun.lockb'))
-  ) {
-    return 'bun';
-  }
-
-  // ── Priority 2 & 3: package.json scanning ──
-  const pkgPath = join(workspaceRoot, 'package.json');
-  const pkg = readJsonSafe(pkgPath);
-
-  if (pkg) {
-    const deps = {
-      ...(typeof pkg.dependencies === 'object' && pkg.dependencies !== null
-        ? (pkg.dependencies as Record<string, unknown>)
-        : {}),
-      ...(typeof pkg.devDependencies === 'object' && pkg.devDependencies !== null
-        ? (pkg.devDependencies as Record<string, unknown>)
-        : {}),
-    };
-
-    // Priority 2: dependency keys
-    if ('vitest' in deps) return 'vitest';
-    if ('jest' in deps) return 'jest';
-    if ('mocha' in deps) return 'mocha';
-    if ('jasmine' in deps) return 'jasmine';
-    if ('bun' in deps || 'bun-types' in deps) return 'bun';
-
-    // Priority 3: scripts.test content
-    const scripts =
-      typeof pkg.scripts === 'object' && pkg.scripts !== null
-        ? (pkg.scripts as Record<string, unknown>)
-        : {};
-
-    const testScript = typeof scripts.test === 'string' ? scripts.test : '';
-
-    if (testScript.includes('vitest')) return 'vitest';
-    if (testScript.includes('jest')) return 'jest';
-    if (testScript.includes('mocha')) return 'mocha';
-    if (testScript.includes('jasmine')) return 'jasmine';
-    if (/bun (?:run )?test/.test(testScript)) return 'bun';
-    if (testScript.includes('node --test') || testScript.includes('node:test')) return 'node:test';
-  }
-
-  // ── Priority 4: generic fallback ──
-  return 'command';
-}
-
-/**
- * Read the MAJOR version of the vitest actually installed in the workspace,
- * or null when it can't be determined. Reads node_modules/vitest/package.json
- * — the version that will actually run — rather than the declared semver range,
- * which may be a caret/range that doesn't pin a single major.
- */
-function installedVitestMajor(workspaceRoot: string): number | null {
-  // Walk up ancestor node_modules (Node's own resolution order) so a vitest
-  // hoisted to a monorepo/workspace root is still found — not just one installed
-  // directly under workspaceRoot.
-  let dir = workspaceRoot;
-  for (;;) {
-    const pkg = readJsonSafe(join(dir, 'node_modules', 'vitest', 'package.json'));
-    const version = pkg && typeof pkg.version === 'string' ? pkg.version : null;
-    if (version !== null) {
-      const major = Number.parseInt(version.split('.')[0], 10);
-      return Number.isInteger(major) ? major : null;
-    }
-    const parent = dirname(dir);
-    if (parent === dir) return null;
-    dir = parent;
-  }
-}
-
-/**
- * Map a raw runner name to a Stryker-compatible value.
- * Runners without native Stryker plugins (bun, node:test) map to 'command'.
- *
- * vitest 3.x fallback: StrykerJS 9's `@stryker-mutator/vitest-runner` is
- * incompatible with vitest 3 (it relies on vitest 2's removed `--related`
- * API), so the native runner aborts the run. When the installed vitest is
- * major >= 3 we fall back to Stryker's built-in command runner (`npm test`),
- * which drives any framework as a black box — mutation testing still works,
- * at the cost of no per-mutant coverage optimization (the full suite runs per
- * mutant). vitest <= 2 (or an undeterminable version) keeps the faster native
- * vitest-runner, so behavior is unchanged for those projects.
- */
-function toStrykerRunner(raw: string, workspaceRoot: string): string {
-  if (raw === 'bun' || raw === 'node:test') return 'command';
-  if (raw === 'vitest') {
-    const major = installedVitestMajor(workspaceRoot);
-    if (major !== null && major >= 3) return 'command';
-  }
-  return raw;
-}
-
-/**
- * Detect the JS/TS test runner from workspace signals, returning a
- * Stryker-compatible value.
- *
- * Priority order:
- * 1. Dedicated config files (vitest.config.*, jest.config.*, .mocharc.*, jasmine.json, bunfig.toml)
- * 2. package.json dependencies / devDependencies
- * 3. package.json scripts.test content
- * 4. Fallback: 'command' (Stryker's generic npm test runner)
- *
- * Runners without native Stryker plugins (bun, node:test) are detected
- * but mapped to 'command' since Stryker falls back to `npm test`.
- * Use {@link detectRawJsRunner} to get the unmapped value.
- *
- * @internal Exported for testing only.
- */
-export function detectJsTestRunner(workspaceRoot: string): string {
-  return toStrykerRunner(detectJsRunnerRaw(workspaceRoot), workspaceRoot);
-}
-
-/**
- * Detect the raw JS/TS test runner from workspace signals, without mapping
- * to Stryker-compatible values.
- *
- * Returns 'bun' or 'node:test' when those runners are detected, unlike
- * {@link detectJsTestRunner} which maps them to 'command'.
- *
- * @internal Exported for testing only.
- */
-export function detectRawJsRunner(workspaceRoot: string): string {
-  return detectJsRunnerRaw(workspaceRoot);
-}
-
-// ─── Python test runner detection ────────────────────────────────────────────
-
-/**
- * Read a file as UTF-8 text, returning `null` on any failure.
- * @internal
- */
-function readTextSafe(filePath: string): string | null {
-  try {
-    return readFileSync(filePath, 'utf-8');
-  } catch {
-    return null;
-  }
-}
-
-/**
- * The `[tool.mutmut]` table header, on a line of its own.
- *
- * Anchored (`^…$` with `m`) rather than located with `indexOf('[tool.mutmut]')`,
- * which matched the literal ANYWHERE — inside a `# see [tool.mutmut] for …`
- * comment, or inside a string value such as `description = "reads [tool.mutmut]"`.
- * Either produced a "section" that was really prose, and whatever `runner = "…"`
- * happened to follow it became a shell command cosmic-ray runs once per mutant.
- * A trailing `# comment` after the header is tolerated because TOML allows it;
- * anything else on the line (including a leading `#`) disqualifies the match.
- */
-const MUTMUT_SECTION_RE = /^[ \t]*\[tool\.mutmut\][ \t]*(?:#.*)?$/m;
-
-/**
- * The `runner` key inside that table.
- *
- * `^\s*` (with `m`) is load-bearing: the previous unanchored `runner\s*=` also
- * matched every key ENDING in `runner` — `test_runner = "…"`, `custom_runner =
- * "…"` — and mutmut reads neither. The value is used verbatim as cosmic-ray's
- * `test-command`, so matching the wrong key shells the wrong string per mutant.
- */
-const MUTMUT_RUNNER_RE = /^\s*runner\s*=\s*["']([^"']+)["']/m;
-
-/** The start of the NEXT TOML table, used to bound the `[tool.mutmut]` slice. */
-const NEXT_TABLE_RE = /^[ \t]*\[/m;
-
-/**
- * Extract `[tool.mutmut] runner` from pyproject.toml content, or `null`.
- *
- * Deliberately NOT a TOML parser: pulling a parser dependency into the detection
- * leaf (shared by all four languages) to read one optional key is not worth the
- * weight, and the anchored regexes above close the two holes that actually
- * mattered — a header matched inside a comment/string, and a key matched by
- * suffix. Residual limitation, accepted knowingly: a `[tool.mutmut]` header or a
- * `runner = "…"` line that appears at the start of a line INSIDE a TOML
- * multi-line basic string (`"""…"""`) is still matched, because recognising
- * those requires tracking string state across the whole file. Such content in a
- * real pyproject.toml would be pathological, and the value it produces is still
- * gated by `isRepoTestCommandAllowed` in engines/python.ts before it can reach a
- * shell.
- *
- * @internal
- */
-function readMutmutRunner(pyprojectContent: string): string | null {
-  const header = MUTMUT_SECTION_RE.exec(pyprojectContent);
-  if (header === null) return null;
-
-  // Bound the section at the next table header so a `runner` key belonging to a
-  // LATER table (`[tool.other] runner = "wrong"`) is never picked up.
-  const afterHeader = pyprojectContent.slice(header.index + header[0].length);
-  const nextTable = afterHeader.search(NEXT_TABLE_RE);
-  const section = nextTable === -1 ? afterHeader : afterHeader.slice(0, nextTable);
-
-  const runnerMatch = MUTMUT_RUNNER_RE.exec(section);
-  return runnerMatch === null ? null : runnerMatch[1];
-}
-
-/**
- * Detect the Python test runner from workspace signals.
- *
- * Priority order:
- * 1. pyproject.toml contains [tool.pytest] or [tool.pytest.ini_options]
- * 2. pytest.ini or conftest.py exists in workspace root
- * 3. setup.cfg contains [tool:pytest]
- * 4. tox.ini or noxfile.py — detected as tox/nox orchestrator (maps to 'pytest' for mutmut)
- * 5. pyproject.toml [tool.mutmut] runner key
- * 6. Fallback: 'pytest'
- *
- * Note: tox and nox are CI orchestrators, not test runners themselves.
- * When detected, the engine will still default to 'pytest' since that is
- * what tox typically runs underneath. Use `detectedRunner` on
- * {@link EnvironmentInfo} to see the raw detection result.
- *
- * @internal Exported for testing only.
- */
-export function detectPythonTestRunner(workspaceRoot: string): string {
-  // ── Priority 1: pyproject.toml pytest markers ──
-  const pyprojectPath = join(workspaceRoot, 'pyproject.toml');
-  const pyprojectContent = readTextSafe(pyprojectPath);
-
-  if (pyprojectContent) {
-    if (
-      pyprojectContent.includes('[tool.pytest]') ||
-      pyprojectContent.includes('[tool.pytest.ini_options]')
-    ) {
-      return 'pytest';
-    }
-  }
-
-  // ── Priority 2: standalone pytest markers ──
-  if (existsSync(join(workspaceRoot, 'pytest.ini'))) return 'pytest';
-  if (existsSync(join(workspaceRoot, 'conftest.py'))) return 'pytest';
-
-  // ── Priority 3: setup.cfg pytest markers ──
-  const setupCfgContent = readTextSafe(join(workspaceRoot, 'setup.cfg'));
-  if (setupCfgContent && setupCfgContent.includes('[tool:pytest]')) {
-    return 'pytest';
-  }
-
-  // ── Priority 4: tox / nox orchestrator markers ──
-  // tox.ini and noxfile.py indicate the project uses these CI orchestrators.
-  // They are not test runners themselves — mutmut defaults to 'pytest' underneath.
-  if (existsSync(join(workspaceRoot, 'tox.ini'))) return 'pytest';
-  if (existsSync(join(workspaceRoot, 'noxfile.py'))) return 'pytest';
-
-  // ── Priority 5: mutmut config runner override ──
-  const mutmutRunner = pyprojectContent ? readMutmutRunner(pyprojectContent) : null;
-  if (mutmutRunner !== null) return mutmutRunner;
-
-  // ── Priority 6: default ──
-  return 'pytest';
-}
-
-/**
- * Detect the raw Python test runner / orchestrator from workspace signals,
- * without mapping tox/nox to 'pytest'.
- *
- * Returns 'tox' or 'nox' when those orchestrators are detected, unlike
- * {@link detectPythonTestRunner} which returns 'pytest' in those cases.
- *
- * @internal Exported for testing only.
- */
-export function detectRawPythonRunner(workspaceRoot: string): string {
-  // Check for tox/nox BEFORE pytest markers (they're orchestrators, not runners)
-  if (existsSync(join(workspaceRoot, 'tox.ini'))) return 'tox';
-  if (existsSync(join(workspaceRoot, 'noxfile.py'))) return 'nox';
-
-  // Fall back to the standard runner detection
-  return detectPythonTestRunner(workspaceRoot);
-}
-
-// ─── Python package manager detection ────────────────────────────────────────
-
-/**
- * Detect the Python package manager from workspace signals.
- *
- * Priority order:
- * 1. uv.lock exists → 'uv'
- * 2. poetry.lock exists → 'poetry'
- * 3. pyproject.toml contains [tool.uv] or [tool.uv.*] → 'uv'
- * 4. pyproject.toml contains [tool.poetry] or [tool.poetry.*] → 'poetry'
- * 5. Fallback: 'pip'
- *
- * @internal Exported for testing only.
- */
-export function detectPythonPackageManager(workspaceRoot: string): string {
-  // Priority 1-2: lock files (fastest signal)
-  if (existsSync(join(workspaceRoot, 'uv.lock'))) return 'uv';
-  if (existsSync(join(workspaceRoot, 'poetry.lock'))) return 'poetry';
-
-  // Priority 3-4: pyproject.toml sections
-  const pyprojectContent = readTextSafe(join(workspaceRoot, 'pyproject.toml'));
-  if (pyprojectContent) {
-    // [tool.uv] or [tool.uv.sources] etc.
-    if (/\[tool\.uv\b/.test(pyprojectContent)) return 'uv';
-    // [tool.poetry] or [tool.poetry.dependencies] etc.
-    if (/\[tool\.poetry\b/.test(pyprojectContent)) return 'poetry';
-  }
-
-  // Priority 5: default
-  return 'pip';
-}
-
-// ─── Rust test runner detection ──────────────────────────────────────────────
-
-/**
- * Detect the Rust test runner from workspace signals.
- *
- * Priority order:
- * 1. nextest.toml or .config/nextest.toml exists → 'cargo nextest run'
- * 2. Cargo.toml [dev-dependencies] contains criterion → 'cargo test' (with criterion benchmarks)
- * 3. Fallback: 'cargo test'
- *
- * Note: cargo-nextest is a separately installed CLI tool, not a Cargo.toml
- * dependency. We detect it via its config file.
- *
- * @internal Exported for testing only.
- */
-export function detectRustTestRunner(workspaceRoot: string): string {
-  // Priority 1: cargo-nextest config file
-  if (
-    existsSync(join(workspaceRoot, 'nextest.toml')) ||
-    existsSync(join(workspaceRoot, '.config', 'nextest.toml'))
-  ) {
-    return 'cargo nextest run';
-  }
-
-  // Priority 2: criterion benchmarks in Cargo.toml dev-dependencies
-  const cargoContent = readTextSafe(join(workspaceRoot, 'Cargo.toml'));
-  if (cargoContent && cargoContent.includes('criterion')) {
-    // criterion is a benchmarking library, not a test runner — still use cargo test
-    // but note the presence for diagnostics
-    return 'cargo test';
-  }
-
-  // Priority 3: default
-  return 'cargo test';
-}
-
-/**
- * Detect the raw Rust test runner without mapping.
- *
- * @internal Exported for testing only.
- */
-export function detectRawRustRunner(workspaceRoot: string): string {
-  return detectRustTestRunner(workspaceRoot);
-}
-
-// ─── PHP test runner detection ───────────────────────────────────────────────
-
-/**
- * Detect the PHP test runner. v1 targets PHPUnit only: presence of
- * phpunit.xml / phpunit.xml.dist (or a project-supplied infection.json which
- * carries its own framework) resolves to 'phpunit'. Returns 'phpunit' as the
- * default since Infection defaults to PHPUnit.
- *
- * @internal Exported for testing only.
- */
-export function detectPhpTestRunner(_workspaceRoot: string): string {
-  return 'phpunit';
-}
-
-/**
- * Detect the raw PHP test runner without mapping.
- * @internal Exported for testing only.
- */
-export function detectRawPhpRunner(workspaceRoot: string): string {
-  return detectPhpTestRunner(workspaceRoot);
-}
-
-// ─── Per-language detection registry ─────────────────────────────────────────
-
-/**
- * Per-language detection metadata. Single source of truth for "what languages
- * are supported and how each is detected", replacing the parallel
- * `projectType === '…'` ternary chains previously inlined in
- * {@link detectProjectType} and {@link detectEnvironment}. The execution-side
- * counterpart lives in engines/registry.ts.
- */
-interface LanguageDetector {
-  /** True when the target file belongs to this language (by extension). */
-  matches: (filePath: string) => boolean;
-  /**
-   * Source-file extensions this language owns, most idiomatic first, lowercase
-   * and dot-prefixed. Single source of truth for every "which files can be
-   * audited" list in the codebase — triage discovery
-   * ({@link supportedSourceExtensions}) and the MCP tool-schema prose both
-   * derive from it, so a new language cannot ship with triage silently unable
-   * to discover its files.
-   *
-   * Intentionally NOT the same predicate as {@link LanguageDetector.matches}:
-   * `matches` is deliberately wider for TypeScript (it also accepts `.mjs`,
-   * `.cjs`, `.mts`, `.cts`), and narrowing it to this list would change which
-   * files detect as a supported project. This list is the discovery/prose set.
-   */
-  extensions: readonly string[];
-  /**
-   * The subset of {@link LanguageDetector.extensions} used in space-constrained
-   * prose (schema descriptions that name a few representative extensions rather
-   * than enumerating variant forms). Defaults to `extensions` when omitted.
-   */
-  primaryExtensions?: readonly string[];
-  /** Root-marker files used to resolve the workspace root. */
-  markers: readonly string[];
-  /** Stryker/mutmut-compatible test-runner detection. */
-  testRunner: (workspaceRoot: string) => string;
-  /** Raw runner/orchestrator detection, for diagnostics (e.g. 'bun', 'tox'). */
-  rawRunner: (workspaceRoot: string) => string;
-  /** Package-manager detection — only meaningful for Python today. */
-  packageManager?: (workspaceRoot: string) => string;
-}
-
-const LANGUAGE_DETECTORS: Record<SupportedProjectType, LanguageDetector> = {
-  typescript: {
-    matches: (p) => /\.(c|m)?[jt]sx?$/.test(p),
-    extensions: ['.ts', '.js', '.tsx', '.jsx'],
-    primaryExtensions: ['.ts', '.js'],
-    markers: JS_ROOT_MARKERS,
-    testRunner: detectJsTestRunner,
-    rawRunner: detectRawJsRunner,
-  },
-  python: {
-    matches: (p) => p.endsWith('.py'),
-    extensions: ['.py'],
-    markers: PY_ROOT_MARKERS,
-    testRunner: detectPythonTestRunner,
-    rawRunner: detectRawPythonRunner,
-    packageManager: detectPythonPackageManager,
-  },
-  rust: {
-    matches: (p) => p.endsWith('.rs'),
-    extensions: ['.rs'],
-    markers: RUST_ROOT_MARKERS,
-    testRunner: detectRustTestRunner,
-    rawRunner: detectRawRustRunner,
-  },
-  php: {
-    matches: (p) => p.endsWith('.php'),
-    extensions: ['.php'],
-    markers: PHP_ROOT_MARKERS,
-    testRunner: detectPhpTestRunner,
-    rawRunner: detectRawPhpRunner,
-  },
-};
-
-/** Detection order — preserves the original typescript→python→rust sequence. */
-const LANGUAGE_DETECTOR_TYPES = Object.keys(LANGUAGE_DETECTORS) as SupportedProjectType[];
+// ─── Extension inventories ───────────────────────────────────────────────────
 
 /**
  * Every auditable source-file extension, deduped, in detection order
