@@ -11,8 +11,13 @@ export type ToolArgs = Record<string, unknown>;
  * `timeoutMs: -1`, `0`, `NaN`, or `"60000"` silently fell back to the 5-minute
  * default while the caller believed the run was capped. Every other argument
  * here rejects malformed input rather than ignoring it; this one now matches.
+ *
+ * Exported because `estimate_audit` shares the same `timeoutMs` argument and
+ * the same `resolveAuditTimeoutMs` resolver, but runs no validator table of its
+ * own. It must not re-derive this rule: a second copy is exactly how the
+ * MAX_TIMEOUT_MS clamp gets fixed in one tool and left broken in the other.
  */
-function validateTimeoutMs(args: ToolArgs): string | null {
+export function validateTimeoutMs(args: ToolArgs): string | null {
   if (
     args.timeoutMs !== undefined &&
     (typeof args.timeoutMs !== 'number' || !(args.timeoutMs > 0))

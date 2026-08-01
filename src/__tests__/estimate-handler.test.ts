@@ -52,6 +52,7 @@ import { estimateAudit, estimateNeedsSandbox } from '../estimate.js';
 import { detectEnvironment } from '../utils/project-detector.js';
 import { createSandbox } from '../utils/sandbox.js';
 import { createExecutionSession } from '../utils/execution.js';
+import { MAX_TIMEOUT_MS } from '../utils/constants.js';
 
 const mockEstimateAudit = vi.mocked(estimateAudit);
 const mockEstimateNeedsSandbox = vi.mocked(estimateNeedsSandbox);
@@ -131,6 +132,35 @@ describe('handleEstimateCall', () => {
     const res = await handleEstimateCall(req({ filePath: 'src/math.ts', withTiming: 'yes' }));
     expect(res.isError).toBe(true);
     expect(text(res)).toMatch(/withTiming must be a boolean/i);
+  });
+
+  /**
+   * `timeoutMs` used to reach `resolveAuditTimeoutMs` unvalidated — it accepts
+   * any `number > 0`, and Node CLAMPS a delay past MAX_TIMEOUT_MS to 1ms. The
+   * estimate's own subprocess was therefore killed instantly and the failure
+   * blamed on a timeout the caller had deliberately made enormous. Both sibling
+   * tools reject these; the estimate now borrows their validator.
+   */
+  it.each([-1, 0, NaN, '60000', MAX_TIMEOUT_MS + 1])(
+    'rejects timeoutMs=%p before doing any work',
+    async (v) => {
+      const res = await handleEstimateCall(req({ filePath: 'src/math.ts', timeoutMs: v }));
+      expect(res.isError).toBe(true);
+      expect(text(res)).toMatch(/timeoutMs must be/i);
+      // Rejected up-front: no estimate is attempted for an argument we refuse.
+      expect(mockEstimateAudit).not.toHaveBeenCalled();
+    },
+  );
+
+  it('accepts a timeoutMs at the clamp boundary', async () => {
+    mockEstimateAudit.mockResolvedValue(approxResult);
+    const res = await handleEstimateCall(
+      req({ filePath: 'src/math.ts', timeoutMs: MAX_TIMEOUT_MS }),
+    );
+    expect(res.isError).toBeUndefined();
+    expect(mockEstimateAudit).toHaveBeenCalledWith(
+      expect.objectContaining({ timeoutMs: MAX_TIMEOUT_MS }),
+    );
   });
 
   // ── C2 boundary enforcement ───────────────────────────────────────────────

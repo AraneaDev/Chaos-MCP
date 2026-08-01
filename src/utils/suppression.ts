@@ -560,7 +560,15 @@ export function removeSuppressions(
     const list = data.entries[legacyKey];
     if (!Array.isArray(list)) return;
     const drop = new Set(keys.map((k) => keyOf(k.line, k.mutator)));
-    const kept = list.filter((e) => !drop.has(keyOf(e.line, e.mutator)));
+    // `readFile` only proves `entries` is an object — per-entry shape is never
+    // checked on the write path, so a hand-edited or truncated file holding
+    // `{"entries":{"src/a.ts":[null]}}` made this dereference throw, surfacing
+    // as an opaque "Failed to update suppression list". Same guard
+    // `addSuppressions` already applies when it indexes the list; a junk entry
+    // is silently dropped here, which is the repair the caller wanted anyway.
+    const kept = list.filter(
+      (e) => e && typeof e === 'object' && !drop.has(keyOf(e.line, e.mutator)),
+    );
     if (legacyKey !== portableKey) data.entries = withoutKey(data.entries, legacyKey);
     if (kept.length > 0) {
       data.entries[portableKey] = kept;

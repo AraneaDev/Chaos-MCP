@@ -906,6 +906,54 @@ describe('suppression file read failures (fail-safe)', () => {
     expect(warn).not.toHaveBeenCalled();
   });
 
+  /**
+   * `readFile` validates only that `entries` is an object — per-entry shape is
+   * never checked on the write path. `addSuppressions` guards each element
+   * before dereferencing it; `removeSuppressions` did not, so a hand-edited or
+   * truncated file turned an `unsuppress` into a TypeError reported as the
+   * unhelpful "Failed to update suppression list: Cannot read properties of
+   * null". Unsuppressing is the repair action — it must not be the one call
+   * that a corrupt file can block.
+   */
+  it('removeSuppressions survives a junk entry instead of dereferencing it', async () => {
+    writeRawSuppressions(
+      root,
+      JSON.stringify({
+        version: 2,
+        entries: { 'src/a.ts': [null, { line: 1, mutator: 'A', addedAt: 1 }, 'nonsense'] },
+      }),
+    );
+
+    await expect(
+      removeSuppressions(root, 'src/a.ts', [{ line: 1, mutator: 'A' }]),
+    ).resolves.toBeUndefined();
+
+    // The requested key is gone, and the unusable entries went with it rather
+    // than being rewritten as `null` for the next reader to trip over.
+    expect(storedKeys(root, 'src/a.ts')).toEqual([]);
+  });
+
+  it('removeSuppressions keeps the valid entries alongside a junk one', async () => {
+    writeRawSuppressions(
+      root,
+      JSON.stringify({
+        version: 2,
+        entries: {
+          'src/a.ts': [
+            null,
+            { line: 1, mutator: 'A', addedAt: 1 },
+            { line: 2, mutator: 'B', addedAt: 1 },
+          ],
+        },
+      }),
+    );
+
+    await removeSuppressions(root, 'src/a.ts', [{ line: 1, mutator: 'A' }]);
+
+    // Only the key that was asked for is dropped; the other survives untouched.
+    expect(storedKeys(root, 'src/a.ts')).toEqual(['2 B']);
+  });
+
   it('the write queue does not leak an entry when the read throws', async () => {
     writeRawSuppressions(root, '{bad');
     await expect(addSuppressions(root, 'src/a.ts', [{ line: 1, mutator: 'A' }])).rejects.toThrow();

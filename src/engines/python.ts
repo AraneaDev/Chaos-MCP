@@ -270,6 +270,17 @@ export class PythonEngine extends BaseEngine {
       });
     } catch (error: unknown) {
       if (error instanceof MutationToolStartupError) throw new Error(error.message);
+      // Cancellation BEFORE the ExecFailureError branch below.
+      //
+      // `invokeMutationTool` deliberately rethrows an abort as the raw
+      // `ExecFailureError` with `code: 'ABORTED'` so that `isCancel` can still
+      // recognise the abort — see utils/exec-classify.ts, a fix made because
+      // rewrapping that error is precisely how a cancelled run came back
+      // wearing a plausible result. `onExecFailure` yields a plain `Error`,
+      // destroying the marker, so this branch must run first. Consumers survive
+      // today because `isCancel` short-circuits on `ctx.signal.aborted`; a
+      // ctx-less caller (as `computeCount` is for Rust) would see the bug.
+      if (error instanceof ExecFailureError && error.code === 'ABORTED') throw error;
       if (error instanceof ExecFailureError) throw opts.onExecFailure(error);
       throw error instanceof Error
         ? error

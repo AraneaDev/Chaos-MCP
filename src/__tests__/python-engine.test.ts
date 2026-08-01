@@ -17,6 +17,7 @@ vi.mock('node:fs', () => ({ writeFileSync: vi.fn() }));
 import { writeFileSync } from 'node:fs';
 import { runShell } from '../utils/exec.js';
 import { ExecFailureError } from '../utils/exec-error.js';
+import { isCancel } from '../utils/cancel.js';
 import { PythonEngine, parseCosmicRayDump, _resetInterpreterCache } from '../engines/python.js';
 
 const mockRunShell = vi.mocked(runShell);
@@ -1133,6 +1134,27 @@ describe('PythonEngine (cosmic-ray)', () => {
       await expect(engine.run('m.py', { workDir: '/tmp/sandbox' })).rejects.toThrow(
         /cosmic-ray is not installed.*pipx install cosmic-ray/,
       );
+    });
+
+    it('rethrows an ABORTED exec failure untouched so isCancel still sees it', async () => {
+      // `invokeMutationTool` goes out of its way to rethrow a cancellation as
+      // the raw ExecFailureError (utils/exec-classify.ts) precisely so
+      // `code === 'ABORTED'` survives. Mapping it through `onExecFailure`
+      // rewrapped it as a plain Error, and a cancelled run then came back
+      // wearing a step-failure message — "cosmic-ray init failed (exit null)".
+      // A caller with no request context has nothing else to key on.
+      mockRunShell.mockResolvedValueOnce(ok()); // baseline
+      mockRunShell.mockRejectedValueOnce(fail({ code: 'ABORTED', signal: 'SIGKILL' })); // init
+
+      const error = await engine.run('m.py', { workDir: '/tmp/sandbox' }).then(
+        () => null,
+        (e: unknown) => e,
+      );
+
+      expect(error).toBeInstanceOf(ExecFailureError);
+      expect((error as ExecFailureError).code).toBe('ABORTED');
+      // The marker is only worth preserving because this is what reads it.
+      expect(isCancel(error)).toBe(true);
     });
 
     it('passes a non-exec, non-startup Error through unchanged', async () => {

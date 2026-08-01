@@ -4,6 +4,7 @@ import type { CallToolRequest, CallToolResult } from '@modelcontextprotocol/sdk/
 import { createSandbox } from './utils/sandbox.js';
 import { toolError, mapCreateSandboxError, mapHandlerFailure } from './tool-result.js';
 import { validateFilePath } from './utils/file-path.js';
+import { validateTimeoutMs } from './tool-args-validation.js';
 import { supportedTypeOf, anchorTarget } from './audit/target.js';
 import { estimateAudit, estimateNeedsSandbox } from './estimate.js';
 import type { ChaosConfig } from './utils/config-loader.js';
@@ -62,6 +63,19 @@ export async function handleEstimateCall(
   if (args.withTiming !== undefined && typeof args.withTiming !== 'boolean') {
     return toolError('withTiming must be a boolean. Example: true.');
   }
+
+  // ── timeoutMs: the audit tool's own rule, not a second copy of it. ──
+  //
+  // This handler runs no validator table, so `timeoutMs` reached
+  // `resolveAuditTimeoutMs` — which accepts any `number > 0` — completely
+  // unchecked. A value past MAX_TIMEOUT_MS is then CLAMPED TO 1ms by Node's
+  // timer, so `estimate_audit { timeoutMs: 3e9 }` killed its own subprocess
+  // instantly and blamed a "timed out after 3000000000ms"; with `withTiming`
+  // the failure degraded further into a bare " (timing unavailable)". Both
+  // sibling tools already reject it; borrowing their validator keeps the three
+  // from drifting apart again.
+  const timeoutError = validateTimeoutMs(args);
+  if (timeoutError !== null) return toolError(timeoutError);
 
   try {
     const projectType = supportedTypeOf(rawFilePath);

@@ -20,11 +20,10 @@ import { buildRunOptions, type ProjectType } from './run-options.js';
 /**
  * The single wording of the "this Python project has no test suite" refusal.
  *
- * The rule has two dispositions and therefore had two verbatim copies: the
- * pre-flight in `handleToolCall` returns it as a tool error (bailing out BEFORE
- * the sandbox copy), while the guard inside {@link auditFile} throws it (the
- * triage path reaches the engine without that pre-flight). One string, two
- * call sites — the copies could drift, and this is the shared home they lacked.
+ * The rule has two dispositions — `handleToolCall` returns it as a tool error,
+ * {@link auditFile} throws it — and therefore once had two verbatim copies of
+ * the wording. This is the shared home they lacked; {@link assertPythonHasTests}
+ * is now the single decision both dispositions are built on.
  */
 export function pythonNoTestsMessage(workspaceRoot: string): string {
   return (
@@ -38,13 +37,16 @@ export function pythonNoTestsMessage(workspaceRoot: string): string {
 }
 
 /**
- * Python pre-flight for the callers that can still back out cheaply: a project
- * with no test suite can never produce a meaningful mutation run, so bail out
- * BEFORE the sandbox copy — provisioning copies the whole workspace tree
- * (100+ MB on real repos) only to throw it away. Mirrors the guard in
- * {@link auditFile}, including its "no explicit test selection" gate.
+ * The Python "has this project any tests at all?" rule, in one place.
  *
- * Returns the refusal message, or `null` when the run may proceed.
+ * `handleToolCall` runs it as a pre-flight so a testless project backs out
+ * cheaply — BEFORE the sandbox copy, which duplicates the whole workspace tree
+ * (100+ MB on real repos) only to throw it away. {@link auditFile} runs it
+ * again as a last line of defence, because the triage path reaches the engine
+ * without that pre-flight.
+ *
+ * Returns the refusal message, or `null` when the run may proceed; the two call
+ * sites differ only in what they do with it (tool error vs. thrown).
  */
 export function assertPythonHasTests(env: EnvironmentInfo, config?: ChaosConfig): string | null {
   const explicitSelection = config?.cosmicray?.testSelection;
@@ -103,11 +105,16 @@ export async function auditFile(input: AuditFileInput): Promise<MutationResult> 
     // Mutation testing is meaningless without tests, and cosmic-ray's baseline
     // failure would otherwise be reported as "the test suite fails" — pytest
     // exits 5 for "no tests collected", which is a different problem entirely.
-    // A depth-limited scan proves nothing, so only a tree-exhausted miss blocks.
-    const scan = workspaceHasPythonTests(env.workspaceRoot);
-    if (!scan.found && !scan.depthLimited) {
-      throw new Error(pythonNoTestsMessage(env.workspaceRoot));
-    }
+    //
+    // Delegated to the shared rule rather than re-deriving it from
+    // `workspaceHasPythonTests` here: the pre-flight in `handleToolCall` and
+    // this guard are the SAME check with two dispositions (it returns a tool
+    // error, this throws), and two copies of a scan/depth-limit rule is how
+    // they drift. Its own `cosmicray.testSelection` gate is a no-op at this
+    // call site — reaching here means `pythonTestSelection` is empty, and that
+    // field is populated from exactly that config key.
+    const refusal = assertPythonHasTests(env, config);
+    if (refusal !== null) throw new Error(refusal);
     const auto = findPythonTestSelection(targetFile, env.workspaceRoot);
     if (auto.length > 0) {
       runOptions.pythonTestSelection = auto;
