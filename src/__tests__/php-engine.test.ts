@@ -362,6 +362,126 @@ describe('parseInfectionJsonLog', () => {
     expect(nc?.description).toMatch(/no test reached/i);
   });
 
+  it("reads Infection's REAL key `uncovered` into the denominator as no-coverage holes", () => {
+    // Infection's JSON reporter emits `uncovered`, NOT `notCovered` — verified
+    // at both ends of the supported range (0.27 JsonLogger, 0.34 JsonReporter).
+    // Reading only the alias meant `noCoverage` was ALWAYS 0 and every uncovered
+    // mutant vanished from both `vulnerabilities` and the denominator.
+    const log = JSON.stringify({
+      stats: { killedCount: 1, escapedCount: 1 },
+      escaped: [{ mutator: { mutatorName: 'Plus', originalStartLine: 3 } }],
+      killed: [{}],
+      uncovered: [
+        { mutator: { mutatorName: 'Minus', originalStartLine: 7 }, diff: '  - $a - $b\n' },
+        { mutator: { mutatorName: 'Identical', originalStartLine: 9 } },
+      ],
+    });
+    const r = parseInfectionJsonLog(log, 'src/X.php');
+    expect(r.killed).toBe(1);
+    expect(r.survived).toBe(1); // survivors only — uncovered is not a survivor
+    expect(r.totalMutants).toBe(4); // 1 killed + 1 escaped + 2 uncovered
+    expect(r.mutationScore).toBe('25.00%');
+    expect(r.vulnerabilities).toHaveLength(3);
+    expect(r.vulnerabilities.filter((v) => v.kind === 'noCoverage')).toHaveLength(2);
+    const nc = r.vulnerabilities.find((v) => v.line === 7);
+    expect(nc).toMatchObject({ kind: 'noCoverage', mutator: 'Minus', mutated: '- $a - $b' });
+    expect(nc?.description).toMatch(/no test reached/i);
+  });
+
+  it('still accepts the `notCovered` spelling as a tolerated alias', () => {
+    // Backwards compatibility for hand-written/legacy logs: the alias must keep
+    // producing exactly the same result as Infection's own key.
+    const entries = [
+      { mutator: { mutatorName: 'Minus', originalStartLine: 7 } },
+      { mutator: { mutatorName: 'Identical', originalStartLine: 9 } },
+    ];
+    const base = { stats: { killedCount: 1 }, escaped: [], killed: [{}] };
+    const viaAlias = parseInfectionJsonLog(
+      JSON.stringify({ ...base, notCovered: entries }),
+      'src/X.php',
+    );
+    const viaRealKey = parseInfectionJsonLog(
+      JSON.stringify({ ...base, uncovered: entries }),
+      'src/X.php',
+    );
+    expect(viaAlias.totalMutants).toBe(3);
+    expect(viaAlias.vulnerabilities.filter((v) => v.kind === 'noCoverage')).toHaveLength(2);
+    expect(viaAlias).toEqual(viaRealKey);
+  });
+
+  it('scores a file with NO TESTS AT ALL rather than reporting "no mutable logic"', () => {
+    // The failure this fix exists for: an untested PHP file's log carries ONLY
+    // `uncovered` entries. Reading the wrong key left killed 0 / survived 0 /
+    // total 0 → "n/a" / "no mutable logic" → ranked safest in triage and waved
+    // through the minScore gate.
+    const log = JSON.stringify({
+      stats: { totalMutantsCount: 2, killedCount: 0, escapedCount: 0, notCoveredCount: 2 },
+      escaped: [],
+      killed: [],
+      uncovered: [
+        { mutator: { mutatorName: 'Plus', originalStartLine: 4 } },
+        { mutator: { mutatorName: 'Minus', originalStartLine: 5 } },
+      ],
+    });
+    const r = parseInfectionJsonLog(log, 'src/Untested.php');
+    expect(r.totalMutants).toBe(2);
+    expect(r.killed).toBe(0);
+    expect(r.survived).toBe(0);
+    expect(r.mutationScore).toBe('0.00%');
+    expect(r.vulnerabilities).toHaveLength(2);
+    expect(r.vulnerabilities.every((v) => v.kind === 'noCoverage')).toBe(true);
+  });
+
+  it('folds killedByStaticAnalysis into the killed total (Infection 0.31+)', async () => {
+    // 0.31+ split `killedCount` into tests-only kills plus a separate
+    // `killedByStaticAnalysisCount`. Ignoring the latter dropped those mutants
+    // from numerator AND denominator and made the totals cross-check cry wolf.
+    const { warn } = await import('../utils/logger.js');
+    vi.mocked(warn).mockClear();
+    const log = JSON.stringify({
+      stats: {
+        totalMutantsCount: 6,
+        killedCount: 3,
+        killedByStaticAnalysisCount: 2,
+        escapedCount: 1,
+      },
+      escaped: [{ mutator: { mutatorName: 'Plus', originalStartLine: 3 } }],
+      killed: [{}, {}, {}],
+      killedByStaticAnalysis: [{}, {}],
+    });
+    const r = parseInfectionJsonLog(log, 'src/X.php');
+    expect(r.killed).toBe(5); // 3 by tests + 2 by static analysis
+    expect(r.totalMutants).toBe(6);
+    expect(r.mutationScore).toBe('83.33%');
+    expect(vi.mocked(warn)).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the killedByStaticAnalysis ARRAY when the count is absent', () => {
+    // Same convention as `timeouts`: the list drives no reported output, so the
+    // stat wins with the array length as fallback.
+    const log = JSON.stringify({
+      stats: { killedCount: 1 },
+      escaped: [],
+      killed: [{}],
+      killedByStaticAnalysis: [{}, {}],
+    });
+    expect(parseInfectionJsonLog(log, 'src/X.php').killed).toBe(3);
+  });
+
+  it('checks killedByStaticAnalysis mutants against the audited file too', () => {
+    // The list is fed into the provenance guard alongside every other list a
+    // stale log could carry.
+    const log = JSON.stringify({
+      stats: { killedCount: 0 },
+      escaped: [],
+      killed: [],
+      killedByStaticAnalysis: [
+        { mutator: { mutatorName: 'Plus', originalFilePath: '/sb/src/Other.php' } },
+      ],
+    });
+    expect(() => parseInfectionJsonLog(log, 'src/Calculator.php')).toThrow(/different file/i);
+  });
+
   it('counts errored mutants as incompetent and keeps them out of the score', () => {
     // base.ts defines `incompetent` as mutants the tool could not score because
     // the mutated code failed before a real pass/fail — exactly Infection's
@@ -851,6 +971,34 @@ describe('PhpEngine.run', () => {
     const engine = new PhpEngine();
     const result = await engine.run('src/Calculator.php', { workDir: '/sb' });
     expect(result.survived).toBe(1);
+  });
+
+  it('propagates an ABORTED ExecFailureError unchanged instead of rewrapping it', async () => {
+    // `invokeMutationTool` rethrows an abort as the raw ExecFailureError with
+    // `code: 'ABORTED'` so `isCancel` can still recognise it. Rewrapping it into
+    // a plain Error (which every branch below the guard does) destroys that
+    // marker and a cancelled run comes back wearing a plausible failure — or,
+    // when a log happens to be on disk, a plausible RESULT. Same guard as
+    // python.ts.
+    const aborted = new ExecFailureError(
+      { stdout: '', stderr: '', exit: null, signal: 'SIGTERM', code: 'ABORTED' },
+      'Infection aborted',
+    );
+
+    // No JSON log on disk: the pre-fix path rewrapped this as explainMissingJsonLog's
+    // plain Error.
+    mockExists.mockReturnValue(false);
+    mockInvoke.mockRejectedValue(aborted);
+    await expect(new PhpEngine().run('src/Calculator.php', { workDir: '/sb' })).rejects.toBe(
+      aborted,
+    );
+
+    // A log left on disk must not turn a cancelled run into a reported score.
+    mockExists.mockImplementation((p) => String(p).endsWith('chaos-infection-log.json'));
+    mockRead.mockReturnValue(SAMPLE_LOG);
+    await expect(new PhpEngine().run('src/Calculator.php', { workDir: '/sb' })).rejects.toBe(
+      aborted,
+    );
   });
 
   it('throws a coverage-driver hint when no JSON log is produced', async () => {

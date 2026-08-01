@@ -16,6 +16,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { BaseEngine, RunOptions, MutationResult } from './base.js';
 import { invokeMutationTool } from '../utils/exec-classify.js';
+import { ExecFailureError } from '../utils/exec-error.js';
 import { log, isVerbose } from '../utils/logger.js';
 import { DEFAULT_TIMEOUT_MS } from '../utils/constants.js';
 import {
@@ -96,6 +97,12 @@ export class PhpEngine extends BaseEngine {
       });
       stderr = res.stderr;
     } catch (error: unknown) {
+      // Cancellation FIRST, before anything that rewraps the error.
+      // `invokeMutationTool` deliberately rethrows an abort as the raw
+      // `ExecFailureError` with `code: 'ABORTED'` so `isCancel` can still
+      // recognise it; wrapping it into a plain `Error` destroys the marker.
+      // Same guard, same reason, as `python.ts` — see the longer note there.
+      if (error instanceof ExecFailureError && error.code === 'ABORTED') throw error;
       // Startup failures (missing binary/timeout/crash) rethrow via toExecFailure.
       const execErr = this.toExecFailure(error, 'Infection');
       stderr = execErr.stderr;

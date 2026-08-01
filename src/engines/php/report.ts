@@ -23,6 +23,12 @@ interface InfectionJsonLog {
   stats?: {
     totalMutantsCount?: number;
     killedCount?: number;
+    /**
+     * Infection 0.31+ splits kills: `killedCount` became tests-only and static
+     * analysis kills are counted separately here. Absent before 0.31, where
+     * `killedCount` was already the total.
+     */
+    killedByStaticAnalysisCount?: number;
     escapedCount?: number;
     timeOutCount?: number;
     timedOutCount?: number;
@@ -35,9 +41,22 @@ interface InfectionJsonLog {
   };
   escaped?: InfectionMutant[];
   killed?: InfectionMutant[];
+  /** Mutants a static analyser killed rather than the test suite (0.31+). */
+  killedByStaticAnalysis?: InfectionMutant[];
   timeouted?: InfectionMutant[];
   timedOut?: InfectionMutant[];
-  /** Mutants on lines no test covers — an actionable coverage hole, not a pass. */
+  /**
+   * Mutants on lines no test covers — an actionable coverage hole, not a pass.
+   *
+   * `uncovered` is Infection's REAL key name for this list: its JSON reporter
+   * emits `'uncovered' => …` at both ends of {@link SUPPORTED_INFECTION_RANGE}
+   * (0.27's `JsonLogger`, 0.34's `JsonReporter`). `notCovered` is a tolerated
+   * alias only, kept so hand-written or legacy logs still parse — note that
+   * `stats.notCoveredCount` above IS a real Infection key and unrelated to this
+   * spelling.
+   */
+  uncovered?: InfectionMutant[];
+  /** Tolerated alias for {@link InfectionJsonLog.uncovered}; not a key Infection emits. */
   notCovered?: InfectionMutant[];
   /** Mutants whose run crashed before producing a pass/fail — unscoreable. */
   errored?: InfectionMutant[];
@@ -70,8 +89,10 @@ const RECOGNISED_STAT_KEYS = [
 const RECOGNISED_MUTANT_LISTS = [
   'escaped',
   'killed',
+  'killedByStaticAnalysis',
   'timeouted',
   'timedOut',
+  'uncovered',
   'notCovered',
   'errored',
 ] as const;
@@ -167,7 +188,7 @@ function requireRecognisedLog(parsed: unknown, filePath: string): InfectionJsonL
  * made unusable.
  *
  * EVERY list the parser consumes is fed in, not just `escaped`/`killed`: a file
- * with no coverage at all yields a log whose only entries are `notCovered`, and
+ * with no coverage at all yields a log whose only entries are `uncovered`, and
  * those now become reported vulnerabilities — so they need the same provenance
  * check. Feeding more lists in can only ever help a genuine log (the match is
  * `.some`), while giving the stale-log guard something to work with in cases
@@ -249,14 +270,16 @@ function crossCheckTotals(
  *    not score … excluded from the denominator"), so it is reported there and
  *    stays out of the score, mirroring cosmic-ray's `incompetent` and
  *    cargo-mutants' `unviable`.
- *  - `notCovered` — no test covers the line. Nothing failed; the suite simply
+ *  - `uncovered` — no test covers the line. Nothing failed; the suite simply
  *    never looked. That is an ACTIONABLE COVERAGE HOLE, not an unscoreable
  *    mutant, and it is precisely what the TypeScript engine reports as Stryker's
  *    `NoCoverage`: a vulnerability with `kind: 'noCoverage'`, unkilled and
  *    therefore inside the denominator. Filing it under `incompetent` instead
  *    would recreate this file's own false-100% failure mode — a PHP file with no
- *    tests at all has ONLY `notCovered` mutants, so killed 0 / survived 0 /
- *    total 0 renders as `"100.00%"` for a completely untested file.
+ *    tests at all has ONLY `uncovered` mutants, so killed 0 / survived 0 /
+ *    total 0 renders as `"100.00%"` for a completely untested file. (`uncovered`
+ *    is the key Infection actually emits; `notCovered` is read as a tolerated
+ *    alias for hand-written or legacy logs.)
  *
  * Consequently `vulnerabilities` is survivors + no-coverage while `survived`
  * counts survivors only, which is the same shape `triage.ts` already derives its
@@ -285,7 +308,15 @@ export function parseInfectionJsonLog(logText: string, filePath: string): Mutati
 
   const escaped = Array.isArray(parsed.escaped) ? parsed.escaped : [];
   const killedArr = Array.isArray(parsed.killed) ? parsed.killed : [];
-  const notCovered = Array.isArray(parsed.notCovered) ? parsed.notCovered : [];
+  const killedByStaticAnalysisArr = Array.isArray(parsed.killedByStaticAnalysis)
+    ? parsed.killedByStaticAnalysis
+    : [];
+  // `uncovered` is Infection's own key; `notCovered` is a tolerated alias.
+  const notCovered = Array.isArray(parsed.uncovered)
+    ? parsed.uncovered
+    : Array.isArray(parsed.notCovered)
+      ? parsed.notCovered
+      : [];
   const erroredArr = Array.isArray(parsed.errored) ? parsed.errored : [];
 
   const timedOutArr = Array.isArray(parsed.timeouted)
@@ -297,6 +328,7 @@ export function parseInfectionJsonLog(logText: string, filePath: string): Mutati
   assertLogDescribes(filePath, [
     ...escaped,
     ...killedArr,
+    ...killedByStaticAnalysisArr,
     ...notCovered,
     ...erroredArr,
     ...timedOutArr,
@@ -307,14 +339,20 @@ export function parseInfectionJsonLog(logText: string, filePath: string): Mutati
   // source of truth — reading `stats.escapedCount` independently could
   // (on a stats/array mismatch from an Infection version skew) report a
   // survivor count and score that contradict the emitted `vulnerabilities`.
-  // The same rule now extends to `notCovered`: its entries are emitted as
-  // no-coverage vulnerabilities, so the array — never `stats.notCoveredCount` —
-  // is what the denominator is built from.
+  // The same rule now extends to the no-coverage list: its entries are emitted
+  // as no-coverage vulnerabilities, so the array — never `stats.notCoveredCount`
+  // — is what the denominator is built from.
   const stats = parsed.stats ?? {};
   const survived = escaped.length;
   const noCoverage = notCovered.length;
   const timeouts = stats.timeOutCount ?? stats.timedOutCount ?? timedOutArr.length;
-  const killed = (stats.killedCount ?? killedArr.length) + timeouts;
+  // Infection 0.31+ counts static-analysis kills separately from `killedCount`
+  // (which became tests-only). They drive no reported output, so the stat wins
+  // with the array as fallback — the same shape as `timeouts` above. Pre-0.31
+  // logs have neither, so this contributes 0 and `killedCount` stays the total.
+  const killedByStaticAnalysis =
+    stats.killedByStaticAnalysisCount ?? killedByStaticAnalysisArr.length;
+  const killed = (stats.killedCount ?? killedArr.length) + killedByStaticAnalysis + timeouts;
   // No-coverage mutants are unkilled and in the denominator (as in the
   // TypeScript engine); `errored` mutants leave it entirely.
   const totalMutants = killed + survived + noCoverage;
