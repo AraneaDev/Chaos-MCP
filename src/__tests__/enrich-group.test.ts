@@ -384,3 +384,42 @@ describe('exhaustiveness guards without a brace block', () => {
     expect(e.why).toBe(MUTATOR_SEMANTICS.ConditionalExpression.why);
   });
 });
+
+describe('enrichment copy is present and distinct', () => {
+  /**
+   * Every assertion of the form `expect(e.why).toBe(MUTATOR_SEMANTICS.X.why)` compares
+   * the table against ITSELF: blank the string in the source and both sides change
+   * together, so the mutant survives. A mutation audit of enrich.ts confirmed exactly
+   * that — its only survivors were the two EQUIVALENT_GUARD_SEMANTIC literals, which
+   * the guard tests above "cover" in name only.
+   *
+   * Asserting the copy is non-empty is not self-referential, and it kills every
+   * blanking mutant across the whole table in one check. Restating each string here
+   * would just move the duplication into the test file, where it would rot.
+   */
+  const ALL_COPY: [string, { why: string; hint: string }][] = [
+    ...Object.entries(MUTATOR_SEMANTICS),
+    ['UNKNOWN_SEMANTIC', UNKNOWN_SEMANTIC],
+    ['EQUIVALENT_GUARD_SEMANTIC', EQUIVALENT_GUARD_SEMANTIC],
+  ];
+
+  it('gives every category a non-empty why and hint', () => {
+    const blank = ALL_COPY.filter(([, s]) => s.why.trim() === '' || s.hint.trim() === '');
+    expect(blank.map(([name]) => name)).toEqual([]);
+  });
+
+  it('does not reuse one category’s advice for another', () => {
+    // Two categories sharing a hint means one of them is being given advice written for
+    // different code — the failure mode the guard copy exists to fix, in miniature.
+    const hints = ALL_COPY.map(([, s]) => s.hint);
+    expect(new Set(hints).size).toBe(hints.length);
+  });
+
+  it('tells the caller to suppress rather than to write a test, for a guard', () => {
+    // The one piece of copy whose CONTENT carries the fix: pinned by substring, so it
+    // survives rewording but not a change of instruction.
+    expect(EQUIVALENT_GUARD_SEMANTIC.hint.toLowerCase()).toContain('suppress');
+    expect(EQUIVALENT_GUARD_SEMANTIC.hint.toLowerCase()).toContain('do not write a test');
+    expect(EQUIVALENT_GUARD_SEMANTIC.why.toLowerCase()).toContain('equivalent');
+  });
+});
