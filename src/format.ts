@@ -586,6 +586,23 @@ export function formatResultAsText(
     if (prepared.noCoverageFiltered > 0)
       lines.push(`  …${prepared.noCoverageFiltered} hidden below severityFloor`);
   }
+  // The severity floor removed EVERY group. `prepared.clean` is captured before
+  // any filtering (see `prepareGroups`) and stays that way on purpose — flipping
+  // it post-filter would print "No surviving mutants — your tests caught all
+  // mutations." over a header that still reports a non-zero survivor count. But
+  // pre-filter `clean` also means both render blocks above are skipped, and each
+  // block owns its own "…N hidden below severityFloor" note, so neither fires:
+  // the report used to end on "targeting these lines" with no lines above it.
+  // Emit the hidden count here instead, and replace the trailing advice, which
+  // would otherwise point the reader at a list that was never printed.
+  const hiddenByFloor = prepared.survivorsFiltered + prepared.noCoverageFiltered;
+  if (survivors.length === 0 && noCoverage.length === 0 && hiddenByFloor > 0) {
+    lines.push(
+      `…${hiddenByFloor} hidden below severityFloor — every surviving line group was filtered out, so none are listed above.`,
+    );
+    lines.push('Lower severityFloor to see them, or treat this file as clean at that severity.');
+    return lines.join('\n');
+  }
   lines.push('Add or strengthen tests targeting these lines to kill the survivors.');
   return lines.join('\n');
 }

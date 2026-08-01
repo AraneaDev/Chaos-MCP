@@ -833,6 +833,63 @@ describe('formatResultAsText severityFloor signal', () => {
     expect(text).toContain('…1 more (raise maxSurvivors to see them)');
     expect(text).toContain('…1 hidden below severityFloor');
   });
+
+  it('reports the hidden count when the floor filters out every group', () => {
+    // The per-section "…N hidden below severityFloor" notes live INSIDE the
+    // `survivors.length > 0` / `noCoverage.length > 0` render blocks, and
+    // `prepared.clean` is pre-filter, so a floor that removes 100% of groups
+    // used to skip both blocks and leave the report as a header claiming
+    // survivors plus a bare "targeting these lines" with no lines above it.
+    const text = formatResultAsText(
+      result({
+        vulnerabilities: [
+          vuln(1, 'StringLiteral'), // low — filtered
+          vuln(2, 'StringLiteral', NO_COVERAGE_DESC), // low — filtered
+        ],
+      }),
+      { projectType: 'typescript' },
+      { severityFloor: 'high' },
+    );
+    expect(text).toContain(
+      '…2 hidden below severityFloor — every surviving line group was filtered out, so none are listed above.',
+    );
+    expect(text).toContain(
+      'Lower severityFloor to see them, or treat this file as clean at that severity.',
+    );
+    // Neither list rendered, so the advice that points at printed lines must not
+    // appear — and the run is NOT clean: 2 mutants survived, they are just below
+    // the floor the caller asked for.
+    expect(text).not.toContain('Add or strengthen tests targeting these lines');
+    expect(text).not.toContain('No surviving mutants');
+    expect(text).not.toContain('Survivors (line: mutators):');
+    expect(text).not.toContain('No-coverage mutants (line: mutators):');
+  });
+
+  it('keeps the ordinary trailing advice when at least one group survives the floor', () => {
+    // The all-filtered branch must not fire while anything is still rendered:
+    // the existing strings are pinned by the tests above.
+    const text = formatResultAsText(
+      result({
+        vulnerabilities: [
+          vuln(1, 'ConditionalExpression'), // high — kept
+          vuln(2, 'StringLiteral'), // low — filtered
+        ],
+      }),
+      { projectType: 'typescript' },
+      { severityFloor: 'high' },
+    );
+    expect(text).toContain('  …1 hidden below severityFloor');
+    expect(text).not.toContain('every surviving line group was filtered out');
+    expect(text).toContain('Add or strengthen tests targeting these lines to kill the survivors.');
+  });
+
+  it('leaves the trailing advice alone when nothing was filtered at all', () => {
+    // Guards the `hiddenByFloor > 0` half of the new condition: with no floor
+    // the report must end exactly as it always did.
+    const text = formatResultAsText(result({ vulnerabilities: [vuln(1, 'StringLiteral')] }));
+    expect(text).toContain('Add or strengthen tests targeting these lines to kill the survivors.');
+    expect(text).not.toContain('hidden below severityFloor');
+  });
 });
 
 describe('A2 scopeNote', () => {
