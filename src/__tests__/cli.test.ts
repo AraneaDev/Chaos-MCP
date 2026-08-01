@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { MockInstance } from 'vitest';
+import { resolve } from 'path';
+import { tmpdir } from 'os';
+import { fileURLToPath } from 'url';
 
 // Mock the modules cli.ts depends on so runCli is exercised in-process.
 vi.mock('../utils/config-loader.js', () => ({
@@ -26,6 +29,17 @@ const mockEnableVerbose = vi.mocked(enableVerbose);
 const mockIsVerbose = vi.mocked(isVerbose);
 const mockLog = vi.mocked(log);
 const mockInspectContainerRuntime = vi.mocked(inspectContainerRuntime);
+
+/**
+ * Real filesystem paths for the `--config <missing file>` check.
+ *
+ * `fs` is deliberately NOT mocked here: the CLI's existence check and the config
+ * loader must agree on the SAME resolved path, and mocking `existsSync` would
+ * let them disagree without any test noticing. This file is guaranteed to exist
+ * (it is the one running); the other name is guaranteed not to.
+ */
+const existingConfigPath = fileURLToPath(import.meta.url);
+const missingConfigPath = resolve(tmpdir(), 'chaos-mcp-no-such-config-9f3c1a.json');
 
 /** A process.exit stub that throws so control flow halts like the real exit. */
 class ExitError extends Error {
@@ -414,8 +428,60 @@ describe('cli', () => {
     });
 
     it('passes the --config path to loadConfig', () => {
-      run(['--config', '/tmp/my.json']);
-      expect(mockLoadConfig).toHaveBeenCalledWith('/tmp/my.json');
+      run(['--config', existingConfigPath]);
+      expect(mockLoadConfig).toHaveBeenCalledWith(existingConfigPath);
+    });
+
+    // ── --config <missing file> (audit finding 18) ──
+    //
+    // `readConfigRaw` treats a nonexistent path as "no config" and returns null,
+    // so `loadConfig` returns {} WITHOUT throwing: the catch below it never
+    // fires, and the verbose branch is gated on a NON-empty config, so it stayed
+    // silent too. The server started on built-in defaults and a mistyped
+    // --config path was indistinguishable from a working one.
+    it('warns on stderr when an explicit --config path does not exist', () => {
+      const { startServer } = run(['--config', missingConfigPath]);
+      // Names the RESOLVED path — the same one the loader looked for, via the
+      // resolver imported from parse.ts — so the operator can see the typo.
+      expect(errSpy).toHaveBeenCalledWith(
+        expect.stringContaining(`config file not found at ${resolve(missingConfigPath)}`),
+      );
+      // …and says what happened instead, which is the actionable half.
+      expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('using built-in defaults'));
+      // Advisory only: --validate-config owns the fatal variant, so the server
+      // still starts and the exit code is untouched.
+      expect(startServer).toHaveBeenCalledTimes(1);
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('resolves a RELATIVE --config path before reporting it missing', () => {
+      // A bare filename must not be reported as-is: the loader resolves it
+      // against cwd, and reporting the unresolved string sends the operator
+      // looking in the wrong directory.
+      run(['--config', 'nope-chaos-mcp.config.json']);
+      expect(errSpy).toHaveBeenCalledWith(
+        expect.stringContaining(resolve('nope-chaos-mcp.config.json')),
+      );
+    });
+
+    it('stays silent when the explicit --config path exists', () => {
+      run(['--config', existingConfigPath]);
+      expect(errSpy).not.toHaveBeenCalledWith(expect.stringContaining('config file not found at'));
+    });
+
+    it('stays silent about a missing config when --config was never passed', () => {
+      // No config at the DEFAULT location is the ordinary case — running on
+      // built-in defaults is a valid configuration, not something to warn about.
+      const { startServer } = run([]);
+      expect(errSpy).not.toHaveBeenCalledWith(expect.stringContaining('config file not found at'));
+      expect(startServer).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not warn when --config was given no usable value', () => {
+      // `getFlagValue` already warned and returned undefined; a second warning
+      // about a path the operator never wrote would be noise.
+      run(['--config', '--strict']);
+      expect(errSpy).not.toHaveBeenCalledWith(expect.stringContaining('config file not found at'));
     });
 
     it('--config --strict does not treat --strict as the path, warns, and still starts the server (L2)', () => {

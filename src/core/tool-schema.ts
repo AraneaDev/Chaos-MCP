@@ -6,6 +6,7 @@
  */
 
 import { MAX_TIMEOUT_MS } from '../utils/constants.js';
+import { MAX_LINE_NUMBER } from './tool-args-validation.js';
 import { primarySourceExtensions, supportedSourceExtensions } from '../utils/project-detector.js';
 import { ENGINE_REGISTRY, type SupportedProjectType } from '../engines/registry.js';
 
@@ -86,12 +87,18 @@ const MUTANT_KEY_SCHEMA = {
  * A baseline survivor/noCoverage group: `{ line: int≥1, mutators: { name: count } }`.
  * Mirrors the shape the handler actually validates so a schema-driven client can
  * predict the rejection instead of hitting a bare `items: { type: 'object' }` (L6).
+ *
+ * The bounds are the validator's, not decorative: `assertValidLine` caps `line`
+ * at {@link MAX_LINE_NUMBER}, and `validateBaselineArg` rejects any mutator
+ * count below 1 ("baseline mutator counts must be positive integers"). Both were
+ * looser here than in `tool-args-validation.ts`, so a schema-driven client could
+ * not predict either rejection (audit finding 19c/19d).
  */
 const BASELINE_GROUP_SCHEMA = {
   type: 'object',
   properties: {
-    line: { type: 'integer', minimum: 1 },
-    mutators: { type: 'object', additionalProperties: { type: 'integer' } },
+    line: { type: 'integer', minimum: 1, maximum: MAX_LINE_NUMBER },
+    mutators: { type: 'object', additionalProperties: { type: 'integer', minimum: 1 } },
   },
   required: ['line', 'mutators'],
 } as const;
@@ -129,14 +136,22 @@ export const TOOL_DEFINITION = {
           'Useful for surgically auditing a specific function or block. ' +
           'Example: { "start": 10, "end": 45 }',
         properties: {
+          // `maximum` is the validator's MAX_LINE_NUMBER, imported rather than
+          // repeated: `validateLineScopeArg` rejects anything above it, and the
+          // SDK does not check arguments against this schema, so a client can
+          // only predict that rejection if the two numbers cannot drift (19d).
           start: {
             type: 'integer',
             minimum: 1,
+            maximum: MAX_LINE_NUMBER,
             description: 'Start line (1-based, inclusive).',
           },
           end: {
             type: 'integer',
             minimum: 1,
+            maximum: MAX_LINE_NUMBER,
+            // `end >= start` is a cross-field rule JSON Schema cannot express,
+            // so it stays prose and is enforced only by the validator.
             description: 'End line (1-based, inclusive). Must be >= start.',
           },
         },
@@ -145,8 +160,15 @@ export const TOOL_DEFINITION = {
       mutatorAllowlist: {
         type: 'array',
         items: { type: 'string' },
+        minItems: 1,
+        // The schema used to call this harmless ("ignored — passing it has no
+        // effect"), but `validateMutatorAllowlistArg` REJECTS every form of it,
+        // `[]` included, and does so deliberately: a clear error beats a silent
+        // no-op. Since the MCP SDK never validates arguments against this
+        // schema, the description is the only place a caller can learn that the
+        // call FAILS. Wording now matches `resources.ts` and `cli.ts` (F11).
         description:
-          'NOT SUPPORTED in StrykerJS v9 and ignored — passing it has no effect. ' +
+          'NOT SUPPORTED in StrykerJS v9 — REJECTED: passing this fails the call with an error. ' +
           'v9 has no way to express "only these mutators" without the full mutator list. ' +
           'Use mutatorDenylist to exclude noisy mutators instead, or supply your own stryker.config.json.',
       },
@@ -237,6 +259,11 @@ export const TOOL_DEFINITION = {
           survivors: { type: 'array', items: BASELINE_GROUP_SCHEMA },
           noCoverage: { type: 'array', items: BASELINE_GROUP_SCHEMA },
         },
+        // A bare `{}` is rejected — "baseline must contain at least one
+        // (line, mutator) entry across survivors/noCoverage" — so at least one
+        // of the two keys must be present. Neither can be `required` on its
+        // own (either alone is legal), which is what the `anyOf` expresses (19b).
+        anyOf: [{ required: ['survivors'] }, { required: ['noCoverage'] }],
       },
       runId: {
         type: 'string',
@@ -252,10 +279,13 @@ export const TOOL_DEFINITION = {
           'Appended to .chaos-mcp/suppressions.json for this file, stamped with a fingerprint of the source line so a later edit to that line retires the suppression instead of silently re-pointing it. ' +
           'Re-issue the same entry to re-confirm one reported as drifted or unverified. ' +
           'Example: [{ "line": 42, "mutator": "ConditionalExpression", "reason": "guard unreachable" }].',
+        // `validateMutantKeyArray` rejects an empty array ("must be a non-empty
+        // array"), and caps each line at MAX_LINE_NUMBER (19a/19d).
+        minItems: 1,
         items: {
           type: 'object',
           properties: {
-            line: { type: 'integer', minimum: 1 },
+            line: { type: 'integer', minimum: 1, maximum: MAX_LINE_NUMBER },
             mutator: { type: 'string' },
             reason: { type: 'string' },
           },
@@ -265,9 +295,13 @@ export const TOOL_DEFINITION = {
       unsuppress: {
         type: 'array',
         description: 'Remove previously-suppressed mutants for this file (undo a wrong suppress).',
+        minItems: 1,
         items: {
           type: 'object',
-          properties: { line: { type: 'integer', minimum: 1 }, mutator: { type: 'string' } },
+          properties: {
+            line: { type: 'integer', minimum: 1, maximum: MAX_LINE_NUMBER },
+            mutator: { type: 'string' },
+          },
           required: ['line', 'mutator'],
         },
       },
@@ -479,7 +513,12 @@ export const TRIAGE_TOOL_DEFINITION = {
           "Gate: if any file's mutation score is below this (0–100), the result reports gate.passed=false and lists the failing files. Never causes an error. Example: 80.",
       },
     },
+    // No single argument is required, but a bare `{}` IS rejected —
+    // `validateTargetPresence` returns 'Provide "paths" … or "diffBase" … — at
+    // least one is required.' `required: []` alone advertised the opposite, so a
+    // schema-driven client could not predict the rejection (19e).
     required: [],
+    anyOf: [{ required: ['paths'] }, { required: ['diffBase'] }],
     additionalProperties: false,
   },
   outputSchema: {
@@ -540,7 +579,25 @@ export const TRIAGE_TOOL_DEFINITION = {
           minScore: { type: 'number' },
           passed: { type: 'boolean' },
           failingFiles: { type: 'array', items: { type: 'string' } },
+          // Same class of defect as `fidelityNote` above: `buildTriagePayload`
+          // has always emitted `reason` on a failure and `notGraded` on EVERY
+          // gated sweep, but neither was declared — so a client generating
+          // types or binding fields from this schema could not see them at all.
+          //
+          // `reason` is the only machine-readable way to tell "measured and
+          // below threshold" from "never measured": the gate fails CLOSED over
+          // errored or unaudited files (see triage.ts), so `passed: false` with
+          // an empty `failingFiles` is a real, and otherwise unexplained, state.
+          reason: { type: 'string', enum: ['below_threshold', 'files_not_graded'] },
+          notGraded: {
+            type: 'object',
+            properties: { errored: { type: 'integer' }, unaudited: { type: 'integer' } },
+            required: ['errored', 'unaudited'],
+          },
         },
+        // `reason` is conditional (failures only); the other four are set
+        // unconditionally whenever `minScore` was supplied.
+        required: ['minScore', 'passed', 'failingFiles', 'notGraded'],
       },
     },
     required: ['mode', 'summary', 'ranking', 'errors', 'note'],
@@ -569,6 +626,25 @@ export const ESTIMATE_TOOL_DEFINITION = {
         description:
           'When true, run the test suite once to measure a baseline and estimate total wall-clock ' +
           'time (mutants × baseline / concurrency). Default false (count only, no test run).',
+      },
+      // `estimate-handler.ts` has always READ this argument — it runs
+      // `validateTimeoutMs(args)` and then `resolveAuditTimeoutMs(args, …)` —
+      // but the schema declared only filePath/withTiming with
+      // `additionalProperties: false`, so the one argument that decides
+      // `budgetMs`, `fitsBudget` and `recommendation` was advertised as
+      // forbidden. Shape matches the identical argument on
+      // `audit_code_resilience` and `triage_test_coverage` (finding 13).
+      timeoutMs: {
+        type: 'number',
+        exclusiveMinimum: 0,
+        maximum: MAX_TIMEOUT_MS,
+        description:
+          'The audit budget in milliseconds this estimate is GRADED against: budgetMs echoes it, and ' +
+          'fitsBudget/recommendation compare the estimated time to it. Resolved exactly as ' +
+          'audit_code_resilience resolves its own timeoutMs (same argument, config keys, and ' +
+          'per-language defaults), so an estimate answers the question for the audit you would ' +
+          `actually run. Default: 300000 (5 minutes). Must be <= ${MAX_TIMEOUT_MS} ` +
+          '(the largest delay a timer accepts). Example: 120000.',
       },
     },
     required: ['filePath'],

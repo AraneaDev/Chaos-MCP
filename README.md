@@ -180,7 +180,7 @@ Re-runs only the baseline lines and reports which previously-uncaught mutants ar
 
 ### 3. Interpret the Results
 
-The output is **bundled and deduplicated** to stay token-efficient: mutants are grouped by line (with a per-line count of each mutator type), `survivors` (tests ran but didn't catch) and `noCoverage` (no test reached the mutant) are reported separately at line+mutator granularity, and the explanatory note appears once instead of being repeated for every mutant. Because the split is per-mutator, the same line can appear in both lists (e.g. a live expression that survived next to an unreachable fallback that no test reached). Survivors and no-coverage entries also include a `changes` sample — a capped, deduped list of `original → mutated` edits — for TypeScript and Rust targets (best-effort; absent for Python, which doesn't expose per-mutant detail). When `diffBase` is used, the output may include a `scopeNote` (a top-level JSON field / a `Scope:` text line) reporting scoping decisions — e.g. a skipped run when nothing changed, or a whole-file fallback for Python/Rust targets.
+The output is **bundled and deduplicated** to stay token-efficient: mutants are grouped by line (with a per-line count of each mutator type), `survivors` (tests ran but didn't catch) and `noCoverage` (no test reached the mutant) are reported separately at line+mutator granularity, and the explanatory note appears once instead of being repeated for every mutant. Because the split is per-mutator, the same line can appear in both lists (e.g. a live expression that survived next to an unreachable fallback that no test reached). Survivors and no-coverage entries also include a `changes` sample — a capped, deduped list of per-mutant edits — for all four languages (best-effort). TypeScript (StrykerJS) and Python (cosmic-ray, read from each mutant's diff) report the full `original → mutated` form; Rust (cargo-mutants) and PHP (Infection) expose only the mutated side, so their entries carry just that. When `diffBase` is used, the output may include a `scopeNote` (a top-level JSON field / a `Scope:` text line) reporting scoping decisions — e.g. a skipped run when nothing changed, or a whole-file fallback for Python/Rust targets.
 
 **JSON output (default — emitted as a single compact line):**
 
@@ -489,12 +489,24 @@ Each ranking row gains a `passed` field. The top-level output includes:
   "gate": {
     "minScore": 75,
     "passed": false,
-    "failingFiles": ["src/utils/math.ts", "src/parser.ts"]
+    "failingFiles": ["src/utils/math.ts", "src/parser.ts"],
+    "notGraded": { "errored": 0, "unaudited": 0 },
+    "reason": "below_threshold"
   }
 }
 ```
 
-`gate.passed` is `false` if any file's score is below `minScore`. `failingFiles` lists the workspace-relative paths that did not pass. Files that errored during triage are reported in `errors[]` and do not affect the gate.
+**The triage gate fails closed.** `gate.passed` is `false` if any file's score is below `minScore` **or if any requested file was never measured** — one that errored during the sweep (also listed in `errors[]`) or that the `totalTimeoutMs` budget never reached (also listed in `unaudited[]`). Grading a sweep on whichever subset happened to finish would let a CI step keyed on `gate.passed` go green over ungraded code, so an incomplete sweep never passes. A file audited only partially (its `complete` is `false`) fails on the same basis.
+
+The gate object always carries `minScore`, `passed`, `failingFiles`, and `notGraded` whenever `minScore` was supplied:
+
+- `failingFiles` — workspace-relative paths that were measured and scored below `minScore`.
+- `notGraded` — `{ "errored": <count>, "unaudited": <count> }`, the files that produced no score at all.
+- `reason` — present only on a failure, and the only machine-readable way to tell the two causes apart:
+  - `"below_threshold"` — at least one file was measured and scored too low (`failingFiles` is non-empty).
+  - `"files_not_graded"` — every measured file passed, but something was never measured (`failingFiles` is empty and `notGraded` is non-zero).
+
+A `passed: false` with an empty `failingFiles` is therefore expected, not a bug: check `reason` and `notGraded` before assuming a score problem.
 
 ### CI use case
 

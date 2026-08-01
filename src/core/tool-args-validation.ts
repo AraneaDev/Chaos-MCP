@@ -94,8 +94,16 @@ function validateLineScopeArg(args: ToolArgs): string | null {
   return null;
 }
 
-/** Reasonable upper bound on a source-file line number. ~50k is generous; */
-const MAX_LINE_NUMBER = 100_000;
+/**
+ * Reasonable upper bound on a source-file line number. ~50k is generous;
+ *
+ * Exported so `tool-schema.ts` can declare it as the `maximum` on every `line`
+ * field instead of hardcoding 100000 — the MCP SDK does not validate arguments
+ * against `inputSchema`, so the schema's only job is to let a client PREDICT
+ * this rejection, and a second copy of the number is exactly how the two sides
+ * drift (audit finding 19d).
+ */
+export const MAX_LINE_NUMBER = 100_000;
 
 /** Assert every line field is a positive integer ≤ MAX_LINE_NUMBER (H5). */
 function assertValidLine(line: unknown): string | null {

@@ -1,4 +1,6 @@
+import { existsSync } from 'fs';
 import { loadConfig, validateConfig, ChaosConfig } from './utils/config-loader.js';
+import { resolveConfigPath } from './utils/config/parse.js';
 import { enableVerbose, log, isVerbose } from './utils/logger.js';
 import { inspectContainerRuntime } from './utils/container/doctor.js';
 
@@ -93,7 +95,9 @@ Tool: audit_code_resilience
     filePath (required)  — Workspace-relative path to the file to audit (.ts/.js/.py/.rs/.php).
     timeoutMs            — Max run time in ms (default: 300000 / 5 min).
     lineScope            — { start, end } 1-based line range (StrykerJS only).
-    mutatorAllowlist     — (unsupported in StrykerJS v9 — ignored; use mutatorDenylist).
+    mutatorAllowlist     — NOT SUPPORTED (StrykerJS v9 has no allowlist): REJECTED with an error
+                           when passed as a tool argument. Use mutatorDenylist instead, or supply
+                           your own stryker.config.json.
     mutatorDenylist      — string[] of Stryker mutator names to exclude.
     concurrency          — number of parallel mutation workers (StrykerJS only).
     dryRun               — boolean, validate test suite only (StrykerJS only).
@@ -251,6 +255,29 @@ export function runCli({ appVersion, startServer }: CliDeps): void {
   let loadedConfig: ChaosConfig | undefined;
   try {
     loadedConfig = loadConfig(configPath);
+    // A --config path that does not exist is NOT an error to `loadConfig`:
+    // `readConfigRaw` treats a missing file as "no config" and returns null, so
+    // `loadConfig` returns {} without throwing and the catch below never fires.
+    // --verbose stayed silent too, because it only logs a NON-empty config. The
+    // server therefore started on built-in defaults with no signal at all that
+    // the operator's tuning had been ignored — a mistyped path is indis-
+    // tinguishable from a working one (audit finding 18).
+    //
+    // Only a path the operator NAMED is worth warning about; no file at the
+    // default location is the ordinary case. The same resolver `loadConfig`
+    // used is imported rather than reimplemented, so this reports the exact
+    // path that was looked for. Deliberately a warning, not a throw: the fatal
+    // variant of this check is --validate-config's job (it exits 1), and this
+    // path must keep starting the server on defaults.
+    if (configPath !== undefined) {
+      const resolved = resolveConfigPath(configPath);
+      if (!existsSync(resolved)) {
+        console.error(
+          `Warning: config file not found at ${resolved} — using built-in defaults. ` +
+            `Run with --validate-config to make a missing --config path a hard error.`,
+        );
+      }
+    }
     if (isVerbose() && loadedConfig && Object.keys(loadedConfig).length > 0) {
       log('Config loaded:', JSON.stringify(loadedConfig));
     }

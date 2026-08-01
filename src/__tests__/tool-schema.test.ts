@@ -4,6 +4,12 @@ import {
   TRIAGE_TOOL_DEFINITION,
   ESTIMATE_TOOL_DEFINITION,
 } from '../core/tool-schema.js';
+import {
+  MAX_LINE_NUMBER,
+  TOOL_ARG_VALIDATORS,
+  type ToolArgs,
+} from '../core/tool-args-validation.js';
+import { TRIAGE_ARG_VALIDATORS } from '../core/triage-args-validation.js';
 import { supportedSourceExtensions } from '../utils/project-detector.js';
 import { ENGINE_REGISTRY } from '../engines/registry.js';
 import type { ResultPayload } from '../core/format.js';
@@ -604,12 +610,228 @@ describe('nested argument schemas', () => {
     expect(lineScope.required).toEqual(['start', 'end']);
   });
 
-  it('requires exactly filePath on the audit tool, and nothing on triage', () => {
+  it('requires exactly filePath on the audit tool, and no SINGLE field on triage', () => {
     // `required: []` on triage is meaningful, not an oversight: a triage call
-    // may supply paths OR diffBase, so neither can be required in the schema.
+    // may supply paths OR diffBase, so neither can be required on its own. The
+    // "at least one of the two" half is carried by `anyOf` — see the
+    // validator-parity block below.
     expect(TOOL_DEFINITION.inputSchema.required).toEqual(['filePath']);
     expect(TRIAGE_TOOL_DEFINITION.inputSchema.required).toEqual([]);
     expect(ESTIMATE_TOOL_DEFINITION.inputSchema.required).toEqual(['filePath']);
+  });
+});
+
+/**
+ * Schema constraints that must be at least as tight as the runtime validator.
+ *
+ * The MCP SDK does NOT validate arguments against `inputSchema` (stated outright
+ * in `triage-args-validation.ts`), so the schema's entire job is to let a client
+ * PREDICT a rejection before making the call. Where a constraint is LOOSER here
+ * than in the validator, the schema actively misleads: the client believes the
+ * value is legal, sends it, and gets an error the schema said could not happen.
+ *
+ * Each case therefore pins BOTH halves — the schema keyword AND the validator
+ * actually rejecting the value that keyword now excludes — so the two cannot
+ * drift apart in either direction (audit finding 19).
+ */
+describe('input schema ↔ validator constraint parity', () => {
+  const props = TOOL_DEFINITION.inputSchema.properties as Record<string, Record<string, unknown>>;
+
+  /** Run the audit validator table and collect every message it produces. */
+  function auditErrors(args: ToolArgs): string[] {
+    return TOOL_ARG_VALIDATORS.map((v) => v(args)).filter((m): m is string => m !== null);
+  }
+
+  /** Run the triage validator table; its driver stops at the first failure. */
+  function triageError(args: ToolArgs): string | null {
+    for (const v of TRIAGE_ARG_VALIDATORS) {
+      const m = v(args);
+      if (m !== null) return m;
+    }
+    return null;
+  }
+
+  it.each(['suppress', 'unsuppress', 'mutatorAllowlist'])(
+    'declares minItems on %s, which the validator rejects when empty',
+    (field) => {
+      expect(props[field].minItems).toBe(1);
+      expect(auditErrors({ filePath: 'a.ts', [field]: [] }).join(' ')).toContain(field);
+    },
+  );
+
+  it('requires at least one of baseline.survivors / baseline.noCoverage', () => {
+    // A bare `{}` passes `type: 'object'` but is rejected at runtime, and
+    // neither key may be `required` alone — either one on its own is legal.
+    expect(props.baseline.anyOf).toEqual([
+      { required: ['survivors'] },
+      { required: ['noCoverage'] },
+    ]);
+    expect(auditErrors({ filePath: 'a.ts', baseline: {} }).join(' ')).toContain(
+      'at least one (line, mutator) entry',
+    );
+    // …and the anyOf must not over-reject: either key alone still validates.
+    expect(
+      auditErrors({
+        filePath: 'a.ts',
+        baseline: { survivors: [{ line: 1, mutators: { X: 1 } }] },
+      }),
+    ).toEqual([]);
+    expect(
+      auditErrors({
+        filePath: 'a.ts',
+        baseline: { noCoverage: [{ line: 1, mutators: { X: 1 } }] },
+      }),
+    ).toEqual([]);
+  });
+
+  it('floors baseline mutator counts at 1, as the validator does', () => {
+    const group = (props.baseline.properties as Record<string, Record<string, unknown>>).survivors
+      .items as Record<string, Record<string, unknown>>;
+    const mutators = (group.properties as unknown as Record<string, Record<string, unknown>>)
+      .mutators;
+    expect((mutators.additionalProperties as Record<string, unknown>).minimum).toBe(1);
+    expect(
+      auditErrors({
+        filePath: 'a.ts',
+        baseline: { survivors: [{ line: 1, mutators: { X: 0 } }] },
+      }).join(' '),
+    ).toContain('baseline mutator counts must be positive integers');
+  });
+
+  it('caps every line field at the validator MAX_LINE_NUMBER, imported not copied', () => {
+    // Imported from `tool-args-validation.ts` rather than hardcoded: a literal
+    // 100000 here is exactly how the schema and the validator drift apart.
+    const over = MAX_LINE_NUMBER + 1;
+    const lineScope = props.lineScope.properties as Record<string, Record<string, unknown>>;
+    expect(lineScope.start.maximum).toBe(MAX_LINE_NUMBER);
+    expect(lineScope.end.maximum).toBe(MAX_LINE_NUMBER);
+    for (const field of ['suppress', 'unsuppress']) {
+      const items = props[field].items as Record<string, Record<string, unknown>>;
+      expect(
+        (items.properties as unknown as Record<string, Record<string, unknown>>).line.maximum,
+      ).toBe(MAX_LINE_NUMBER);
+    }
+    const group = (props.baseline.properties as Record<string, Record<string, unknown>>).survivors
+      .items as Record<string, Record<string, unknown>>;
+    expect(
+      (group.properties as unknown as Record<string, Record<string, unknown>>).line.maximum,
+    ).toBe(MAX_LINE_NUMBER);
+
+    // …and each of those bounds is really enforced at runtime.
+    expect(auditErrors({ filePath: 'a.ts', lineScope: { start: 1, end: over } })).not.toEqual([]);
+    expect(auditErrors({ filePath: 'a.ts', suppress: [{ line: over, mutator: 'X' }] })).not.toEqual(
+      [],
+    );
+    expect(
+      auditErrors({ filePath: 'a.ts', unsuppress: [{ line: over, mutator: 'X' }] }),
+    ).not.toEqual([]);
+    expect(
+      auditErrors({
+        filePath: 'a.ts',
+        baseline: { survivors: [{ line: over, mutators: { X: 1 } }] },
+      }),
+    ).not.toEqual([]);
+  });
+
+  it('expresses the triage "paths or diffBase" rule the validator enforces', () => {
+    expect(TRIAGE_TOOL_DEFINITION.inputSchema.anyOf).toEqual([
+      { required: ['paths'] },
+      { required: ['diffBase'] },
+    ]);
+    // The bare `{}` the old `required: []` advertised as legal.
+    expect(triageError({})).toContain('at least one is required');
+    // Either selector alone still validates — the anyOf must not over-reject.
+    expect(triageError({ paths: ['src'] })).toBeNull();
+    expect(triageError({ diffBase: 'HEAD' })).toBeNull();
+  });
+
+  it('leaves lineScope end >= start to prose, as JSON Schema cannot express it', () => {
+    // Deliberately NOT expressed as a keyword: there is no cross-field ordering
+    // constraint in JSON Schema. The description is the only place a caller can
+    // learn the rule, so it must carry it.
+    expect(
+      (props.lineScope.properties as Record<string, { description: string }>).end.description,
+    ).toContain('Must be >= start');
+    expect(auditErrors({ filePath: 'a.ts', lineScope: { start: 10, end: 5 } })).not.toEqual([]);
+  });
+});
+
+describe('estimate_audit timeoutMs input (finding 13)', () => {
+  const ESTIMATE = ESTIMATE_TOOL_DEFINITION.inputSchema.properties as Record<
+    string,
+    { type?: string; exclusiveMinimum?: number; maximum?: number; description?: string }
+  >;
+
+  it('declares the timeoutMs the handler has always read', () => {
+    // `estimate-handler.ts` runs `validateTimeoutMs(args)` and then
+    // `resolveAuditTimeoutMs(args, …)`, but the schema declared only
+    // filePath/withTiming under `additionalProperties: false` — so the argument
+    // the handler acts on was advertised as forbidden.
+    expect(ESTIMATE.timeoutMs).toBeDefined();
+    expect(ESTIMATE.timeoutMs.type).toBe('number');
+  });
+
+  it('bounds it identically to the two sibling tools', () => {
+    const audit = TOOL_DEFINITION.inputSchema.properties as Record<
+      string,
+      { exclusiveMinimum?: number; maximum?: number }
+    >;
+    expect(ESTIMATE.timeoutMs.exclusiveMinimum).toBe(audit.timeoutMs.exclusiveMinimum);
+    expect(ESTIMATE.timeoutMs.maximum).toBe(audit.timeoutMs.maximum);
+    expect(ESTIMATE.timeoutMs.maximum).toBe(2_147_483_647);
+  });
+
+  it('explains that it is the budget the estimate is graded against', () => {
+    // budgetMs / fitsBudget / recommendation are gradeable ONLY against this
+    // argument; without the description a caller cannot tell what they mean.
+    const d = ESTIMATE.timeoutMs.description ?? '';
+    expect(d).toContain('budgetMs');
+    expect(d).toContain('fitsBudget');
+    expect(d).toContain('audit_code_resilience');
+  });
+
+  it('is optional — the estimate still runs on the default budget', () => {
+    expect(ESTIMATE_TOOL_DEFINITION.inputSchema.required).not.toContain('timeoutMs');
+  });
+});
+
+/**
+ * The triage gate's failure REASON and its not-graded counters.
+ *
+ * `buildTriagePayload` sets `notGraded` on every gated sweep and `reason` on
+ * every failure, but neither was declared — the same class of defect already
+ * fixed for `fidelityNote` on the audit schema: produced for releases, never
+ * advertised, so a client generating types or binding fields from the schema
+ * never saw it. `reason` matters more than most: the gate fails CLOSED over
+ * files that were never measured, so `passed: false` with an empty
+ * `failingFiles` is a real state and `reason` is the only machine-readable way
+ * to tell it from a genuine score failure (finding 14).
+ */
+describe('triage gate outputSchema (finding 14)', () => {
+  const gate = (
+    TRIAGE_TOOL_DEFINITION.outputSchema.properties as Record<string, Record<string, unknown>>
+  ).gate;
+  const gateProps = gate.properties as Record<string, Record<string, unknown>>;
+
+  it('declares the two failure reasons the code actually emits', () => {
+    expect(gateProps.reason.type).toBe('string');
+    expect(gateProps.reason.enum).toEqual(['below_threshold', 'files_not_graded']);
+  });
+
+  it('declares notGraded with both counters required', () => {
+    expect(gateProps.notGraded.type).toBe('object');
+    const inner = gateProps.notGraded.properties as Record<string, Record<string, unknown>>;
+    expect(Object.keys(inner).sort()).toEqual(['errored', 'unaudited']);
+    expect(inner.errored.type).toBe('integer');
+    expect(inner.unaudited.type).toBe('integer');
+    expect(gateProps.notGraded.required).toEqual(['errored', 'unaudited']);
+  });
+
+  it('requires every field the payload sets unconditionally, but not reason', () => {
+    // `reason` is set only on a failure; the other four accompany any gated
+    // sweep, so a client may bind them without a presence check.
+    expect(gate.required).toEqual(['minScore', 'passed', 'failingFiles', 'notGraded']);
+    expect(gate.required).not.toContain('reason');
   });
 });
 
