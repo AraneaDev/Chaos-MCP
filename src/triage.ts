@@ -5,7 +5,7 @@ import {
   hasNoMutableLogic,
   suppressionDriftNotes,
   type LineGroup,
-} from './format.js';
+} from './score-semantics.js';
 import { evaluateGate } from './gate.js';
 
 export interface TriageRow {

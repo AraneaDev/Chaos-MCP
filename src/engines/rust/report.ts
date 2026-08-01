@@ -166,7 +166,7 @@ export function stripCargoTiming(desc: string): string {
  * sound discriminator now that the glob is escaped: a correctly-escaped glob
  * that fails to match a file which demonstrably exists is not a case real
  * cargo-mutants produces. A file that exists and yields no mutants returns a
- * zero-mutant result instead, which `hasNoMutableLogic` (src/format.ts) renders
+ * zero-mutant result instead, which `hasNoMutableLogic` (src/score-semantics.ts) renders
  * as "n/a" — explicitly NOT the same claim as proven coverage.
  */
 export function noMutantsError(filePath: string): Error {
@@ -281,7 +281,7 @@ export function parseCargoMutantsText(
   //         nothing, or matched the wrong thing; 0/0 would format as "100.00%".
   //       • target PRESENT → a normal zero-mutant result. The file exists and
   //         genuinely has no mutable logic (constants, a `mod.rs` barrel, pure
-  //         re-exports). `hasNoMutableLogic` in src/format.ts renders that as
+  //         re-exports). `hasNoMutableLogic` in src/score-semantics.ts renders that as
   //         "n/a", NOT as a score — which is only true as long as the result
   //         carries no `scopeNote`, so this path must never set one.
   const summary = parseCargoSummary(stdout);

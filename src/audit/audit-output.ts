@@ -12,12 +12,8 @@ import { type SupportedProjectType } from '../engines/registry.js';
 import type { EnvironmentInfo } from '../utils/project-detector.js';
 import type { ChaosConfig } from '../utils/config-loader.js';
 import type { ToolArgs } from '../tool-args-validation.js';
-import {
-  formatResultAsText,
-  buildResultPayload,
-  suppressionDriftNotes,
-  type EnrichContext,
-} from '../format.js';
+import { formatResultAsText, buildResultPayload, type EnrichContext } from '../format.js';
+import { suppressionDriftNotes } from '../score-semantics.js';
 import { evaluateGate } from '../gate.js';
 import { toStructuredContent } from '../tool-result.js';
 import { suggestTestFile } from '../test-file.js';

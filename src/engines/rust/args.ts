@@ -55,7 +55,7 @@ export function resolveCargoJobs(concurrency: number | undefined, cpuCount: numb
  * 100%. Where the two meet: a glob that misses a file which is NOT on disk still
  * throws, and a glob that somehow misses a file that IS on disk degrades to a
  * zero-mutant "n/a" result — never to a 100% score — because `hasNoMutableLogic`
- * (src/format.ts) refuses to render 0/0 as a percentage at all.
+ * (src/score-semantics.ts) refuses to render 0/0 as a percentage at all.
  */
 export function escapeCargoFileGlob(filePath: string): string {
   return filePath.replace(/[*?[\]{}]/g, (c) => `[${c}]`);

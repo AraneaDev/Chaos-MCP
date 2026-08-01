@@ -65,7 +65,7 @@ export interface MutationResult {
   /**
    * How much of the target file this run actually enumerated mutants for.
    *
-   * WHY this is a STRUCTURAL field: `hasNoMutableLogic` (format.ts) used to
+   * WHY this is a STRUCTURAL field: `hasNoMutableLogic` (score-semantics.ts) used to
    * decide "this file has no testable logic" from `totalMutants === 0 &&
    * !scopeNote` — i.e. from the ABSENCE of a free-text sentence. Every batched
    * command-runner run sets a `scopeNote` ("Completed N bounded mutation
@@ -112,7 +112,7 @@ export interface MutationResult {
  * decimals and a trailing `%`, e.g. `"87.50%"`.
  *
  * WHY this is shared: the `total === 0 → "100.00%"` convention is load-bearing
- * downstream. `format.ts` (`hasNoMutableLogic`) and `gate.ts` both branch on the
+ * downstream. `score-semantics.ts` (`hasNoMutableLogic`) and `gate.ts` both branch on the
  * parsed score, and a score they cannot parse is treated as PASSING. Every
  * engine plus the suppression recompute must therefore agree on the denominator
  * rule and the exact string shape; keeping the formula in one place is what

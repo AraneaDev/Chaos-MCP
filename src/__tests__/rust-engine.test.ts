@@ -22,7 +22,7 @@ vi.mock('../utils/logger.js', () => ({
 import { runShell } from '../utils/exec.js';
 import { ExecFailureError } from '../utils/exec-error.js';
 import { RustEngine, resolveCargoJobs, escapeCargoFileGlob } from '../engines/rust.js';
-import { displayMutationScore, hasNoMutableLogic } from '../format.js';
+import { displayMutationScore, hasNoMutableLogic } from '../score-semantics.js';
 
 const mockRunShell = vi.mocked(runShell);
 

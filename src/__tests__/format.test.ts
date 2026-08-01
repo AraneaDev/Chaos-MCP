@@ -3,10 +3,9 @@ import {
   formatResultAsText,
   formatResultAsJson,
   buildResultPayload,
-  hasNoMutableLogic,
-  displayMutationScore,
   type ResultPayload,
 } from '../format.js';
+import { hasNoMutableLogic, displayMutationScore } from '../score-semantics.js';
 import { evaluateGate } from '../gate.js';
 import type { MutationResult } from '../engines/base.js';
 

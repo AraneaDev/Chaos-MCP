@@ -195,7 +195,7 @@ describe('TypeScriptEngine', () => {
     });
   });
 
-  // `hasNoMutableLogic` (format.ts) must key on a STRUCTURAL field, not on the
+  // `hasNoMutableLogic` (score-semantics.ts) must key on a STRUCTURAL field, not on the
   // presence of the free-text scopeNote every batched run emits. scopeKind is
   // that field: it says whether the batches spanned the whole file or only the
   // caller's ranges, and it must be carried verbatim, never inferred from prose.
@@ -2435,7 +2435,7 @@ describe('report handling', () => {
     expect(vi.mocked(warn)).not.toHaveBeenCalled();
   });
 
-  // hasNoMutableLogic (format.ts) must not key on the presence of free-text
+  // hasNoMutableLogic (score-semantics.ts) must not key on the presence of free-text
   // prose. These pin the structural discriminator the engine now emits.
   it('labels an unscoped single run whole-file and a line-scoped one scoped', async () => {
     mockReadFileSync.mockReturnValue(makeJsonReport([]));

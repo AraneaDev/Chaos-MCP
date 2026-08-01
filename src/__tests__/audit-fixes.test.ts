@@ -22,7 +22,7 @@ import { readFileSync as readPkg } from 'node:fs';
 
 import { validateToolArgs } from '../handler.js';
 import { applySuppressions } from '../audit/apply-suppressions.js';
-import { hasNoMutableLogic } from '../format.js';
+import { hasNoMutableLogic } from '../score-semantics.js';
 import { isNoCoverage } from '../utils/no-coverage.js';
 import { projectTimingRange } from '../baseline-timing.js';
 import { isRepoTestCommandAllowed, resolveTestCommand } from '../engines/python.js';
