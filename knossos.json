@@ -38,5 +38,8 @@
     "boundary_violations": 0,
     "error_diagnostics": 0
   },
-  "dead_code_suppressions": ["scripts/audit-self.js", "src/utils/sandbox.ts#buildCopyPolicy::*"]
+  "dead_code_suppressions": [
+    "scripts/audit-self.js",
+    "src/utils/sandbox/copy-policy.ts#buildCopyPolicy::*"
+  ]
 }

@@ -29,20 +29,7 @@ import {
   type MutantKey,
 } from '../verify.js';
 import { ignoredOptionsFor, resolveMaxSurvivors, resolveSeverityFloor } from './run-options.js';
-import { loadVerifiedSuppressions } from './suppression-io.js';
-
-/**
- * How one file's stored suppressions were resolved for this run: how many were
- * applied, and how many were rejected as drifted / unverified.
- */
-export interface SuppressionCounts {
-  /** Mutants actually excluded from the score. */
-  applied: number;
-  /** Entries whose content fingerprint no longer matches their source line. */
-  drifted: number;
-  /** Entries with no fingerprint at all (v1 data), never applied. */
-  unverified: number;
-}
+import { loadVerifiedSuppressions, type SuppressionCounts } from './suppression-io.js';
 
 /**
  * Build the enrichment context for the formatters, or `undefined` when the

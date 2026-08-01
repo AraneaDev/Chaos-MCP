@@ -17,9 +17,28 @@ import type { ToolArgs } from '../tool-args-validation.js';
 import type { ToolContext } from '../tool-context.js';
 import type { MutationResult } from '../engines/base.js';
 import type { MutantKey } from '../verify.js';
-import type { SuppressionCounts } from './audit-output.js';
 import { toolError } from '../tool-result.js';
 import { applySuppressions } from './apply-suppressions.js';
+
+/**
+ * How one file's stored suppressions were resolved for this run: how many were
+ * applied, and how many were rejected as drifted / unverified.
+ *
+ * Declared here rather than beside the formatter that renders it: this module
+ * is what produces the counts, and `audit-output.ts` already imports
+ * `loadVerifiedSuppressions` from here — so owning the type there too made the
+ * two modules import each other. The runtime never saw it (the back-edge was
+ * type-only, and erased), but it was a real cycle in the dependency graph and
+ * the `new_cycles: 0` budget in knossos.json rejects it.
+ */
+export interface SuppressionCounts {
+  /** Mutants actually excluded from the score. */
+  applied: number;
+  /** Entries whose content fingerprint no longer matches their source line. */
+  drifted: number;
+  /** Entries with no fingerprint at all (v1 data), never applied. */
+  unverified: number;
+}
 import {
   loadSuppressions,
   addSuppressions,
