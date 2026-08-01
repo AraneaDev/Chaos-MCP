@@ -1,25 +1,30 @@
 /**
- * Process-lifetime ownership for sandbox directories.
+ * Process-lifetime ownership for sandbox directories and execution containers.
  *
  * Split out of `utils/sandbox.ts` so that provisioning (copying a workspace
  * tree) and shutdown (installing `exit`/`SIGTERM`/`SIGINT`/`SIGHUP`/`SIGQUIT`
  * handlers and, by default, calling `process.exit`) are no longer the same
  * unit. Only this module talks to `process`; `utils/sandbox.ts` reaches it
- * through {@link registerSandbox} / {@link unregisterSandbox} / {@link makeCleanup}.
+ * through {@link registerSandbox} / {@link unregisterSandbox} / {@link makeCleanup},
+ * and `utils/execution.ts` through {@link registerContainer} /
+ * {@link unregisterContainer}.
  *
- * SINGLE INSTANCE, NON-NEGOTIABLE. {@link ACTIVE_SANDBOXES} is module-level
- * state, and ES modules are cached per RESOLVED SPECIFIER. If this file were
- * ever reachable through two different specifiers (a second copy under another
- * path, a re-export chain that resolves differently, a bundler alias, a
- * `.js`/`.ts` split in one graph), two independent Sets would exist: sandboxes
- * would register in one and the signal handlers would walk the other, silently
- * cleaning up nothing. The leak is not a stray temp file — it is a full copy of
- * the audited workspace per audit, left in `tmpdir()` forever. Import this
- * module by exactly one path (`./sandbox/registry.js` from `utils/sandbox.ts`,
+ * SINGLE INSTANCE, NON-NEGOTIABLE. {@link ACTIVE_SANDBOXES} and
+ * {@link ACTIVE_CONTAINERS} are module-level state, and ES modules are cached
+ * per RESOLVED SPECIFIER. If this file were ever reachable through two
+ * different specifiers (a second copy under another path, a re-export chain
+ * that resolves differently, a bundler alias, a `.js`/`.ts` split in one
+ * graph), two independent registries would exist: sandboxes would register in
+ * one and the signal handlers would walk the other, silently cleaning up
+ * nothing. The leak is not a stray temp file — it is a full copy of the audited
+ * workspace per audit, left in `tmpdir()` forever, plus a container holding its
+ * whole CPU/memory reservation. Import this module by exactly one path
+ * (`./sandbox/registry.js` from `utils/sandbox.ts` and `utils/execution.ts`,
  * `./utils/sandbox/registry.js` from `src/index.ts`) and do not re-export its
  * mutable state through another module.
  */
 
+import { spawnSync } from 'child_process';
 import { rmSync } from 'fs';
 import { killAllTrackedProcesses, killProcessesUnder } from '../process-reaper.js';
 
@@ -32,6 +37,25 @@ import { killAllTrackedProcesses, killProcessesUnder } from '../process-reaper.j
  * removes entries from this set.
  */
 const ACTIVE_SANDBOXES = new Set<string>();
+
+/**
+ * Registry of execution containers this process still owns, container name to
+ * the runtime binary (`docker`, `podman`, …) that owns it.
+ *
+ * A container is removed by its per-request session in `finally`, but that
+ * `finally` does not run when the process is terminated: the signal handlers
+ * below call `process.exit()` (or the server does), which abandons every
+ * pending continuation. The container's entrypoint is an infinite sleep, so
+ * nothing inside it ever exits on its own — it keeps its whole `--cpus` /
+ * `--memory` reservation and stays bind-mounted to a sandbox directory this
+ * module has just deleted. Registered here, it is torn down on the same sweep
+ * as the directories.
+ *
+ * Keyed by NAME rather than the runtime's container id: the name is known
+ * before `create` is issued, which is precisely the window in which an
+ * interrupted request would otherwise leak a container nobody has an id for.
+ */
+const ACTIVE_CONTAINERS = new Map<string, string>();
 
 /** Guards against double-registration of process exit handlers. */
 let exitHandlerRegistered = false;
@@ -78,8 +102,35 @@ export function setSandboxSignalExit(enabled: boolean): void {
 }
 
 /**
- * Remove every sandbox this process still owns. Synchronous and idempotent, so
- * it is safe from an `exit` handler and safe to call more than once.
+ * Remove every container in {@link ACTIVE_CONTAINERS}, one `rm -f` per runtime.
+ *
+ * Synchronous on purpose: the only callers are `exit`/signal handlers, where a
+ * promise is never awaited. Best-effort like the `rmSync` loop below — a
+ * shutdown must not be aborted because a daemon is gone or slow, hence the
+ * short timeout and the swallowed error.
+ */
+function removeAllContainers(): void {
+  const byRuntime = new Map<string, string[]>();
+  for (const [name, runtime] of ACTIVE_CONTAINERS) {
+    const names = byRuntime.get(runtime);
+    if (names) names.push(name);
+    else byRuntime.set(runtime, [name]);
+  }
+  for (const [runtime, names] of byRuntime) {
+    try {
+      spawnSync(runtime, ['rm', '-f', ...names], { timeout: 5_000, stdio: 'ignore' });
+    } catch {
+      // Best-effort — the runtime may be unreachable, or the container may
+      // already be gone.
+    }
+  }
+  ACTIVE_CONTAINERS.clear();
+}
+
+/**
+ * Remove every sandbox and container this process still owns. Synchronous and
+ * idempotent, so it is safe from an `exit` handler and safe to call more than
+ * once — both registries are emptied, so a second call has nothing to remove.
  */
 export function cleanupAllSandboxes(): void {
   // Kill first, delete second. A mutation engine's test processes run INSIDE
@@ -87,6 +138,11 @@ export function cleanupAllSandboxes(): void {
   // does not stop it — it just leaves it running against a path that no longer
   // exists. (Observed: a worker held 2 GB for 20 hours that way.)
   killAllTrackedProcesses();
+  // Containers before the directories they mount: a container outlives the
+  // `docker exec` clients just reaped above, and removing its bind-mount source
+  // first would leave it running against a path that no longer exists — the
+  // same failure mode as the directory-before-process ordering, one level up.
+  removeAllContainers();
   for (const dir of ACTIVE_SANDBOXES) {
     try {
       rmSync(dir, { recursive: true, force: true });
@@ -194,6 +250,32 @@ export function registerSandbox(sandboxDir: string): void {
  */
 export function unregisterSandbox(sandboxDir: string): void {
   ACTIVE_SANDBOXES.delete(sandboxDir);
+}
+
+/**
+ * Take ownership of the container `name`, run by `runtime`: until
+ * {@link unregisterContainer}, the shutdown handlers above will remove it.
+ *
+ * Call it BEFORE the `create` command is issued. A container that the runtime
+ * has begun creating is already capable of outliving this process, and the
+ * caller has nothing but the name to remove it by until `create` returns.
+ *
+ * @internal The only write path into ACTIVE_CONTAINERS — see the module docblock.
+ */
+export function registerContainer(name: string, runtime: string): void {
+  ACTIVE_CONTAINERS.set(name, runtime);
+}
+
+/**
+ * Release ownership of the container `name`. Call it only once the container is
+ * actually gone: a session whose own `rm` failed must stay registered, or the
+ * shutdown sweep — the last teardown path there is — will skip the one
+ * container known to have survived.
+ *
+ * @internal The only delete path into ACTIVE_CONTAINERS — see the module docblock.
+ */
+export function unregisterContainer(name: string): void {
+  ACTIVE_CONTAINERS.delete(name);
 }
 
 /**

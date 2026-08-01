@@ -6,6 +6,9 @@ import { ExecFailureError, type ExecResult } from './exec-error.js';
 import { runShell, runShellCommand } from './exec.js';
 import { warn } from './logger.js';
 import { buildCreateArgs, changedEnvironment } from './container/args.js';
+// Exactly one specifier for the process-lifetime registry — see the docblock in
+// ./sandbox/registry.ts for why a second copy of that module would be silent.
+import { registerContainer, unregisterContainer } from './sandbox/registry.js';
 
 export type ExecutionMode = 'native' | 'container' | 'auto';
 
@@ -80,7 +83,16 @@ class ContainerExecutionSession implements ExecutionSession {
   private readonly name = `chaos-mcp-${process.pid}-${randomUUID().slice(0, 12)}`;
   private containerId: string | undefined;
   private startPromise: Promise<void> | undefined;
+  /** In-flight teardown, for de-duplicating CONCURRENT callers only. */
   private disposePromise: Promise<void> | undefined;
+  /**
+   * Whether a teardown has actually removed this session's container.
+   *
+   * Set only when `rm -f` SUCCEEDS, and cleared whenever a new container is
+   * provisioned. A failed removal deliberately leaves it false so the next
+   * {@link dispose} retries — see that method for the leak that caused.
+   */
+  private removed = false;
   private abortListener: (() => void) | undefined;
 
   constructor(
@@ -105,10 +117,9 @@ class ContainerExecutionSession implements ExecutionSession {
   private async ensureStarted(): Promise<void> {
     if (this.containerId) return;
     if (this.startPromise) return this.startPromise;
-    // A new provision supersedes any completed teardown: unlatch `dispose()` so
-    // the container about to be created can itself be removed later. Teardown
-    // stays idempotent for as long as the session has no container.
-    this.disposePromise = undefined;
+    // A new provision supersedes any completed teardown: the container about to
+    // be created has not been removed, whatever happened to its predecessor.
+    this.removed = false;
     this.startPromise = (async () => {
       if (this.signal?.aborted) throw new Error('Container execution cancelled before startup.');
       // Arm cancellation BEFORE anything is created, not after `start` returns.
@@ -118,12 +129,25 @@ class ContainerExecutionSession implements ExecutionSession {
       // RUNNING container and nothing was left that would ever tear it down.
       // (Both current callers also dispose in a `finally`, which masked it; the
       // listener is this class's stated cancellation mechanism and must actually
-      // arm.) Registering first is safe because `dispose()` is idempotent — it
-      // latches on `disposePromise` — and removes the container by name when
-      // `containerId` is not set yet, which is exactly the state an abort during
-      // `create` leaves behind.
+      // arm.) Registering first is safe because `dispose()` de-duplicates
+      // concurrent callers and removes the container by name when `containerId`
+      // is not set yet, which is exactly the state an abort during `create`
+      // leaves behind.
+      //
+      // RESIDUAL RACE, by design: an abort landing mid-`create` runs `rm -f`
+      // against a container the daemon may not have registered yet, and that
+      // removal simply fails. Deferring the removal until `create` settles was
+      // considered and rejected — every deferral scheme reopens a window
+      // between the last in-flight check and the flag being cleared. Recovery
+      // is what covers it instead: teardown is RETRYABLE (see `dispose`), so
+      // the `catch` below issues a second `rm`, and the process-exit sweep
+      // removes whatever still survives that.
       this.abortListener = () => void this.dispose();
       this.signal?.addEventListener('abort', this.abortListener, { once: true });
+      // Process-lifetime ownership, taken BEFORE `create` is issued: from here
+      // on a SIGINT/SIGTERM removes this container even though `process.exit()`
+      // abandons the request's own `finally { dispose() }`.
+      registerContainer(this.name, this.runtime);
       const created = await runShell(this.runtime, this.createArgs(), {
         timeoutMs: this.config.startupTimeoutMs ?? 60_000,
         signal: this.signal,
@@ -176,6 +200,12 @@ class ContainerExecutionSession implements ExecutionSession {
         timeoutMs: options.timeoutMs,
         signal: options.signal ?? this.signal,
         killTree: true,
+        // The HOST cwd of the `docker exec` client (the guest working directory
+        // is the `--workdir` above). Without it the client is tracked under
+        // `process.cwd()`, so `killProcessesUnder(sandboxDir)` — how a sandbox
+        // teardown reaps the engines still running in it — matches nothing in
+        // container mode and every exec client survives the sandbox.
+        cwd: this.workDir,
       });
     } catch (error) {
       if (
@@ -192,9 +222,41 @@ class ContainerExecutionSession implements ExecutionSession {
     return this.run('sh', ['-c', command], options);
   }
 
+  /**
+   * Remove this session's container. Safe to call repeatedly and from several
+   * places at once; never throws.
+   *
+   * De-duplicates CONCURRENT callers through {@link disposePromise}, but does
+   * NOT latch that promise once it settles: teardown has to stay RETRYABLE.
+   * The sequence that made a permanent latch a leak: an abort lands while
+   * `create` is in flight, the abort listener's `dispose()` runs `rm -f`
+   * against a container the daemon has not registered yet, that removal fails
+   * and is swallowed, the daemon then finishes creating the container, and
+   * `ensureStarted`'s `catch { await this.dispose(); }` returned the already
+   * settled promise instead of issuing a second `rm` — leaking the container
+   * for the lifetime of the process.
+   *
+   * What DOES latch is {@link removed}, and only on a successful removal, so a
+   * repeat call for a container that is already gone stays a cheap no-op.
+   */
   async dispose(): Promise<void> {
-    if (this.disposePromise) return this.disposePromise;
-    this.disposePromise = (async () => {
+    // Two passes at most: one to wait out a teardown already in flight (so two
+    // callers never `rm` the same container concurrently), one to re-issue the
+    // removal if that teardown did not actually get rid of it.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (this.removed) return;
+      const inFlight = this.disposePromise;
+      if (!inFlight) {
+        await (this.disposePromise = this.removeContainer());
+        return;
+      }
+      await inFlight;
+    }
+  }
+
+  /** One `rm -f` attempt. Never throws; see {@link dispose} for the retry rule. */
+  private removeContainer(): Promise<void> {
+    return (async () => {
       if (this.abortListener) {
         this.signal?.removeEventListener('abort', this.abortListener);
         this.abortListener = undefined;
@@ -204,9 +266,12 @@ class ContainerExecutionSession implements ExecutionSession {
           timeoutMs: 15_000,
           killTree: true,
         });
+        this.removed = true;
       } catch {
         // Best effort: the container may not have been created, or Docker may
-        // already have removed it after a daemon-side failure.
+        // already have removed it after a daemon-side failure. `removed` stays
+        // false so a later dispose() — and, failing that, the process-exit
+        // sweep over ACTIVE_CONTAINERS — tries again.
       } finally {
         this.containerId = undefined;
         // Drop the settled startup promise as well. A session survives its own
@@ -214,12 +279,16 @@ class ContainerExecutionSession implements ExecutionSession {
         // TypeScriptEngine.runBatched keeps going with the next batch — so the
         // next command must provision a fresh container instead of being handed
         // this already-resolved promise and exec-ing into a removed container.
-        // `disposePromise` stays latched (teardown is idempotent);
-        // `ensureStarted()` clears it when a new container is provisioned.
         this.startPromise = undefined;
+        // Release the shutdown registry only for a container that is genuinely
+        // gone; one whose removal failed must stay registered so the exit sweep
+        // still reaches it.
+        if (this.removed) unregisterContainer(this.name);
+        // Clear the concurrency guard last: a dispose that starts AFTER this one
+        // settles must be able to issue its own `rm`.
+        this.disposePromise = undefined;
       }
     })();
-    return this.disposePromise;
   }
 }
 

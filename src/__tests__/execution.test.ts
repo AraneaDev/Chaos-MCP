@@ -22,6 +22,15 @@ vi.mock('../utils/exec.js', async (importOriginal) => {
 
 vi.mock('../utils/logger.js', () => ({ warn: vi.fn() }));
 
+// The process-exit sweep removes containers with `spawnSync` — it runs from an
+// `exit` handler, where a promise is never awaited. Partial mock: the reaper
+// imports from this module too.
+vi.mock('child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('child_process')>();
+  return { ...actual, spawnSync: vi.fn() };
+});
+
+import { spawnSync } from 'child_process';
 import { runShell, runShellCommand } from '../utils/exec.js';
 import { ExecFailureError } from '../utils/exec-error.js';
 import {
@@ -31,6 +40,9 @@ import {
   defaultContainerImage,
 } from '../utils/execution.js';
 import { warn } from '../utils/logger.js';
+// Exactly the specifier utils/execution.ts registers through, so the sweep here
+// walks the very Map the sessions below write into — see the registry docblock.
+import { cleanupAllSandboxes } from '../utils/sandbox/registry.js';
 
 const ok = (stdout = '') => ({ stdout, stderr: '', exit: 0, signal: null }) as const;
 
@@ -431,7 +443,10 @@ describe('execution sessions', () => {
       expect(vi.mocked(runShell).mock.calls[3]).toEqual([
         'docker',
         ['exec', '--workdir', '/workspace', 'container-id', 'tool', 'arg'],
-        { timeoutMs: undefined, signal: undefined, killTree: true },
+        // `cwd` is the HOST directory the exec CLIENT runs in — the sandbox, so
+        // the reaper's per-sandbox sweep can reach it (the guest working
+        // directory is the `--workdir` above).
+        { timeoutMs: undefined, signal: undefined, killTree: true, cwd: '/tmp/work' },
       ]);
       expect(vi.mocked(runShell).mock.calls[4]).toEqual([
         'docker',
@@ -788,6 +803,137 @@ describe('execution sessions', () => {
     expect(vi.mocked(runShell).mock.calls.some((call) => call[1]?.[0] === 'exec')).toBe(false);
   });
 
+  it('re-issues the removal when the abort lands DURING `create`', async () => {
+    // The ordering no other case covers: the cancellation arrives while the
+    // container is still being created, so the listener's `rm -f` races the
+    // daemon and loses, and the daemon then finishes creating the container.
+    // Teardown that latched its first settled promise made every later attempt
+    // a no-op and leaked that container for the lifetime of the process.
+    const controller = new AbortController();
+    const rmTargets: string[] = [];
+    vi.mocked(runShell).mockImplementation(async (_command, args) => {
+      const argv = args;
+      if (argv[0] === 'version') return ok('27.0.0');
+      if (argv[0] === 'create') {
+        controller.abort();
+        throw new ExecFailureError(
+          { stdout: '', stderr: '', exit: null, signal: 'SIGTERM', code: 'ABORTED' },
+          'cancelled',
+        );
+      }
+      if (argv[0] === 'rm') {
+        rmTargets.push(String(argv[2]));
+        // First attempt: the daemon has not registered the container yet.
+        if (rmTargets.length === 1) throw new Error('No such container');
+        return ok();
+      }
+      return ok();
+    });
+    const session = await createExecutionSession(
+      'rust',
+      '/tmp/work',
+      { mode: 'container' },
+      controller.signal,
+    );
+
+    await expect(session.run('cargo', ['check'])).rejects.toMatchObject({ code: 'ABORTED' });
+
+    // Two attempts at the SAME container, addressed by name because `create`
+    // never returned an id.
+    expect(rmTargets).toHaveLength(2);
+    expect(new Set(rmTargets).size).toBe(1);
+    expect(rmTargets[0]).toMatch(/^chaos-mcp-\d+-[0-9a-f-]{12}$/);
+  });
+
+  it('removes a still-running container from the process-exit sweep', async () => {
+    // On SIGINT the server calls process.exit() from a `.finally()`, so the
+    // request's own `finally { dispose() }` never runs. The container's
+    // entrypoint is an infinite sleep, so nothing else would ever stop it.
+    vi.mocked(runShell)
+      .mockResolvedValueOnce(ok('27.0.0'))
+      .mockResolvedValueOnce(ok('cid'))
+      .mockResolvedValue(ok());
+    const session = await createExecutionSession('typescript', '/tmp/work', {
+      mode: 'container',
+      runtime: 'podman',
+    });
+    await session.run('stryker', []);
+    const containerName = vi.mocked(runShell).mock.calls[1]?.[1]?.[2];
+
+    cleanupAllSandboxes();
+
+    // Synchronous, because an `exit` handler cannot await anything.
+    expect(spawnSync).toHaveBeenCalledWith(
+      'podman',
+      ['rm', '-f', containerName],
+      expect.objectContaining({ timeout: expect.any(Number) }),
+    );
+
+    // …and the sweep is idempotent: a second signal removes nothing again.
+    vi.mocked(spawnSync).mockClear();
+    cleanupAllSandboxes();
+    expect(spawnSync).not.toHaveBeenCalled();
+  });
+
+  it('leaves nothing for the exit sweep once the session has disposed', async () => {
+    vi.mocked(runShell)
+      .mockResolvedValueOnce(ok('27.0.0'))
+      .mockResolvedValueOnce(ok('disposed-cid'))
+      .mockResolvedValue(ok());
+    // Two sessions, one torn down normally and one still holding its container,
+    // so the assertion below cannot pass merely because the sweep did nothing.
+    const disposed = await createExecutionSession('typescript', '/tmp/work', {
+      mode: 'container',
+      runtime: 'podman',
+    });
+    await disposed.run('stryker', []);
+    await disposed.dispose();
+    const live = await createExecutionSession('typescript', '/tmp/work', {
+      mode: 'container',
+      runtime: 'podman',
+    });
+    await live.run('stryker', []);
+    const calls = vi.mocked(runShell).mock.calls;
+    const disposedName = calls[1]?.[1]?.[2];
+    const liveName = calls.filter((call) => call[1]?.[0] === 'create')[1]?.[1]?.[2];
+
+    cleanupAllSandboxes();
+
+    expect(spawnSync).toHaveBeenCalledWith(
+      'podman',
+      ['rm', '-f', liveName],
+      expect.objectContaining({ timeout: expect.any(Number) }),
+    );
+    // The disposed session's container is already gone; sweeping it again would
+    // misreport what this process still owns.
+    const swept = vi.mocked(spawnSync).mock.calls.flatMap((call) => [...(call[1] ?? [])]);
+    expect(swept).not.toContain(disposedName);
+  });
+
+  it('runs the exec client itself inside the sandbox directory', async () => {
+    // `--workdir` is the GUEST path; the exec client is a host process, and the
+    // reaper indexes host processes by cwd. Left at process.cwd(), every
+    // `docker exec` this session started was invisible to
+    // killProcessesUnder(sandboxDir) — the sandbox's only reaping path.
+    vi.mocked(runShell)
+      .mockResolvedValueOnce(ok('27.0.0'))
+      .mockResolvedValueOnce(ok('cid'))
+      .mockResolvedValue(ok());
+    const session = await createExecutionSession('typescript', '/tmp/sandbox-abc', {
+      mode: 'container',
+    });
+
+    await session.run('stryker', ['run'], { cwd: '/tmp/sandbox-abc/src' });
+    await session.dispose();
+
+    expect(vi.mocked(runShell).mock.calls[3]?.[1]?.slice(0, 3)).toEqual([
+      'exec',
+      '--workdir',
+      '/workspace/src',
+    ]);
+    expect(vi.mocked(runShell).mock.calls[3]?.[2]).toMatchObject({ cwd: '/tmp/sandbox-abc' });
+  });
+
   it('does not forward the host environment wholesale into containers', async () => {
     vi.mocked(runShell)
       .mockResolvedValueOnce(ok('27.0.0'))
@@ -904,6 +1050,7 @@ describe('execution sessions', () => {
       timeoutMs: undefined,
       signal: commandController.signal,
       killTree: true,
+      cwd: '/tmp/work',
     });
   });
 
