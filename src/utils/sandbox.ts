@@ -1,13 +1,5 @@
-import { cp } from 'fs/promises';
-import {
-  mkdtempSync,
-  symlinkSync,
-  rmSync,
-  existsSync,
-  statSync,
-  readdirSync,
-  realpathSync,
-} from 'fs';
+import { cp, readdir } from 'fs/promises';
+import { mkdtempSync, symlinkSync, rmSync, existsSync, statSync, realpathSync } from 'fs';
 import { join, resolve, sep } from 'path';
 import { tmpdir } from 'os';
 import { randomUUID } from 'crypto';
@@ -153,6 +145,23 @@ function safeSymlink(target: string, path: string): void {
   }
 }
 
+/**
+ * How many directories {@link estimateWorkspaceSize} may visit between forced
+ * event-loop yields.
+ *
+ * `await readdir` already releases the loop whenever the read actually hits the
+ * threadpool, but a warm page cache can resolve many reads without ever letting
+ * a timer or an `abort()` callback run. 64 keeps the guaranteed release cheap
+ * (one extra macrotask per 64 directories) while bounding the longest stretch
+ * of uninterrupted walking on any filesystem.
+ */
+const SIZE_WALK_YIELD_EVERY_DIRS = 64;
+
+/** Release the event loop for one macrotask so pending work (e.g. an abort) runs. */
+function yieldToEventLoop(): Promise<void> {
+  return new Promise<void>((resolveYield) => setImmediate(resolveYield));
+}
+
 /** Size of a single file in bytes; 0 for files we cannot stat. */
 function fileSize(path: string): number {
   try {
@@ -167,6 +176,11 @@ function fileSize(path: string): number {
  * Estimate the size of a directory tree by summing file sizes.
  * Used as a pre-copy guard to warn on very large workspaces.
  *
+ * Asynchronous: the walk yields to the event loop while reading each directory
+ * (and unconditionally every {@link SIZE_WALK_YIELD_EVERY_DIRS} directories),
+ * so an in-flight abort is observed mid-walk and concurrent provisions do not
+ * serialise their walks on the loop.
+ *
  * Applies the SAME {@link CopyPolicy} the copy will use, so the estimate
  * matches what the copy actually walks — otherwise the warning would fire for
  * bytes that are never copied (audit Low#3).
@@ -179,30 +193,48 @@ function fileSize(path: string): number {
  * the walked entry's own name rather than segments of the workspace root's
  * absolute path.
  */
-function estimateWorkspaceSize(
+async function estimateWorkspaceSize(
   workspaceRoot: string,
   policy: CopyPolicy,
   signal?: AbortSignal,
-): number {
+): Promise<number> {
   try {
     const stack: string[] = [workspaceRoot];
     let total = 0;
+    let dirsSinceYield = 0;
 
     while (stack.length > 0) {
-      // CodeRabbit finding: this walk is synchronous, so a large workspace
-      // could block the event loop long enough that an MCP abort is not
-      // observed until the whole scan finishes. Check the signal per directory
-      // so cancellation is honoured promptly, and stop early once we already
-      // know the workspace exceeds the warning threshold — the result is only
-      // used for a boolean `size > MAX_WORKSPACE_SIZE_BYTES` warning, so there
-      // is nothing to gain by continuing to walk past the cap.
+      // The walk is asynchronous, and that is what makes this check mean
+      // something. `AbortController.abort()` runs on the event loop, so a
+      // signal cannot flip in the middle of a synchronous walk no matter how
+      // often the walk looks at it — the previous version's per-directory poll
+      // was provably equivalent to the one before the loop, and its own comment
+      // ("this walk is synchronous, so ... an MCP abort is not observed until
+      // the whole scan finishes") was the reason it could not work.
+      //
+      // Each `await readdir` hands the event loop back while the directory read
+      // runs on the threadpool, and the explicit yield every
+      // SIZE_WALK_YIELD_EVERY_DIRS directories guarantees a release even when
+      // every read is served from cache. Both give a pending abort a real
+      // chance to run before the next iteration reads the flag. This also stops
+      // `poolSize` concurrent triage provisions from serialising their tree
+      // walks on the event loop and freezing the MCP server for that window.
+      //
+      // Stop early once we already know the workspace exceeds the warning
+      // threshold — the result is only used for a boolean
+      // `size > MAX_WORKSPACE_SIZE_BYTES` warning, so there is nothing to gain
+      // by continuing to walk past the cap.
       if (signal?.aborted) throw abortError();
       if (total > MAX_WORKSPACE_SIZE_BYTES) break;
       const current = stack.pop();
       if (current === undefined) break;
+      if (++dirsSinceYield >= SIZE_WALK_YIELD_EVERY_DIRS) {
+        dirsSinceYield = 0;
+        await yieldToEventLoop();
+      }
       let entries;
       try {
-        entries = readdirSync(current, { withFileTypes: true });
+        entries = await readdir(current, { withFileTypes: true });
       } catch {
         continue;
       }
@@ -419,7 +451,7 @@ export async function createSandbox(
   // must not match segments of the workspace root's own path). Its
   // `skippedHeavyDirs` is deliberately discarded — only the copy's set drives
   // the symlink step.
-  const size = estimateWorkspaceSize(
+  const size = await estimateWorkspaceSize(
     absoluteWorkspace,
     buildCopyPolicy({
       absoluteTarget,

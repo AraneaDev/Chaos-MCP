@@ -16,9 +16,12 @@ vi.mock('fs', () => ({
   realpathSync: vi.fn((p: unknown) => String(p)),
 }));
 
-// Mock fs/promises — cp is the audit C1 async copy primitive.
+// Mock fs/promises — cp is the audit C1 async copy primitive, and readdir is
+// the pre-copy size walk's directory reader (Med#17: the walk is async so an
+// abort can actually land in the middle of it).
 vi.mock('fs/promises', () => ({
   cp: vi.fn(),
+  readdir: vi.fn(),
 }));
 
 // Mock crypto
@@ -50,9 +53,9 @@ vi.mock('../utils/logger.js', () => ({
   warn: vi.fn(),
 }));
 
-import { mkdtempSync, symlinkSync, rmSync, existsSync, statSync, readdirSync } from 'fs';
+import { mkdtempSync, symlinkSync, rmSync, existsSync, statSync } from 'fs';
 import type { PathLike } from 'fs';
-import { cp } from 'fs/promises';
+import { cp, readdir } from 'fs/promises';
 import { tmpdir } from 'os';
 import { resolve, join, sep } from 'path';
 import { createSandbox, SandboxContext } from '../utils/sandbox.js';
@@ -73,6 +76,7 @@ const TEST_PROJECT_VENDOR = `${TEST_PROJECT}/vendor`;
 
 const mockMkdtempSync = vi.mocked(mkdtempSync);
 const mockCp = vi.mocked(cp);
+const mockReaddir = vi.mocked(readdir);
 const mockSymlinkSync = vi.mocked(symlinkSync);
 const mockRmSync = vi.mocked(rmSync);
 const mockExistsSync = vi.mocked(existsSync);
@@ -690,11 +694,11 @@ describe('createSandbox', () => {
     const mockedWarn = vi.mocked(warn);
     mockedWarn.mockClear();
 
-    // Mock readdirSync to return a directory with a giant file
-    vi.mocked(readdirSync).mockReturnValueOnce([
+    // Mock readdir to return a directory with a giant file
+    mockReaddir.mockResolvedValueOnce([
       { name: 'src', isDirectory: () => true, isFile: () => false },
     ] as never);
-    vi.mocked(readdirSync).mockReturnValueOnce([
+    mockReaddir.mockResolvedValueOnce([
       { name: 'giant.bin', isDirectory: () => false, isFile: () => true },
     ] as never);
     vi.mocked(statSync).mockReturnValueOnce({
@@ -723,10 +727,14 @@ describe('createSandbox', () => {
     // estimator must skip node_modules entirely; a mutant that drops the
     // ALWAYS_EXCLUDE guard would recurse into it and warn. Path-based
     // implementations (not Once-queues) so nothing leaks into later tests.
-    vi.mocked(readdirSync).mockImplementation((p: unknown) =>
+    mockReaddir.mockImplementation((p: unknown) =>
       String(p).endsWith('node_modules')
-        ? ([{ name: 'giant.bin', isDirectory: () => false, isFile: () => true }] as never)
-        : ([{ name: 'node_modules', isDirectory: () => true, isFile: () => false }] as never),
+        ? (Promise.resolve([
+            { name: 'giant.bin', isDirectory: () => false, isFile: () => true },
+          ]) as never)
+        : (Promise.resolve([
+            { name: 'node_modules', isDirectory: () => true, isFile: () => false },
+          ]) as never),
     );
     vi.mocked(statSync).mockReturnValue({ size: 250 * 1024 * 1024 } as never);
 
@@ -750,10 +758,14 @@ describe('createSandbox', () => {
     // Root holds only a user-ignored 'huge' dir with a 250MB file. Since the
     // copy will skip it, the size estimate must skip it too — otherwise the
     // warning fires for bytes that are never copied.
-    vi.mocked(readdirSync).mockImplementation((p: unknown) =>
+    mockReaddir.mockImplementation((p: unknown) =>
       String(p).endsWith('huge')
-        ? ([{ name: 'giant.bin', isDirectory: () => false, isFile: () => true }] as never)
-        : ([{ name: 'huge', isDirectory: () => true, isFile: () => false }] as never),
+        ? (Promise.resolve([
+            { name: 'giant.bin', isDirectory: () => false, isFile: () => true },
+          ]) as never)
+        : (Promise.resolve([
+            { name: 'huge', isDirectory: () => true, isFile: () => false },
+          ]) as never),
     );
     vi.mocked(statSync).mockReturnValue({ size: 250 * 1024 * 1024 } as never);
 
@@ -774,10 +786,10 @@ describe('createSandbox', () => {
     const mockedWarn = vi.mocked(warn);
     mockedWarn.mockClear();
 
-    vi.mocked(readdirSync).mockReturnValueOnce([
+    mockReaddir.mockResolvedValueOnce([
       { name: 'src', isDirectory: () => true, isFile: () => false },
     ] as never);
-    vi.mocked(readdirSync).mockReturnValueOnce([
+    mockReaddir.mockResolvedValueOnce([
       { name: 'small.ts', isDirectory: () => false, isFile: () => true },
     ] as never);
     vi.mocked(statSync).mockReturnValueOnce({ size: 1000 } as never);
@@ -847,17 +859,17 @@ describe('createSandbox', () => {
 
   // ─── estimateWorkspaceSize error-catch paths ─────────────────────────────
 
-  it('estimateWorkspaceSize handles readdirSync errors gracefully', async () => {
+  it('estimateWorkspaceSize handles readdir errors gracefully', async () => {
     mockExistsSync.mockImplementation((path: PathLike) => {
       return path === `${SANDBOX_DIR}/src/utils/math.ts`;
     });
 
     // Simulate a permission error when reading a directory
-    vi.mocked(readdirSync).mockImplementationOnce(() => {
-      throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
-    });
+    mockReaddir.mockRejectedValueOnce(
+      Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' }),
+    );
 
-    // Should not throw — estimateWorkspaceSize catches readdirSync errors
+    // Should not throw — estimateWorkspaceSize catches readdir rejections
     await expect(createSandbox('src/utils/math.ts', TEST_PROJECT)).resolves.toBeDefined();
   });
 
@@ -866,11 +878,11 @@ describe('createSandbox', () => {
       return path === `${SANDBOX_DIR}/src/utils/math.ts`;
     });
 
-    // First readdirSync: return a dir with a file
-    vi.mocked(readdirSync).mockReturnValueOnce([
+    // First readdir: return a dir with a file
+    mockReaddir.mockResolvedValueOnce([
       { name: 'src', isDirectory: () => true, isFile: () => false },
     ] as never);
-    vi.mocked(readdirSync).mockReturnValueOnce([
+    mockReaddir.mockResolvedValueOnce([
       { name: 'broken.txt', isDirectory: () => false, isFile: () => true },
     ] as never);
     // statSync throws for 'broken.txt'
@@ -1122,7 +1134,7 @@ describe('createSandbox', () => {
 
     // Exactly at the 200MB cap → strictly-greater-than guard must NOT warn.
     mockedWarn.mockClear();
-    vi.mocked(readdirSync).mockReturnValueOnce([
+    mockReaddir.mockResolvedValueOnce([
       { name: 'big.bin', isDirectory: () => false, isFile: () => true },
     ] as never);
     vi.mocked(statSync).mockReturnValueOnce({ size: 200 * 1024 * 1024 } as never);
@@ -1131,7 +1143,7 @@ describe('createSandbox', () => {
 
     // 300MB → warns, and the human-readable size is computed correctly.
     mockedWarn.mockClear();
-    vi.mocked(readdirSync).mockReturnValueOnce([
+    mockReaddir.mockResolvedValueOnce([
       { name: 'big.bin', isDirectory: () => false, isFile: () => true },
     ] as never);
     vi.mocked(statSync).mockReturnValueOnce({ size: 300 * 1024 * 1024 } as never);
@@ -1160,18 +1172,17 @@ describe('createSandbox', () => {
   });
 
   it('honours an abort that lands during the workspace size estimate', async () => {
-    // The size walk is synchronous and can run for a while on a big tree, so it
-    // polls the signal itself. Without that poll a cancelled request keeps
-    // walking to completion before anyone notices.
+    // The walk polls the signal per directory. Without that poll a cancelled
+    // request keeps walking to completion before anyone notices.
     const controller = new AbortController();
     mockMkdtempSync.mockClear();
     mockExistsSync.mockImplementation(
       (path: PathLike) => path === `${SANDBOX_DIR}/src/utils/math.ts` || path === TEST_PROJECT,
     );
-    vi.mocked(readdirSync).mockImplementation((() => {
+    mockReaddir.mockImplementation((() => {
       // Abort as soon as the walk reads its first directory.
       controller.abort();
-      return [{ name: 'a', isDirectory: () => true, isFile: () => false }];
+      return Promise.resolve([{ name: 'a', isDirectory: () => true, isFile: () => false }]);
     }) as never);
 
     await expect(
@@ -1180,6 +1191,51 @@ describe('createSandbox', () => {
 
     // The abort escaped the size estimate's best-effort catch rather than being
     // swallowed and reported as "size 0".
+    expect(mockMkdtempSync).not.toHaveBeenCalled();
+  });
+
+  it('observes an abort flipped by an interleaved task mid-walk (Med#17)', async () => {
+    // The case the synchronous walk could NOT pass. `controller.abort()` runs
+    // on the event loop, so with a sync `readdirSync` walk the whole tree is
+    // visited in one uninterruptible turn: the per-directory `signal.aborted`
+    // poll can never see a flag flipped by a task that has not been allowed to
+    // run yet. Only an async walk gives that task a turn.
+    //
+    // Nobody touches the controller from inside the walk here — the abort comes
+    // from an ordinary macrotask racing it, exactly like an MCP cancellation.
+    const controller = new AbortController();
+    mockMkdtempSync.mockClear();
+    mockExistsSync.mockImplementation(
+      (path: PathLike) => path === `${SANDBOX_DIR}/src/utils/math.ts` || path === TEST_PROJECT,
+    );
+
+    // A 40-directory tree. Each readdir resolves on a real macrotask, the way
+    // threadpool-backed fs.promises.readdir does.
+    const CHILD_DIRS = 40;
+    mockReaddir.mockImplementation((async (p: unknown) => {
+      await new Promise<void>((r) => setTimeout(r, 0));
+      return String(p) === TEST_PROJECT
+        ? Array.from({ length: CHILD_DIRS }, (_unused, i) => ({
+            name: `d${i}`,
+            isDirectory: () => true,
+            isFile: () => false,
+          }))
+        : [{ name: 'leaf.ts', isDirectory: () => false, isFile: () => true }];
+    }) as never);
+    vi.mocked(statSync).mockReturnValue({ size: 1 } as never);
+
+    const inFlight = createSandbox('src/utils/math.ts', TEST_PROJECT, undefined, {
+      signal: controller.signal,
+    });
+    // Scheduled AFTER the walk starts, on the same timer queue the mocked
+    // directory reads resolve on, so it lands between two directories.
+    setTimeout(() => controller.abort(), 0);
+
+    await expect(inFlight).rejects.toMatchObject({ name: 'AbortError' });
+
+    // Mid-walk, not after it: the walk stopped well short of all 41 directories
+    // and never reached the temp-dir allocation that follows the estimate.
+    expect(mockReaddir.mock.calls.length).toBeLessThan(CHILD_DIRS);
     expect(mockMkdtempSync).not.toHaveBeenCalled();
   });
 
