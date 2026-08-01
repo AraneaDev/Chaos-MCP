@@ -52,81 +52,132 @@ export function buildEnrichContext(
   return { projectType, sourceLines };
 }
 
-/**
- * Format a completed audit into the MCP tool response: verify-mode delta when a
- * baseline was supplied, otherwise the standard report plus a trailing note for
- * any StrykerJS-only options the resolved engine ignored (audit Low#5).
- *
- * The non-verify branch builds the result payload once via `buildResultPayload`,
- * then returns both a text/JSON content block AND `structuredContent: payload`
- * so callers can consume the structured data directly. Verify-mode is UNCHANGED.
- */
-export function formatAuditOutput(
-  auditResults: MutationResult,
-  args: ToolArgs,
-  projectType: SupportedProjectType,
-  baselineKeys: MutantKey[] | undefined,
-  targetFile: string,
-  enrichCtx: EnrichContext | undefined,
-  cfg: ChaosConfig,
-  env: EnvironmentInfo,
-  suppression: SuppressionCounts,
-  runId: string | undefined,
-  relFromRoot: string,
-): CallToolResult {
-  if (baselineKeys) {
-    // Task 9: filter suppressed equivalent mutants from BOTH the baseline keys
-    // AND the re-run result before computing the delta so known-equivalent mutants
-    // never appear as "still surviving" or "now killed" — they vanish entirely.
-    // Uses the same workspace-relative key (relFromRoot) as the standard audit
-    // path (Task 7) so the two modes read identical suppression entries (A9).
-    // Only FINGERPRINT-VERIFIED suppressions filter the delta. A drifted or
-    // unverified entry leaves its mutant in both sides of the comparison, where
-    // it shows up as "still surviving" — visible, and explained by the note
-    // appended below.
-    const verdict = loadVerifiedSuppressions(env.workspaceRoot, relFromRoot, cfg.suppressionsPath);
-    const suppressed = verdict.applied;
-    const rerun = applySuppressions(auditResults, suppressed).result;
-    const keptBaseline = baselineKeys.filter((k) => !suppressed.has(`${k.line} ${k.mutator}`));
-    // EVERY engine re-runs the whole file in verify mode now — StrykerJS
-    // included, since single-line scoping silently dropped multi-line mutants
-    // and `computeVerifyDelta` then read their absence as "killed" (see
-    // `audit/scope.ts`). Regressions can therefore land on lines outside the
-    // baseline on any engine, and all of them are counted (audit H1).
-    const delta = computeVerifyDelta(keptBaseline, rerun);
-    const verifyText =
-      args.outputFormat === 'text'
-        ? formatVerifyResultAsText(targetFile, delta)
-        : formatVerifyResultAsJson(targetFile, delta);
-    // Verify responses must carry `structuredContent` too — the tool declares an
-    // `outputSchema` whose `oneOf` includes this verify-delta shape (audit H3).
-    const verifyStructured: Record<string, unknown> = {
-      target: targetFile,
-      mode: 'verify',
-      baselineTotal: delta.baselineTotal,
-      killedCount: delta.nowKilled.length,
-      nowKilled: delta.nowKilled,
-      stillSurviving: delta.stillSurviving,
-      newSurvivors: delta.newSurvivors,
-      note: buildVerifyNote(delta),
-    };
-    // Verify mode reports the same drift the standard report does — otherwise a
-    // stale suppression makes a mutant reappear as "still surviving" with no
-    // explanation anywhere in the response.
-    const verifyDrift = suppressionDriftNotes(verdict.drifted, verdict.unverified);
-    const verifyContent: { type: 'text'; text: string }[] = [{ type: 'text', text: verifyText }];
-    if (verifyDrift.length > 0) {
-      if (verdict.drifted > 0) verifyStructured.driftedSuppressions = verdict.drifted;
-      if (verdict.unverified > 0) verifyStructured.unverifiedSuppressions = verdict.unverified;
-      verifyStructured.note = `${verifyStructured.note as string} ${verifyDrift.join(' ')}`;
-      verifyContent.push({ type: 'text', text: verifyDrift.map((n) => `Note: ${n}`).join('\n') });
-    }
-    return {
-      content: verifyContent,
-      structuredContent: verifyStructured,
-    };
-  }
+/** What {@link formatVerifyOutput} needs — a strict subset of the audit output. */
+interface VerifyOutputOptions {
+  /** The verify RE-RUN's result, before suppressions are re-applied to it. */
+  auditResults: MutationResult;
+  args: ToolArgs;
+  /** The baseline mutant keys; their presence is what selects verify mode. */
+  baselineKeys: MutantKey[];
+  targetFile: string;
+  cfg: ChaosConfig;
+  env: EnvironmentInfo;
+  relFromRoot: string;
+}
 
+/** What {@link formatStandardOutput} needs — the other, disjoint subset. */
+interface StandardOutputOptions {
+  auditResults: MutationResult;
+  args: ToolArgs;
+  projectType: SupportedProjectType;
+  targetFile: string;
+  enrichCtx: EnrichContext | undefined;
+  cfg: ChaosConfig;
+  env: EnvironmentInfo;
+  /** Counts from the handler's suppression phase; verify mode has none. */
+  suppression: SuppressionCounts;
+  runId: string | undefined;
+}
+
+/**
+ * Verify mode: the baseline-vs-re-run delta.
+ *
+ * Shares no state with {@link formatStandardOutput} and returns a completely
+ * different `structuredContent` key set (`mode` / `baselineTotal` / `nowKilled`
+ * / `stillSurviving` / `newSurvivors`), which is why the two are separate
+ * functions behind one entry point.
+ *
+ * This is the ONLY place verify-mode suppressions are read: the handler's
+ * suppression phase deliberately skips the auto-filter when `baselineKeys` is
+ * set (see `applyAndCountSuppressions`), because filtering the re-run without
+ * also filtering the baseline would misreport a newly suppressed mutant as
+ * "now killed". So the read below is not a duplicate of the standard path's —
+ * it is the load that path's counterpart skipped.
+ */
+function formatVerifyOutput({
+  auditResults,
+  args,
+  baselineKeys,
+  targetFile,
+  cfg,
+  env,
+  relFromRoot,
+}: VerifyOutputOptions): CallToolResult {
+  // Task 9: filter suppressed equivalent mutants from BOTH the baseline keys
+  // AND the re-run result before computing the delta so known-equivalent mutants
+  // never appear as "still surviving" or "now killed" — they vanish entirely.
+  // Uses the same workspace-relative key (relFromRoot) as the standard audit
+  // path (Task 7) so the two modes read identical suppression entries (A9).
+  // Only FINGERPRINT-VERIFIED suppressions filter the delta. A drifted or
+  // unverified entry leaves its mutant in both sides of the comparison, where
+  // it shows up as "still surviving" — visible, and explained by the note
+  // appended below.
+  const verdict = loadVerifiedSuppressions(env.workspaceRoot, relFromRoot, cfg.suppressionsPath);
+  const suppressed = verdict.applied;
+  const rerun = applySuppressions(auditResults, suppressed).result;
+  const keptBaseline = baselineKeys.filter((k) => !suppressed.has(`${k.line} ${k.mutator}`));
+  // EVERY engine re-runs the whole file in verify mode now — StrykerJS
+  // included, since single-line scoping silently dropped multi-line mutants
+  // and `computeVerifyDelta` then read their absence as "killed" (see
+  // `audit/scope.ts`). Regressions can therefore land on lines outside the
+  // baseline on any engine, and all of them are counted (audit H1).
+  const delta = computeVerifyDelta(keptBaseline, rerun);
+  const verifyText =
+    args.outputFormat === 'text'
+      ? formatVerifyResultAsText(targetFile, delta)
+      : formatVerifyResultAsJson(targetFile, delta);
+  // Verify responses must carry `structuredContent` too — the tool declares an
+  // `outputSchema` whose `oneOf` includes this verify-delta shape (audit H3).
+  const verifyStructured: Record<string, unknown> = {
+    target: targetFile,
+    mode: 'verify',
+    baselineTotal: delta.baselineTotal,
+    killedCount: delta.nowKilled.length,
+    nowKilled: delta.nowKilled,
+    stillSurviving: delta.stillSurviving,
+    newSurvivors: delta.newSurvivors,
+    note: buildVerifyNote(delta),
+  };
+  // Verify mode reports the same drift the standard report does — otherwise a
+  // stale suppression makes a mutant reappear as "still surviving" with no
+  // explanation anywhere in the response.
+  const verifyDrift = suppressionDriftNotes(verdict.drifted, verdict.unverified);
+  const verifyContent: { type: 'text'; text: string }[] = [{ type: 'text', text: verifyText }];
+  if (verifyDrift.length > 0) {
+    if (verdict.drifted > 0) verifyStructured.driftedSuppressions = verdict.drifted;
+    if (verdict.unverified > 0) verifyStructured.unverifiedSuppressions = verdict.unverified;
+    verifyStructured.note = `${verifyStructured.note as string} ${verifyDrift.join(' ')}`;
+    verifyContent.push({ type: 'text', text: verifyDrift.map((n) => `Note: ${n}`).join('\n') });
+  }
+  return {
+    content: verifyContent,
+    structuredContent: verifyStructured,
+  };
+}
+
+/**
+ * Standard (non-verify) mode: the full report, plus a trailing note for any
+ * StrykerJS-only options the resolved engine ignored (audit Low#5).
+ *
+ * Builds the result payload once via `buildResultPayload`, then returns both a
+ * text/JSON content block AND `structuredContent: payload` so callers can
+ * consume the structured data directly.
+ *
+ * Suppressions are NOT re-read here: the handler's suppression phase already
+ * applied them to `auditResults` and handed back the counts this function
+ * reports.
+ */
+function formatStandardOutput({
+  auditResults,
+  args,
+  projectType,
+  targetFile,
+  enrichCtx,
+  cfg,
+  env,
+  suppression,
+  runId,
+}: StandardOutputOptions): CallToolResult {
   const enrichOpts = {
     enrich: enrichCtx,
     maxSurvivors: resolveMaxSurvivors(args, cfg),
@@ -183,4 +234,41 @@ export function formatAuditOutput(
   }
 
   return { content, structuredContent: payload as unknown as Record<string, unknown> };
+}
+
+/**
+ * Format a completed audit into the MCP tool response: verify-mode delta when a
+ * baseline was supplied, otherwise the standard report.
+ *
+ * The two modes share no state and produce different `structuredContent` shapes,
+ * so each lives in its own function above; this is the single entry point the
+ * handler calls, and its positional signature is unchanged. Verify-mode output
+ * is UNCHANGED.
+ */
+export function formatAuditOutput(
+  auditResults: MutationResult,
+  args: ToolArgs,
+  projectType: SupportedProjectType,
+  baselineKeys: MutantKey[] | undefined,
+  targetFile: string,
+  enrichCtx: EnrichContext | undefined,
+  cfg: ChaosConfig,
+  env: EnvironmentInfo,
+  suppression: SuppressionCounts,
+  runId: string | undefined,
+  relFromRoot: string,
+): CallToolResult {
+  return baselineKeys
+    ? formatVerifyOutput({ auditResults, args, baselineKeys, targetFile, cfg, env, relFromRoot })
+    : formatStandardOutput({
+        auditResults,
+        args,
+        projectType,
+        targetFile,
+        enrichCtx,
+        cfg,
+        env,
+        suppression,
+        runId,
+      });
 }
