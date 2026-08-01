@@ -16,7 +16,13 @@ import { formatResultAsText, buildResultPayload } from '../core/format.js';
 import { evaluateGate } from '../core/gate.js';
 import { computeChangedRanges, type GitOptions } from '../utils/git-diff.js';
 import { loadRun, workspaceFingerprint } from '../utils/run-cache.js';
-import { parseBaseline, type BaselineInput, type MutantKey } from '../core/verify.js';
+import {
+  parseBaseline,
+  evaluateVerifyGate,
+  formatVerifyGateLine,
+  type BaselineInput,
+  type MutantKey,
+} from '../core/verify.js';
 import type { AuditDeadline } from '../utils/deadline.js';
 
 /**
@@ -73,8 +79,97 @@ function nothingToMutateResult(
       ? evaluateGate(empty.mutationScore, earlyArgs.minScore)
       : undefined;
   const payload = buildResultPayload(empty, { gate });
+  // The SAME GateResult the payload carries, threaded into the text projection
+  // exactly as `audit/audit-output.ts` does on the normal path (Fix 20). This
+  // call passed no options at all, so text output computed a verdict and then
+  // dropped it — the identical divergence `formatGateLine` was written to close:
+  // "a caller reading only the text block saw a clean report for a failing
+  // gate". The impact here is bounded (a 0-mutant score always passes, so the
+  // line always reads "passed"), but a MISSING verdict and a passing verdict are
+  // different messages, and this codebase treats the divergence itself as the
+  // defect.
+  //
+  // The score beside it is "n/a" after Fix 7 — a run that generated no mutants
+  // has no percentage — and the two stay coherent: `formatGateLine` quotes the
+  // DISPLAYED score, and `evaluateGate` grades `result.mutationScore`, which is
+  // still the raw "100.00%" and still passes every valid minScore.
   const text =
-    earlyArgs.outputFormat === 'text' ? formatResultAsText(empty) : JSON.stringify(payload);
+    earlyArgs.outputFormat === 'text'
+      ? formatResultAsText(empty, undefined, { gate })
+      : JSON.stringify(payload);
+  return {
+    kind: 'result',
+    result: {
+      content: [{ type: 'text', text }],
+      structuredContent: toStructuredContent(payload),
+    },
+  };
+}
+
+/**
+ * Build the terminal result for a VERIFY whose baseline recorded nothing.
+ *
+ * Same short-circuit as {@link nothingToMutateResult} — no engine runs, because
+ * running one is not the honest answer to "did the mutants I recorded get
+ * fixed?" when none were recorded — but a DIFFERENT response shape, and that is
+ * the whole point of this function existing.
+ *
+ * The tool's `outputSchema` declares two discriminated shapes via `oneOf`
+ * (`core/tool-schema.ts`): the standard audit report (`mutationScore` /
+ * `summary` / `survivors` / `noCoverage`) and the verify delta (`mode` /
+ * `baselineTotal` / `nowKilled` / `stillSurviving` / `newSurvivors`). A verify
+ * call must answer in the verify shape. Routing this branch through
+ * `nothingToMutateResult` answered in the AUDIT shape, so a client written
+ * `result.stillSurviving.length === 0` threw a TypeError — on the most common
+ * verify call there is. `mintRunId` is unconditional for non-verify runs
+ * including a perfectly clean file (see the comment at the call site below), and
+ * the `harden_file` prompt tells the agent to loop on exactly that runId, so
+ * "the baseline was empty" is the documented happy path, not a corner case.
+ *
+ * The diff `no-changes` short-circuit deliberately KEEPS `nothingToMutateResult`:
+ * that one really is a standard audit — the caller asked what the state of the
+ * file is, not whether a recorded set of mutants is still alive.
+ */
+function nothingToVerifyResult(targetFile: string, earlyArgs: ToolArgs): ScopeResolution {
+  const note =
+    `The baseline for ${targetFile} recorded no uncaught mutants, so there is nothing to verify ` +
+    'and no mutants were run. Nothing was fixed and nothing regressed, because nothing was ever ' +
+    'outstanding. Re-run without `runId`/`baseline` for a fresh measurement of the file.';
+  const payload: Record<string, unknown> = {
+    target: targetFile,
+    mode: 'verify',
+    baselineTotal: 0,
+    killedCount: 0,
+    nowKilled: [],
+    stillSurviving: [],
+    newSurvivors: [],
+    note,
+  };
+  // The gate travels on this path too, for the reason spelled out on
+  // {@link nothingToMutateResult}: `minScore` promises a `gate` key on the
+  // RESULT, and a consumer written `if (!result.gate.passed)` throws a
+  // TypeError when it is missing. An empty baseline has nothing still surviving
+  // and nothing new, so the verify gate passes (see `evaluateVerifyGate`).
+  const gate =
+    typeof earlyArgs.minScore === 'number'
+      ? evaluateVerifyGate(earlyArgs.minScore, {
+          baselineTotal: 0,
+          nowKilled: [],
+          stillSurviving: [],
+          newSurvivors: [],
+          notReChecked: [],
+        })
+      : undefined;
+  if (gate) payload.gate = gate;
+  // Text and JSON are two projections of one payload, as everywhere else here.
+  // The text form mirrors `formatVerifyResultAsText`'s header — including the
+  // gate line, via the same helper, so this short-circuit cannot repeat the
+  // divergence Finding 20 fixes on its sibling: a verdict in the structured
+  // payload and none in the text a caller may be the only thing reading.
+  const textLines = [`Chaos-MCP Verify Report: ${targetFile}`];
+  if (gate) textLines.push(formatVerifyGateLine(gate));
+  textLines.push(note);
+  const text = earlyArgs.outputFormat === 'text' ? textLines.join('\n') : JSON.stringify(payload);
   return {
     kind: 'result',
     result: {
@@ -179,6 +274,46 @@ async function resolveDiffScope(
       );
     }
   }
+}
+
+/**
+ * The payload counters that say a response's survivor lists were CUT DOWN before
+ * emission — `maxSurvivors` capping (`capGroups`) and `severityFloor` filtering
+ * (`floorGroups`), both in `core/format.ts`.
+ *
+ * They are read off the caller's `baseline` argument, not off a run of our own:
+ * see {@link incompleteBaselineCounters}.
+ */
+const BASELINE_INCOMPLETENESS_COUNTERS = [
+  'survivorsTruncated',
+  'noCoverageTruncated',
+  'survivorsFiltered',
+  'noCoverageFiltered',
+] as const;
+
+/**
+ * Which of the four "groups were hidden" counters the supplied baseline carries
+ * with a positive value — i.e. proof that the response it was copied from did
+ * NOT list every uncaught mutant the run found (Finding 4).
+ *
+ * Why this is checkable at all: `validateBaselineArg` inspects `survivors` and
+ * `noCoverage` and IGNORES every other key, and the `baseline` sub-schema sets
+ * no `additionalProperties: false` — so a caller (or an agent) that pastes the
+ * whole prior response back as `baseline` passes validation with the counters
+ * still attached. That is the common shape in practice, and it is precisely the
+ * shape that carries the evidence.
+ *
+ * A caller who copies ONLY the two arrays strips the evidence, and no check here
+ * can recover it — which is why the producer half of this fix puts an explicit
+ * "INCOMPLETE LIST … do not pass them back as `baseline`" sentence into the
+ * response's own `note` (`core/format.ts`). Refusal catches what it can see;
+ * the note is what covers the rest.
+ */
+function incompleteBaselineCounters(baseline: Record<string, unknown>): string[] {
+  return BASELINE_INCOMPLETENESS_COUNTERS.filter((k) => {
+    const v = baseline[k];
+    return typeof v === 'number' && v > 0;
+  });
 }
 
 /**
@@ -321,6 +456,27 @@ export async function computeScope(
     typeof earlyArgs.baseline === 'object' &&
     !Array.isArray(earlyArgs.baseline)
   ) {
+    // Refuse a baseline that its own response says is incomplete (Finding 4).
+    // Verify infers "killed" from ABSENCE, so a `maxSurvivors`-capped or
+    // `severityFloor`-filtered list reports every group it omits as fixed — the
+    // exact failure `mintRunId` documents ("a `maxSurvivors`-truncated one would
+    // cache fewer survivors than the run found and a later verify would read the
+    // missing ones as fixed") and guards against on the runId path. Refusing is
+    // right rather than merely warning: the answer would be confidently wrong on
+    // the only question verify is asked, and `runId` is an uncapped baseline the
+    // caller already has for the same run.
+    const incomplete = incompleteBaselineCounters(earlyArgs.baseline as Record<string, unknown>);
+    if (incomplete.length > 0) {
+      return scopeError(
+        `The baseline you passed reports hidden line groups (${incomplete.join(', ')}), so it is ` +
+          'not the full set of uncaught mutants that run found: `maxSurvivors` capped it and/or ' +
+          '`severityFloor` filtered it. Verify treats a mutant that is absent from the baseline as ' +
+          'never having been uncaught, so the hidden ones would be silently dropped from the ' +
+          "delta. Pass that run's `runId` instead — the run cache records the uncapped, " +
+          'unfiltered set — or re-run the audit with no maxSurvivors/severityFloor and pass ' +
+          'THAT response back.',
+      );
+    }
     baselineKeys = parseBaseline(earlyArgs.baseline as BaselineInput);
   }
 
@@ -351,13 +507,13 @@ export async function computeScope(
   //
   // Answer it honestly instead: nothing was recorded, so there is nothing to
   // re-check and no engine needs to run at all.
+  //
+  // The SHORT-CIRCUIT is unchanged; only the shape of the answer is. It used to
+  // return `nothingToMutateResult`, i.e. the standard audit payload, for a call
+  // the client made in VERIFY mode — see {@link nothingToVerifyResult}.
   if (baselineKeys !== undefined) {
     if (baselineKeys.length === 0) {
-      return nothingToMutateResult(
-        targetFile,
-        `The baseline for ${targetFile} recorded no uncaught mutants, so there is nothing to verify; no mutants were run.`,
-        earlyArgs,
-      );
+      return nothingToVerifyResult(targetFile, earlyArgs);
     }
     // Verify deliberately does NOT line-scope the re-run, on ANY engine.
     //

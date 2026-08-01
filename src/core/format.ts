@@ -627,6 +627,32 @@ export function buildResultPayload(
   if (prepared.noCoverageTruncated > 0) payload.noCoverageTruncated = prepared.noCoverageTruncated;
   if (prepared.survivorsFiltered > 0) payload.survivorsFiltered = prepared.survivorsFiltered;
   if (prepared.noCoverageFiltered > 0) payload.noCoverageFiltered = prepared.noCoverageFiltered;
+  // Say, in the response itself, that these arrays must not be echoed back as a
+  // verify `baseline` (Finding 4).
+  //
+  // The tool schema tells callers to "pass back the `survivors` and `noCoverage`
+  // arrays from a PRIOR run" — but those arrays are severity-FILTERED and capped
+  // at `maxSurvivors` (default 10) before emission. Verify infers "killed" from
+  // ABSENCE, so every group the cap or the floor removed comes back reported as
+  // fixed. The codebase already knows this hazard on the sibling path:
+  // `utils/run-cache.ts#mintRunId` requires an "UNCAPPED, UNFILTERED payload
+  // (`{}` opts)" for exactly this reason, and both mint sites obey it. Nothing
+  // protected the client-supplied `baseline`, so this is where it is said out
+  // loud — and, because `audit/scope.ts` refuses a baseline carrying these
+  // counters, echoing the whole response is caught rather than silently
+  // mis-graded.
+  const hiddenGroups =
+    prepared.survivorsTruncated +
+    prepared.noCoverageTruncated +
+    prepared.survivorsFiltered +
+    prepared.noCoverageFiltered;
+  if (hiddenGroups > 0) {
+    payload.note +=
+      ` INCOMPLETE LIST: ${hiddenGroups} line group(s) are hidden by maxSurvivors/severityFloor, so` +
+      ' these survivors/noCoverage arrays are NOT the full set. Do not pass them back as `baseline`' +
+      ' — a verify infers "killed" from absence and would report every hidden mutant as fixed. Pass' +
+      " this run's `runId` instead: the run cache records the uncapped, unfiltered set.";
+  }
   if (prepared.enrichNote) payload.enrichNote = prepared.enrichNote;
   if (result.scopeNote) payload.scopeNote = result.scopeNote;
   if (result.fidelityNote) payload.fidelityNote = result.fidelityNote;

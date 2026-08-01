@@ -112,11 +112,50 @@ describe('computeScope — no-changes short-circuit', () => {
     expect(res.result.isError).toBeUndefined();
     expect(structured(res.result).scopeNote).toContain('No changed lines');
   });
+
+  // ── Fix 20: the gate must appear in the TEXT projection too ──
+  it('renders the gate verdict in text output, not only in structuredContent', async () => {
+    // This call passed no options to `formatResultAsText`, so a verdict that
+    // existed in the payload was invisible to a caller reading only the text
+    // block — the exact divergence the normal path threads the gate to avoid.
+    const res = await scope({ diffBase: 'main', minScore: 80, outputFormat: 'text' });
+    if (res.kind !== 'result') throw new Error('expected a short-circuit');
+    const text = textOf(res.result);
+    expect(text).toContain('Gate: passed (minScore 80)');
+    // The SAME verdict the payload carries, not a second evaluation.
+    expect(structured(res.result).gate).toEqual({ minScore: 80, passed: true });
+  });
+
+  it('keeps the text report coherent with the "n/a" score from Fix 7', async () => {
+    // A run that generated no mutants has no percentage to report, and the gate
+    // line quotes the DISPLAYED score. The two must not contradict each other.
+    const res = await scope({ diffBase: 'main', minScore: 80, outputFormat: 'text' });
+    if (res.kind !== 'result') throw new Error('expected a short-circuit');
+    const text = textOf(res.result);
+    expect(text).toContain('Mutation score: n/a (0/0 killed, 0 survived)');
+    expect(text).toContain('Gate: passed (minScore 80)');
+    expect(text).toContain('No mutants were run, so this result is not a measurement');
+  });
+
+  it('renders no gate line in text when no minScore was supplied', async () => {
+    const res = await scope({ diffBase: 'main', outputFormat: 'text' });
+    if (res.kind !== 'result') throw new Error('expected a short-circuit');
+    expect(textOf(res.result)).not.toContain('Gate:');
+  });
 });
 
 // ── High#1: an empty baseline must not escalate into a whole-file run ────────
 describe('computeScope — empty baseline', () => {
-  it('short-circuits an explicit baseline with no recorded mutants', async () => {
+  // REWRITTEN (Finding 12): the last assertion used to read
+  // `structured(res.result).scopeNote`, i.e. it pinned the STANDARD AUDIT
+  // payload for a call the client made in VERIFY mode. The tool's outputSchema
+  // discriminates the two shapes with a `oneOf`, and a client written
+  // `result.stillSurviving.length === 0` threw a TypeError here — on the most
+  // common verify call there is. The short-circuit itself (what this test is
+  // really about) is unchanged and still asserted; only the shape it answers in
+  // is now the verify one, and the explanation moved from `scopeNote` to the
+  // verify payload's `note`.
+  it('short-circuits an explicit baseline with no recorded mutants, in the VERIFY shape', async () => {
     // Pre-fix this returned { kind: 'scope', diffRanges: [] }, and an EMPTY
     // array is truthy: auditFile set `lineRanges = []`, Stryker got the bare
     // file path, and the "verify" mutated the whole file.
@@ -124,7 +163,19 @@ describe('computeScope — empty baseline', () => {
     expect(res.kind).toBe('result');
     if (res.kind !== 'result') return;
     expect(res.result.isError).toBeUndefined();
-    expect(structured(res.result).scopeNote).toContain('nothing to verify');
+    const sc = structured(res.result);
+    expect(sc.mode).toBe('verify');
+    expect(sc.baselineTotal).toBe(0);
+    expect(sc.killedCount).toBe(0);
+    expect(sc.nowKilled).toEqual([]);
+    expect(sc.stillSurviving).toEqual([]);
+    expect(sc.newSurvivors).toEqual([]);
+    expect(sc.note).toContain('nothing to verify');
+    // …and NOT the standard audit report: those keys are what a verify client
+    // must not have to defend against.
+    expect(sc.mutationScore).toBeUndefined();
+    expect(sc.summary).toBeUndefined();
+    expect(sc.survivors).toBeUndefined();
   });
 
   it('short-circuits a cached run that recorded no survivors', async () => {
@@ -147,6 +198,27 @@ describe('computeScope — empty baseline', () => {
     if (res.kind !== 'result') return;
     expect(res.result.isError).toBeUndefined();
     expect(textOf(res.result)).toContain('nothing to verify');
+    // Finding 12: the cached-runId route answers in the verify shape too — it
+    // is the one the `harden_file` prompt loops on.
+    expect(structured(res.result).mode).toBe('verify');
+    expect(structured(res.result).stillSurviving).toEqual([]);
+  });
+
+  it('renders the clean-baseline verify as a Verify Report in text mode', async () => {
+    // Finding 12: `outputFormat: 'text'` must be honoured on this path too, and
+    // the header must say Verify, not Audit — a caller reading only the text
+    // block otherwise cannot tell which question was answered.
+    const runId = saveRun(
+      { file: FILE, projectType: 'typescript', survivors: [], noCoverage: [] },
+      { workspaceRoot: WS },
+    );
+    const res = await scope({ runId, outputFormat: 'text' });
+    if (res.kind !== 'result') throw new Error('expected a short-circuit');
+    const text = textOf(res.result);
+    expect(text.startsWith('{')).toBe(false);
+    expect(text).toContain(`Chaos-MCP Verify Report: ${FILE}`);
+    expect(text).toContain('nothing to verify');
+    expect(text).not.toContain('Chaos-MCP Audit Report');
   });
 
   it('gates the nothing-to-verify short-circuit too', async () => {
@@ -166,6 +238,53 @@ describe('computeScope — empty baseline', () => {
   // which infers "killed" from absence, reported it as `nowKilled`. Verify now
   // re-runs whole-file and filters by baseline key, so `diffRanges` must stay
   // undefined while `baselineKeys` still carries what to filter by.
+  // ── Finding 4: a truncated/filtered response must not become a baseline ──
+  describe('incomplete client-supplied baseline', () => {
+    const groups = { survivors: [{ line: 7, mutators: { Cond: 1 } }] };
+
+    it.each([
+      'survivorsTruncated',
+      'noCoverageTruncated',
+      'survivorsFiltered',
+      'noCoverageFiltered',
+    ])('refuses a baseline whose response reported %s', async (counter) => {
+      // Verify infers "killed" from ABSENCE, so a capped/filtered list reports
+      // every group it omits as fixed — the same failure `mintRunId` documents
+      // and guards against on the runId path.
+      const res = await scope({ baseline: { ...groups, [counter]: 3 } });
+      if (res.kind !== 'result') throw new Error('expected a refusal');
+      expect(res.result.isError).toBe(true);
+      expect(textOf(res.result)).toContain(counter);
+      // Actionable: it names the uncapped alternative the caller already has.
+      expect(textOf(res.result)).toContain('`runId`');
+      expect(textOf(res.result)).toContain('maxSurvivors');
+    });
+
+    it('accepts a complete baseline exactly as before', async () => {
+      // The documented workflow must be untouched — only the unsound variant is
+      // refused. Zero counters are as good as absent ones.
+      for (const b of [
+        groups,
+        { ...groups, survivorsTruncated: 0, noCoverageFiltered: 0 },
+      ] as const) {
+        const res = await scope({ baseline: b });
+        expect(res).toMatchObject({
+          kind: 'scope',
+          baselineKeys: [{ line: 7, mutator: 'Cond' }],
+        });
+      }
+    });
+
+    it('is not fooled by a non-numeric counter', async () => {
+      // The counters are read off a caller-supplied object; a string "3" is not
+      // evidence of anything and must not error out a legitimate baseline.
+      const res = await scope({
+        baseline: { ...groups, survivorsTruncated: '3' } as unknown as Record<string, unknown>,
+      });
+      expect(res.kind).toBe('scope');
+    });
+  });
+
   it('does NOT line-scope a NON-empty baseline, but still carries its keys', async () => {
     const res = await scope({ baseline: { survivors: [{ line: 7, mutators: { Cond: 1 } }] } });
     expect(res).toMatchObject({

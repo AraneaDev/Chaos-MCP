@@ -200,6 +200,41 @@ describe('handleToolCall phase3 wiring', () => {
     expect(cached?.survivors[0]).toMatchObject({ line: 7 });
   });
 
+  // ── Finding 3: no verify baseline from a SCOPED audit ──
+  it('mints NO runId when the audit was line-scoped', async () => {
+    // Verify re-runs the whole file and reports every fresh survivor outside
+    // the baseline as a `newSurvivor` — "your change introduced these uncaught
+    // mutants". Against a `lineScope`/`diffBase`-scoped baseline that is a
+    // libel on every pre-existing survivor the scoped audit never looked at, so
+    // no id is minted and the unsound verify cannot be started.
+    stubEngine({ ...resultWithSurvivor(), scopeKind: 'scoped' });
+    const res = await handleToolCall(
+      makeRequest({ filePath: FILE, lineScope: { start: 5, end: 9 } }),
+      { suppressionsPath: supPath },
+    );
+    expect(res.isError).toBeUndefined();
+    // The audit itself still answers in full — only the verify token is absent.
+    const sc = res.structuredContent as Record<string, unknown>;
+    expect(sc).not.toHaveProperty('runId');
+    expect((sc.summary as Record<string, unknown>).survived).toBe(1);
+  });
+
+  it('still mints a runId for a whole-file audit, batched or not', async () => {
+    // Pins the guard to `=== 'scoped'`: a batched whole-file run reports
+    // `'whole-file'` (batching is an implementation detail of covering the
+    // file), so large files must keep their runIds.
+    stubEngine({
+      ...resultWithSurvivor(),
+      scopeKind: 'whole-file',
+      scopeNote: 'Completed 4 bounded mutation batches.',
+    });
+    const res = await handleToolCall(makeRequest({ filePath: FILE }), {
+      suppressionsPath: supPath,
+    });
+    const sc = res.structuredContent as Record<string, unknown>;
+    expect(sc.runId).toMatch(/^[0-9a-f]{8}$/);
+  });
+
   it('keys the run-cache by the workspace-relative path when cwd differs from workspaceRoot', async () => {
     // workspaceRoot is a subdir of cwd (monorepo). The cached `file` must be
     // relative to workspaceRoot, NOT the absolute resolvedFile — this is where

@@ -3,6 +3,7 @@ import {
   parseBaseline,
   baselineLines,
   computeVerifyDelta,
+  evaluateVerifyGate,
   buildVerifyNote,
   formatVerifyResultAsJson,
   formatVerifyResultAsText,
@@ -16,6 +17,24 @@ const result = (vulns: { line: number; mutator: string }[]): MutationResult => (
   survived: vulns.length,
   mutationScore: '80.00%',
   vulnerabilities: vulns.map((v) => ({ ...v, description: 'survived' })),
+});
+
+/**
+ * A re-run that stopped early — the shape `runBatched` produces when the time
+ * budget drains or a batch throws (Finding 2). Verify is whole-file on every
+ * engine, so it plans the MAXIMUM number of batches and is the run most likely
+ * to be truncated.
+ */
+const partialResult = (
+  vulns: { line: number; mutator: string }[],
+  extra: Partial<MutationResult> = {},
+): MutationResult => ({
+  ...result(vulns),
+  complete: false,
+  batchesCompleted: 2,
+  batchesPlanned: 7,
+  stoppedReason: 'time_budget_exhausted',
+  ...extra,
 });
 
 describe('parseBaseline', () => {
@@ -157,6 +176,61 @@ describe('computeVerifyDelta', () => {
     expect(delta.newSurvivors).toHaveLength(1);
     expect(delta.newSurvivors[0]).toEqual({ line: 5, mutator: 'Z' });
   });
+
+  // ── Finding 2: absence only proves a kill when the re-run enumerated everything ──
+
+  it('leaves notReChecked empty and nowKilled populated for a COMPLETE re-run', () => {
+    // The unchanged contract, pinned so the partial branch cannot be widened
+    // into the normal case by accident.
+    const delta = computeVerifyDelta(baseline, result([]));
+    expect(delta.nowKilled).toHaveLength(2);
+    expect(delta.notReChecked).toEqual([]);
+  });
+
+  it('reports an absent baseline mutant as notReChecked, not nowKilled, when the re-run was partial', () => {
+    // The re-run merged 2 of 7 batches. A baseline mutant that did not reappear
+    // may simply never have been GENERATED, so "you fixed it" is unsupported.
+    const delta = computeVerifyDelta(baseline, partialResult([]));
+    expect(delta.nowKilled).toEqual([]);
+    expect(delta.notReChecked).toEqual([
+      { line: 42, mutator: 'ConditionalExpression' },
+      { line: 88, mutator: 'ArithmeticOperator' },
+    ]);
+  });
+
+  it('still trusts PRESENCE on a partial re-run: stillSurviving and newSurvivors are unaffected', () => {
+    // A mutant the truncated re-run actually saw survive is a fact regardless of
+    // how much of the file ran — only the absence inference is unsound.
+    const delta = computeVerifyDelta(
+      baseline,
+      partialResult([
+        { line: 88, mutator: 'ArithmeticOperator' },
+        { line: 999, mutator: 'X' },
+      ]),
+    );
+    expect(delta.stillSurviving).toEqual([{ line: 88, mutator: 'ArithmeticOperator' }]);
+    expect(delta.newSurvivors).toEqual([{ line: 999, mutator: 'X' }]);
+    expect(delta.notReChecked).toEqual([{ line: 42, mutator: 'ConditionalExpression' }]);
+    expect(delta.nowKilled).toEqual([]);
+  });
+
+  it("forwards the run's partial provenance onto the delta", () => {
+    const delta = computeVerifyDelta(baseline, partialResult([]));
+    expect(delta.complete).toBe(false);
+    expect(delta.batchesCompleted).toBe(2);
+    expect(delta.batchesPlanned).toBe(7);
+    expect(delta.stoppedReason).toBe('time_budget_exhausted');
+  });
+
+  it('treats an explicitly complete run as complete (`=== false`, not `!== true`)', () => {
+    // Engines with no batching concept leave `complete` undefined; one that sets
+    // it to true is equally whole. Both must keep the absence⇒killed inference.
+    expect(computeVerifyDelta(baseline, result([])).complete).toBeUndefined();
+    const explicit = computeVerifyDelta(baseline, { ...result([]), complete: true });
+    expect(explicit.complete).toBe(true);
+    expect(explicit.nowKilled).toHaveLength(2);
+    expect(explicit.notReChecked).toEqual([]);
+  });
 });
 
 describe('formatVerifyResultAsJson', () => {
@@ -287,6 +361,8 @@ describe('buildVerifyNote', () => {
       { line: 5, mutator: 'E' },
     ],
     newSurvivors: [{ line: 6, mutator: 'F' }],
+    // A COMPLETE re-run: absence proved a kill, so nothing landed here.
+    notReChecked: [],
   };
 
   it('reports each count against the field it belongs to', () => {
@@ -304,6 +380,7 @@ describe('buildVerifyNote', () => {
         nowKilled: [],
         stillSurviving: [],
         newSurvivors: [],
+        notReChecked: [],
       }),
     ).toContain('0 of 0 previously-uncaught mutants are now killed; 0 still surviving; 0 new.');
   });
@@ -314,5 +391,213 @@ describe('buildVerifyNote', () => {
     const built = buildVerifyNote(delta);
     const json = JSON.parse(formatVerifyResultAsJson('src/x.ts', delta)) as { note: string };
     expect(json.note).toBe(built);
+  });
+
+  // ── Finding 2 ──
+
+  it('leads with the partial-re-run warning before any count', () => {
+    // Every number after it is conditioned on it: `0 of 2 now killed` read
+    // without the banner says "your fix achieved nothing", when the truth is
+    // "we did not look".
+    const note = buildVerifyNote(
+      computeVerifyDelta(
+        parseBaseline({ survivors: [{ line: 42, mutators: { C: 1, D: 1 } }] }),
+        partialResult([]),
+      ),
+    );
+    expect(note.startsWith('PARTIAL RE-RUN —')).toBe(true);
+    expect(note).toContain('only 2 of 7 batches ran');
+    expect(note).toContain('the time budget was exhausted before the rest could run');
+    expect(note).toContain('nothing here can be reported as fixed');
+    expect(note).toContain('2 baseline mutant(s) were NOT re-checked');
+  });
+
+  it('falls back to vaguer wording when the batch counts are unknown', () => {
+    // `complete: false` with no batch numbers — the shape a non-batching stop
+    // would produce. The claim must degrade, not disappear.
+    const note = buildVerifyNote(
+      computeVerifyDelta(
+        parseBaseline({ survivors: [{ line: 1, mutators: { A: 1 } }] }),
+        partialResult([], {
+          batchesCompleted: undefined,
+          batchesPlanned: undefined,
+          stoppedReason: undefined,
+        }),
+      ),
+    );
+    expect(note).toContain('only part of the file was re-run');
+    expect(note).toContain('the run stopped before the rest could run');
+  });
+
+  it('says nothing about a partial run when the re-run was complete', () => {
+    const note = buildVerifyNote(
+      computeVerifyDelta(
+        parseBaseline({ survivors: [{ line: 1, mutators: { A: 1 } }] }),
+        result([]),
+      ),
+    );
+    expect(note).not.toContain('PARTIAL RE-RUN');
+    expect(note.startsWith('1 of 1 previously-uncaught mutants are now killed')).toBe(true);
+  });
+});
+
+describe('verify output — partial re-run (Finding 2)', () => {
+  const baseline = parseBaseline({ survivors: [{ line: 42, mutators: { C: 1 } }] });
+
+  it('JSON reports notReChecked and the partial provenance, and killedCount 0', () => {
+    const json = JSON.parse(
+      formatVerifyResultAsJson('src/x.ts', computeVerifyDelta(baseline, partialResult([]))),
+    ) as Record<string, unknown>;
+    expect(json.killedCount).toBe(0);
+    expect(json.nowKilled).toEqual([]);
+    expect(json.notReChecked).toEqual([{ line: 42, mutator: 'C' }]);
+    expect(json.complete).toBe(false);
+    expect(json.batchesCompleted).toBe(2);
+    expect(json.batchesPlanned).toBe(7);
+    expect(json.stoppedReason).toBe('time_budget_exhausted');
+  });
+
+  it('JSON omits the new keys entirely for a complete re-run', () => {
+    // A caller that never hits a partial run must not have to learn a field
+    // that is always empty for them.
+    const json = JSON.parse(
+      formatVerifyResultAsJson('src/x.ts', computeVerifyDelta(baseline, result([]))),
+    ) as Record<string, unknown>;
+    expect(json).not.toHaveProperty('notReChecked');
+    expect(json).not.toHaveProperty('complete');
+    expect(json.killedCount).toBe(1);
+  });
+
+  it('text replaces the all-killed success line with the partial banner', () => {
+    // A truncated re-run can legitimately come back with nothing surviving and
+    // no regressions; "All 1 previously-uncaught mutants are now killed." is
+    // then flatly false — that mutant was never generated.
+    const text = formatVerifyResultAsText(
+      'src/x.ts',
+      computeVerifyDelta(baseline, partialResult([])),
+    );
+    expect(text).not.toContain('All 1 previously-uncaught mutants are now killed.');
+    expect(text.split('\n')[1].startsWith('PARTIAL RE-RUN —')).toBe(true);
+    expect(text).toContain('0 of 1 previously-uncaught mutants now killed');
+  });
+
+  it('text lists the not-re-checked mutants rather than only counting them', () => {
+    const text = formatVerifyResultAsText(
+      'src/x.ts',
+      computeVerifyDelta(
+        parseBaseline({ survivors: [{ line: 42, mutators: { C: 1 } }] }),
+        partialResult([{ line: 9, mutator: 'Z' }]),
+      ),
+    );
+    expect(text).toContain(
+      'Not re-checked (never generated by this partial run — status unknown):',
+    );
+    expect(text).toContain('  42: C');
+    // Presence is still trusted, so the fresh survivor is still a regression.
+    expect(text).toContain('New survivors (regressions on baseline lines):');
+    expect(text).toContain('  9: Z');
+    expect(text).not.toContain('Now killed:');
+  });
+
+  it('text keeps the success line for a COMPLETE re-run', () => {
+    const text = formatVerifyResultAsText('src/x.ts', computeVerifyDelta(baseline, result([])));
+    expect(text).toBe(
+      'Chaos-MCP Verify Report: src/x.ts\nAll 1 previously-uncaught mutants are now killed.',
+    );
+  });
+});
+
+// ── Finding 8: minScore is accepted in verify mode, so a gate must be emitted ──
+describe('evaluateVerifyGate', () => {
+  const baseline = parseBaseline({ survivors: [{ line: 42, mutators: { C: 1 } }] });
+
+  it('passes when nothing still survives and nothing is new', () => {
+    expect(evaluateVerifyGate(80, computeVerifyDelta(baseline, result([])))).toEqual({
+      minScore: 80,
+      passed: true,
+    });
+  });
+
+  it('fails when a baseline mutant is still surviving', () => {
+    expect(
+      evaluateVerifyGate(80, computeVerifyDelta(baseline, result([{ line: 42, mutator: 'C' }]))),
+    ).toEqual({ minScore: 80, passed: false });
+  });
+
+  it('fails on a NEW survivor even though the baseline itself is clear', () => {
+    // Kills an `&&`→`||` on the verdict: the whole point of `newSurvivors` is
+    // that a fix which breaks a different line has not passed.
+    const delta = computeVerifyDelta(baseline, result([{ line: 999, mutator: 'X' }]));
+    expect(delta.stillSurviving).toEqual([]);
+    expect(evaluateVerifyGate(80, delta)).toEqual({ minScore: 80, passed: false });
+  });
+
+  it('fails CLOSED on a partial re-run, with the shared partial_audit reason', () => {
+    // The delta looks spotless — nothing surviving, nothing new — because the
+    // re-run never generated the mutants. A CI gate must not go green on that.
+    const delta = computeVerifyDelta(baseline, partialResult([]));
+    expect(delta.stillSurviving).toEqual([]);
+    expect(delta.newSurvivors).toEqual([]);
+    expect(evaluateVerifyGate(80, delta)).toEqual({
+      minScore: 80,
+      passed: false,
+      reason: 'partial_audit',
+    });
+  });
+
+  it('does not grade on nowKilled, so a suppressed mutant cannot fail the gate', () => {
+    // Suppression removes a mutant from BOTH sides: baselineTotal 0, nothing
+    // killed, nothing surviving. That is a pass, not a zero-kill failure.
+    const delta = computeVerifyDelta([], result([]));
+    expect(delta.nowKilled).toEqual([]);
+    expect(evaluateVerifyGate(100, delta).passed).toBe(true);
+  });
+});
+
+describe('verify gate rendering (Finding 8)', () => {
+  const baseline = parseBaseline({ survivors: [{ line: 42, mutators: { C: 1 } }] });
+
+  it('JSON carries the gate the caller was promised', () => {
+    const delta = computeVerifyDelta(baseline, result([{ line: 42, mutator: 'C' }]));
+    const json = JSON.parse(
+      formatVerifyResultAsJson('src/x.ts', delta, evaluateVerifyGate(80, delta)),
+    ) as Record<string, unknown>;
+    expect(json.gate).toEqual({ minScore: 80, passed: false });
+  });
+
+  it('JSON omits the gate entirely when no minScore was supplied', () => {
+    const json = JSON.parse(
+      formatVerifyResultAsJson('src/x.ts', computeVerifyDelta(baseline, result([]))),
+    ) as Record<string, unknown>;
+    expect(json).not.toHaveProperty('gate');
+  });
+
+  it('text renders the verdict even on the all-killed success shortcut', () => {
+    // The shortcut returns early; a gate line emitted after it would never be
+    // seen, which is precisely the divergence `formatGateLine` exists to stop.
+    const delta = computeVerifyDelta(baseline, result([]));
+    const text = formatVerifyResultAsText('src/x.ts', delta, evaluateVerifyGate(80, delta));
+    expect(text).toContain('Gate: passed (minScore 80)');
+    expect(text).toContain('All 1 previously-uncaught mutants are now killed.');
+  });
+
+  it('text explains a FAILED verdict in terms of the baseline, not a score', () => {
+    const delta = computeVerifyDelta(baseline, result([{ line: 42, mutator: 'C' }]));
+    const text = formatVerifyResultAsText('src/x.ts', delta, evaluateVerifyGate(80, delta));
+    expect(text).toContain(
+      'Gate: FAILED (minScore 80) — the baseline is not clear: mutants are still surviving and/or new ones appeared.',
+    );
+  });
+
+  it('text explains a partial-re-run failure differently from a dirty baseline', () => {
+    const delta = computeVerifyDelta(baseline, partialResult([]));
+    const text = formatVerifyResultAsText('src/x.ts', delta, evaluateVerifyGate(80, delta));
+    expect(text).toContain('Gate: FAILED (minScore 80) — the re-run did not complete');
+  });
+
+  it('text says nothing about a gate when none was requested', () => {
+    expect(
+      formatVerifyResultAsText('src/x.ts', computeVerifyDelta(baseline, result([]))),
+    ).not.toContain('Gate:');
   });
 });

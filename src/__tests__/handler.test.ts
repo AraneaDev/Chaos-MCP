@@ -1448,7 +1448,15 @@ describe('handleToolCall', () => {
     );
   });
 
-  it('renders the no-change short-circuit in text format with a perfect score', async () => {
+  // REWRITTEN (Finding 7): this used to assert the text block contained
+  // "100.00%". That was the defect, not the contract — `nothingToMutateResult`
+  // hard-codes `mutationScore: '100.00%'` for a run that generated ZERO
+  // mutants, and the reader saw a perfect kill rate for a file nothing was ever
+  // run against. `displayMutationScore` now substitutes "n/a" for every
+  // zero-mutant result, so the assertion pins the honest score plus the scope
+  // note that explains it. Everything else the test legitimately checked (text
+  // branch rather than JSON, report header, and that no engine ran) is kept.
+  it('renders the no-change short-circuit in text format with an honest "n/a" score', async () => {
     const mockRun = vi.fn();
     MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
     mockDetectEnv.mockReturnValue({
@@ -1472,8 +1480,13 @@ describe('handleToolCall', () => {
     // Text branch, not JSON (kills `outputFormat === 'text' → false` / `'text' → ""`).
     expect(text.startsWith('{')).toBe(false);
     expect(text).toContain('Chaos-MCP Audit Report');
-    // Synthetic 100% score (kills the `'100.00%' → ""` StringLiteral mutant).
-    expect(text).toContain('100.00%');
+    // Zero mutants were generated, so there is no percentage to report and the
+    // raw "100.00%" must never reach the reader.
+    expect(text).toContain('Mutation score: n/a (0/0 killed, 0 survived)');
+    expect(text).not.toContain('100.00%');
+    // …and the scope note says why the number is missing, so "n/a" is never
+    // left unexplained.
+    expect(text).toContain('No changed lines in');
     expect(mockRun).not.toHaveBeenCalled();
   });
 
@@ -3461,6 +3474,168 @@ describe('handleToolCall', () => {
       expect(json.mode).toBe('verify');
       expect(json.killedCount).toBe(1);
       expect(json.nowKilled).toEqual([{ line: 7, mutator: 'RustMut' }]);
+    });
+
+    // ── Finding 2, end to end ──
+    it('does not claim "now killed" when the verify re-run stopped early', async () => {
+      // Verify is deliberately whole-file on every engine, so a batched TS
+      // re-run plans the MAXIMUM number of batches and is the run most likely
+      // to be truncated. `formatVerifyOutput` never read `complete`, so a
+      // baseline mutant sitting in a batch that never ran came back as proof
+      // the caller's fix worked.
+      const mockRun = vi.fn().mockResolvedValue({
+        target: 'src/x.ts',
+        totalMutants: 4,
+        killed: 4,
+        survived: 0,
+        mutationScore: '100.00%',
+        vulnerabilities: [],
+        complete: false,
+        batchesCompleted: 2,
+        batchesPlanned: 7,
+        stoppedReason: 'time_budget_exhausted',
+      });
+      MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+      mockDetectEnv.mockReturnValue(tsEnv);
+
+      const res = await handleToolCall(
+        makeRequest('audit_code_resilience', {
+          filePath: 'src/x.ts',
+          baseline: { survivors: [{ line: 42, mutators: { ConditionalExpression: 1 } }] },
+        }),
+      );
+
+      const sc = res.structuredContent as Record<string, unknown>;
+      expect(sc.mode).toBe('verify');
+      expect(sc.killedCount).toBe(0);
+      expect(sc.nowKilled).toEqual([]);
+      expect(sc.notReChecked).toEqual([{ line: 42, mutator: 'ConditionalExpression' }]);
+      // The partial provenance reaches structuredContent, not just the text
+      // block — a client reading only the structured payload could not
+      // otherwise tell a whole-file re-run from a truncated one.
+      expect(sc.complete).toBe(false);
+      expect(sc.batchesCompleted).toBe(2);
+      expect(sc.batchesPlanned).toBe(7);
+      expect(sc.stoppedReason).toBe('time_budget_exhausted');
+      expect(sc.note as string).toContain('PARTIAL RE-RUN');
+      // Text and JSON are two projections of one payload.
+      expect(JSON.parse((res.content[0] as { text: string }).text)).toEqual(sc);
+    });
+
+    // ── Finding 8, end to end ──
+    it('emits the promised gate when minScore is supplied in verify mode', async () => {
+      // `{ filePath, runId|baseline, minScore }` validates cleanly — nothing
+      // makes minScore mutually exclusive with the verify inputs — and the
+      // schema promises "the result reports gate.passed=false (never an
+      // error)". Verify mode emitted no `gate` key at all, so
+      // `if (!result.gate.passed)` threw a TypeError and
+      // `result.gate?.passed === true` read it as a FAILURE.
+      const mockRun = vi.fn().mockResolvedValue({
+        target: 'src/x.ts',
+        totalMutants: 4,
+        killed: 3,
+        survived: 1,
+        mutationScore: '75.00%',
+        vulnerabilities: [{ line: 42, mutator: 'ConditionalExpression', description: 'survived' }],
+      });
+      MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+      mockDetectEnv.mockReturnValue(tsEnv);
+
+      const res = await handleToolCall(
+        makeRequest('audit_code_resilience', {
+          filePath: 'src/x.ts',
+          baseline: { survivors: [{ line: 42, mutators: { ConditionalExpression: 1 } }] },
+          minScore: 80,
+        }),
+      );
+
+      const sc = res.structuredContent as Record<string, unknown>;
+      expect(sc.mode).toBe('verify');
+      // The baseline mutant is still alive, so the gate fails — and it is a
+      // graded result, never an error.
+      expect(sc.gate).toEqual({ minScore: 80, passed: false });
+      expect(res.isError).toBeUndefined();
+      expect(JSON.parse((res.content[0] as { text: string }).text)).toEqual(sc);
+    });
+
+    it('renders the verify gate in the TEXT projection too', async () => {
+      const mockRun = vi.fn().mockResolvedValue({
+        target: 'src/x.ts',
+        totalMutants: 4,
+        killed: 4,
+        survived: 0,
+        mutationScore: '100.00%',
+        vulnerabilities: [],
+      });
+      MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+      mockDetectEnv.mockReturnValue(tsEnv);
+
+      const res = await handleToolCall(
+        makeRequest('audit_code_resilience', {
+          filePath: 'src/x.ts',
+          baseline: { survivors: [{ line: 42, mutators: { ConditionalExpression: 1 } }] },
+          minScore: 80,
+          outputFormat: 'text',
+        }),
+      );
+
+      const text = (res.content[0] as { text: string }).text;
+      expect(text).toContain('Gate: passed (minScore 80)');
+    });
+
+    it('fails the verify gate closed when the re-run was partial', async () => {
+      // Findings 2 + 8 together: the delta looks spotless because the mutants
+      // were never generated, and a CI gate must not go green on that.
+      const mockRun = vi.fn().mockResolvedValue({
+        target: 'src/x.ts',
+        totalMutants: 4,
+        killed: 4,
+        survived: 0,
+        mutationScore: '100.00%',
+        vulnerabilities: [],
+        complete: false,
+        batchesCompleted: 1,
+        batchesPlanned: 6,
+        stoppedReason: 'time_budget_exhausted',
+      });
+      MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+      mockDetectEnv.mockReturnValue(tsEnv);
+
+      const res = await handleToolCall(
+        makeRequest('audit_code_resilience', {
+          filePath: 'src/x.ts',
+          baseline: { survivors: [{ line: 42, mutators: { ConditionalExpression: 1 } }] },
+          minScore: 80,
+        }),
+      );
+
+      expect((res.structuredContent as Record<string, unknown>).gate).toEqual({
+        minScore: 80,
+        passed: false,
+        reason: 'partial_audit',
+      });
+    });
+
+    it('omits the gate from a verify response when no minScore was supplied', async () => {
+      const mockRun = vi.fn().mockResolvedValue({
+        target: 'src/x.ts',
+        totalMutants: 4,
+        killed: 4,
+        survived: 0,
+        mutationScore: '100.00%',
+        vulnerabilities: [],
+      });
+      MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+      mockDetectEnv.mockReturnValue(tsEnv);
+
+      const res = await handleToolCall(
+        makeRequest('audit_code_resilience', {
+          filePath: 'src/x.ts',
+          baseline: { survivors: [{ line: 42, mutators: { ConditionalExpression: 1 } }] },
+        }),
+      );
+
+      expect(res.structuredContent as Record<string, unknown>).not.toHaveProperty('gate');
     });
   });
 

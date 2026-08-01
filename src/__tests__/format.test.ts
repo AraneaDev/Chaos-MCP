@@ -490,6 +490,66 @@ describe('displayMutationScore', () => {
       displayMutationScore(result({ totalMutants: 10, killed: 10, mutationScore: '100.00%' })),
     ).toBe('100.00%');
   });
+
+  // ── Finding 7: a zero-mutant run that carries PROSE ──
+  //
+  // These three shapes all reach `displayMutationScore` with `complete`
+  // undefined, so neither of the two clauses this predicate used to have could
+  // rescue them and the hard-coded "100.00%" survived into the report. The
+  // question the display answers is "is there a percentage to report?", and the
+  // answer is no as soon as nothing was enumerated — whatever the reason.
+
+  it('substitutes "n/a" for the no-work short-circuit, which hard-codes "100.00%"', () => {
+    // `nothingToMutateResult` (audit/scope.ts) — a diffBase whose file did not
+    // change, or a verify whose baseline recorded nothing. It always sets a
+    // scopeNote, so `hasNoMutableLogic` refuses it, and `complete` is undefined.
+    expect(
+      displayMutationScore(
+        result({
+          totalMutants: 0,
+          killed: 0,
+          mutationScore: '100.00%',
+          scopeNote: 'No changed lines in src/foo.ts vs HEAD; nothing to mutate.',
+        }),
+      ),
+    ).toBe('n/a');
+  });
+
+  it('substitutes "n/a" for a scoped zero, where the range — not the file — was empty', () => {
+    // `scopeKind: 'scoped'` (a lineScope run over lines with no mutable logic).
+    // `hasNoMutableLogic` returns false here BY DESIGN — the rest of the file
+    // was never looked at — but "the range held nothing" is still not a kill
+    // rate.
+    expect(
+      displayMutationScore(
+        result({ totalMutants: 0, killed: 0, mutationScore: '100.00%', scopeKind: 'scoped' }),
+      ),
+    ).toBe('n/a');
+  });
+
+  it('substitutes "n/a" for a scopeKind-less engine whose result was given a diff note', () => {
+    // handler.ts appends the diffBase-derived scopeNote to results from the
+    // three engines that set no scopeKind (python/rust/php).
+    expect(
+      displayMutationScore(
+        result({
+          totalMutants: 0,
+          killed: 0,
+          mutationScore: '100.00%',
+          scopeNote: 'diffBase scoping is not supported for rust; mutated the whole file.',
+        }),
+      ),
+    ).toBe('n/a');
+  });
+
+  it('leaves `hasNoMutableLogic` alone — the two answer different questions', () => {
+    // The display widened; the PREDICATE must not. `format.ts` and `triage.ts`
+    // both branch on it to choose their wording ("no mutable logic" vs "no
+    // mutants were run"), and a scoped/short-circuited zero proves neither.
+    const scoped = result({ totalMutants: 0, mutationScore: '100.00%', scopeKind: 'scoped' });
+    expect(displayMutationScore(scoped)).toBe('n/a');
+    expect(hasNoMutableLogic(scoped)).toBe(false);
+  });
 });
 
 describe('formatResultAsText', () => {

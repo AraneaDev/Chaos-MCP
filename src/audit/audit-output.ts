@@ -23,6 +23,8 @@ import {
   formatVerifyResultAsJson,
   formatVerifyResultAsText,
   buildVerifyNote,
+  verifyPayloadFields,
+  evaluateVerifyGate,
   type MutantKey,
 } from '../core/verify.js';
 import { ignoredOptionsFor, resolveMaxSurvivors, resolveSeverityFloor } from './run-options.js';
@@ -119,22 +121,37 @@ function formatVerifyOutput({
   // `audit/scope.ts`). Regressions can therefore land on lines outside the
   // baseline on any engine, and all of them are counted (audit H1).
   const delta = computeVerifyDelta(keptBaseline, rerun);
+  // `minScore` is accepted in verify mode — nothing makes it mutually exclusive
+  // with `runId`/`baseline` — and the schema promises a `gate` on the result
+  // whenever it is supplied. This path emitted none, which is the same defect
+  // `audit/scope.ts` documents as already fixed for the no-changes
+  // short-circuit. `evaluateVerifyGate` owns the rule (including failing closed
+  // on a partial re-run); it is evaluated ONCE and the same GateResult is handed
+  // to the payload and to the renderer, so the two cannot disagree.
+  const gate =
+    typeof args.minScore === 'number' ? evaluateVerifyGate(args.minScore, delta) : undefined;
   const verifyText =
     args.outputFormat === 'text'
-      ? formatVerifyResultAsText(targetFile, delta)
-      : formatVerifyResultAsJson(targetFile, delta);
+      ? formatVerifyResultAsText(targetFile, delta, gate)
+      : formatVerifyResultAsJson(targetFile, delta, gate);
   // Verify responses must carry `structuredContent` too — the tool declares an
   // `outputSchema` whose `oneOf` includes this verify-delta shape (audit H3).
+  //
+  // The delta fields come from `verifyPayloadFields`, the same helper the JSON
+  // renderer spreads, so the structured payload cannot drift from the text/JSON
+  // block beside it. That is how `notReChecked` and the `complete` /
+  // `batchesCompleted` / `batchesPlanned` / `stoppedReason` provenance reach
+  // this object: a caller reading only `structuredContent` previously had no way
+  // to tell a whole-file re-run from one that stopped a third of the way in, and
+  // therefore no way to know `nowKilled` was inferred from batches that never
+  // ran.
   const verifyStructured: Record<string, unknown> = {
     target: targetFile,
     mode: 'verify',
-    baselineTotal: delta.baselineTotal,
-    killedCount: delta.nowKilled.length,
-    nowKilled: delta.nowKilled,
-    stillSurviving: delta.stillSurviving,
-    newSurvivors: delta.newSurvivors,
+    ...verifyPayloadFields(delta),
     note: buildVerifyNote(delta),
   };
+  if (gate) verifyStructured.gate = gate;
   // Verify mode reports the same drift the standard report does — otherwise a
   // stale suppression makes a mutant reappear as "still surviving" with no
   // explanation anywhere in the response.

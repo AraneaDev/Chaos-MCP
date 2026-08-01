@@ -74,19 +74,44 @@ export function hasNoMutableLogic(result: MutationResult): boolean {
 /**
  * Display score for a result: "n/a" when the number would lie, else the raw score.
  *
- * Two ways it lies, both ending in an empty denominator that
- * {@link formatMutationScore} renders as "100.00%":
+ * The rule is simply: NO ENUMERATED MUTANT, NO PERCENTAGE. `formatMutationScore`
+ * computes killed/total and renders the empty denominator 0/0 as "100.00%",
+ * which reads as proven coverage no matter WHICH kind of zero produced it:
  *  - the file has no mutable logic at all (see {@link hasNoMutableLogic});
- *  - the run stopped early AND the batches that did run enumerated nothing.
+ *  - the run stopped early and the batches that did run enumerated nothing.
  *    That is not "no mutable logic" — `hasNoMutableLogic` correctly refuses it,
  *    because the unrun batches were never looked at — but it is not a perfect
- *    kill rate either, and 0/0 has no percentage to report. Without this second
- *    clause the honesty fix in `hasNoMutableLogic` would hand such a run the
- *    bare "100.00%" it used to be protected from.
+ *    kill rate either;
+ *  - the run deliberately mutated nothing: a `diffBase` whose file did not
+ *    change, a verify whose baseline recorded no uncaught mutants, or a
+ *    `lineScope` over lines with no mutable logic in them.
+ *
+ * That third group is why the predicate is now a bare `totalMutants === 0`
+ * rather than the two narrower clauses it replaced. Both of those were gated on
+ * something ELSE also being true (`hasNoMutableLogic`, or `complete === false`),
+ * and three live paths produce a zero-mutant result that satisfies neither:
+ * `nothingToMutateResult` (audit/scope.ts) hard-codes `mutationScore:
+ * '100.00%'` alongside a scopeNote; `handler.ts` appends diffBase-derived notes
+ * to results from the three engines that set no `scopeKind`; and a `'scoped'`
+ * zero is refused by `hasNoMutableLogic` by design. All three left `complete`
+ * undefined, so the old second clause could not rescue them and the raw
+ * "100.00%" survived into the report.
+ *
+ * {@link hasNoMutableLogic} is deliberately NOT widened to match: it answers a
+ * different question ("does this file have no mutable logic?" vs "measured
+ * nothing"), and `format.ts`/`triage.ts` both branch on it to pick their
+ * wording. Every zero-mutant branch of `cleanNote` already tells the reader the
+ * number is not a measurement, so "n/a" is never left unexplained. Gates are
+ * unaffected: `evaluateGate` reads `result.mutationScore`, not this display
+ * value, and treats a non-numeric score as passing either way.
+ *
+ * One clause, not three: `hasNoMutableLogic(result)` and `totalMutants === 0 &&
+ * complete === false` both IMPLY `totalMutants === 0`, so keeping them beside
+ * the general test would leave two branches no input can reach — dead code, and
+ * exactly the kind of equivalent mutant this server exists to find.
  */
 export function displayMutationScore(result: MutationResult): string {
-  if (hasNoMutableLogic(result)) return 'n/a';
-  if (result.totalMutants === 0 && result.complete === false) return 'n/a';
+  if (result.totalMutants === 0) return 'n/a';
   return result.mutationScore;
 }
 

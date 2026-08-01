@@ -361,6 +361,45 @@ describe('buildResultPayload maxSurvivors', () => {
   });
 });
 
+// ── Finding 4: a truncated/filtered response must say it is not a baseline ──
+describe('buildResultPayload — incomplete-list warning', () => {
+  it('warns against echoing a truncated list back as a `baseline`', () => {
+    // The schema tells callers to pass the `survivors`/`noCoverage` arrays back
+    // as `baseline`, but they are capped before emission and verify infers
+    // "killed" from ABSENCE — so every hidden group would be reported as fixed.
+    const payload = buildResultPayload(result({ vulnerabilities: manySurvivors(15) }), {
+      maxSurvivors: 10,
+    });
+    expect(payload.note).toContain('INCOMPLETE LIST: 5 line group(s) are hidden');
+    expect(payload.note).toContain('Do not pass them back as `baseline`');
+    // …and it names the uncapped alternative rather than just saying "careful".
+    expect(payload.note).toContain('`runId`');
+  });
+
+  it('counts groups hidden by severityFloor too, not only by the cap', () => {
+    const payload = buildResultPayload(
+      result({
+        vulnerabilities: [
+          { line: 1, mutator: 'ConditionalExpression', description: 'survived' }, // high
+          { line: 2, mutator: 'StringLiteral', description: 'survived' }, // low
+        ],
+      }),
+      { enrich: { projectType: 'typescript' }, severityFloor: 'high' },
+    );
+    expect(payload.survivorsFiltered).toBe(1);
+    expect(payload.note).toContain('INCOMPLETE LIST: 1 line group(s) are hidden');
+  });
+
+  it('says nothing when the list is complete', () => {
+    // The documented baseline workflow must read exactly as it always did when
+    // nothing was hidden.
+    const payload = buildResultPayload(result({ vulnerabilities: manySurvivors(3) }), {
+      maxSurvivors: 10,
+    });
+    expect(payload.note).not.toContain('INCOMPLETE LIST');
+  });
+});
+
 describe('buildResultPayload severityFloor', () => {
   it('drops groups below the floor and counts them, when enriched', () => {
     const payload = buildResultPayload(
