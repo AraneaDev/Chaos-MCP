@@ -9,7 +9,7 @@ import type { SupportedProjectType } from './project-detector.js';
  * the dependency graph:
  *
  *   - `utils/sandbox.ts` derives `SYMLINK_DIRS` from `ALL_DEPENDENCY_DIRS`.
- *   - `utils/execution.ts` derives the container bind-mount list from it.
+ *   - `utils/container/args.ts` derives the container bind-mount list from it.
  *   - `engines/registry.ts` stamps each descriptor's `dependencyDirs` from it.
  *
  * `utils/execution.ts` cannot import `engines/registry.ts` directly: the

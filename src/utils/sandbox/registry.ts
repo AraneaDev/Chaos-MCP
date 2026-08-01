@@ -53,7 +53,7 @@ let exitHandlerRegistered = false;
  * returns early once `exitHandlerRegistered` is set, and nothing outside tests
  * clears it.
  */
-const INSTALLED_PROCESS_HANDLERS: Array<[NodeJS.Signals | 'exit', () => void]> = [];
+const INSTALLED_PROCESS_HANDLERS: [NodeJS.Signals | 'exit', () => void][] = [];
 
 /**
  * Whether this module's signal handlers terminate the process themselves.
