@@ -1,5 +1,6 @@
 import { existsSync, readdirSync } from 'fs';
 import { join, dirname, basename, extname, relative, sep } from 'path';
+import { COMMON_IGNORE_DIRS } from './utils/ignore-dirs.js';
 import { assertNeverProjectType, type SupportedProjectType } from './utils/project-detector.js';
 
 /**
@@ -49,15 +50,22 @@ function candidates(targetFile: string, projectType: SupportedProjectType): stri
   }
 }
 
-/** Directory names never worth descending into when hunting for test files. */
-const TEST_SEARCH_SKIP = new Set([
-  'node_modules',
-  '.git',
-  '.venv',
-  'venv',
-  '__pycache__',
-  'dist',
-  'build',
+/**
+ * Directory names never worth descending into when hunting for test files.
+ *
+ * Composes the shared {@link COMMON_IGNORE_DIRS} leaf plus this walker's own
+ * extras. Deliberately NARROWER than triage.ts's `IGNORE_DIRS`: it does not skip
+ * `tests`/`__tests__` (that is exactly what it is hunting for), nor `.tox`,
+ * `out`, `.next`, `.cache`, `reports` or `site-packages`. Widening it would
+ * change which test files are discovered, so the gap is left explicit rather
+ * than quietly closed.
+ *
+ * @internal Exported for testing only — `ignore-dirs.test.ts` pins the
+ * effective set byte-for-byte.
+ */
+export const TEST_SEARCH_SKIP = new Set([
+  ...COMMON_IGNORE_DIRS,
+  // ── test-search-only ──
   'coverage',
   'target',
   'vendor',
@@ -130,14 +138,21 @@ export function findPythonTestSelection(targetFile: string, workspaceRoot: strin
   return [...new Set(found)];
 }
 
-const PYTHON_TEST_IGNORE_DIRS = new Set([
-  'node_modules',
-  '.git',
-  '.venv',
-  'venv',
-  '__pycache__',
-  'build',
-  'dist',
+/**
+ * Directories the pytest-presence scan does not descend into.
+ *
+ * Composes the shared {@link COMMON_IGNORE_DIRS} leaf plus its own extras. Note
+ * `workspaceHasPythonTests` ALSO skips every entry whose name starts with `.`,
+ * so the dotted members here (`.git`, `.venv`, `.tox`) are redundant at the call
+ * site — they are kept so this set stands on its own if that predicate ever
+ * changes, and so the pinned contents stay comparable to the other three.
+ *
+ * @internal Exported for testing only — `ignore-dirs.test.ts` pins the
+ * effective set byte-for-byte.
+ */
+export const PYTHON_TEST_IGNORE_DIRS = new Set([
+  ...COMMON_IGNORE_DIRS,
+  // ── python-scan-only ──
   '.tox',
   'site-packages',
 ]);

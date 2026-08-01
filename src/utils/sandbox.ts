@@ -20,6 +20,7 @@ import {
   isWorkspaceRootAllowed,
 } from './path-safety.js';
 import { ALL_DEPENDENCY_DIRS } from './dependency-dirs.js';
+import { COMMON_IGNORE_DIRS } from './ignore-dirs.js';
 
 /**
  * Registry of active sandbox directories that have not yet been cleaned up.
@@ -156,21 +157,27 @@ function abortError(): Error {
   return e;
 }
 
-/** Directories and files that should never be copied into the sandbox. */
-const ALWAYS_EXCLUDE = new Set([
-  'node_modules',
-  '.git',
+/**
+ * Directories and files that should never be copied into the sandbox.
+ *
+ * {@link COMMON_IGNORE_DIRS} is the core every tree-walker in the codebase
+ * shares; everything after it is exclusive to the sandbox copy filter and is
+ * listed explicitly so the remaining drift against triage.ts / test-file.ts is
+ * visible rather than buried in four hand-kept copies. Note this set also
+ * carries FILE names, which the shared constant deliberately does not.
+ *
+ * @internal Exported for testing only — `ignore-dirs.test.ts` pins the
+ * effective set byte-for-byte.
+ */
+export const ALWAYS_EXCLUDE = new Set([
+  ...COMMON_IGNORE_DIRS,
+  // ── sandbox-only ──
   '.svn',
   '.stryker-tmp',
   '.mutmut-cache',
-  '__pycache__',
   '.pytest_cache',
   '.tox',
-  '.venv',
-  'venv',
   '.env',
-  'dist',
-  'build',
   'coverage',
   '.nyc_output',
   '.next',

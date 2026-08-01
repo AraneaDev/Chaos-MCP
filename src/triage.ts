@@ -9,6 +9,7 @@ import {
   type LineGroup,
 } from './format.js';
 import { evaluateGate } from './gate.js';
+import { COMMON_IGNORE_DIRS } from './utils/ignore-dirs.js';
 import { supportedSourceExtensions } from './utils/project-detector.js';
 
 export interface TriageRow {
@@ -75,25 +76,27 @@ const SUPPORTED_EXT = supportedSourceExtensions();
  * sweep could fill its whole budget with third-party files and rank none of the
  * user's.
  *
- * Must stay in sync with `TEST_SEARCH_SKIP` in `test-file.ts`, which already
- * carries the per-language entries. A follow-up will unify the two into one
- * shared set; until then, an entry added here belongs there too.
+ * The shared core now comes from {@link COMMON_IGNORE_DIRS}, the import-free
+ * leaf that `utils/sandbox.ts` and `test-file.ts` also compose from, so the
+ * entries all four walkers agree on can no longer drift. Everything after it is
+ * exclusive to triage discovery and is spelled out here on purpose: the residual
+ * difference against `TEST_SEARCH_SKIP` (which still lacks `.tox`, `out`,
+ * `.next`, `.cache`, `reports` and `site-packages`) is a real behavioural
+ * difference in which files each walker sees, not an oversight to paper over.
+ *
+ * @internal Exported for testing only — `ignore-dirs.test.ts` pins the
+ * effective set byte-for-byte.
  */
-const IGNORE_DIRS = new Set([
-  'node_modules',
-  'build',
-  'dist',
-  '.git',
+export const IGNORE_DIRS = new Set([
+  ...COMMON_IGNORE_DIRS,
+  // ── triage-only ──
   'coverage',
   '.stryker-tmp',
   'reports',
   '__tests__',
   'tests',
   // Python
-  '.venv',
-  'venv',
   'env',
-  '__pycache__',
   '.tox',
   'site-packages',
   // PHP / Rust
