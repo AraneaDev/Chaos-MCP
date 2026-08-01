@@ -786,6 +786,40 @@ describe('parameter documentation facts', () => {
       cursor = at;
     }
   });
+
+  it('renders both line-scope warnings from supportsLineScope, byte-identically', () => {
+    // Finding 4: the two "no line scoping here" language lists were hardcoded,
+    // so flipping `supportsLineScope` for a language left the schema telling the
+    // model the opposite of the truth. They are now derived from the registry.
+    // The two sites use DIFFERENT separators on purpose and an LLM client reads
+    // both verbatim, so each exact rendering is the contract.
+    expect(AUDIT.lineScope.description).toBe(
+      'Constrain mutations to a 1-based line range (inclusive). Only supported by StrykerJS; ' +
+        'ignored for Python, Rust, and PHP targets. ' +
+        'Useful for surgically auditing a specific function or block. ' +
+        'Example: { "start": 10, "end": 45 }',
+    );
+    expect(AUDIT.diffBase.description).toContain(
+      'Line-level scoping is StrykerJS-only; Python/Rust/PHP targets run whole-file with a note.',
+    );
+  });
+
+  it('names exactly the engines that lack line scoping, in registry order', () => {
+    // …and it really is derived: the list must track `supportsLineScope` in both
+    // directions, so a language that gains line scoping drops out of both
+    // warnings and one that loses it is added.
+    const expected = Object.values(ENGINE_REGISTRY)
+      .filter((entry) => !entry.supportsLineScope)
+      .map((entry) => entry.label);
+    expect(expected.length).toBeGreaterThan(0);
+
+    expect(AUDIT.diffBase.description).toContain(`${expected.join('/')} targets run whole-file`);
+
+    const lineScopeDesc = AUDIT.lineScope.description ?? '';
+    for (const entry of Object.values(ENGINE_REGISTRY)) {
+      expect(lineScopeDesc.includes(entry.label)).toBe(!entry.supportsLineScope);
+    }
+  });
 });
 
 // ─── Extension prose derived from the detection registry (audit F15) ────────

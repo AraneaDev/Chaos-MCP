@@ -51,6 +51,30 @@ const ENGINE_SUPPORT_PROSE = conjoin(
   'and',
 );
 
+/**
+ * The languages whose engines run whole-file because they have no line-level
+ * scoping — `['Python', 'Rust', 'PHP']` today, in registry order, derived from
+ * `supportsLineScope` rather than hardcoded so a language that gains (or loses)
+ * line scoping is never described to the model with the wrong capability
+ * (audit finding 4). Same motivation as {@link ENGINE_SUPPORT_PROSE}.
+ */
+const NO_LINE_SCOPE_LABELS = (Object.keys(ENGINE_REGISTRY) as SupportedProjectType[])
+  .filter((t) => !ENGINE_REGISTRY[t].supportsLineScope)
+  .map((t) => ENGINE_REGISTRY[t].label);
+
+/**
+ * `'Python, Rust, and PHP'` — the prose form, for the `lineScope` warning.
+ * Byte-identical to the literal it replaced; pinned by `tool-schema.test.ts`.
+ */
+const NO_LINE_SCOPE_PROSE = conjoin(NO_LINE_SCOPE_LABELS, 'and');
+
+/**
+ * `'Python/Rust/PHP'` — the compact form, for the `diffBase` warning, which
+ * uses a slash list rather than a conjunction. Deliberately a second rendering
+ * of the same set: the two call sites' wording differs and both are pinned.
+ */
+const NO_LINE_SCOPE_SLASH_PROSE = NO_LINE_SCOPE_LABELS.join('/');
+
 /** A single (line, mutator) mutant identity — shared by verify-mode delta arrays. */
 const MUTANT_KEY_SCHEMA = {
   type: 'object',
@@ -101,7 +125,7 @@ export const TOOL_DEFINITION = {
       lineScope: {
         type: 'object',
         description:
-          'Constrain mutations to a 1-based line range (inclusive). Only supported by StrykerJS; ignored for Python, Rust, and PHP targets. ' +
+          `Constrain mutations to a 1-based line range (inclusive). Only supported by StrykerJS; ignored for ${NO_LINE_SCOPE_PROSE} targets. ` +
           'Useful for surgically auditing a specific function or block. ' +
           'Example: { "start": 10, "end": 45 }',
         properties: {
@@ -198,7 +222,7 @@ export const TOOL_DEFINITION = {
           'Auto-scope mutation to only the lines changed in git. The value selects the base to diff against: ' +
           '"HEAD" (all uncommitted changes), "staged" (staged changes only), or any git ref/branch/SHA ' +
           '(e.g. "main", resolved via merge-base with HEAD). Mutually exclusive with lineScope. ' +
-          'Line-level scoping is StrykerJS-only; Python/Rust/PHP targets run whole-file with a note. ' +
+          `Line-level scoping is StrykerJS-only; ${NO_LINE_SCOPE_SLASH_PROSE} targets run whole-file with a note. ` +
           'If the file has no changes vs the base, the run is skipped. Example: "HEAD"',
       },
       baseline: {
