@@ -28,15 +28,45 @@ export function quoteCommandArg(value: string): string {
 }
 
 /**
+ * Flags that pin each mutant's test run to ONE vitest worker.
+ *
+ * Parallelism belongs to the layers ABOVE this command, and they already own it:
+ * `triage_test_coverage` runs `fileConcurrency` files at once, and within each
+ * file StrykerJS runs `--concurrency` mutants at once (capped by
+ * `resolveStrykerConcurrency` so those two multiply out to about the core
+ * count). Vitest then forked its own pool INSIDE each of those slots, and
+ * nothing bounded it — so the real process count was
+ * `fileConcurrency × strykerConcurrency × vitestWorkers`, with only the first
+ * two capped.
+ *
+ * Measured on an 8-core / 8 GB box, auditing the SMALLEST file in this repo
+ * (8 mutants):
+ *
+ *   `--run`                                   20 node processes, 1561 MB RSS
+ *   `--run --no-file-parallelism --maxWorkers=1`   6 node processes,  440 MB RSS
+ *
+ * At `fileConcurrency: 4` the first row is ~6.2 GB against ~6 GB free: the box
+ * OOMs partway through the first four files. That is not hypothetical — a sweep
+ * of this repo's 62 source files took the machine down hard enough to need a
+ * reboot. Throughput does not suffer, because Stryker is still running mutants
+ * in parallel; only the redundant inner fan-out goes away.
+ */
+const VITEST_SINGLE_WORKER = '--no-file-parallelism --maxWorkers=1';
+
+/**
  * Build the Stryker command-runner string without exposing a Windows shell
  * injection surface. Stryker accepts only a command string here, not argv.
  * Unsafe Windows paths therefore fall back to the project's configured command
  * instead of being interpolated through cmd.exe.
+ *
+ * The worker caps are unconditional — see {@link VITEST_SINGLE_WORKER}. A
+ * single-file audit pays them too, and should: Stryker auto-detects its own
+ * concurrency there, so the inner fan-out multiplies just the same.
  */
 export function buildVitestRelatedCommand(targetFile: string): string | undefined {
   if (process.platform === 'win32') {
     if (!/^[A-Za-z0-9_./\\:-]+$/.test(targetFile)) return undefined;
-    return `npx vitest related ${targetFile} --run`;
+    return `npx vitest related ${targetFile} --run ${VITEST_SINGLE_WORKER}`;
   }
-  return `npx vitest related ${quoteCommandArg(targetFile)} --run`;
+  return `npx vitest related ${quoteCommandArg(targetFile)} --run ${VITEST_SINGLE_WORKER}`;
 }

@@ -211,8 +211,19 @@ export const TRIAGE_ARG_VALIDATORS: ((args: ToolArgs) => string | null)[] = [
   validateOutputFormatArg,
 ];
 
-/** Per-file StrykerJS worker cap so parallel triage doesn't oversubscribe CPU.
- *  Clamped to 1–64 to stay within StrykerJS's documented concurrency range. */
+/**
+ * Per-file StrykerJS worker cap so parallel triage doesn't oversubscribe CPU.
+ * Clamped to 1–64 to stay within StrykerJS's documented concurrency range.
+ *
+ * This bounds only the SECOND of three multiplying layers. The full product is
+ * `fileConcurrency × strykerConcurrency × vitestWorkers`, and this function has
+ * no say over the third: each mutant's test run is a fresh `npx vitest`, which
+ * forks its own pool. That third factor used to be unbounded, which is how a
+ * correctly-computed `strykerConcurrency` of 1 still put ~80 node processes and
+ * ~6 GB on an 8 GB box. It is now pinned to a single worker at the command
+ * itself — see `VITEST_SINGLE_WORKER` in utils/shell-quote.ts. Keep the two in
+ * mind together; capping either one alone does not bound the total.
+ */
 export function resolveStrykerConcurrency(poolSize: number, cpuCount: number): number | undefined {
   if (poolSize <= 1) return undefined;
   return Math.min(64, Math.max(1, Math.floor((cpuCount - 1) / poolSize)));

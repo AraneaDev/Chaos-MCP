@@ -442,7 +442,10 @@ export const TRIAGE_TOOL_DEFINITION = {
         maximum: 64,
         description:
           "How many files to audit in parallel. Default min(4, cpus-1). When >1, each StrykerJS run's " +
-          'worker count is capped so total CPU use stays near the core count. Example: 4',
+          "worker count is capped, and each mutant's test run is pinned to a single vitest worker, " +
+          'so the three layers multiply out to roughly the core count rather than to ' +
+          'fileConcurrency x strykerConcurrency x vitestWorkers. Raise with care on a workstation: ' +
+          'a sweep is still the most resource-hungry thing this server does. Example: 4',
       },
       minScore: {
         type: 'number',

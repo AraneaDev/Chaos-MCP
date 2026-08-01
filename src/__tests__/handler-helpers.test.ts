@@ -268,7 +268,9 @@ describe('buildRunOptions', () => {
         'src/my module.ts',
       );
 
-      expect(options.commandRunnerCommand).toBe("npx vitest related 'src/my module.ts' --run");
+      expect(options.commandRunnerCommand).toBe(
+        "npx vitest related 'src/my module.ts' --run --no-file-parallelism --maxWorkers=1",
+      );
     } finally {
       platform.mockRestore();
     }
@@ -279,11 +281,19 @@ describe('buildRunOptions', () => {
     const platform = vi.spyOn(process, 'platform', 'get');
     try {
       platform.mockReturnValue('linux');
+      // The `--no-file-parallelism --maxWorkers=1` suffix is load-bearing, not
+      // cosmetic: without it vitest forks its own pool inside every mutant slot,
+      // and the measured cost of ONE 8-mutant audit was 20 node processes /
+      // 1561 MB instead of 6 / 440 MB. At fileConcurrency 4 that is ~6.2 GB and
+      // takes an 8 GB box down. Asserted on both platform branches so neither
+      // can lose the caps silently.
       expect(buildVitestRelatedCommand("src/a'b.ts")).toBe(
-        "npx vitest related 'src/a'\\''b.ts' --run",
+        "npx vitest related 'src/a'\\''b.ts' --run --no-file-parallelism --maxWorkers=1",
       );
       platform.mockReturnValue('win32');
-      expect(buildVitestRelatedCommand('src/app.ts')).toBe('npx vitest related src/app.ts --run');
+      expect(buildVitestRelatedCommand('src/app.ts')).toBe(
+        'npx vitest related src/app.ts --run --no-file-parallelism --maxWorkers=1',
+      );
       expect(buildVitestRelatedCommand('src/my module.ts')).toBeUndefined();
       expect(buildVitestRelatedCommand('src/a&whoami.ts')).toBeUndefined();
       expect(buildVitestRelatedCommand('src/a"b.ts')).toBeUndefined();
