@@ -8,8 +8,13 @@ import { resolveStrykerConcurrency } from '../triage-args-validation.js';
 import { ALLOWED_ROOTS_ENV } from '../utils/path-safety.js';
 import { ExecFailureError } from '../utils/exec-error.js';
 
-vi.mock('../triage.js', async () => {
-  const actual = await vi.importActual<typeof import('../triage.js')>('../triage.js');
+// Discovery moved out of triage.ts into `triage/discover-files.ts` (Finding 5
+// decomposition); the stub follows it to the module `discover-targets.ts` now
+// imports from.
+vi.mock('../triage/discover-files.js', async () => {
+  const actual = await vi.importActual<typeof import('../triage/discover-files.js')>(
+    '../triage/discover-files.js',
+  );
   return { ...actual, discoverFiles: vi.fn(), discoverChangedFiles: vi.fn() };
 });
 vi.mock('../utils/git-diff.js', () => ({
@@ -53,7 +58,7 @@ vi.mock('../utils/suppression.js', async () => {
   return { ...actual, loadSuppressions: vi.fn(() => new Map()) };
 });
 
-import { discoverFiles, discoverChangedFiles } from '../triage.js';
+import { discoverFiles, discoverChangedFiles } from '../triage/discover-files.js';
 import { detectEnvironment } from '../utils/project-detector.js';
 import { auditFile } from '../audit/audit-file.js';
 import { listChangedFiles, computeChangedRanges } from '../utils/git-diff.js';

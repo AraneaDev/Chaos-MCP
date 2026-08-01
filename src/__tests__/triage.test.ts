@@ -7,6 +7,8 @@ import {
   isSupportedSourceFile,
   discoverFiles,
   discoverChangedFiles,
+} from '../triage/discover-files.js';
+import {
   rankResults,
   compareTriageRows,
   formatTriageAsJson,

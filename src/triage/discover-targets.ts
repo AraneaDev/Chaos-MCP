@@ -7,7 +7,7 @@
  * a git ref becomes a file list.
  */
 import { resolve } from 'path';
-import { discoverFiles, discoverChangedFiles } from '../triage.js';
+import { discoverFiles, discoverChangedFiles } from './discover-files.js';
 import { listChangedFiles, type ChangedFilesResult } from '../utils/git-diff.js';
 import { isPathPermitted } from '../utils/path-safety.js';
 import { isCancel } from '../utils/cancel.js';
