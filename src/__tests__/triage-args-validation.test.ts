@@ -58,3 +58,33 @@ describe('triage timeout arguments are capped at MAX_TIMEOUT_MS', () => {
     expect(firstError(base)).toBeNull();
   });
 });
+
+/**
+ * `validateOutputFormatArg` was entirely unexercised: a mutation audit found its
+ * condition, both sub-conditions, the return block AND the message all survive
+ * mutation, because nothing ever passed an invalid `outputFormat` to triage.
+ *
+ * The valid cases matter as much as the invalid one. Forcing `outputFormat !== 'json'`
+ * to true (or swapping it to `===`, or blanking the 'json' literal) only shows up
+ * when a legitimate value is asserted to pass.
+ */
+describe('triage outputFormat validation', () => {
+  const base = { paths: ['src'] };
+
+  it('accepts "text"', () => {
+    expect(firstError({ ...base, outputFormat: 'text' })).toBeNull();
+  });
+
+  it('accepts "json"', () => {
+    expect(firstError({ ...base, outputFormat: 'json' })).toBeNull();
+  });
+
+  it('leaves outputFormat optional', () => {
+    expect(firstError(base)).toBeNull();
+  });
+
+  it('rejects an unsupported format and names the permitted ones', () => {
+    const message = firstError({ ...base, outputFormat: 'xml' });
+    expect(message).toContain('outputFormat must be one of "text" or "json"');
+  });
+});

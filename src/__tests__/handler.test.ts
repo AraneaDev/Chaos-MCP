@@ -3851,3 +3851,74 @@ describe('mapCreateSandboxError', () => {
     expect(text(result)).toContain('EACCES');
   });
 });
+
+/**
+ * The three abort short-circuits are numbered in handler.ts because each one guards a
+ * different expensive stage. A mutation audit found #2 (line 209) and #3 (line 253)
+ * both survive being forced to false, and their 'Operation cancelled.' messages survive
+ * being blanked — only #1 was covered.
+ *
+ * Aborting up front cannot test #2 or #3: short-circuit #1 catches it and the later
+ * guards are never reached. Each test therefore aborts INSIDE a mock that runs in the
+ * window the guard protects, so only that guard can catch it. Asserting what did NOT
+ * run is what pins the stage down — a guard that fires too late would still return the
+ * same message.
+ */
+describe('handleToolCall cancellation short-circuits', () => {
+  const tsEnv = {
+    projectType: 'typescript' as const,
+    testRunner: 'vitest',
+    detectedRunner: 'vitest',
+    packageManager: '',
+    workspaceRoot: '/workspace',
+  };
+
+  it('honours cancellation raised during scope resolution, before provisioning a sandbox', async () => {
+    const controller = new AbortController();
+    const mockRun = vi.fn();
+    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    // detectEnvironment runs after short-circuit #1 and before #2.
+    mockDetectEnv.mockImplementation(() => {
+      controller.abort();
+      return tsEnv;
+    });
+
+    const response = await handleToolCall(
+      makeRequest('audit_code_resilience', { filePath: 'src/math.ts' }),
+      undefined,
+      { signal: controller.signal },
+    );
+
+    expect(response.isError).toBe(true);
+    expect((response.content[0] as { text: string }).text).toContain('Operation cancelled.');
+    // Short-circuit #2 exists precisely to avoid paying for a sandbox copy.
+    expect(mockCreateSandbox).not.toHaveBeenCalled();
+    expect(mockRun).not.toHaveBeenCalled();
+  });
+
+  it('honours cancellation raised during sandbox provisioning, before running the engine', async () => {
+    const controller = new AbortController();
+    const mockRun = vi.fn();
+    const cleanup = vi.fn();
+    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    mockDetectEnv.mockReturnValue(tsEnv);
+    // Sandbox provisioning runs after short-circuit #2 and before #3.
+    mockCreateSandbox.mockImplementation(async () => {
+      controller.abort();
+      return { workDir: '/tmp/chaos-mcp-sandbox', targetFile: '', cleanup };
+    });
+
+    const response = await handleToolCall(
+      makeRequest('audit_code_resilience', { filePath: 'src/math.ts' }),
+      undefined,
+      { signal: controller.signal },
+    );
+
+    expect(response.isError).toBe(true);
+    expect((response.content[0] as { text: string }).text).toContain('Operation cancelled.');
+    expect(mockCreateSandbox).toHaveBeenCalled();
+    expect(mockRun).not.toHaveBeenCalled();
+    // handler.ts:252 promises the finally-block still cleans up on this path.
+    expect(cleanup).toHaveBeenCalled();
+  });
+});

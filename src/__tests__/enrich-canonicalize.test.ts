@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { canonicalizeMutator, MUTATOR_SEMANTICS } from '../core/enrich.js';
+import { canonicalizePhpMutator } from '../engines/php/canonicalize.js';
 
 describe('canonicalizeMutator', () => {
   it('maps StrykerJS canonical names directly for typescript', () => {
@@ -298,5 +299,170 @@ describe('canonicalizeMutator (php — Infection mutator names)', () => {
     expect(canonicalizeMutator('constructor', 'typescript')).toBe('unknown');
     expect(canonicalizeMutator('toString', 'typescript')).toBe('unknown');
     expect(canonicalizeMutator('constructor', 'php')).toBe('unknown');
+  });
+});
+
+describe('engine vocabulary contract', () => {
+  // The Infection mutator names this server claims to support. This list is INPUT data
+  // only: the expected category is deliberately not restated, so the test cannot decay
+  // into comparing the table against itself (the trap that left enrich.ts:67-68 with
+  // unkillable StringLiteral mutants). It asserts the weaker contract that actually
+  // matters — every name we claim to handle resolves to a category enrich can rank.
+  //
+  // Blanking any table value makes canonicalizeMutator fall through to 'unknown', so
+  // this one loop kills every StringLiteral mutant in the PHP vocabulary at once.
+  const INFECTION_MUTATORS = [
+    'GreaterThan',
+    'GreaterThanOrEqualTo',
+    'LessThan',
+    'LessThanOrEqualTo',
+    'Equal',
+    'NotEqual',
+    'Identical',
+    'NotIdentical',
+    'GreaterThanNegotiation',
+    'GreaterThanOrEqualToNegotiation',
+    'LessThanNegotiation',
+    'LessThanOrEqualToNegotiation',
+    'EqualIdentical',
+    'IdenticalEqual',
+    'NotEqualNotIdentical',
+    'NotIdenticalNotEqual',
+    'Spaceship',
+    'LogicalAnd',
+    'LogicalOr',
+    'LogicalLowerAnd',
+    'LogicalLowerOr',
+    'LogicalAndNegation',
+    'LogicalAndAllSubExprNegation',
+    'LogicalAndSingleSubExprNegation',
+    'LogicalOrNegation',
+    'LogicalOrAllSubExprNegation',
+    'LogicalOrSingleSubExprNegation',
+    'LogicalNot',
+    'IfNegation',
+    'ElseIfNegation',
+    'Ternary',
+    'InstanceOf_',
+    'MatchArmRemoval',
+    'SharedCaseRemoval',
+    'TrueValue',
+    'FalseValue',
+    'Plus',
+    'Minus',
+    'Multiplication',
+    'Division',
+    'Modulus',
+    'Exponentiation',
+    'BitwiseAnd',
+    'BitwiseOr',
+    'BitwiseXor',
+    'BitwiseNot',
+    'ShiftLeft',
+    'ShiftRight',
+    'RoundingFamily',
+    'DecrementInteger',
+    'IncrementInteger',
+    'OneZeroInteger',
+    'OneZeroFloat',
+    'IntegerNegation',
+    'FloatNegation',
+    'Increment',
+    'Decrement',
+    'Assignment',
+    'AssignmentEqual',
+    'PlusEqual',
+    'MinusEqual',
+    'MulEqual',
+    'DivEqual',
+    'ModEqual',
+    'PowEqual',
+    'AssignCoalesce',
+    'AssignmentCoalesce',
+    'Coalesce',
+    'NullSafeMethodCall',
+    'NullSafePropertyCall',
+    'ReturnRemoval',
+    'FunctionCall',
+    'NewObject',
+    'This',
+    'YieldValue',
+    'Yield_',
+    'Throw_',
+    'Catch_',
+    'CatchBlockRemoval',
+    'Finally_',
+    'UnwrapFinally',
+    'Foreach_',
+    'For_',
+    'While_',
+    'DoWhile',
+    'Break_',
+    'Continue_',
+    'FunctionCallRemoval',
+    'MethodCallRemoval',
+    'CloneRemoval',
+    'ArrayFind',
+    'ArrayFindKey',
+    'ArrayFirst',
+    'ArrayLast',
+    'ArrayAll',
+    'ArrayAny',
+    'BCMath',
+    'MBString',
+    'ArrayItem',
+    'ArrayItemRemoval',
+    'ArrayOneItem',
+    'SpreadAssignment',
+    'SpreadOneItem',
+    'SpreadRemoval',
+    'Concat',
+    'ConcatOperandRemoval',
+  ];
+
+  it('resolves every supported Infection mutator to a rankable category', () => {
+    // Collected rather than asserted per-name so a failure lists EVERY offending row at
+    // once — and `unknown` is itself absent from MUTATOR_SEMANTICS, so this one check
+    // catches both a blanked table value and a name that reaches no rule.
+    const unresolved = INFECTION_MUTATORS.map((name) => ({
+      name,
+      category: canonicalizeMutator(name, 'php'),
+    })).filter(({ category }) => !Object.hasOwn(MUTATOR_SEMANTICS, category));
+
+    expect(unresolved).toEqual([]);
+  });
+
+  it('covers every row of the PHP vocabulary', () => {
+    // Guards the list above against silently falling behind the table it describes.
+    expect(INFECTION_MUTATORS.length).toBe(106);
+    expect(new Set(INFECTION_MUTATORS).size).toBe(INFECTION_MUTATORS.length);
+  });
+});
+
+/**
+ * The prefix-family fallbacks that catch Infection names absent from the exact table.
+ * These names must NOT be in PHP_MUTATOR_CATEGORIES, or they would resolve on the table
+ * branch and never reach the rules — which is why the vocabulary loop above cannot cover
+ * them, and why the `/^Unwrap/`, `/^Cast/` and `/^Preg/` patterns survived mutation.
+ */
+describe('PHP prefix-family fallbacks', () => {
+  it.each([
+    ['UnwrapArrayFilter', 'MethodExpression'],
+    ['UnwrapStrReplace', 'MethodExpression'],
+    ['CastInt', 'MethodExpression'],
+    ['CastString', 'MethodExpression'],
+    ['PregQuote', 'Regex'],
+    ['PregMatchMatches', 'Regex'],
+  ])('routes %s to %s via a prefix rule', (name, expected) => {
+    expect(canonicalizeMutator(name, 'php')).toBe(expected);
+  });
+
+  it('falls through to unknown for a name matching no table row and no prefix', () => {
+    // Asserted on the RAW engine function, not the enrich wrapper. The wrapper maps any
+    // category outside MUTATOR_SEMANTICS back to 'unknown' (enrich.ts:179), so blanking
+    // this sentinel to '' is invisible through canonicalizeMutator — it would return
+    // 'unknown' either way and the mutant would survive the assertion.
+    expect(canonicalizePhpMutator('SomeFutureInfectionMutator')).toBe('unknown');
+    expect(canonicalizeMutator('SomeFutureInfectionMutator', 'php')).toBe('unknown');
   });
 });
