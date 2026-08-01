@@ -85,7 +85,7 @@ describe('each consumer keeps its pre-refactor effective set', () => {
     ]);
   });
 
-  it('IGNORE_DIRS (triage.ts discovery walker)', () => {
+  it('IGNORE_DIRS (triage/discover-files.ts discovery walker)', () => {
     expect(sorted(IGNORE_DIRS)).toEqual([
       '.cache',
       '.git',

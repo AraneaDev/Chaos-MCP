@@ -1,7 +1,7 @@
 /**
  * Target selection for one triage sweep: which files the leaderboard will rank.
  *
- * Both branches are thin glue over `triage.ts` (`discoverChangedFiles` /
+ * Both branches are thin glue over `triage/discover-files.ts` (`discoverChangedFiles` /
  * `discoverFiles`), which is why they belong beside it rather than inside
  * `handleTriageCall` — the handler's job is to sequence phases, not to know how
  * a git ref becomes a file list.

@@ -16,12 +16,12 @@
  * the dependency graph and none of them may import another:
  *
  *   - `utils/sandbox.ts`   → `ALWAYS_EXCLUDE`          (copy filter)
- *   - `triage.ts`          → `IGNORE_DIRS`             (discovery walker)
+ *   - `triage/discover-files.ts` → `IGNORE_DIRS`        (discovery walker)
  *   - `test-file.ts`       → `TEST_SEARCH_SKIP`        (test-file finder)
  *   - `test-file.ts`       → `PYTHON_TEST_IGNORE_DIRS` (pytest presence scan)
  *
  * `utils/` is a leaf (`utils-is-a-leaf` in knossos.json), so sandbox.ts can
- * never reach up to `triage.ts` or `test-file.ts`; hoisting just the DATA into a
+ * never reach up to `triage/discover-files.ts` or `test-file.ts`; hoisting just the DATA into a
  * module that imports nothing is what lets all four share one definition.
  *
  * The four lists drifted for real, twice, and both regressions reached
@@ -31,7 +31,7 @@
  *      so a Python `.venv/` was walked as caller code. Discovery sorts
  *      lexicographically before `slice(0, maxFiles)` and `.venv/...` sorts before
  *      `src/...`, so a sweep spent its entire budget on third-party files and
- *      ranked none of the user's (see the note above `IGNORE_DIRS` in triage.ts).
+ *      ranked none of the user's (see the note above `IGNORE_DIRS` in triage/discover-files.ts).
  *   2. `vendor` was in `SYMLINK_DIRS` but missing from `ALWAYS_EXCLUDE`, so the
  *      copy materialised it and Step 2's symlink hit `EEXIST` — every PHP
  *      (Composer) project failed provisioning (see `CopyPolicyInput.symlinkDirs`

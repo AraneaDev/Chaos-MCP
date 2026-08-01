@@ -54,7 +54,7 @@ function candidates(targetFile: string, projectType: SupportedProjectType): stri
  * Directory names never worth descending into when hunting for test files.
  *
  * Composes the shared {@link COMMON_IGNORE_DIRS} leaf plus this walker's own
- * extras. Deliberately NARROWER than triage.ts's `IGNORE_DIRS`: it does not skip
+ * extras. Deliberately NARROWER than triage/discover-files.ts's `IGNORE_DIRS`: it does not skip
  * `tests`/`__tests__` (that is exactly what it is hunting for), nor `.tox`,
  * `out`, `.next`, `.cache`, `reports` or `site-packages`. Widening it would
  * change which test files are discovered, so the gap is left explicit rather
