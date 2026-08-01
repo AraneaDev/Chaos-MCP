@@ -12,7 +12,14 @@
  * rather than a preloaded map: it can adopt this helper without changing its
  * call shape. Wiring triage up is deliberately left to the triage decomposition.
  */
+import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import type { ToolArgs } from '../tool-args-validation.js';
+import type { ToolContext } from '../tool-context.js';
+import type { MutationResult } from '../engines/base.js';
+import type { MutantKey } from '../verify.js';
+import type { SuppressionCounts } from './audit-output.js';
+import { toolError } from '../tool-result.js';
+import { applySuppressions } from './apply-suppressions.js';
 import {
   loadSuppressions,
   addSuppressions,
@@ -86,4 +93,67 @@ export function loadVerifiedSuppressions(
 ): SuppressionVerdict {
   const key = toPortableKey(relFromRoot);
   return verifySuppressions(wsRoot, relFromRoot, loadSuppressions(wsRoot, supPath).get(key));
+}
+
+/**
+ * The suppression phase of one audit: apply the caller's explicit edits, then
+ * filter the equivalent mutants out of the engine's result.
+ *
+ * Suppression writes (explicit user action) happen first so the same call
+ * reflects them. Then auto-filter equivalent mutants from the result.
+ * C2 boundary: writes land under `wsRoot` (or `cfg.suppressionsPath`), keyed by
+ * the WORKSPACE-RELATIVE path (`relFromRoot`, the same expression triage uses)
+ * so the suppressions file is portable/committable and audit and triage agree
+ * on the key — never outside the workspace.
+ *
+ * Returns the (possibly filtered) result plus the counts to report, or a
+ * ready-to-return {@link CallToolResult} when the phase must short-circuit —
+ * the same `{ ok }` shape the handler's other phase helpers use. Sandbox
+ * cleanup still runs on every one of those returns, via the handler's `finally`.
+ */
+export async function applyAndCountSuppressions(
+  args: ToolArgs,
+  auditResults: MutationResult,
+  baselineKeys: MutantKey[] | undefined,
+  wsRoot: string,
+  relFromRoot: string,
+  supPath: string | undefined,
+  ctx?: ToolContext,
+): Promise<
+  | { ok: true; result: MutationResult; counts: SuppressionCounts }
+  | { ok: false; result: CallToolResult }
+> {
+  let result = auditResults;
+  try {
+    // CodeRabbit finding: if the request aborts after auditFile resolves
+    // but before these writes, a cancelled call could still mutate the
+    // suppressions file. Guard the write block so cancellation stays
+    // side-effect free.
+    if (ctx?.signal?.aborted) return { ok: false, result: toolError('Operation cancelled.') };
+    await applySuppressionArgs(args, wsRoot, relFromRoot, supPath);
+  } catch (error: unknown) {
+    // A write failure surfaces a specific error rather than the generic
+    // "Chaos Engine Halted" (Fix 4). Sandbox cleanup still runs via finally.
+    const message = error instanceof Error ? error.message : String(error);
+    return { ok: false, result: toolError(`Failed to update suppression list: ${message}`) };
+  }
+  // Filter only for non-verify runs. In verify mode (baselineKeys set), the
+  // filter is owned by Task 9: removing a now-suppressed mutant from the
+  // re-run but NOT from the baseline would make computeVerifyDelta misreport
+  // it as "now killed" (Fix 2). Writes above remain ungated (explicit action).
+  //
+  // Only fingerprint-verified entries filter the result. Drifted and
+  // unverified entries are counted and reported instead — including the
+  // entries just written above whose source line could not be read, which
+  // land in `unverified` in this very response.
+  const counts: SuppressionCounts = { applied: 0, drifted: 0, unverified: 0 };
+  if (!baselineKeys) {
+    const verdict = loadVerifiedSuppressions(wsRoot, relFromRoot, supPath);
+    const filtered = applySuppressions(result, verdict.applied);
+    result = filtered.result;
+    counts.applied = filtered.suppressedCount;
+    counts.drifted = verdict.drifted;
+    counts.unverified = verdict.unverified;
+  }
+  return { ok: true, result, counts };
 }

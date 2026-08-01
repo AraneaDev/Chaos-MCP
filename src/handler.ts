@@ -20,19 +20,13 @@ import { isCancel } from './utils/cancel.js';
 import { ChaosConfig } from './utils/config-loader.js';
 import { log, isVerbose } from './utils/logger.js';
 import { ToolArgs, TOOL_ARG_VALIDATORS } from './tool-args-validation.js';
-import { mintRunId } from './utils/run-cache.js';
-import { buildResultPayload } from './format.js';
-import { applySuppressions } from './audit/apply-suppressions.js';
+import { mintRunIdSafely } from './audit/run-id.js';
 import { AuditDeadline } from './utils/deadline.js';
 import { resolveAuditTimeoutMs, resolveGatedPrebuild } from './audit/run-options.js';
 import { auditFile, assertPythonHasTests, type AuditFileInput } from './audit/audit-file.js';
 import { computeScope } from './audit/scope.js';
-import {
-  buildEnrichContext,
-  formatAuditOutput,
-  type SuppressionCounts,
-} from './audit/audit-output.js';
-import { applySuppressionArgs, loadVerifiedSuppressions } from './audit/suppression-io.js';
+import { buildEnrichContext, formatAuditOutput } from './audit/audit-output.js';
+import { applyAndCountSuppressions } from './audit/suppression-io.js';
 
 /**
  * Validate the optional tool arguments that are not covered by the JSON schema's
@@ -288,74 +282,30 @@ export async function handleToolCall(
           : scopeNote;
       }
 
-      // Suppression writes (explicit user action) happen first so the same
-      // call reflects them. Then auto-filter equivalent mutants from the result.
-      // C2 boundary: writes land under env.workspaceRoot (or cfg.suppressionsPath),
-      // keyed by the WORKSPACE-RELATIVE path (relFromRoot, the same expression
-      // triage uses) so the suppressions file is portable/committable and audit
-      // and triage agree on the key — never outside the workspace.
-      const wsRoot = env.workspaceRoot;
-      const supPath = cfg.suppressionsPath;
-      try {
-        // CodeRabbit finding: if the request aborts after auditFile resolves
-        // but before these writes, a cancelled call could still mutate the
-        // suppressions file. Guard the write block so cancellation stays
-        // side-effect free.
-        if (ctx?.signal?.aborted) return toolError('Operation cancelled.');
-        await applySuppressionArgs(args, wsRoot, relFromRoot, supPath);
-      } catch (error: unknown) {
-        // A write failure surfaces a specific error rather than the generic
-        // "Chaos Engine Halted" (Fix 4). Sandbox cleanup still runs via finally.
-        const message = error instanceof Error ? error.message : String(error);
-        return toolError(`Failed to update suppression list: ${message}`);
-      }
-      // Filter only for non-verify runs. In verify mode (baselineKeys set), the
-      // filter is owned by Task 9: removing a now-suppressed mutant from the
-      // re-run but NOT from the baseline would make computeVerifyDelta misreport
-      // it as "now killed" (Fix 2). Writes above remain ungated (explicit action).
-      //
-      // Only fingerprint-verified entries filter the result. Drifted and
-      // unverified entries are counted and reported instead — including the
-      // entries just written above whose source line could not be read, which
-      // land in `unverified` in this very response.
-      const suppression: SuppressionCounts = { applied: 0, drifted: 0, unverified: 0 };
-      if (!baselineKeys) {
-        const verdict = loadVerifiedSuppressions(wsRoot, relFromRoot, supPath);
-        const filtered = applySuppressions(auditResults, verdict.applied);
-        auditResults = filtered.result;
-        suppression.applied = filtered.suppressedCount;
-        suppression.drifted = verdict.drifted;
-        suppression.unverified = verdict.unverified;
-      }
+      // Suppression phase: explicit writes, then the auto-filter (audit/suppression-io.ts).
+      const suppressed = await applyAndCountSuppressions(
+        args,
+        auditResults,
+        baselineKeys,
+        env.workspaceRoot,
+        relFromRoot,
+        cfg.suppressionsPath,
+        ctx,
+      );
+      if (!suppressed.ok) return suppressed.result;
+      auditResults = suppressed.result;
+      const suppression = suppressed.counts;
 
-      // Mint a runId for non-verify runs so the caller can verify later by id.
-      // Keyed by relFromRoot so the cached run matches the verify-by-runId
-      // check and triage (Task 8) on the same file.
-      // The compact payload is built HERE, not inside mintRunId: run-cache.ts is
-      // a leaf util and may not import the domain-layer format module. The
-      // try/catch keeps mintRunId's old contract intact — it used to swallow a
-      // payload-construction failure too, and minting a runId must never cost
-      // the caller the audit it asked for.
-      //
-      // `workspaceRoot` stamps the entry's workspace fingerprint (audit M10).
-      // `relFromRoot` alone is a workspace-RELATIVE key, so without it a runId
-      // minted for workspace A's `src/index.ts` satisfied the verify path's
-      // `cached.file === relFile` check while pointed at workspace B's
-      // `src/index.ts` — a different file — and the verify graded B's code
-      // against A's mutants. `audit/scope.ts` now REFUSES an entry that carries
-      // no hash, so omitting this here would break verify-by-runId outright.
-      let mintedRunId: string | undefined;
-      if (!baselineKeys) {
-        try {
-          mintedRunId = mintRunId(buildResultPayload(auditResults, {}), relFromRoot, projectType, {
-            ttlMs: cfg.runCacheTtlMs,
-            max: cfg.runCacheMax,
-            workspaceRoot: env.workspaceRoot,
-          });
-        } catch {
-          mintedRunId = undefined;
-        }
-      }
+      // Mint a runId for non-verify runs so the caller can verify later by id
+      // (audit/run-id.ts owns the swallowed-failure contract).
+      const mintedRunId = mintRunIdSafely(
+        auditResults,
+        baselineKeys,
+        relFromRoot,
+        projectType,
+        env.workspaceRoot,
+        cfg,
+      );
 
       const enrichCtx =
         // Skip the synchronous source read for verify-mode re-runs: the
