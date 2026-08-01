@@ -10,6 +10,7 @@
 import { existsSync } from 'fs';
 import { join, sep } from 'path';
 import { ALL_DEPENDENCY_DIRS } from '../dependency-dirs.js';
+import { phpDetector } from '../detectors/php.js';
 import { COMMON_IGNORE_DIRS } from '../ignore-dirs.js';
 
 /**
@@ -236,7 +237,15 @@ export function buildCopyPolicy({
  * @internal Exported only so `utils/sandbox.ts` can pick the per-audit symlink set.
  */
 export function isComposerPhpAudit(targetFile: string, absoluteWorkspace: string): boolean {
-  if (!targetFile.toLowerCase().endsWith('.php')) return false;
+  // "Is this a PHP file?" is answered by `phpDetector`, not by a literal here:
+  // a hand-written `.endsWith('.php')` was the fifth copy of that rule in the
+  // codebase, and a language whose extension list later grows (or gains a
+  // second suffix) would silently keep the symlinked-vendor path here while
+  // every other call site moved on. The `.toLowerCase()` stays OUTSIDE the
+  // detector: `phpDetector.matches` is case-SENSITIVE by contract (its other
+  // callers lowercase first), and dropping it would break `Calculator.PHP` on
+  // the case-insensitive filesystems where such a name is legal.
+  if (!phpDetector.matches(targetFile.toLowerCase())) return false;
   return (
     existsSync(join(absoluteWorkspace, 'composer.json')) ||
     existsSync(join(absoluteWorkspace, 'vendor', 'composer'))

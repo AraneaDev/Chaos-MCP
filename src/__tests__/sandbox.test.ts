@@ -214,6 +214,29 @@ describe('createSandbox', () => {
     expect(symlinkedDsts).not.toContain(`${SANDBOX_DIR}/vendor`);
   });
 
+  it('treats an UPPERCASE .PHP target as a Composer audit too', async () => {
+    // The extension test delegates to `phpDetector.matches`, which is
+    // case-SENSITIVE by contract; `isComposerPhpAudit` lowercases the path
+    // first. On case-insensitive filesystems `Calculator.PHP` is a legal
+    // spelling of the same file, and losing the lowercase step would send it
+    // down the symlinked-vendor path — where Composer's `__DIR__` escapes the
+    // sandbox and Infection reports "No source code … was executed". This pins
+    // the lowercasing so a future refactor of the detector call cannot drop it.
+    mockExistsSync.mockImplementation((path: PathLike) => {
+      if (path === `${SANDBOX_DIR}/src/Calculator.PHP`) return true;
+      if (path === TEST_PROJECT_VENDOR) return true;
+      if (path === `${TEST_PROJECT}/composer.json`) return true;
+      return false;
+    });
+
+    await createSandbox('src/Calculator.PHP', TEST_PROJECT);
+
+    const filter = mockCp.mock.calls[0][2]?.filter as (src: string) => boolean;
+    expect(filter(`${TEST_PROJECT}/vendor`)).toBe(true);
+    const symlinkedDsts = mockSymlinkSync.mock.calls.map((c) => c[1]);
+    expect(symlinkedDsts).not.toContain(`${SANDBOX_DIR}/vendor`);
+  });
+
   it('symlinks vendor for a NON-Composer .php audit (no composer.json marker)', async () => {
     // Without a Composer marker (composer.json / vendor/composer) there is no
     // autoloader-through-symlink hazard, so vendor keeps the cheap symlink path
@@ -1485,6 +1508,71 @@ describe('cleanupAllSandboxes', () => {
     mockRmSync.mockClear();
     fresh.cleanupAllSandboxes();
     expect(mockRmSync).not.toHaveBeenCalled();
+  });
+});
+
+describe('_resetSandboxSignalState', () => {
+  const originalAllowedRoots = process.env[ALLOWED_ROOTS_ENV];
+  afterEach(() => {
+    if (originalAllowedRoots === undefined) Reflect.deleteProperty(process.env, ALLOWED_ROOTS_ENV);
+    else process.env[ALLOWED_ROOTS_ENV] = originalAllowedRoots;
+  });
+
+  it('un-installs the process listeners and restores both latches', async () => {
+    // Signal state is process-lifetime module state, so without this hook a
+    // single `setSandboxSignalExit(false)` silently disables signal-driven exit
+    // for every remaining test in the worker, and the exit-handler latch lets
+    // only the first sandbox-creating test ever observe installation.
+    vi.clearAllMocks();
+    Reflect.deleteProperty(process.env, ALLOWED_ROOTS_ENV);
+    mockTmpdir.mockReturnValue('/tmp');
+    mockCp.mockResolvedValue(undefined as never);
+    mockMkdtempSync.mockReturnValue(SANDBOX_DIR);
+    mockExistsSync.mockImplementation(
+      (path: PathLike) => path === `${SANDBOX_DIR}/src/utils/math.ts`,
+    );
+
+    // One reset, both imports: the provisioner must register into the same
+    // module instance whose latches are being reset (see freshModule above).
+    vi.resetModules();
+    const [fresh, registry] = await Promise.all([
+      import('../utils/sandbox.js'),
+      import('../utils/sandbox/registry.js'),
+    ]);
+
+    // Deltas, not absolutes: earlier cases in this file installed handlers from
+    // module instances that no longer exist and can never be removed.
+    const baseExit = process.listenerCount('exit');
+    const baseSigterm = process.listenerCount('SIGTERM');
+
+    await fresh.createSandbox('src/utils/math.ts', TEST_PROJECT);
+    expect(process.listenerCount('exit')).toBe(baseExit + 1);
+    expect(process.listenerCount('SIGTERM')).toBe(baseSigterm + 1);
+
+    registry.setSandboxSignalExit(false);
+    registry._resetSandboxSignalState();
+
+    // A flag-only reset would leave these counts elevated forever and let the
+    // next ensureExitHandler() stack a second generation on the live one.
+    expect(process.listenerCount('exit')).toBe(baseExit);
+    expect(process.listenerCount('SIGTERM')).toBe(baseSigterm);
+
+    // Re-arming installs exactly ONE generation, not two.
+    await fresh.createSandbox('src/utils/math.ts', TEST_PROJECT);
+    expect(process.listenerCount('exit')).toBe(baseExit + 1);
+    expect(process.listenerCount('SIGTERM')).toBe(baseSigterm + 1);
+
+    // …and signalExitEnabled is back to its default, so the fresh handler
+    // terminates the process again instead of inheriting the `false` above.
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+    const sigtermListeners = process.listeners('SIGTERM');
+    (sigtermListeners[sigtermListeners.length - 1] as () => void)();
+    expect(exitSpy).toHaveBeenCalledWith(143);
+    exitSpy.mockRestore();
+
+    // Leave the process exactly as this case found it.
+    registry._resetSandboxSignalState();
+    expect(process.listenerCount('SIGTERM')).toBe(baseSigterm);
   });
 });
 

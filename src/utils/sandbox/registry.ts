@@ -37,6 +37,25 @@ const ACTIVE_SANDBOXES = new Set<string>();
 let exitHandlerRegistered = false;
 
 /**
+ * Every process listener {@link ensureExitHandler} installed, in install order.
+ *
+ * Kept solely so {@link _resetSandboxSignalState} can uninstall exactly those
+ * listeners and nothing else: the signal handlers are closures created per call,
+ * so without this record there is no reference to hand `process.off`, and a
+ * reset that merely flipped `exitHandlerRegistered` back to false would let the
+ * next {@link ensureExitHandler} install a SECOND full set on top of the live
+ * one. That is a real leak inside a long-lived vitest worker — the per-event
+ * listener count climbs past Node's default 10 into a
+ * MaxListenersExceededWarning, and one signal would then run cleanup (and
+ * `process.exit`) once per generation.
+ *
+ * Production never appends more than one generation here: `ensureExitHandler`
+ * returns early once `exitHandlerRegistered` is set, and nothing outside tests
+ * clears it.
+ */
+const INSTALLED_PROCESS_HANDLERS: Array<[NodeJS.Signals | 'exit', () => void]> = [];
+
+/**
  * Whether this module's signal handlers terminate the process themselves.
  *
  * Registering a signal handler suppresses Node's default termination, so
@@ -94,6 +113,7 @@ export function ensureExitHandler(): void {
   // `process.on('exit')` fires when the event loop empties or process.exit() is
   // called. Only synchronous operations are allowed in exit handlers.
   process.on('exit', cleanupAll);
+  INSTALLED_PROCESS_HANDLERS.push(['exit', cleanupAll]);
 
   // SIGTERM, SIGINT, SIGHUP, and SIGQUIT: try to clean up before the OS
   // kills the process. We call process.exit() after cleanup to let the
@@ -114,11 +134,43 @@ export function ensureExitHandler(): void {
   // setSandboxSignalExit(false) — see that flag for why a leaf utility should
   // not unilaterally end the process. Cleanup always runs either way.
   for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP', 'SIGQUIT'] as const) {
-    process.on(sig, () => {
+    const handler = (): void => {
       cleanupAll();
       if (signalExitEnabled) process.exit(128 + SIGNAL_NUMBERS[sig]);
-    });
+    };
+    process.on(sig, handler);
+    INSTALLED_PROCESS_HANDLERS.push([sig, handler]);
   }
+}
+
+/**
+ * Reset the two process-lifetime latches above to their startup values.
+ *
+ * Both outlive an individual test: a case calling `setSandboxSignalExit(false)`
+ * otherwise leaves every LATER test in the same vitest worker running with
+ * signal-driven exit silently disabled, and `exitHandlerRegistered` makes the
+ * first test that provisions a sandbox the only one that can ever observe
+ * handler installation. Same class of cross-test leak the Python interpreter
+ * probe cache was refactored away to eliminate.
+ *
+ * The listeners `ensureExitHandler` installed are removed BEFORE its latch is
+ * cleared, so re-arming installs one generation rather than stacking a second
+ * on a live one — see {@link INSTALLED_PROCESS_HANDLERS} for why a
+ * flag-only reset would leak process listeners.
+ *
+ * {@link ACTIVE_SANDBOXES} is deliberately NOT cleared: forgetting tracked
+ * directories without removing them from disk is exactly how sandboxes leak.
+ * Call {@link cleanupAllSandboxes} when a test wants them gone.
+ *
+ * @internal Exported for testing only.
+ */
+export function _resetSandboxSignalState(): void {
+  for (const [event, handler] of INSTALLED_PROCESS_HANDLERS) {
+    process.off(event, handler);
+  }
+  INSTALLED_PROCESS_HANDLERS.length = 0;
+  exitHandlerRegistered = false;
+  signalExitEnabled = true;
 }
 
 /**
