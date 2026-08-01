@@ -6,7 +6,7 @@ import type { ContainerConfig } from './config-loader.js';
 import { ExecFailureError, type ExecResult } from './exec-error.js';
 import { runShell, runShellCommand } from './exec.js';
 import { warn } from './logger.js';
-import { ALL_DEPENDENCY_DIRS } from '../engines/dependency-dirs.js';
+import { ALL_DEPENDENCY_DIRS } from './dependency-dirs.js';
 
 export type ExecutionMode = 'native' | 'container' | 'auto';
 

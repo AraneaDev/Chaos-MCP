@@ -19,7 +19,7 @@ import {
   isPathInside,
   isWorkspaceRootAllowed,
 } from './path-safety.js';
-import { dependencyDirectories } from '../engines/registry.js';
+import { ALL_DEPENDENCY_DIRS } from './dependency-dirs.js';
 
 /**
  * Registry of active sandbox directories that have not yet been cleaned up.
@@ -185,12 +185,19 @@ const ALWAYS_EXCLUDE = new Set([
  * into the sandbox rather than copied (they are large and read-only during
  * mutation runs).
  *
- * DERIVED, not hand-maintained: the union of every language's
- * `EngineDescriptor.dependencyDirs`, deduped, in registry order. A new language
- * therefore cannot ship with its dependency tree silently deep-copied into every
- * sandbox — the registry entry it is forced to add carries the answer. Today
- * that yields exactly `['node_modules', '.venv', 'venv', 'vendor']`
+ * DERIVED, not hand-maintained: the union of every language's dependency
+ * directories, deduped, in declaration order. A new language therefore cannot
+ * ship with its dependency tree silently deep-copied into every sandbox — the
+ * `DEPENDENCY_DIRS` entry it is forced to add carries the answer. Today that
+ * yields exactly `['node_modules', '.venv', 'venv', 'vendor']`
  * (typescript → python → rust(none) → php), pinned by sandbox.test.ts.
+ *
+ * Taken from the `utils/dependency-dirs.ts` leaf rather than from
+ * `engines/registry.ts#dependencyDirectories()`: the two are equal by
+ * construction (the registry stamps each descriptor's `dependencyDirs` from the
+ * same constant) and sandbox.test.ts pins them equal, but reaching through the
+ * registry made this util import every engine class to learn four directory
+ * names.
  *
  * Note: `target` (Rust build artifacts) is intentionally NOT symlinked — Rust
  * compiles into `target/`, and a symlink would let mutation runs corrupt the
@@ -201,7 +208,7 @@ const ALWAYS_EXCLUDE = new Set([
  *
  * @internal Exported for testing only.
  */
-export const SYMLINK_DIRS: readonly string[] = dependencyDirectories();
+export const SYMLINK_DIRS: readonly string[] = ALL_DEPENDENCY_DIRS;
 
 /**
  * The single decision function for "does this path get copied into the sandbox?".

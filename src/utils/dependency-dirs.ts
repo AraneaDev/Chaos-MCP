@@ -1,4 +1,4 @@
-import type { SupportedProjectType } from '../utils/project-detector.js';
+import type { SupportedProjectType } from './project-detector.js';
 
 /**
  * Per-language heavyweight dependency directories — the ONE place each
@@ -8,8 +8,9 @@ import type { SupportedProjectType } from '../utils/project-detector.js';
  * `registry.ts` because BOTH layers need it and they sit on opposite sides of
  * the dependency graph:
  *
- *   - `utils/sandbox.ts` derives `SYMLINK_DIRS` from it (via the registry).
+ *   - `utils/sandbox.ts` derives `SYMLINK_DIRS` from `ALL_DEPENDENCY_DIRS`.
  *   - `utils/execution.ts` derives the container bind-mount list from it.
+ *   - `engines/registry.ts` stamps each descriptor's `dependencyDirs` from it.
  *
  * `utils/execution.ts` cannot import `engines/registry.ts` directly: the
  * registry imports every engine class, each engine reaches
@@ -17,6 +18,12 @@ import type { SupportedProjectType } from '../utils/project-detector.js';
  * (9 of them, one per engine/entry-point pair). Hoisting just the DATA into a
  * module that imports nothing at runtime breaks that knot while keeping a single
  * source of truth, so the three consumers cannot drift.
+ *
+ * It sits under `utils/` rather than `engines/` because two of its three
+ * consumers are utils and it depends on nothing in the engine layer — it is
+ * data, not engine behaviour. Filing it under `engines/` made the two utils
+ * that read it import upward across a layer they otherwise never touch
+ * (`utils-is-a-leaf` in knossos.json).
  *
  * Only list a directory that is safe to SHARE with the host workspace. Build
  * *output* directories must NOT go here — see {@link EngineDescriptor.dependencyDirs}

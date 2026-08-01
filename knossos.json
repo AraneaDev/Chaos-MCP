@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "boundaries": [
+    { "name": "utils", "path_prefix": "src/utils" },
+    { "name": "engines", "path_prefix": "src/engines" },
+    { "name": "audit", "path_prefix": "src/audit" },
+    { "name": "triage", "path_prefix": "src/triage" },
+    { "name": "tests", "path_prefix": "src/__tests__" }
+  ],
+  "policies": [
+    {
+      "id": "utils-is-a-leaf",
+      "from_boundary": "utils",
+      "deny_targets": ["engines", "audit", "triage"],
+      "edge_kinds": ["imports", "calls", "constructs"]
+    },
+    {
+      "id": "engines-below-domain",
+      "from_boundary": "engines",
+      "deny_targets": ["audit", "triage"],
+      "edge_kinds": ["imports", "calls", "constructs"]
+    },
+    {
+      "id": "audit-does-not-know-triage",
+      "from_boundary": "audit",
+      "deny_targets": ["triage"],
+      "edge_kinds": ["imports", "calls", "constructs"]
+    },
+    {
+      "id": "production-never-imports-tests",
+      "from_boundary": "utils",
+      "deny_targets": ["tests"],
+      "edge_kinds": ["imports", "calls", "constructs"]
+    }
+  ],
+  "quality_budgets": {
+    "new_cycles": 0,
+    "boundary_violations": 0,
+    "error_diagnostics": 0
+  },
+  "dead_code_suppressions": ["scripts/audit-self.js", "src/utils/sandbox.ts#buildCopyPolicy::*"]
+}

@@ -11,7 +11,7 @@ import type {
   SupportedProjectType,
 } from '../utils/project-detector.js';
 import type { EngineConfigKey } from '../utils/config-loader.js';
-import { DEPENDENCY_DIRS } from './dependency-dirs.js';
+import { DEPENDENCY_DIRS } from '../utils/dependency-dirs.js';
 import type { ToolArgs } from '../tool-args-validation.js';
 
 /**
@@ -238,7 +238,7 @@ export function resolvePrebuildCommand(
  *     (`Record<SupportedProjectType, …>`): extension matcher, extension list,
  *     root markers, test-runner detection. Triage discovery and the tool
  *     schema's extension prose are DERIVED from it.
- *  2. engines/dependency-dirs.ts — `DEPENDENCY_DIRS`
+ *  2. utils/dependency-dirs.ts — `DEPENDENCY_DIRS`
  *     (`Record<SupportedProjectType, …>`): the language's heavyweight dependency
  *     directories, and the ONE place they are written down. `dependencyDirs`
  *     below points at it, and BOTH `SYMLINK_DIRS` (utils/sandbox.ts) and

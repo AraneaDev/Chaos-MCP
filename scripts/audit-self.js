@@ -1,7 +1,12 @@
 #!/usr/bin/env node
 /**
  * Run mutation audit against a ChaosMCP source file.
- * Usage: node scripts/audit-self.js <filePath>
+ *
+ * Usage: npm run audit:self -- <filePath>
+ *    or: node scripts/audit-self.js <filePath>   (requires an existing build/)
+ *
+ * One file per invocation, deliberately: a whole-tree sweep spawns a mutation
+ * run per file and will saturate a dev machine.
  */
 
 import { handleToolCall } from '../build/index.js';
