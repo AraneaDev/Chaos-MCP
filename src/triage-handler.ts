@@ -30,7 +30,11 @@ import {
 } from './triage-args-validation.js';
 import { resolveTriageTargets } from './triage/discover-targets.js';
 import { toolError, mapHandlerFailure } from './tool-result.js';
-import { auditTriageFile, type TriageFileDeps } from './triage/audit-one.js';
+import {
+  auditTriageFile,
+  type TriageFileDeps,
+  type TriageAuditOutcome,
+} from './triage/audit-one.js';
 import { AuditDeadline } from './utils/deadline.js';
 
 const DEFAULT_MAX_FILES = 25;
@@ -70,6 +74,93 @@ function validateTriageArgs(args: ToolArgs): CallToolResult | null {
   return null;
 }
 
+/** Everything one sweep is parameterised by, after tool args and config merge. */
+interface TriageOptions {
+  paths: string[] | undefined;
+  diffBase: string | undefined;
+  minScore: number | undefined;
+  maxFiles: number;
+  outputFormat: 'text' | 'json';
+  poolSize: number;
+  survivorsPerFile: number;
+  deadline: AuditDeadline;
+}
+
+/**
+ * Resolve every knob of a sweep from the tool arguments, the loaded config and
+ * the host's CPU count.
+ *
+ * The precedence is tool argument → config → built-in default, uniformly: an
+ * explicit argument always wins, `chaos.config.json` supplies the fallback where
+ * it has an opinion, and the constant at the top of this module is the last
+ * resort. Arguments are already known well-formed here (`validateTriageArgs`
+ * ran first); the `typeof`/`Number.isInteger` checks are the type narrowing the
+ * `unknown`-valued `ToolArgs` bag needs, not a second validation pass.
+ */
+function resolveTriageOptions(args: ToolArgs, cfg: ChaosConfig, cpuCount: number): TriageOptions {
+  return {
+    paths: hasTriagePaths(args) ? (args.paths as string[]) : undefined,
+    diffBase: hasTriageDiffBase(args) ? (args.diffBase as string) : undefined,
+    minScore: typeof args.minScore === 'number' ? args.minScore : undefined,
+    maxFiles:
+      args.maxFiles !== undefined
+        ? (args.maxFiles as number)
+        : (cfg.defaultMaxFiles ?? DEFAULT_MAX_FILES),
+    outputFormat: args.outputFormat === 'text' ? 'text' : 'json',
+    poolSize:
+      typeof args.fileConcurrency === 'number' && Number.isInteger(args.fileConcurrency)
+        ? (args.fileConcurrency as number)
+        : (cfg.defaultFileConcurrency ?? Math.max(1, Math.min(4, cpuCount - 1))),
+    survivorsPerFile:
+      typeof args.survivorsPerFile === 'number' && Number.isInteger(args.survivorsPerFile)
+        ? (args.survivorsPerFile as number)
+        : 0,
+    // One wall-clock budget for the WHOLE sweep. `timeoutMs` is per file, so
+    // without this a default triage could run maxFiles × timeoutMs (25 × 5 min)
+    // — long past any MCP client's own request timeout, at which point the work
+    // is orphaned and nothing is returned. Files that never start are reported as
+    // unaudited rather than silently omitted.
+    deadline: new AuditDeadline(
+      typeof args.totalTimeoutMs === 'number' ? args.totalTimeoutMs : DEFAULT_TOTAL_TIMEOUT_MS,
+    ),
+  };
+}
+
+/** The three disjoint buckets a finished pool of per-file audits sorts into. */
+interface TriageOutcomes {
+  rows: TriageRow[];
+  errors: TriageError[];
+  unaudited: string[];
+}
+
+/**
+ * Demultiplex the per-file audit outcomes into rows, errors and unaudited files.
+ *
+ * `mapPool` yields one of four things per file: the `Error` safety-net slot, an
+ * `{ unaudited }` marker for a file the sweep never reached, an `{ error }`
+ * record for one that failed, or the `{ row }` of a successful audit.
+ */
+export function partitionOutcomes(outcomes: TriageAuditOutcome[]): TriageOutcomes {
+  const rows: TriageRow[] = [];
+  const errors: TriageError[] = [];
+  const unaudited: string[] = [];
+  for (const o of outcomes) {
+    if (o instanceof Error) {
+      // Safety-net slot from mapPool — auditTriageFile never throws, but guard defensively.
+      errors.push({ file: '(unknown)', error: o.message });
+      continue;
+    }
+    if ('unaudited' in o) {
+      unaudited.push(o.unaudited);
+    } else if ('error' in o) {
+      errors.push(o.error);
+    } else {
+      rows.push(o.row);
+    }
+  }
+  return { rows, errors, unaudited };
+}
+
 /**
  * Batch-triage handler: discover supported source files under `paths`, audit
  * each in bounded-parallel via the shared `auditFile` core, and return a
@@ -88,33 +179,17 @@ export async function handleTriageCall(
 
   try {
     const rootCwd = resolve(process.cwd());
-    const paths = hasTriagePaths(args) ? (args.paths as string[]) : undefined;
-    const diffBase = hasTriageDiffBase(args) ? (args.diffBase as string) : undefined;
-    const minScore = typeof args.minScore === 'number' ? args.minScore : undefined;
-    const maxFiles =
-      args.maxFiles !== undefined
-        ? (args.maxFiles as number)
-        : (cfg.defaultMaxFiles ?? DEFAULT_MAX_FILES);
-    const outputFormat = args.outputFormat === 'text' ? 'text' : 'json';
-
     const cpuCount = cpus().length;
-    const poolSize =
-      typeof args.fileConcurrency === 'number' && Number.isInteger(args.fileConcurrency)
-        ? (args.fileConcurrency as number)
-        : (cfg.defaultFileConcurrency ?? Math.max(1, Math.min(4, cpuCount - 1)));
-    const survivorsPerFile =
-      typeof args.survivorsPerFile === 'number' && Number.isInteger(args.survivorsPerFile)
-        ? (args.survivorsPerFile as number)
-        : 0;
-
-    // One wall-clock budget for the WHOLE sweep. `timeoutMs` is per file, so
-    // without this a default triage could run maxFiles × timeoutMs (25 × 5 min)
-    // — long past any MCP client's own request timeout, at which point the work
-    // is orphaned and nothing is returned. Files that never start are reported as
-    // unaudited rather than silently omitted.
-    const deadline = new AuditDeadline(
-      typeof args.totalTimeoutMs === 'number' ? args.totalTimeoutMs : DEFAULT_TOTAL_TIMEOUT_MS,
-    );
+    const {
+      paths,
+      diffBase,
+      minScore,
+      maxFiles,
+      outputFormat,
+      poolSize,
+      survivorsPerFile,
+      deadline,
+    } = resolveTriageOptions(args, cfg, cpuCount);
 
     // Early abort before hitting the network (git) or filesystem (discovery). (Task 6)
     if (ctx?.signal?.aborted) return toolError('Operation cancelled.');
@@ -159,25 +234,9 @@ export async function handleTriageCall(
     if (ctx?.signal?.aborted) return toolError('Operation cancelled.');
 
     const outcomes = await mapPool(files, poolSize, (file) => auditTriageFile(file, deps));
-    const auditedRows: TriageRow[] = [];
-    const errors: TriageError[] = [];
-    const unaudited: string[] = [];
-    for (const o of outcomes) {
-      if (o instanceof Error) {
-        // Safety-net slot from mapPool — auditTriageFile never throws, but guard defensively.
-        errors.push({ file: '(unknown)', error: o.message });
-        continue;
-      }
-      if ('unaudited' in o) {
-        unaudited.push(o.unaudited);
-      } else if ('error' in o) {
-        errors.push(o.error);
-      } else {
-        auditedRows.push(o.row);
-      }
-    }
+    const { rows, errors, unaudited } = partitionOutcomes(outcomes);
 
-    const ranking = auditedRows.slice().sort(compareTriageRows);
+    const ranking = rows.slice().sort(compareTriageRows);
     return triageResult(
       ranking,
       errors,

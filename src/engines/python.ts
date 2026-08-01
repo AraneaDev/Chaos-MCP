@@ -9,6 +9,7 @@
  *   config.ts      — the generated cosmic-ray TOML (pure)
  *   interpreter.ts — interpreter probing and test-command resolution
  *   report.ts      — dump parsing and scoring (pure)
+ *   diagnose.ts    — the degenerate-run guard over an already-parsed result
  *
  * The helpers are re-exported here because that is the surface the test suite
  * already imports; the split moved where they live, not what the module offers.
@@ -28,12 +29,9 @@ import {
   MIN_STEP_BUDGET_MS,
   buildCosmicRayConfig,
 } from './python/config.js';
-import {
-  describeInterpreter,
-  probePythonInterpreter,
-  resolveTestCommand,
-} from './python/interpreter.js';
+import { probePythonInterpreter, resolveTestCommand } from './python/interpreter.js';
 import { parseCosmicRayDump } from './python/report.js';
+import { assertScorableRun } from './python/diagnose.js';
 
 export { buildCosmicRayConfig, type CosmicRayConfigOptions } from './python/config.js';
 export { CosmicRayDumpShapeError, parseCosmicRayDump } from './python/report.js';
@@ -105,26 +103,17 @@ export class PythonEngine extends BaseEngine {
     // spuriously "killed"; surface it instead of reporting a meaningless 100%.
     // NOTE: no `--session-file` — baseline would otherwise create the session DB,
     // and the subsequent `init` refuses a pre-existing session (exit 65).
-    await this.invoke(['baseline', configPath], cwd, this.stepBudget(budget, 'baseline'), {
+    await this.step('baseline', ['baseline', configPath], cwd, budget, options, {
       onExecFailure: (e) =>
         new Error(
           `cosmic-ray baseline failed (exit ${e.exit}) before mutation testing began. ` +
             `The usual cause is a failing or uncollectable test suite; run the suite directly to confirm. ` +
             `Details: ${(e.stderr || e.message).slice(0, 500)}`,
         ),
-      signal: options?.signal,
-      executor: options?.executor,
     });
 
     // Step 2: init — enumerate mutants into the session DB (no tests run).
-    await this.invoke(['init', configPath, sessionPath], cwd, this.stepBudget(budget, 'init'), {
-      onExecFailure: (e) =>
-        new Error(
-          `cosmic-ray init failed (exit ${e.exit}): ${(e.stderr || e.message).slice(0, 500)}`,
-        ),
-      signal: options?.signal,
-      executor: options?.executor,
-    });
+    await this.step('init', ['init', configPath, sessionPath], cwd, budget, options);
 
     // Step 2.5: operator filter — mark mutants matching excludeOperators as
     // skipped so exec doesn't run them. cosmic-ray has no operator allowlist and
@@ -134,7 +123,7 @@ export class PythonEngine extends BaseEngine {
     //
     // A previous comment here claimed "Skipped mutants are omitted from dump, so
     // they simply drop out of the score". That is FALSE, and it was the premise
-    // the degenerate-run guard below was built on. Verified against the pinned
+    // the degenerate-run guard (`python/diagnose.ts`) was built on. Verified against the pinned
     // cosmic-ray 8.4.6 (containers/python/requirements.txt), source + a live
     // session: `cr-filter-operators` calls
     // `work_db.set_result(job_id, WorkResult(worker_outcome=SKIPPED))`, which
@@ -152,30 +141,21 @@ export class PythonEngine extends BaseEngine {
     // parseCosmicRayDump counts it as `unscored` and the degenerate-run guard
     // names the exclude list rather than blaming the interpreter.
     if (options?.pythonExcludeOperators && options.pythonExcludeOperators.length > 0) {
-      await this.invoke([sessionPath, configPath], cwd, this.stepBudget(budget, 'filter'), {
+      await this.step('filter', [sessionPath, configPath], cwd, budget, options, {
         command: 'cr-filter-operators',
         onExecFailure: (e) =>
           new Error(
             `cosmic-ray operator filter failed (exit ${e.exit}): ${(e.stderr || e.message).slice(0, 500)}`,
           ),
-        signal: options?.signal,
-        executor: options?.executor,
       });
     }
 
     // Step 3: exec — apply each mutant and run the test-command.
-    await this.invoke(['exec', configPath, sessionPath], cwd, this.stepBudget(budget, 'exec'), {
-      onExecFailure: (e) =>
-        new Error(
-          `cosmic-ray exec failed (exit ${e.exit}): ${(e.stderr || e.message).slice(0, 500)}`,
-        ),
-      signal: options?.signal,
-      executor: options?.executor,
-    });
+    await this.step('exec', ['exec', configPath, sessionPath], cwd, budget, options);
 
     // Step 4: dump — structured JSON results.
     const filtered = (options?.pythonExcludeOperators?.length ?? 0) > 0;
-    const dump = await this.invoke(['dump', sessionPath], cwd, this.stepBudget(budget, 'dump'), {
+    const dump = await this.step('dump', ['dump', sessionPath], cwd, budget, options, {
       onExecFailure: (e) =>
         new Error(
           `cosmic-ray dump failed (exit ${e.exit}): ${(e.stderr || e.message).slice(0, 500)}` +
@@ -190,54 +170,52 @@ export class PythonEngine extends BaseEngine {
                 `dump tolerates a null test_outcome, to get results for this file.`
               : ''),
         ),
-      signal: options?.signal,
-      executor: options?.executor,
     });
 
     const { result, completed, unscored } = parseCosmicRayDump(dump.stdout, filePath);
 
-    // Degenerate-run guard. cosmic-ray's `baseline` returns exit 0 even when the
-    // test binary is missing or collects nothing, so a broken run reaches here
-    // looking like a clean one: mutants were enumerated and executed, but none
-    // of them produced a killed/survived verdict. parseCosmicRayDump drops those
-    // from the denominator, which would otherwise surface as a dangerously
-    // misleading `total:0` / `100%` ("caught every mutation") when in truth NO
-    // test ever ran. A genuinely tiny file with zero enumerated mutants has
-    // `completed === 0` and is untouched.
-    //
-    // The two unscorable outcomes have OPPOSITE causes and must not share a
-    // diagnosis. `incompetent` means the mutated code was executed and the test
-    // command produced no real pass/fail → interpreter/test-command. A null
-    // `test_outcome` means the worker never ran a test at all → almost always
-    // `cr-filter-operators` skipping everything (step 2.5). The guard used to
-    // count both as "completed" and blame the interpreter either way, so a
-    // too-broad `excludeOperators` produced a confidently wrong message that
-    // sent the operator to look at a Python install that was fine.
-    if (result.totalMutants === 0 && completed > 0) {
-      // `incompetent` is optional on the public MutationResult shape.
-      const incompetent = result.incompetent ?? 0;
-      if (incompetent > 0) {
-        throw new Error(
-          `cosmic-ray ran ${completed} mutant(s) on ${filePath} but scored none of them — ` +
-            `${incompetent} came back 'incompetent', meaning the test command never ` +
-            `produced a real pass/fail. This usually means the Python interpreter or pytest is ` +
-            `missing, or the test-command is wrong. Resolved interpreter: ` +
-            `${describeInterpreter(interpreter)}. Resolved test-command: "${testCommand}". ` +
-            `Verify it runs the suite from the project root before re-auditing.`,
-        );
-      }
-      throw new Error(
-        `cosmic-ray ran ${completed} mutant(s) on ${filePath} but scored none of them — ` +
-          `${unscored} came back with no test outcome at all, which means no test was ever run ` +
-          `for them (cosmic-ray records those with worker_outcome 'skipped' or 'no-test'). The ` +
-          `usual cause is an operator filter that excluded every mutation: ` +
-          `"cosmicray": { "excludeOperators": [...] }` +
-          (filtered ? ` — this run used ${JSON.stringify(options?.pythonExcludeOperators)}` : '') +
-          `. Narrow the exclude patterns so some operators survive the filter, then re-audit.`,
-      );
-    }
+    assertScorableRun({
+      result,
+      completed,
+      unscored,
+      filePath,
+      interpreter,
+      testCommand,
+      excludeOperators: options?.pythonExcludeOperators,
+    });
 
     return result;
+  }
+
+  /**
+   * Run one cosmic-ray subcommand within the shared wall-clock budget.
+   *
+   * Every step spends {@link stepBudget} for `name`, forwards the caller's
+   * `signal`/`executor`, and — unless it supplies its own `onExecFailure` —
+   * reports a recoverable non-zero exit as
+   * `cosmic-ray <name> failed (exit N): <stderr|message, first 500 chars>`.
+   * `baseline`, `filter` and `dump` override that text; their wording is the
+   * user-facing contract and is pinned by the test suite.
+   */
+  private async step(
+    name: string,
+    args: string[],
+    cwd: string,
+    budget: AuditDeadline,
+    options: RunOptions | undefined,
+    opts?: { command?: string; onExecFailure?: (e: ExecFailureError) => Error },
+  ): Promise<{ stdout: string; stderr: string }> {
+    return this.invoke(args, cwd, this.stepBudget(budget, name), {
+      onExecFailure:
+        opts?.onExecFailure ??
+        ((e) =>
+          new Error(
+            `cosmic-ray ${name} failed (exit ${e.exit}): ${(e.stderr || e.message).slice(0, 500)}`,
+          )),
+      command: opts?.command,
+      signal: options?.signal,
+      executor: options?.executor,
+    });
   }
 
   /**

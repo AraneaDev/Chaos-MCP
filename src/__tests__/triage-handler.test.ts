@@ -5,6 +5,8 @@ import type { MutationResult } from '../engines/base.js';
 // `resolveStrykerConcurrency` moved out of triage-handler.ts with the argument
 // prelude it belongs to (Finding 3 decomposition); the import follows it there.
 import { resolveStrykerConcurrency } from '../triage-args-validation.js';
+import type { TriageRow } from '../triage.js';
+import type { TriageAuditOutcome } from '../triage/audit-one.js';
 import { ALLOWED_ROOTS_ENV } from '../utils/path-safety.js';
 import { ExecFailureError } from '../utils/exec-error.js';
 
@@ -66,7 +68,7 @@ import { loadSuppressions, fingerprintSourceLine, type StoredEntry } from '../ut
 import { mintRunId, loadRun, workspaceFingerprint } from '../utils/run-cache.js';
 import { computeScope } from '../audit/scope.js';
 import { createSandbox } from '../utils/sandbox.js';
-import { handleTriageCall } from '../triage-handler.js';
+import { handleTriageCall, partitionOutcomes } from '../triage-handler.js';
 
 const mockDiscover = vi.mocked(discoverFiles);
 const mockDiscoverChanged = vi.mocked(discoverChangedFiles);
@@ -1456,6 +1458,64 @@ describe('handleTriageCall ctx: progress + cancellation', () => {
     expect(mockAuditFile).toHaveBeenCalledWith(
       expect.objectContaining({ signal: controller.signal }),
     );
+  });
+});
+
+describe('partitionOutcomes', () => {
+  const row = (file: string): TriageRow => ({
+    file,
+    mutationScore: '50.00%',
+    total: 2,
+    killed: 1,
+    survived: 1,
+    noCoverage: 0,
+  });
+
+  it('sorts the four outcome variants into rows, errors and unaudited', () => {
+    const a = row('a.ts');
+    const b = row('b.ts');
+    const { rows, errors, unaudited } = partitionOutcomes([
+      { row: a },
+      { unaudited: 'skipped.ts' },
+      { error: { file: 'bad.ts', error: 'boom' } },
+      { row: b },
+    ]);
+
+    expect(rows).toEqual([a, b]);
+    expect(errors).toEqual([{ file: 'bad.ts', error: 'boom' }]);
+    expect(unaudited).toEqual(['skipped.ts']);
+  });
+
+  it('preserves input order within each bucket', () => {
+    // The ranking is sorted afterwards, but `unaudited` and `errors` are
+    // reported in the order mapPool returned them (which is input order).
+    const { errors, unaudited } = partitionOutcomes([
+      { unaudited: 'z.ts' },
+      { error: { file: 'e2.ts', error: 'second' } },
+      { unaudited: 'a.ts' },
+      { error: { file: 'e1.ts', error: 'first' } },
+    ]);
+
+    expect(unaudited).toEqual(['z.ts', 'a.ts']);
+    expect(errors.map((e) => e.file)).toEqual(['e2.ts', 'e1.ts']);
+  });
+
+  it('turns the mapPool safety-net Error slot into an "(unknown)" error row', () => {
+    // auditTriageFile never throws, so this slot should be unreachable — but a
+    // raw Error landing in the outcome array must not be read as a row, which
+    // would put `undefined` into the ranking.
+    const { rows, errors, unaudited } = partitionOutcomes([
+      new Error('pool blew up') as unknown as TriageAuditOutcome,
+      { row: row('ok.ts') },
+    ]);
+
+    expect(errors).toEqual([{ file: '(unknown)', error: 'pool blew up' }]);
+    expect(rows).toHaveLength(1);
+    expect(unaudited).toEqual([]);
+  });
+
+  it('returns three empty buckets for no outcomes', () => {
+    expect(partitionOutcomes([])).toEqual({ rows: [], errors: [], unaudited: [] });
   });
 });
 

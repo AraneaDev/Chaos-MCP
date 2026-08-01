@@ -123,7 +123,8 @@ function resolveSurvivorLocation(item: unknown): { line: number; operator: strin
  * result) and `unscored`. Neither is a field on `MutationResult` (the public
  * payload shape): the engine reads them to tell "no mutants enumerated" (a
  * genuine 100%) from "mutants ran but none were scorable", and to tell WHICH
- * kind of unscorable. See the degenerate-run guard in {@link PythonEngine.run}.
+ * kind of unscorable. See the degenerate-run guard, `assertScorableRun` in
+ * `./diagnose.ts`.
  */
 export function parseCosmicRayDump(
   dumpText: string,
