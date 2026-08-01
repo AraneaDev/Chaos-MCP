@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "entries": {
     "src/estimate-heuristic.ts": [
       {
@@ -787,6 +787,22 @@
         "mutator": "BlockStatement",
         "reason": "Emptying the catch continues the config-name loop, which falls through to the same `return true` at the end of the function — the advisory is withheld either way.",
         "addedAt": 1785505944182
+      }
+    ],
+    "src/core/baseline-timing.ts": [
+      {
+        "line": 55,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1785608862819,
+        "reason": "Exhaustiveness guard: projectType is narrowed to never in this default arm, so no runtime input can reach it. Killing this would require casting an invalid value past the type system, defeating the guard.",
+        "fingerprint": "81e7d79016d1"
+      },
+      {
+        "line": 55,
+        "mutator": "BlockStatement",
+        "addedAt": 1785608862819,
+        "reason": "Exhaustiveness guard: the block only calls assertNeverProjectType and returns undefined, unreachable for the declared SupportedProjectType union. Emptying it is behaviourally equivalent at runtime.",
+        "fingerprint": "81e7d79016d1"
       }
     ]
   }
