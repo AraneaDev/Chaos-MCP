@@ -2,8 +2,23 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { auditTriageFile, type TriageFileDeps } from '../triage/audit-one.js';
+import {
+  auditTriageFile,
+  type TriageAuditOutcome,
+  type TriageFileDeps,
+} from '../triage/audit-one.js';
+import type { TriageError, TriageRow } from '../core/triage.js';
 import type { AuditDeadline } from '../utils/deadline.js';
+
+/**
+ * `TriageAuditOutcome` is a union with one key per arm, so reading a key to
+ * assert it is ABSENT does not type-check against the arm that was returned.
+ * Widening to the optional shape keeps each assertion exactly as written —
+ * including the "and not the other two" ones, which are the point of these
+ * tests — without asserting the arm first and losing that check.
+ */
+const arms = (outcome: TriageAuditOutcome) =>
+  outcome as Partial<{ row: TriageRow; error: TriageError; unaudited: string }>;
 
 /**
  * The suppressions memoization in `triage/audit-one.ts#suppressionsFor`.
@@ -114,8 +129,8 @@ describe('auditTriageFile — suppressions are read once per workspace, not once
     // Both files must genuinely have reached provisioning; otherwise a guard
     // short-circuiting above the memo would make the count below meaningless.
     expect(createSandboxMock).toHaveBeenCalledTimes(2);
-    expect(first.error).toBeDefined();
-    expect(second.error).toBeDefined();
+    expect(arms(first).error).toBeDefined();
+    expect(arms(second).error).toBeDefined();
 
     // The second file is served from the memo. Two reads here is the whole
     // regression: N synchronous reads and JSON parses per sweep.

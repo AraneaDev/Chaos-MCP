@@ -52,7 +52,14 @@ const result = (): MutationResult => ({
   killed: 3,
   survived: 1,
   mutationScore: '75.00%',
-  vulnerabilities: [{ line: 1, mutator: 'ConditionalExpression', kind: 'survived' }],
+  vulnerabilities: [
+    {
+      line: 1,
+      mutator: 'ConditionalExpression',
+      kind: 'survived',
+      description: 'ConditionalExpression survived at line 1',
+    },
+  ],
 });
 
 describe('loadVerifiedSuppressions', () => {

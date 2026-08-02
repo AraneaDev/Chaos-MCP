@@ -106,7 +106,10 @@ describe('resolveTriageTargets — diff sweep forwards cancellation and budget t
     const controller = new AbortController();
     controller.abort();
     mockListChangedFiles.mockRejectedValue(
-      new ExecFailureError('aborted', { code: 'ABORTED', command: 'git' } as never),
+      new ExecFailureError(
+        { stdout: '', stderr: '', exit: null, signal: null, code: 'ABORTED' },
+        'aborted',
+      ),
     );
 
     await expect(

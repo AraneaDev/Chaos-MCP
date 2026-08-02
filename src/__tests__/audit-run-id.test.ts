@@ -24,7 +24,14 @@ const result = (over: Partial<MutationResult> = {}): MutationResult => ({
   killed: 3,
   survived: 1,
   mutationScore: '75.00%',
-  vulnerabilities: [{ line: 2, mutator: 'ArithmeticOperator', kind: 'survived' }],
+  vulnerabilities: [
+    {
+      line: 2,
+      mutator: 'ArithmeticOperator',
+      kind: 'survived',
+      description: 'ArithmeticOperator survived at line 2',
+    },
+  ],
   ...over,
 });
 

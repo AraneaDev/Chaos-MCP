@@ -2,8 +2,23 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { auditTriageFile, type TriageFileDeps } from '../triage/audit-one.js';
+import {
+  auditTriageFile,
+  type TriageAuditOutcome,
+  type TriageFileDeps,
+} from '../triage/audit-one.js';
+import type { TriageError, TriageRow } from '../core/triage.js';
 import type { AuditDeadline } from '../utils/deadline.js';
+
+/**
+ * `TriageAuditOutcome` is a union with one key per arm, so reading a key to
+ * assert it is ABSENT does not type-check against the arm that was returned.
+ * Widening to the optional shape keeps each assertion exactly as written —
+ * including the "and not the other two" ones, which are the point of these
+ * tests — without asserting the arm first and losing that check.
+ */
+const arms = (outcome: TriageAuditOutcome) =>
+  outcome as Partial<{ row: TriageRow; error: TriageError; unaudited: string }>;
 
 /**
  * `triage/audit-one.ts` had no test file. These cover its two "don't start" guards —
@@ -54,11 +69,11 @@ describe('auditTriageFile — refuses to start when already cancelled', () => {
 
     const outcome = await auditTriageFile('src/a.ts', deps({ ctx: { signal: controller.signal } }));
 
-    expect(outcome.error).toEqual({ file: 'src/a.ts', error: 'Operation cancelled.' });
+    expect(arms(outcome).error).toEqual({ file: 'src/a.ts', error: 'Operation cancelled.' });
     // Not unaudited: the caller stopped this deliberately, and the sweep says so with
     // the same wording every other abort path uses.
-    expect(outcome.unaudited).toBeUndefined();
-    expect(outcome.row).toBeUndefined();
+    expect(arms(outcome).unaudited).toBeUndefined();
+    expect(arms(outcome).row).toBeUndefined();
   });
 
   it('proceeds past the guard when the signal is not aborted', async () => {
@@ -71,7 +86,7 @@ describe('auditTriageFile — refuses to start when already cancelled', () => {
       deps({ ctx: { signal: controller.signal } }),
     );
 
-    expect(outcome.error?.error).not.toBe('Operation cancelled.');
+    expect(arms(outcome).error?.error).not.toBe('Operation cancelled.');
   });
 });
 
@@ -81,15 +96,15 @@ describe('auditTriageFile — refuses to start when the budget is spent', () => 
     // Reporting it as either would let a truncated sweep read as complete.
     const outcome = await auditTriageFile('src/a.ts', deps({ deadline: deadlineWith(0) }));
 
-    expect(outcome.unaudited).toBe('src/a.ts');
-    expect(outcome.error).toBeUndefined();
-    expect(outcome.row).toBeUndefined();
+    expect(arms(outcome).unaudited).toBe('src/a.ts');
+    expect(arms(outcome).error).toBeUndefined();
+    expect(arms(outcome).row).toBeUndefined();
   });
 
   it('treats an overspent budget the same as an exhausted one', async () => {
     const outcome = await auditTriageFile('src/a.ts', deps({ deadline: deadlineWith(-1) }));
 
-    expect(outcome.unaudited).toBe('src/a.ts');
+    expect(arms(outcome).unaudited).toBe('src/a.ts');
   });
 
   it('spends the budget net of the cleanup reserve', async () => {
@@ -121,8 +136,8 @@ describe('auditTriageFile — refuses to start when the budget is spent', () => 
       deps({ deadline: deadlineWith(0), ctx: { signal: controller.signal } }),
     );
 
-    expect(outcome.error?.error).toBe('Operation cancelled.');
-    expect(outcome.unaudited).toBeUndefined();
+    expect(arms(outcome).error?.error).toBe('Operation cancelled.');
+    expect(arms(outcome).unaudited).toBeUndefined();
   });
 });
 

@@ -181,7 +181,12 @@ describe('formatAuditOutput — verify mode suppression drift reporting', () => 
 });
 
 describe('formatAuditOutput — suggestTestFile trigger', () => {
-  const vulnerability: Vulnerability = { line: 2, mutator: 'ArithmeticOperator', kind: 'survived' };
+  const vulnerability: Vulnerability = {
+    line: 2,
+    mutator: 'ArithmeticOperator',
+    kind: 'survived',
+    description: 'ArithmeticOperator survived at line 2',
+  };
 
   it('suggests a test file when mutants survived', () => {
     const s = structured(run({ auditResults: result({ survived: 1, vulnerabilities: [] }) }));
@@ -232,9 +237,9 @@ describe('formatAuditOutput — minScore gate wiring', () => {
 
 describe('formatAuditOutput — text output', () => {
   const threeSurvivingLines: Vulnerability[] = [
-    { line: 1, mutator: 'BlockStatement', kind: 'survived' },
-    { line: 2, mutator: 'ArithmeticOperator', kind: 'survived' },
-    { line: 3, mutator: 'BooleanLiteral', kind: 'survived' },
+    { line: 1, mutator: 'BlockStatement', kind: 'survived', description: 'survived at line 1' },
+    { line: 2, mutator: 'ArithmeticOperator', kind: 'survived', description: 'survived at line 2' },
+    { line: 3, mutator: 'BooleanLiteral', kind: 'survived', description: 'survived at line 3' },
   ];
 
   it('hands the resolved reporting options and the gate to the text renderer', () => {

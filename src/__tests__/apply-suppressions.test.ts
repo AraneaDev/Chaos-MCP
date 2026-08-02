@@ -14,12 +14,14 @@ const survivor = (line: number, mutator = 'ConditionalExpression'): Vulnerabilit
   line,
   mutator,
   kind: 'survived',
+  description: `${mutator} survived at line ${line}`,
 });
 
 const noCoverage = (line: number, mutator = 'BlockStatement'): Vulnerability => ({
   line,
   mutator,
   kind: 'noCoverage',
+  description: `no test reached ${mutator} at line ${line}`,
 });
 
 const result = (over: Partial<MutationResult> = {}): MutationResult => ({
