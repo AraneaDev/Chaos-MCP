@@ -97,3 +97,13 @@ jobs:
 
       - name: Smoke-test pinned mutation engine
         run: docker run --rm chaos-mcp-${{ matrix.language }}:ci ${{ matrix.smoke-command }}
+
+      # The step above answers "is the engine installed", which is not the same
+      # question as "can the engine run". `stryker --version` needs nothing but
+      # the binary, so four releases shipped images without `ps` — which Vite
+      # shells out to through @stryker-mutator/vitest-runner — and the first
+      # containerised TypeScript audit died with `spawn ps ENOENT` during engine
+      # startup. Assert the POSIX utilities the engines reach for are present,
+      # so a base-image change cannot quietly drop one again.
+      - name: Smoke-test the utilities the engines shell out to
+        run: docker run --rm chaos-mcp-${{ matrix.language }}:ci sh -c 'command -v ps'
