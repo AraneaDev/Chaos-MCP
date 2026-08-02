@@ -615,7 +615,12 @@ Container settings:
 The images pin the language runtime and mutation engine, while the project
 still supplies its own test dependencies. Existing sandbox dependency
 directories (`node_modules`, `.venv`/`venv`, and `vendor`) are mounted
-read-only when they are symlinked from the host. Dependencies containing native
+read-only when they are symlinked from the host, with one exception:
+`node_modules/.vite-temp` is a small writable tmpfs, because Vite writes a
+bundled copy of the config it is loading there and a read-only tree would fail
+the config load of every vitest project. The scratch is discarded with the
+container and project test code still cannot write to the real dependency tree.
+Dependencies containing native
 extensions must be compatible with the selected Linux image; use an image
 override when the project requires another runtime or platform build.
 Chaos-MCP selects release-matched GHCR images for all four languages by

@@ -1106,6 +1106,43 @@ describe('execution sessions', () => {
     expect(createArgs.some((arg) => arg.startsWith('PATH='))).toBe(false);
   });
 
+  it('gives Vite a writable scratch inside the read-only node_modules mount', async () => {
+    // Vite writes `<node_modules>/.vite-temp/<config>.timestamp-*.mjs` to load
+    // ANY config file, so a read-only dependency tree fails the config load
+    // outright: every test errors and StrykerJS reports "There were failed tests
+    // in the initial test run" before a mutant runs. Auditing a vitest project
+    // in a container was impossible. A tmpfs over just that directory keeps the
+    // tree read-only and discards the scratch with the container.
+    const root = mkdtempSync(join(tmpdir(), 'chaos-execution-vite-'));
+    const workDir = join(root, 'sandbox');
+    tempDirs.push(root);
+    mkdirSync(workDir);
+    const target = join(root, 'project-node_modules');
+    mkdirSync(target);
+    symlinkSync(target, join(workDir, 'node_modules'), 'dir');
+    const venv = join(root, 'project-venv');
+    mkdirSync(venv);
+    symlinkSync(venv, join(workDir, 'venv'), 'dir');
+    vi.mocked(runShell)
+      .mockResolvedValueOnce(ok('27.0.0'))
+      .mockResolvedValueOnce(ok('cid'))
+      .mockResolvedValueOnce(ok())
+      .mockResolvedValueOnce(ok())
+      .mockResolvedValueOnce(ok());
+    const session = await createExecutionSession('typescript', workDir, { mode: 'container' });
+
+    await session.run('stryker', []);
+    await session.dispose();
+
+    const createArgs = vi.mocked(runShell).mock.calls[1]?.[1] ?? [];
+    expect(createArgs).toContain(`${target}/.vite-temp:rw,nosuid,nodev,size=16m`);
+    // The tree itself stays read-only — only the scratch directory is writable.
+    expect(createArgs).toContain(`type=bind,src=${target},dst=${target},readonly`);
+    // No other dependency tree gets one: the path is Vite's, not a general
+    // "make dependencies writable" hole.
+    expect(createArgs.some((arg) => arg.startsWith(`${venv}/`))).toBe(false);
+  });
+
   it('does not mount an ordinary dependency directory outside the sandbox', async () => {
     const root = mkdtempSync(join(tmpdir(), 'chaos-execution-directory-'));
     const workDir = join(root, 'sandbox');

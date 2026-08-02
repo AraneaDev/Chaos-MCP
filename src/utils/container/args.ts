@@ -17,6 +17,14 @@ import { ALL_DEPENDENCY_DIRS } from '../dependency-dirs.js';
  */
 export const SHARED_DEPENDENCY_DIRS: readonly string[] = ALL_DEPENDENCY_DIRS;
 
+/**
+ * The one directory inside a read-only `node_modules` that has to be writable.
+ *
+ * Vite's own path, hardcoded there rather than configurable; a bundler that
+ * picks a different scratch location would need its own entry here.
+ */
+const VITE_TEMP_DIR = '.vite-temp';
+
 export function changedEnvironment(env: NodeJS.ProcessEnv | undefined): [string, string][] {
   if (!env) return [];
   const result: [string, string][] = [];
@@ -90,6 +98,17 @@ function dependencyMountArgs(workDir: string): { args: string[]; targets: Map<st
       const target = realpathSync(candidate);
       targets.set(dir, target);
       args.push('--mount', mountArg(target, target, true));
+      if (dir === 'node_modules') {
+        // Vite writes a bundled copy of the config it is loading to
+        // `<node_modules>/.vite-temp/` — for ANY config file, not just a
+        // TypeScript one — so a read-only dependency tree makes every
+        // vitest project fail its config load, which StrykerJS reports as
+        // failed tests in the initial run. Overlay just that directory rather
+        // than mounting the tree writable: project test code never gets write
+        // access to the host's real dependencies, and the scratch is discarded
+        // with the container.
+        args.push('--tmpfs', `${target}/${VITE_TEMP_DIR}:rw,nosuid,nodev,size=16m`);
+      }
     } catch {
       // Missing or unreadable dependency directories remain absent in the
       // container; the engine will surface its normal dependency error.
