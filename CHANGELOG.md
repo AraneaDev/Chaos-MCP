@@ -2,6 +2,47 @@
 
 All notable changes to Chaos-MCP are documented in this file.
 
+## [1.7.0](https://github.com/AraneaDev/Chaos-MCP/compare/v1.6.0...v1.7.0) (2026-08-02)
+
+
+### Features
+
+* **arch:** declare boundary policies and make utils a true leaf ([db9e6d1](https://github.com/AraneaDev/Chaos-MCP/commit/db9e6d1881e64d0b5768e43c58f45b0d7003f72d))
+* **container:** allow the execution mode to be set per language ([3300e71](https://github.com/AraneaDev/Chaos-MCP/commit/3300e71f997ca7afef5558f7cbd5a8e9e41c33ac))
+* **suppression:** fingerprint suppressed mutants and fail safe on drift ([7b3b4f1](https://github.com/AraneaDev/Chaos-MCP/commit/7b3b4f1a0c56a917b347cf126033bfc61ea537bb))
+
+
+### Bug Fixes
+
+* **arch:** break the cycle the suppression extraction introduced ([9b9c7a9](https://github.com/AraneaDev/Chaos-MCP/commit/9b9c7a93e70716f1b274fd3fc9ca37327a183bd4))
+* **args:** reject a non-boolean dryRun or incremental ([c696fe2](https://github.com/AraneaDev/Chaos-MCP/commit/c696fe2b4f0d288f3a9d3b92c77277dfaf224fb9))
+* close 48 logic-audit findings across all four fronts ([8a71a96](https://github.com/AraneaDev/Chaos-MCP/commit/8a71a961657f6a31bcd8a1546006665587567ec0))
+* comprehensive audit findings and container execution fixes ([6472f03](https://github.com/AraneaDev/Chaos-MCP/commit/6472f03a6c3a540c3e5468f069ad138b782ecf4f))
+* **container:** give Vite a writable scratch inside node_modules ([a3d459e](https://github.com/AraneaDev/Chaos-MCP/commit/a3d459e950db8f5a422e3b5912127688db559d39))
+* **container:** reclaim containers on process exit, and make dispose retryable ([7975cb4](https://github.com/AraneaDev/Chaos-MCP/commit/7975cb484f8e5945cf97eab8253f1b168aaa8847))
+* **containers:** install procps so the engines can spawn ps ([6b40fc8](https://github.com/AraneaDev/Chaos-MCP/commit/6b40fc8ec23f84df73d12b83ed7ba59509b87352))
+* decompose the god modules and close the structural audit findings ([b718cce](https://github.com/AraneaDev/Chaos-MCP/commit/b718ccea464427ebadb81280d047bc1cb2c81b28))
+* **engines:** preserve the ABORTED marker in the TypeScript and Rust engines ([60b06e5](https://github.com/AraneaDev/Chaos-MCP/commit/60b06e55eb311c6999ef11f0cdae5de04f7373cb))
+* **enrich:** detect exhaustiveness guards written without braces ([c6b237e](https://github.com/AraneaDev/Chaos-MCP/commit/c6b237e69dd8e6c4939c4ea93377e2cb910c6031))
+* **enrich:** stop advising a test for mutants that cannot be killed ([421ac3d](https://github.com/AraneaDev/Chaos-MCP/commit/421ac3d2ff8aac22edc2ca353d92bffce167c514))
+* **estimate:** escape the cargo-mutants file glob ([7586a82](https://github.com/AraneaDev/Chaos-MCP/commit/7586a82f107bd050aa2494b9957445f1c9fa67ae))
+* **format:** explain an empty report when severityFloor hid everything ([8341137](https://github.com/AraneaDev/Chaos-MCP/commit/834113760e3470b537b1afb1a624fc8edb959135))
+* **format:** never claim "caught every mutation" when zero mutants ran ([6c8792d](https://github.com/AraneaDev/Chaos-MCP/commit/6c8792dd1eb71cea31b8666a0fba285368a44d81))
+* four small correctness and consistency gaps ([5700bde](https://github.com/AraneaDev/Chaos-MCP/commit/5700bde542c14029d364794252a11d9c4cef355e))
+* **lint:** satisfy array-type, and repoint a moved cross-reference ([29b2f07](https://github.com/AraneaDev/Chaos-MCP/commit/29b2f07490ac9ab9ec175b85f5a9a1cb0a59e776))
+* **php:** read Infection's real `uncovered` key, not `notCovered` ([abd529c](https://github.com/AraneaDev/Chaos-MCP/commit/abd529cc10b0fb587da3b1fdde5348b9985a6d3b))
+* **schema,cli:** align the advertised contract with what the runtime actually does ([56f833d](https://github.com/AraneaDev/Chaos-MCP/commit/56f833dec5d3825267690449970f60baddee5994))
+* **tests:** restore the test suite to type-checking ([6fde32a](https://github.com/AraneaDev/Chaos-MCP/commit/6fde32aff54b69a85669045c244c5ddfea054dd2))
+* **triage:** discover exactly the files an audit accepts ([2fb2a1f](https://github.com/AraneaDev/Chaos-MCP/commit/2fb2a1f2495d04f2bb0f016d383abc8252594064))
+* **triage:** honour cancellation after the pool, and re-read the budget after provisioning ([5157ab0](https://github.com/AraneaDev/Chaos-MCP/commit/5157ab0a2a0d4960159e335bb6f30bc080df313d))
+* **verify:** stop inferring mutant state the run never actually measured ([402cac1](https://github.com/AraneaDev/Chaos-MCP/commit/402cac16b903d3627dd585dce5f19adc1f00d86e))
+* **verify:** stop line-scoping the re-run, which reported untested mutants as killed ([4de8fd7](https://github.com/AraneaDev/Chaos-MCP/commit/4de8fd72bb6ee743af1b70b98a13b18f1d7c2c3b))
+
+
+### Performance Improvements
+
+* **sandbox:** make the workspace size walk async so aborts are observable ([b221a9c](https://github.com/AraneaDev/Chaos-MCP/commit/b221a9cc9cc45f972bb939ba35d7c492cba888a1))
+
 ## [1.6.0](https://github.com/AraneaDev/Chaos-MCP/compare/v1.5.0...v1.6.0) (2026-07-27)
 
 
