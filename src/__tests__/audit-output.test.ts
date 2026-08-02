@@ -7,6 +7,7 @@ import type { MutationResult, Vulnerability } from '../engines/base.js';
 import type { EnvironmentInfo } from '../utils/project-detector.js';
 import type { ChaosConfig } from '../utils/config-loader.js';
 import type { ToolArgs } from '../core/tool-args-validation.js';
+import type { SupportedProjectType } from '../engines/registry.js';
 import type { SuppressionCounts } from '../audit/suppression-io.js';
 import type { MutantKey } from '../core/verify.js';
 
@@ -77,11 +78,13 @@ function run(opts: {
   baselineKeys?: MutantKey[];
   suppression?: SuppressionCounts;
   cfg?: ChaosConfig;
+  /** Selects the engine whose ignored-option set is reported; defaults to Stryker's. */
+  projectType?: SupportedProjectType;
 }) {
   return formatAuditOutput(
     opts.auditResults ?? result(),
     opts.args ?? {},
-    'typescript',
+    opts.projectType ?? 'typescript',
     opts.baselineKeys,
     RELATIVE_TARGET,
     undefined,
@@ -138,6 +141,30 @@ describe('formatAuditOutput — verify mode suppression drift reporting', () => 
 
     expect(s.unverifiedSuppressions).toBe(1);
     expect(s.driftedSuppressions).toBeUndefined();
+  });
+
+  it('separates the drift notes from the delta note and from each other', () => {
+    // The two notes are welded onto one string and onto one content block by
+    // separators that are invisible in a `toContain('Note:')` assertion: drop
+    // the space and the delta note runs into the first drift note; drop the
+    // newline and both drift notes render as a single unreadable line. Only a
+    // two-note run can see either, so both kinds of rejection are recorded.
+    writeSuppressions([
+      { line: 2, mutator: 'ArithmeticOperator', reason: 'v1 entry' },
+      { line: 3, mutator: 'BlockStatement', reason: 'stale entry', fingerprint: 'deadbeef' },
+    ]);
+
+    const response = run({ baselineKeys: baseline });
+    const note = structured(response).note as string;
+
+    // Delta note → first drift note, and drifted note → unverified note.
+    expect(note).toContain('on the same lines. 1 suppression(s) no longer match');
+    expect(note).toContain('`unsuppress`). 1 suppression(s) predate content fingerprinting');
+
+    // The trailing block is one line per rejected-suppression note.
+    const noteLines = (response.content[1] as { text: string }).text.split('\n');
+    expect(noteLines.length).toBe(2);
+    expect(noteLines.filter((l) => !l.startsWith('Note: '))).toEqual([]);
   });
 
   it('reports only the drifted count when nothing is unverified', () => {
@@ -200,5 +227,97 @@ describe('formatAuditOutput — minScore gate wiring', () => {
   it('emits no gate when minScore is absent', () => {
     const s = structured(run({ args: {} }));
     expect(s.gate).toBeUndefined();
+  });
+});
+
+describe('formatAuditOutput — text output', () => {
+  const threeSurvivingLines: Vulnerability[] = [
+    { line: 1, mutator: 'BlockStatement', kind: 'survived' },
+    { line: 2, mutator: 'ArithmeticOperator', kind: 'survived' },
+    { line: 3, mutator: 'BooleanLiteral', kind: 'survived' },
+  ];
+
+  it('hands the resolved reporting options and the gate to the text renderer', () => {
+    // The renderer's whole options argument is a single mutation target, and
+    // text mode is the only place it is observable: `structuredContent` is built
+    // from a separate call, so dropping these options leaves the payload intact
+    // while the human-readable report silently loses its verdict and its cap.
+    const response = run({
+      auditResults: result({ survived: 3, vulnerabilities: threeSurvivingLines }),
+      args: { outputFormat: 'text', minScore: 95, maxSurvivors: 1 },
+    });
+    const text = (response.content[0] as { text: string }).text;
+
+    expect(text).toContain('Gate: FAILED (minScore 95)');
+    // maxSurvivors: 1 keeps the first line group and counts the other two.
+    expect(text).toContain('2 more');
+    expect(text).not.toContain('  3: ');
+  });
+
+  it('reports rejected suppressions in the text report as well as the payload', () => {
+    // drifted/unverified reach the renderer only through that same options
+    // object; a caller reading text output must still learn that stale
+    // suppressions were skipped, because the score was not helped by them.
+    const text = (
+      run({
+        args: { outputFormat: 'text' },
+        suppression: { applied: 0, drifted: 2, unverified: 1 },
+      }).content[0] as { text: string }
+    ).text;
+
+    expect(text).toContain('2 suppression(s) no longer match');
+    expect(text).toContain('1 suppression(s) predate');
+  });
+
+  it('returns the report as one content block typed as text', () => {
+    // The block's `type` is what makes an MCP client render it at all: an empty
+    // type still satisfies the SDK's shape but shows the caller nothing.
+    const response = run({ args: { outputFormat: 'text' } });
+
+    expect(response.content.length).toBe(1);
+    expect(response.content[0]).toEqual({
+      type: 'text',
+      text: expect.stringContaining('Chaos-MCP Audit Report:'),
+    });
+  });
+});
+
+describe('formatAuditOutput — options the resolved engine ignores', () => {
+  // cosmic-ray (Python) honours none of the StrykerJS-only options, so a Python
+  // audit given two of them must say both had no effect. Every other test here
+  // runs against the TypeScript engine, where the ignored set is always empty
+  // and this whole branch is unreachable.
+  const strykerOnly: ToolArgs = { dryRun: true, incremental: true };
+
+  it('names every ignored option in a trailing note', () => {
+    const response = run({
+      projectType: 'python',
+      args: { ...strykerOnly, outputFormat: 'text' },
+    });
+    const note = (response.content[1] as { text: string }).text;
+
+    expect(response.content.length).toBe(2);
+    // Comma-separated: joined with an empty string the two names fuse into one
+    // unrecognisable option ("dryRunincremental").
+    expect(note).toContain('dryRun, incremental');
+    // And the note itself must be renderable, like the report block above it.
+    expect(response.content[1]).toEqual({ type: 'text', text: note });
+    expect(note).toContain('python engine');
+  });
+
+  it('repeats the ignored options in the structured payload', () => {
+    // The trailing note is prose; a programmatic caller reads this field, and it
+    // is populated from the same list only when that list is non-empty.
+    const s = structured(run({ projectType: 'python', args: strykerOnly }));
+    expect(s.ignoredOptions).toEqual(['dryRun', 'incremental']);
+  });
+
+  it('adds neither the note nor the field when nothing was ignored', () => {
+    // Same engine, none of the unsupported options supplied: the other arm of
+    // the guard, without which forcing it true is invisible.
+    const response = run({ projectType: 'python', args: {} });
+
+    expect(response.content.length).toBe(1);
+    expect(structured(response).ignoredOptions).toBeUndefined();
   });
 });

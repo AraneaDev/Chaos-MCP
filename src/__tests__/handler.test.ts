@@ -69,6 +69,15 @@ vi.mock('../utils/git-diff.js', () => ({
   computeChangedRanges: vi.fn(),
 }));
 
+// Scope resolution is DELEGATED, not stubbed: every other test in this file needs the
+// real short-circuits (no-changes, runId-not-found, verify baselines). The wrapper only
+// exists so the options object the handler hands it can be inspected — see the
+// 'forwards cancellation and budget to scope resolution' block at the end of the file.
+vi.mock('../audit/scope.js', async () => {
+  const actual = await vi.importActual<typeof import('../audit/scope.js')>('../audit/scope.js');
+  return { ...actual, computeScope: vi.fn(actual.computeScope) };
+});
+
 // Mock logger for verbose logging tests
 vi.mock('../audit/suppression-io.js', async () => {
   const actual = await vi.importActual<typeof import('../audit/suppression-io.js')>(
@@ -97,6 +106,8 @@ import { existsSync } from 'fs';
 import { computeChangedRanges } from '../utils/git-diff.js';
 import { applyAndCountSuppressions } from '../audit/suppression-io.js';
 import { workspaceHasPythonTests } from '../core/test-file.js';
+import { computeScope } from '../audit/scope.js';
+import { AuditDeadline } from '../utils/deadline.js';
 
 const MockTSEngine = vi.mocked(TypeScriptEngine);
 const MockRustEngine = vi.mocked(RustEngine);
@@ -108,6 +119,7 @@ const mockLog = vi.mocked(log);
 const mockExistsSync = vi.mocked(existsSync);
 const mockComputeChangedRanges = vi.mocked(computeChangedRanges);
 const mockApplySuppressions = vi.mocked(applyAndCountSuppressions);
+const mockComputeScope = vi.mocked(computeScope);
 
 function makeRequest(name: string, args: Record<string, unknown>): CallToolRequest {
   return {
@@ -4145,5 +4157,129 @@ describe('handleToolCall returns a suppression write failure verbatim', () => {
       'Failed to update suppression list: disk on fire',
     );
     expect(response.structuredContent).toBeUndefined();
+  });
+});
+
+/**
+ * Scope resolution runs BEFORE the sandbox exists and makes git calls of its own, so it
+ * is handed the request's abort signal and what is left of the audit's wall-clock budget.
+ * A mutation audit found that whole options object can be emptied without a single test
+ * noticing: the run would look cancellable while git ran to completion, and the git calls
+ * would get an unbounded timeout while spending from a clock everything else is measured
+ * against. This repo already shipped 5157ab0 for a cancellation bug of exactly that
+ * shape, and the sibling gap at triage/discover-targets.ts:83 was closed the same way —
+ * by asserting the options argument WHOLE rather than asserting the call happened.
+ *
+ * The verbose dump below is in the same block because it is the other thing this stage
+ * of the handler does that nothing observed: the existing suite only ever drives it with
+ * verbosity forced ON, so the guard could be deleted and stay green.
+ */
+describe('handleToolCall forwards cancellation and budget to scope resolution', () => {
+  // Separate top-level describe: the sandbox default and the pinned cwd from the main
+  // `handleToolCall` block do not reach here and have to be restated.
+  let cwdSpy3: ReturnType<typeof vi.spyOn>;
+
+  const tsEnv = {
+    projectType: 'typescript' as const,
+    testRunner: 'vitest',
+    detectedRunner: 'vitest',
+    packageManager: '',
+    workspaceRoot: '/workspace',
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    cwdSpy3 = vi.spyOn(process, 'cwd').mockReturnValue('/workspace');
+    mockCreateSandbox.mockResolvedValue({
+      workDir: '/tmp/chaos-mcp-sandbox',
+      targetFile: '',
+      cleanup: vi.fn(),
+    });
+    mockDetectEnv.mockReturnValue(tsEnv);
+    MockTSEngine.mockImplementation(
+      () =>
+        ({
+          run: vi.fn().mockResolvedValue({
+            target: 'src/math.ts',
+            totalMutants: 2,
+            killed: 2,
+            survived: 0,
+            mutationScore: '100.00%',
+            vulnerabilities: [],
+          }),
+        }) as unknown as TypeScriptEngine,
+    );
+  });
+
+  afterEach(() => cwdSpy3.mockRestore());
+
+  it('hands computeScope the request signal and a live deadline, not an empty context', async () => {
+    const controller = new AbortController();
+
+    const response = await handleToolCall(
+      makeRequest('audit_code_resilience', { filePath: 'src/math.ts' }),
+      undefined,
+      { signal: controller.signal },
+    );
+
+    expect(response.isError).toBeUndefined();
+    // Emptying this object is the surviving mutation. Asserting the call happened, or
+    // even that the signal alone arrived, leaves half of it unpinned — so the argument
+    // is compared as a whole: exactly these two keys, both populated.
+    const gitCtx = mockComputeScope.mock.calls[0]?.[6];
+    expect(gitCtx).toEqual({ signal: controller.signal, deadline: expect.any(AuditDeadline) });
+  });
+
+  it("gives scope resolution the run's own budget rather than a fresh clock", async () => {
+    // The git calls spend from the SAME wall-clock the rest of the audit is measured
+    // against; a deadline minted here (or a missing one) would let scoping burn the whole
+    // timeout and still report time remaining to the engine afterwards. 30s is the
+    // caller's number, not a default, so a deadline built from anything else shows up.
+    await handleToolCall(
+      makeRequest('audit_code_resilience', { filePath: 'src/math.ts', timeoutMs: 30_000 }),
+    );
+
+    const deadline = mockComputeScope.mock.calls[0]?.[6]?.deadline;
+    expect(deadline?.budgetMs).toBe(30_000);
+    // Already ticking: the budget handed over is what is LEFT, not a full reset.
+    expect(deadline?.remainingMs()).toBeGreaterThan(0);
+    expect(deadline?.remainingMs()).toBeLessThanOrEqual(30_000);
+  });
+
+  it('stays silent about the run context at the default verbosity', async () => {
+    // `if (isVerbose())` survives being forced to true because every existing verbose
+    // assertion turns verbosity ON first. Without this case the guard could be dropped
+    // and stderr would carry the target path, workspace root and sandbox path of every
+    // audit on a server nobody asked to be verbose.
+    const response = await handleToolCall(
+      makeRequest('audit_code_resilience', { filePath: 'src/math.ts' }),
+    );
+
+    expect(response.isError).toBeUndefined();
+    const contextLines = mockLog.mock.calls
+      .map((c) => String(c[0] ?? ''))
+      .filter(
+        (m) =>
+          m.startsWith('Tool call:') ||
+          m.startsWith('  filePath:') ||
+          m.startsWith('  projectType:') ||
+          m.startsWith('  workspaceRoot:') ||
+          m.startsWith('  sandboxDir:'),
+      );
+    expect(contextLines).toEqual([]);
+  });
+
+  it('dumps the resolved run context once verbosity is on', async () => {
+    // The other arm, asserted on the lines logAuditContext emits unconditionally, so the
+    // pairing above cannot be satisfied by a handler that simply never logs.
+    mockIsVerbose.mockReturnValue(true);
+
+    await handleToolCall(makeRequest('audit_code_resilience', { filePath: 'src/math.ts' }));
+
+    expect(mockLog).toHaveBeenCalledWith('Tool call: audit_code_resilience');
+    expect(mockLog).toHaveBeenCalledWith('  filePath: src/math.ts');
+    // The SANDBOX path, not the workspace path: this dump is written after provisioning
+    // and is the only place the caller can see where the mutants actually ran.
+    expect(mockLog).toHaveBeenCalledWith('  sandboxDir: /tmp/chaos-mcp-sandbox');
   });
 });
