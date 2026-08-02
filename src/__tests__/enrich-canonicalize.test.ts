@@ -466,3 +466,17 @@ describe('PHP prefix-family fallbacks', () => {
     expect(canonicalizeMutator('SomeFutureInfectionMutator', 'php')).toBe('unknown');
   });
 });
+
+describe('PHP prefix rules are anchored to the start of the name', () => {
+  // The `^` in /^Unwrap/, /^Cast/ and /^Preg/ is the contract: these are PREFIX
+  // families, and without the anchor any name merely CONTAINING the word is swept into
+  // the category. A mutation audit reported all three anchors as survivors, which is
+  // what these names are for — each contains the word without starting with it, and is
+  // absent from the exact table, so it reaches the rules and must fall through.
+  it.each([['SpreadUnwrap'], ['ArrayCast'], ['NoPreg']])(
+    'leaves %s unknown rather than matching mid-name',
+    (name) => {
+      expect(canonicalizePhpMutator(name)).toBe('unknown');
+    },
+  );
+});
