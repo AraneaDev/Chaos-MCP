@@ -19,6 +19,17 @@ export default defineConfig({
     environment: 'node',
     globals: false,
     globalSetup: ['tests/global-setup.ts'],
+    // Restore every mock to its original implementation before each test.
+    // `vi.clearAllMocks()` (which many suites call in `beforeEach`) only clears
+    // call history — it does NOT drain the `mockResolvedValueOnce` /
+    // `mockImplementationOnce` queue and does not undo a `vi.spyOn` or a
+    // persistent `mockReturnValue`. That let a test which under-consumed its
+    // queued values silently corrupt every later test in the same file, and let
+    // a stubbed module function (e.g. `symlinkSync` throwing) leak forward.
+    // `restoreMocks` drains the once-queue and resets persistent values while
+    // preserving the implementation a `vi.mock()` factory passed to `vi.fn(impl)`,
+    // so the factory pattern used throughout this suite keeps working.
+    restoreMocks: true,
     coverage: {
       provider: 'v8',
       // Only measure first-party source — never the compiled build/ output or tests.

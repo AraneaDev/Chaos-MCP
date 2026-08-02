@@ -3,8 +3,8 @@ import {
   resolveBaselineTestCommand,
   projectEstimatedMs,
   projectTimingRange,
-} from '../baseline-timing.js';
-import type { EnvironmentInfo } from '../utils/project-detector.js';
+} from '../core/baseline-timing.js';
+import type { EnvironmentInfo, SupportedProjectType } from '../utils/project-detector.js';
 
 const env = (over: Partial<EnvironmentInfo> = {}): EnvironmentInfo =>
   ({
@@ -52,6 +52,24 @@ describe('resolveBaselineTestCommand', () => {
   it('resolves rust', () => {
     expect(resolveBaselineTestCommand(env(), 'rust')).toEqual({ command: 'cargo', args: ['test'] });
   });
+  it('resolves php to the vendored phpunit binary with no arguments', () => {
+    // The PHP case had no test at all: a blanked command string or a stray
+    // argument would have shipped an unrunnable baseline command, and
+    // `estimate_audit --withTiming` would have silently reported no timing.
+    expect(resolveBaselineTestCommand(env(), 'php')).toEqual({
+      command: 'vendor/bin/phpunit',
+      args: [],
+    });
+  });
+
+  it('ignores the detected runner for php', () => {
+    // PHP resolution is unconditional — a JS runner leaking in from the
+    // environment must not change the command.
+    expect(resolveBaselineTestCommand(env({ detectedRunner: 'vitest' }), 'php')?.command).toBe(
+      'vendor/bin/phpunit',
+    );
+  });
+
   it('resolves python to pytest with empty args', () => {
     expect(resolveBaselineTestCommand(env({ detectedRunner: 'pytest' }), 'python')).toEqual({
       command: 'pytest',
@@ -128,11 +146,56 @@ describe('resolveBaselineTestCommand', () => {
       ),
     ).toEqual({ command: 'npx', args: ['jest'] });
   });
+  it('prefers an explicitly resolved runner over env.testRunner', () => {
+    // The audit resolves its runner as
+    // `engine config section ?? cfg.testRunner ?? env.testRunner`, so a config
+    // file can turn a detected-vitest project into a command-runner audit.
+    // Reading `env.testRunner` here measured the baseline with the WRONG
+    // command for the run being estimated — `npx vitest` (whole suite, native)
+    // instead of the scoped `vitest related` the command runner uses.
+    expect(
+      resolveBaselineTestCommand(
+        env({ testRunner: 'vitest', detectedRunner: 'vitest' }),
+        'typescript',
+        'src/gate.ts',
+        'command',
+      ),
+    ).toEqual({ command: 'npx', args: ['vitest', 'related', 'src/gate.ts', '--run'] });
+  });
+
+  it('honours a resolved runner that is NOT the command runner over a command-runner env', () => {
+    // The opposite direction of the same override, so the parameter cannot be
+    // ignored in one arm only.
+    expect(
+      resolveBaselineTestCommand(
+        env({ testRunner: 'command', detectedRunner: 'vitest' }),
+        'typescript',
+        'src/gate.ts',
+        'vitest',
+      ),
+    ).toEqual({ command: 'npx', args: ['vitest'] });
+  });
+
   it('resolves node:test to node --test', () => {
     const cmd = resolveBaselineTestCommand(env({ detectedRunner: 'node:test' }), 'typescript');
     expect(cmd).toEqual({ command: 'node', args: ['--test'] });
   });
   it('returns undefined for an unsupported project type (default arm)', () => {
     expect(resolveBaselineTestCommand(env(), 'cobol' as never)).toBeUndefined();
+  });
+});
+
+describe('resolveBaselineTestCommand — per-language coverage (audit F15)', () => {
+  const SUPPORTED: SupportedProjectType[] = ['typescript', 'python', 'rust', 'php'];
+
+  it.each(SUPPORTED)('resolves a baseline command for %s', (projectType) => {
+    // The switch behind this used to fall through to `return undefined`, so a
+    // newly supported language made `estimate_audit --withTiming` silently drop
+    // timing. A `never` guard now makes that a compile error; this pins the
+    // runtime half — every supported language must resolve a real command.
+    const cmd = resolveBaselineTestCommand(env({ projectType }), projectType, 'src/widget.ts');
+    expect(cmd).toBeDefined();
+    expect(cmd?.command).toBeTruthy();
+    expect(Array.isArray(cmd?.args)).toBe(true);
   });
 });

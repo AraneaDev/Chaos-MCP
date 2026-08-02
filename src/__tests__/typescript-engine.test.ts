@@ -3,37 +3,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Mock the async exec helper
 vi.mock('../utils/exec.js', () => ({
   runShell: vi.fn(),
-  ExecFailureError: class ExecFailureError extends Error {
-    stdout = '';
-    stderr = '';
-    exit: number | null = null;
-    signal: NodeJS.Signals | null = null;
-    code: string | undefined;
-    constructor(
-      result: {
-        stdout: string;
-        stderr: string;
-        exit: number | null;
-        signal: NodeJS.Signals | null;
-        code?: string;
-      },
-      message: string,
-    ) {
-      super(message);
-      this.name = 'ExecFailureError';
-      this.stdout = result.stdout;
-      this.stderr = result.stderr;
-      this.exit = result.exit;
-      this.signal = result.signal;
-      this.code = result.code;
-    }
-  },
 }));
 
 // Mock logger
 vi.mock('../utils/logger.js', () => ({
   log: vi.fn(),
-  isVerbose: vi.fn().mockReturnValue(false),
+  warn: vi.fn(),
+  isVerbose: vi.fn(() => false),
 }));
 
 // Mock fs for report parsing and config-file writes (StrykerJS v9)
@@ -44,13 +20,21 @@ vi.mock('fs', () => ({
   rmSync: vi.fn(),
 }));
 
-import { runShell, ExecFailureError } from '../utils/exec.js';
-import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { runShell } from '../utils/exec.js';
+import { ExecFailureError } from '../utils/exec-error.js';
+import { MutationToolStartupError } from '../utils/exec-classify.js';
+import { warn } from '../utils/logger.js';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import type { PathLike, PathOrFileDescriptor } from 'fs';
 import {
   TypeScriptEngine,
+  StrykerTimeoutError,
+  buildStrykerArgs,
+  classifyStrykerFailure,
+  dryRunResult,
   mergeBatchResults,
   planLineBatches,
+  prepareStrykerConfig,
   writeStrykerRuntimeConfig,
 } from '../engines/typescript.js';
 
@@ -187,6 +171,7 @@ describe('TypeScriptEngine', () => {
       batchesCompleted: 2,
       batchesPlanned: 3,
       stoppedReason: 'time_budget_exhausted',
+      scopeKind: 'whole-file',
       scopeNote:
         'Partial audit: completed 2 of 3 bounded mutation batches before the time budget was exhausted.',
     });
@@ -205,8 +190,19 @@ describe('TypeScriptEngine', () => {
       batchesCompleted: 0,
       batchesPlanned: 0,
       stoppedReason: undefined,
+      scopeKind: 'whole-file',
       scopeNote: 'Completed 0 bounded mutation batches.',
     });
+  });
+
+  // `hasNoMutableLogic` (score-semantics.ts) must key on a STRUCTURAL field, not on the
+  // presence of the free-text scopeNote every batched run emits. scopeKind is
+  // that field: it says whether the batches spanned the whole file or only the
+  // caller's ranges, and it must be carried verbatim, never inferred from prose.
+  it('carries scopeKind through the merge, defaulting to whole-file', () => {
+    expect(mergeBatchResults('src/a.ts', [], 0, true).scopeKind).toBe('whole-file');
+    expect(mergeBatchResults('src/a.ts', [], 0, true, 'scoped').scopeKind).toBe('scoped');
+    expect(mergeBatchResults('src/a.ts', [], 0, true, 'whole-file').scopeKind).toBe('whole-file');
   });
 
   it('builds command-runner overlays for JSON, invalid, and absent project configs', () => {
@@ -285,7 +281,7 @@ describe('TypeScriptEngine', () => {
     expect(result.stoppedReason).toBe('time_budget_exhausted');
     expect(result.scopeNote).toContain('completed 2 of 3');
     const calls = mockRunShell.mock.calls;
-    expect(calls.map((call) => (call[1] as string[])[4])).toEqual([
+    expect(calls.map((call) => mutateValueOf(call[1] as string[]))).toEqual([
       'src/large.ts:1-80',
       'src/large.ts:81-160',
       'src/large.ts:161-200',
@@ -373,13 +369,18 @@ describe('TypeScriptEngine', () => {
     expect(mockRunShell).toHaveBeenCalledTimes(1);
   });
 
-  it('returns an empty partial result when no batch fits the remaining budget', async () => {
-    const now = vi.spyOn(Date, 'now').mockReturnValueOnce(1_000).mockReturnValue(29_001);
+  // ─── Batch-timeout classification is STRUCTURAL, not prose-based ─────────
+
+  it('swallows a genuine batch timeout and keeps running later batches', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(0);
     mockReadFileSync.mockImplementation((p: PathOrFileDescriptor) =>
       p === '/sb/src/large.ts'
         ? Array.from({ length: 121 }, () => 'const x = 1;').join('\n')
-        : makeJsonReport([]),
+        : makeJsonReport([{ status: 'Killed', mutatorName: 'BooleanLiteral', line: 1 }]),
     );
+    mockRunShell
+      .mockRejectedValueOnce(makeExecFailure({ code: 'TIMEOUT' }))
+      .mockResolvedValueOnce(makeExecResult());
 
     const result = await engine.run('src/large.ts', {
       workDir: '/sb',
@@ -387,10 +388,91 @@ describe('TypeScriptEngine', () => {
       timeoutMs: 30_000,
     });
 
-    expect(mockRunShell).not.toHaveBeenCalled();
+    expect(mockRunShell).toHaveBeenCalledTimes(2);
     expect(result.complete).toBe(false);
-    expect(result.batchesCompleted).toBe(0);
+    expect(result.batchesCompleted).toBe(1);
     expect(result.batchesPlanned).toBe(2);
+    expect(result.stoppedReason).toBe('time_budget_exhausted');
+    now.mockRestore();
+  });
+
+  it('rethrows a Stryker exit-1 config error whose stderr merely mentions a timeout', async () => {
+    // No report on disk — exit 1 without one is a genuine failure. (With one it
+    // means "score under thresholds.break"; see the recoverable-exit-1 tests.)
+    mockExistsSync.mockImplementation((p: PathLike) => !String(p).endsWith('mutation.json'));
+    mockReadFileSync.mockImplementation((p: PathOrFileDescriptor) =>
+      p === '/sb/src/large.ts'
+        ? Array.from({ length: 121 }, () => 'const x = 1;').join('\n')
+        : makeJsonReport([]),
+    );
+    mockRunShell.mockRejectedValue(
+      makeExecFailure({ exit: 1, stderr: 'Error: Test timed out in 5000ms.' }),
+    );
+
+    await expect(
+      engine.run('src/large.ts', {
+        workDir: '/sb',
+        testRunner: 'command',
+        timeoutMs: 30_000,
+      }),
+    ).rejects.toThrow(/configuration or internal error \(exit 1\)/);
+    // Fails fast on the first batch rather than dropping it and continuing.
+    expect(mockRunShell).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not report time_budget_exhausted when a later batch fails to configure', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(0);
+    mockExistsSync.mockImplementation((p: PathLike) => !String(p).endsWith('mutation.json'));
+    mockReadFileSync.mockImplementation((p: PathOrFileDescriptor) =>
+      p === '/sb/src/large.ts'
+        ? Array.from({ length: 121 }, () => 'const x = 1;').join('\n')
+        : makeJsonReport([]),
+    );
+    mockRunShell
+      .mockRejectedValueOnce(makeExecFailure({ code: 'TIMEOUT' }))
+      .mockRejectedValueOnce(
+        makeExecFailure({ exit: 1, stderr: 'ConfigError: Test timed out in 5000ms.' }),
+      );
+
+    // Previously the exit-1 error matched /timed out/ too, so BOTH batches were
+    // dropped and the run resolved as a partial "time budget exhausted" result.
+    await expect(
+      engine.run('src/large.ts', {
+        workDir: '/sb',
+        testRunner: 'command',
+        timeoutMs: 30_000,
+      }),
+    ).rejects.toThrow(/configuration or internal error \(exit 1\)/);
+    expect(mockRunShell).toHaveBeenCalledTimes(2);
+    now.mockRestore();
+  });
+
+  // Previously this resolved to a merged result over ZERO batches: totalMutants 0,
+  // killed 0, and `formatMutationScore(0, 0)` === '100.00%' — a flawless score for
+  // a run in which Stryker was never invoked. Reachable with no timeout at all,
+  // because the handler admits any remaining budget >= 1000ms while a run needs
+  // MIN_BATCH_BUDGET_MS (3000) per batch, so the first batchBudget can be below
+  // the floor and the loop breaks with `firstTimeout` still undefined.
+  it('throws when the time budget is exhausted before any batch runs', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValueOnce(1_000).mockReturnValue(29_001);
+    mockReadFileSync.mockImplementation((p: PathOrFileDescriptor) =>
+      p === '/sb/src/large.ts'
+        ? Array.from({ length: 121 }, () => 'const x = 1;').join('\n')
+        : makeJsonReport([]),
+    );
+
+    const error = await engine
+      .run('src/large.ts', { workDir: '/sb', testRunner: 'command', timeoutMs: 30_000 })
+      .catch((e: unknown) => e);
+
+    expect(mockRunShell).not.toHaveBeenCalled();
+    expect(error).toBeInstanceOf(Error);
+    // Names the target, the batch arithmetic, and the two things that fix it.
+    expect((error as Error).message).toContain('src/large.ts');
+    expect((error as Error).message).toContain('0 of 2 planned batches completed');
+    expect((error as Error).message).toMatch(/raise timeoutMs or narrow the audit scope/);
+    // Above all: no score was invented for a run that measured nothing.
+    expect((error as Error).message).not.toContain('100.00%');
     now.mockRestore();
   });
 
@@ -450,11 +532,13 @@ describe('TypeScriptEngine', () => {
   });
 
   it('falls back to one run when the source cannot be read for batch planning', async () => {
-    mockReadFileSync
-      .mockImplementationOnce(() => {
-        throw new Error('unreadable source');
-      })
-      .mockReturnValueOnce(makeJsonReport([]));
+    // Keyed by path rather than by call order: writing the overlay config now
+    // reads the project's own Stryker config too, so a positional
+    // mockImplementationOnce chain no longer lines up with the source read.
+    mockReadFileSync.mockImplementation((p: PathOrFileDescriptor) => {
+      if (String(p).endsWith('src/large.ts')) throw new Error('unreadable source');
+      return makeJsonReport([]);
+    });
     mockRunShell.mockResolvedValue(makeExecResult());
 
     await engine.run('src/large.ts', { workDir: '/sb', testRunner: 'command' });
@@ -487,7 +571,7 @@ describe('TypeScriptEngine', () => {
     });
 
     expect(mockRunShell).toHaveBeenCalledTimes(3);
-    expect(mockRunShell.mock.calls.map((call) => (call[1] as string[])[4])).toEqual([
+    expect(mockRunShell.mock.calls.map((call) => mutateValueOf(call[1] as string[]))).toEqual([
       'src/large.ts:1-80',
       'src/large.ts:81-160',
       'src/large.ts:161-200',
@@ -567,7 +651,8 @@ describe('TypeScriptEngine', () => {
     expect(result.survived).toBe(1);
   });
 
-  it('throws on Stryker exit 1 (config/internal error)', async () => {
+  it('throws on Stryker exit 1 when NO report was written (config/internal error)', async () => {
+    mockExistsSync.mockImplementation((p: PathLike) => !String(p).endsWith('mutation.json'));
     mockRunShell.mockRejectedValue(
       makeExecFailure({ exit: 1, stderr: 'stryker.config.js not found' }),
     );
@@ -576,6 +661,42 @@ describe('TypeScriptEngine', () => {
     // The stderr tail is interpolated into the message — pin it so its
     // string-literal / slice survives mutation.
     await expect(engine.run('src/test.ts')).rejects.toThrow(/stryker\.config\.js not found/);
+  });
+
+  // Exit 1 is OVERLOADED in StrykerJS: MutationTestReportHelper.determineExitCode()
+  // sets it when the score is under `thresholds.break`, and that is the ONLY
+  // setExitCode call site in @stryker-mutator/core@9.6.1 (there is no exit 2).
+  // Treating every exit 1 as a config error meant any project with the standard
+  // CI gate `thresholds: { break: 80 }` got an EMPTY "configuration or internal
+  // error (exit 1):" message (--logLevel off blanks stderr) and had its entire
+  // survivor report discarded — for a run that fully succeeded.
+  it('parses the report on exit 1 when the report exists (score under thresholds.break)', async () => {
+    mockExistsSync.mockReturnValue(true);
+    mockRunShell.mockRejectedValue(makeExecFailure({ exit: 1, stderr: '' }));
+    mockReadFileSync.mockReturnValue(
+      makeJsonReport([
+        { status: 'Survived', mutatorName: 'ArithmeticOperator', line: 10 },
+        { status: 'Killed', mutatorName: 'BooleanLiteral', line: 11 },
+      ]),
+    );
+
+    const result = await engine.run('src/test.ts');
+
+    expect(result.survived).toBe(1);
+    expect(result.killed).toBe(1);
+    expect(result.mutationScore).toBe('50.00%');
+  });
+
+  it('still reports the no-tests failure on exit 1 even when a report exists', async () => {
+    // The "No tests were executed" branch is checked BEFORE the report probe:
+    // a dry run that ran zero tests is a real failure regardless of what is on disk.
+    mockExistsSync.mockReturnValue(true);
+    mockRunShell.mockRejectedValue(
+      makeExecFailure({ exit: 1, stderr: 'ConfigError: No tests were executed.' }),
+    );
+    mockReadFileSync.mockReturnValue(makeJsonReport([]));
+
+    await expect(engine.run('src/orphan.ts')).rejects.toThrow(/zero tests/);
   });
 
   it('maps the "No tests were executed" ConfigError to an actionable no-tests message', async () => {
@@ -599,12 +720,50 @@ describe('TypeScriptEngine', () => {
     await expect(engine.run('src/test.ts')).rejects.toThrow(/timed out/);
   });
 
+  it('classifies a real Stryker timeout as a typed StrykerTimeoutError', async () => {
+    mockRunShell.mockRejectedValue(makeExecFailure({ code: 'TIMEOUT' }));
+
+    const error = await engine.run('src/test.ts').catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(StrykerTimeoutError);
+    expect((error as StrykerTimeoutError).code).toBe('TIMEOUT');
+    expect((error as StrykerTimeoutError).message).toMatch(/^StrykerJS timed out after \d+ms\./);
+  });
+
+  it('leaves the other startup-class failures as plain, untyped errors', async () => {
+    mockRunShell.mockRejectedValue(makeExecFailure({ code: 'ENOENT' }));
+
+    const error = await engine.run('src/test.ts').catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(StrykerTimeoutError);
+    expect((error as Error).message).toMatch(/is not installed/);
+  });
+
   it('throws on signal-based crash', async () => {
     mockRunShell.mockRejectedValue(
       makeExecFailure({ signal: 'SIGSEGV', exit: null, stderr: 'segfault' }),
     );
 
     await expect(engine.run('src/test.ts')).rejects.toThrow(/crashed unexpectedly.*SIGSEGV/);
+  });
+
+  it('propagates an ABORTED exec failure out of the engine unchanged', async () => {
+    // A cancelled run arrives as the raw ExecFailureError with `code: 'ABORTED'`
+    // (`invokeMutationTool` rethrows it untouched so `isCancel` still works).
+    // It used to match no branch of classifyStrykerFailure — `exit: null`, no
+    // stderr — and fall out the bottom as a "recoverable" exit, so the engine
+    // went on to parseReport and reported `Stryker JSON report not found at …`
+    // for a run the caller had deliberately stopped.
+    mockExistsSync.mockImplementation((p: PathLike) => !String(p).endsWith('mutation.json'));
+    const aborted = makeExecFailure({ code: 'ABORTED', signal: 'SIGKILL', exit: null });
+    mockRunShell.mockRejectedValue(aborted);
+
+    const error = await engine.run('src/test.ts').catch((e: unknown) => e);
+
+    // Same error object, so the marker every cancel check keys on survives.
+    expect(error).toBe(aborted);
+    expect(error).toBeInstanceOf(ExecFailureError);
+    expect((error as ExecFailureError).code).toBe('ABORTED');
+    expect((error as Error).message).not.toMatch(/Stryker JSON report not found/);
   });
 
   // ─── RunOptions tests ───────────────────────────────────────────────────
@@ -675,7 +834,12 @@ describe('TypeScriptEngine', () => {
     expect(source).not.toContain('Stryker was here');
   });
 
-  it('does not apply a command-runner overlay to a native test runner', async () => {
+  // The overlay is written for EVERY run now (it is the only place the JSON
+  // report path and the mutator denylist can be pinned), but it must not drag
+  // the command runner along: forcing `testRunner: 'command'` and
+  // `coverageAnalysis: 'off'` onto a vitest run would silently change what is
+  // being measured — and, with no commandRunner.command, run nothing at all.
+  it('writes an overlay for a native test runner without any command-runner override', async () => {
     const mockWrite = vi.mocked(writeFileSync);
     mockRunShell.mockResolvedValue(makeExecResult());
     mockReadFileSync.mockReturnValue(makeJsonReport([]));
@@ -686,10 +850,19 @@ describe('TypeScriptEngine', () => {
       commandRunnerCommand: 'npm test',
     });
 
+    const source = String(
+      mockWrite.mock.calls.find((call) => call[0] === '/sb/.chaos-mcp.stryker.config.mjs')?.[1],
+    );
+    expect(source).not.toContain("testRunner: 'command'");
+    expect(source).not.toContain("coverageAnalysis: 'off'");
+    expect(source).not.toContain('commandRunner:');
+    expect(source).not.toContain('npm test');
+    // The overlay is still selected on the CLI, and --testRunner (which wins
+    // over the config file) still names the native runner.
+    expect(mockRunShell.mock.calls[0]?.[1]).toContain('.chaos-mcp.stryker.config.mjs');
     expect(
-      mockWrite.mock.calls.some((call) => call[0] === '/sb/.chaos-mcp.stryker.config.mjs'),
-    ).toBe(false);
-    expect(mockRunShell.mock.calls[0]?.[1]).not.toContain('.chaos-mcp.stryker.config.mjs');
+      argArgsContain(mockRunShell.mock.calls[0]?.[1] as string[], '--testRunner', 'vitest'),
+    ).toBe(true);
   });
 
   it('passes the runner plugin explicitly so it resolves under pnpm', async () => {
@@ -853,15 +1026,12 @@ describe('TypeScriptEngine', () => {
     );
   });
 
-  it('passes mutatorDenylist via stryker.config.json in sandbox (StrykerJS v9)', async () => {
-    // We need a real temp dir for the config file write. Use workDir.
+  it('passes mutatorDenylist via the overlay config, never as a CLI flag (StrykerJS v9)', async () => {
     const { writeFileSync } = await import('fs');
     const mockWrite = vi.mocked(writeFileSync);
 
-    // No pre-existing stryker.config.json in the sandbox (report path still exists).
-    mockExistsSync.mockImplementation(
-      (p: PathLike) => p !== '/tmp/test-sandbox/stryker.config.json',
-    );
+    // Nothing in the sandbox but the report — no project Stryker config at all.
+    mockExistsSync.mockImplementation((p: PathLike) => String(p).endsWith('mutation.json'));
     mockRunShell.mockResolvedValue(makeExecResult());
     mockReadFileSync.mockReturnValue(makeJsonReport([]));
 
@@ -870,68 +1040,45 @@ describe('TypeScriptEngine', () => {
       mutatorDenylist: ['StringLiteral', 'BooleanLiteral'],
     });
 
-    // Should have written the config file to the sandbox
-    expect(mockWrite).toHaveBeenCalledWith(
-      '/tmp/test-sandbox/stryker.config.json',
-      expect.stringContaining('"StringLiteral"'),
-      'utf-8',
+    const source = String(
+      mockWrite.mock.calls.find(
+        (c) => c[0] === '/tmp/test-sandbox/.chaos-mcp.stryker.config.mjs',
+      )?.[1],
     );
+    expect(source).toContain('const base = {};');
     // Stryker's schema exposes exclusions as mutator.excludedMutations — the
     // former top-level `mutators` map is not a Stryker option and was ignored.
-    const written = JSON.parse(mockWrite.mock.calls[0][1] as string);
-    expect(written).toEqual({
-      mutator: { excludedMutations: ['StringLiteral', 'BooleanLiteral'] },
-    });
-    // Should NOT have --mutators CLI args
+    expect(source).toContain('excludedMutations');
+    expect(source).toContain('...["StringLiteral","BooleanLiteral"],');
+    // v9 removed the --mutators CLI flag; nothing mutator-ish may reach argv.
     const argList = mockRunShell.mock.calls[0]?.[1] as string[];
     expect(argList.filter((a) => a.includes('mutators'))).toHaveLength(0);
   });
 
-  it('merges excludedMutations into an existing stryker.config.json instead of clobbering it', async () => {
+  // THE bug this replaces: the denylist used to be merged into
+  // `stryker.config.json`, which is FIFTH in Stryker's own discovery order
+  // (SUPPORTED_CONFIG_FILE_NAMES: stryker.conf.json, .conf.js, .conf.mjs,
+  // .conf.cjs, stryker.config.json, …) and `ConfigReader.findConfigFile` returns
+  // the FIRST hit. A project shipping `stryker.conf.json` therefore had its
+  // denylist written to a file Stryker never opened, and every denylisted
+  // mutator ran anyway — silently.
+  it('composes the overlay from the config Stryker actually loads, not stryker.config.json', async () => {
     const { writeFileSync } = await import('fs');
     const mockWrite = vi.mocked(writeFileSync);
-    const configPath = '/tmp/test-sandbox/stryker.config.json';
-    const existingConfig = JSON.stringify({
-      testRunner: 'vitest',
-      mutate: ['src/**/*.ts'],
-      mutator: { plugins: null, excludedMutations: ['ConditionalExpression'] },
-    });
+    const loadedPath = '/tmp/test-sandbox/stryker.conf.json';
+    const ignoredPath = '/tmp/test-sandbox/stryker.config.json';
 
-    mockExistsSync.mockReturnValue(true);
-    mockReadFileSync.mockImplementation((p: PathOrFileDescriptor) =>
-      p === configPath ? existingConfig : makeJsonReport([]),
+    // Both exist; stryker.conf.json wins because it comes first in Stryker's order.
+    mockExistsSync.mockImplementation(
+      (p: PathLike) => p === loadedPath || p === ignoredPath || String(p).endsWith('mutation.json'),
     );
-    mockRunShell.mockResolvedValue(makeExecResult());
-
-    await engine.run('src/app.ts', {
-      workDir: '/tmp/test-sandbox',
-      mutatorDenylist: ['StringLiteral', 'ConditionalExpression'],
+    mockReadFileSync.mockImplementation((p: PathOrFileDescriptor) => {
+      if (p === loadedPath) return JSON.stringify({ mutator: { excludedMutations: ['FromConf'] } });
+      if (p === ignoredPath) {
+        return JSON.stringify({ mutator: { excludedMutations: ['FromConfigDotJson'] } });
+      }
+      return makeJsonReport([]);
     });
-
-    const writtenCall = mockWrite.mock.calls.find((c) => c[0] === configPath);
-    expect(writtenCall).toBeDefined();
-    const written = JSON.parse((writtenCall?.[1] ?? '{}') as string);
-    // The project's own settings must survive.
-    expect(written.testRunner).toBe('vitest');
-    expect(written.mutate).toEqual(['src/**/*.ts']);
-    expect(written.mutator.plugins).toBeNull();
-    // The denylist is unioned (deduped) with the existing exclusions.
-    expect(written.mutator.excludedMutations).toEqual(['ConditionalExpression', 'StringLiteral']);
-  });
-
-  it('migrates a legacy top-level `mutators` map into mutator.excludedMutations', async () => {
-    const { writeFileSync } = await import('fs');
-    const mockWrite = vi.mocked(writeFileSync);
-    const configPath = '/tmp/test-sandbox/stryker.config.json';
-    // The shape earlier Chaos-MCP versions wrote — never a valid Stryker option.
-    const existingConfig = JSON.stringify({
-      mutators: { ConditionalExpression: false, BooleanLiteral: true },
-    });
-
-    mockExistsSync.mockReturnValue(true);
-    mockReadFileSync.mockImplementation((p: PathOrFileDescriptor) =>
-      p === configPath ? existingConfig : makeJsonReport([]),
-    );
     mockRunShell.mockResolvedValue(makeExecResult());
 
     await engine.run('src/app.ts', {
@@ -939,25 +1086,117 @@ describe('TypeScriptEngine', () => {
       mutatorDenylist: ['StringLiteral'],
     });
 
-    const writtenCall = mockWrite.mock.calls.find((c) => c[0] === configPath);
-    const written = JSON.parse((writtenCall?.[1] ?? '{}') as string);
-    // Disabled legacy entries fold into excludedMutations; enabled ones don't.
-    expect(written.mutator.excludedMutations).toEqual(['ConditionalExpression', 'StringLiteral']);
-    // The invalid key must not be re-emitted.
-    expect(written.mutators).toBeUndefined();
+    const source = String(
+      mockWrite.mock.calls.find(
+        (c) => c[0] === '/tmp/test-sandbox/.chaos-mcp.stryker.config.mjs',
+      )?.[1],
+    );
+    expect(source).toContain('"FromConf"');
+    expect(source).not.toContain('FromConfigDotJson');
+    // The project's own config file is never rewritten in place any more.
+    expect(mockWrite.mock.calls.some((c) => c[0] === loadedPath)).toBe(false);
+    expect(mockWrite.mock.calls.some((c) => c[0] === ignoredPath)).toBe(false);
   });
 
-  it('treats an empty mutatorDenylist as a no-op (no config written)', async () => {
+  it('routes the denylist through the overlay for a JS-family config it cannot merge into', async () => {
+    const { writeFileSync } = await import('fs');
+    const mockWrite = vi.mocked(writeFileSync);
+    // stryker.conf.mjs is 3rd in Stryker's order and is not textually mergeable —
+    // the overlay imports it and layers the exclusions on the imported object.
+    mockExistsSync.mockImplementation(
+      (p: PathLike) =>
+        p === '/tmp/test-sandbox/stryker.conf.mjs' || String(p).endsWith('mutation.json'),
+    );
+    mockReadFileSync.mockReturnValue(makeJsonReport([]));
+    mockRunShell.mockResolvedValue(makeExecResult());
+
+    await engine.run('src/app.ts', {
+      workDir: '/tmp/test-sandbox',
+      mutatorDenylist: ['StringLiteral'],
+    });
+
+    const source = String(
+      mockWrite.mock.calls.find(
+        (c) => c[0] === '/tmp/test-sandbox/.chaos-mcp.stryker.config.mjs',
+      )?.[1],
+    );
+    expect(source).toContain('import importedConfig from "./stryker.conf.mjs";');
+    expect(source).toContain('...["StringLiteral"],');
+    expect(mockRunShell.mock.calls[0]?.[1]).toContain('.chaos-mcp.stryker.config.mjs');
+  });
+
+  it('unions the denylist with the project exclusions and migrates a legacy `mutators` map', () => {
+    const mockWrite = vi.mocked(writeFileSync);
+    mockExistsSync.mockImplementation((p: PathLike) => p === '/sb/stryker.conf.json');
+    mockReadFileSync.mockReturnValue(
+      JSON.stringify({
+        testRunner: 'vitest',
+        mutate: ['src/**/*.ts'],
+        // The shape earlier Chaos-MCP versions wrote — never a valid Stryker option.
+        mutators: { ConditionalExpression: false, BooleanLiteral: true },
+        mutator: { plugins: null, excludedMutations: ['ArithmeticOperator'] },
+      }),
+    );
+
+    writeStrykerRuntimeConfig('/sb', undefined, ['StringLiteral', 'ArithmeticOperator']);
+    const source = String(mockWrite.mock.calls.at(-1)?.[1]);
+
+    // The project's own settings survive, spread ahead of our overrides…
+    expect(source).toContain('"testRunner":"vitest"');
+    expect(source).toContain('"mutate":["src/**/*.ts"]');
+    expect(source).toContain('"plugins":null');
+    // …with the invalid legacy key stripped from the emitted options,
+    // its disabled entries folded into excludedMutations, and the whole lot deduped.
+    expect(source).toContain(
+      'const { mutators: _legacyMutators, ...withoutLegacyMutators } = base;',
+    );
+    expect(source).toContain('...withoutLegacyMutators,');
+    expect(source).toContain('...legacyExcluded,');
+    expect(source).toContain('...existingExcluded,');
+    expect(source).toContain('new Set(');
+  });
+
+  it('pins jsonReporter.fileName so a project config cannot move the report', () => {
+    const mockWrite = vi.mocked(writeFileSync);
+    // Stryker honours `jsonReporter.fileName` (json-reporter.js normalises it),
+    // and the overlay spreads the project's config forward — so without an
+    // explicit pin a successful run's report lands somewhere parseReport never
+    // looks and the engine reports "Stryker JSON report not found".
+    // It cannot be pinned on the CLI: 9.6.1 declares no --jsonReporter.fileName
+    // and Commander aborts with "unknown option".
+    mockExistsSync.mockImplementation((p: PathLike) => p === '/sb/stryker.conf.json');
+    mockReadFileSync.mockReturnValue(
+      JSON.stringify({ jsonReporter: { fileName: 'artifacts/mutation.json' } }),
+    );
+
+    writeStrykerRuntimeConfig('/sb', undefined, []);
+    const source = String(mockWrite.mock.calls.at(-1)?.[1]);
+
+    expect(source).toContain(
+      'jsonReporter: { ...(base.jsonReporter ?? {}), fileName: "reports/mutation/mutation.json" }',
+    );
+    // The override must come AFTER the base spread, or the project value wins.
+    expect(source.indexOf('...withoutLegacyMutators')).toBeLessThan(
+      source.indexOf('jsonReporter: {'),
+    );
+  });
+
+  it('writes the overlay even for an empty mutatorDenylist', async () => {
     const { writeFileSync } = await import('fs');
     const mockWrite = vi.mocked(writeFileSync);
     mockWrite.mockClear();
     mockRunShell.mockResolvedValue(makeExecResult());
     mockReadFileSync.mockReturnValue(makeJsonReport([]));
 
-    await engine.run('src/app.ts', { mutatorDenylist: [] });
+    await engine.run('src/app.ts', { workDir: '/sb', mutatorDenylist: [] });
 
-    // `length > 0` guard must be strict — an empty list writes nothing.
-    expect(mockWrite).not.toHaveBeenCalled();
+    // No longer conditional on the denylist: the overlay is also what pins the
+    // JSON report path, so it must be written on every run.
+    const source = String(
+      mockWrite.mock.calls.find((c) => c[0] === '/sb/.chaos-mcp.stryker.config.mjs')?.[1],
+    );
+    expect(source).toContain('...[],');
+    expect(source).toContain('fileName: "reports/mutation/mutation.json"');
   });
 
   it('treats an empty mutatorAllowlist as a no-op (does not throw)', async () => {
@@ -1332,6 +1571,10 @@ describe('TypeScriptEngine', () => {
         '--no-install',
         'stryker',
         'run',
+        // Every run is launched with the generated overlay as Stryker's
+        // configFile: it is the only place jsonReporter.fileName and the mutator
+        // denylist can be pinned regardless of what config the project ships.
+        '.chaos-mcp.stryker.config.mjs',
         '--mutate',
         'src/math.ts',
         '--testRunner',
@@ -1463,7 +1706,8 @@ describe('TypeScriptEngine', () => {
     await engine.run('src/math.ts');
 
     expect(mockLog).toHaveBeenCalledWith(
-      'TypeScriptEngine: npx --no-install stryker run --mutate src/math.ts --testRunner command ' +
+      'TypeScriptEngine: npx --no-install stryker run .chaos-mcp.stryker.config.mjs ' +
+        '--mutate src/math.ts --testRunner command ' +
         '--reporters json --logLevel off --cleanTempDir true --tempDirName .stryker-tmp',
     );
     vi.mocked(isVerbose).mockReturnValue(false);
@@ -1607,6 +1851,43 @@ describe('TypeScriptEngine', () => {
     expect(result.vulnerabilities[0].original).toBe('a >\nb');
   });
 
+  // ─── Malformed report entries must not escape as raw TypeErrors ─────────
+
+  it('skips a null file entry and a location-less mutant instead of crashing', () => {
+    const mutants: unknown[] = [
+      { id: '1', mutatorName: 'NoLocation', replacement: 'x', status: 'Survived' },
+      null,
+      { id: '3', mutatorName: 'EmptyLocation', replacement: 'z', location: {}, status: 'Survived' },
+      {
+        id: '4',
+        mutatorName: 'BooleanLiteral',
+        replacement: 'false',
+        location: { start: { line: 1, column: 1 }, end: { line: 1, column: 6 } },
+        status: 'Survived',
+      },
+    ];
+    mockReadFileSync.mockReturnValue(
+      JSON.stringify({
+        files: {
+          'src/null.ts': null,
+          'src/x.ts': { source: 'const x = 1;', mutants },
+        },
+      }),
+    );
+
+    const result = engine.parseReport('/wd', 'src/x.ts');
+    expect(result.totalMutants).toBe(1);
+    expect(result.survived).toBe(1);
+    expect(result.vulnerabilities.map((v) => v.mutator)).toEqual(['BooleanLiteral']);
+  });
+
+  it('does not throw when the report parses to null', () => {
+    mockReadFileSync.mockReturnValue('null');
+    const result = engine.parseReport('/wd', 'src/x.ts');
+    expect(result.totalMutants).toBe(0);
+    expect(result.mutationScore).toBe('100.00%');
+  });
+
   // ─── A2: lineRanges multi-range scoping ─────────────────────────────────
 
   it('A2: emits one --mutate range for a single lineScope (unchanged behavior)', async () => {
@@ -1661,6 +1942,607 @@ describe('TypeScriptEngine', () => {
     vi.mocked(isVerbose).mockReturnValue(false);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// buildStrykerArgs — the argv builder extracted out of runOnce. It is pure (no
+// filesystem, no environment), so the whole flag matrix is assertable as plain
+// string arrays instead of by driving a run through the exec mock.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('buildStrykerArgs', () => {
+  const BASE = [
+    'npx',
+    '--no-install',
+    'stryker',
+    'run',
+    '--mutate',
+    'src/app.ts',
+    '--testRunner',
+    'command',
+    '--reporters',
+    'json',
+    '--logLevel',
+    'off',
+    '--cleanTempDir',
+    'true',
+    '--tempDirName',
+    '.stryker-tmp',
+  ];
+
+  it('builds the baseline argv for a native run with no options', () => {
+    expect(buildStrykerArgs('command', 'src/app.ts', undefined)).toEqual(BASE);
+    expect(buildStrykerArgs('command', 'src/app.ts', undefined, {})).toEqual(BASE);
+  });
+
+  it('drops the npx launcher when the executor is a container', () => {
+    const args = buildStrykerArgs('command', 'src/app.ts', undefined, {
+      executor: {
+        kind: 'container',
+        workDir: '/sb',
+        run: vi.fn(),
+        runCommand: vi.fn(),
+        dispose: vi.fn(),
+      },
+    });
+    expect(args.slice(0, 2)).toEqual(['stryker', 'run']);
+    expect(args).not.toContain('npx');
+  });
+
+  it('inserts the runtime config immediately after `run`', () => {
+    const args = buildStrykerArgs('command', 'src/app.ts', '.chaos-mcp.stryker.config.mjs');
+    expect(args.slice(0, 5)).toEqual([
+      'npx',
+      '--no-install',
+      'stryker',
+      'run',
+      '.chaos-mcp.stryker.config.mjs',
+    ]);
+  });
+
+  it('passes the resolved runner and mutate argument through verbatim', () => {
+    const args = buildStrykerArgs('vitest', 'src/app.ts:3-5,src/app.ts:20-20', undefined);
+    expect(argArgsContain(args, '--testRunner', 'vitest')).toBe(true);
+    expect(argArgsContain(args, '--mutate', 'src/app.ts:3-5,src/app.ts:20-20')).toBe(true);
+  });
+
+  it('adds the runner plugin pair, keeping the wildcard, for every known runner', () => {
+    for (const [runner, plugin] of Object.entries({
+      vitest: '@stryker-mutator/vitest-runner',
+      jest: '@stryker-mutator/jest-runner',
+      mocha: '@stryker-mutator/mocha-runner',
+      jasmine: '@stryker-mutator/jasmine-runner',
+      karma: '@stryker-mutator/karma-runner',
+    })) {
+      const args = buildStrykerArgs(runner, 'src/app.ts', undefined);
+      expect(argPairPresent(args, '--plugins', '@stryker-mutator/*')).toBe(true);
+      expect(argPairPresent(args, '--plugins', plugin)).toBe(true);
+    }
+  });
+
+  it('adds no --plugins for the built-in command runner or an unknown runner', () => {
+    expect(buildStrykerArgs('command', 'src/app.ts', undefined)).not.toContain('--plugins');
+    expect(buildStrykerArgs('my-custom-runner', 'src/app.ts', undefined)).not.toContain(
+      '--plugins',
+    );
+  });
+
+  it('never resolves an inherited Object.prototype member as a plugin package', () => {
+    for (const runner of ['constructor', 'toString', 'hasOwnProperty', '__proto__']) {
+      expect(buildStrykerArgs(runner, 'src/app.ts', undefined)).not.toContain('--plugins');
+    }
+  });
+
+  it('appends --concurrency only for a positive number', () => {
+    expect(
+      argArgsContain(
+        buildStrykerArgs('command', 'src/app.ts', undefined, { concurrency: 4 }),
+        '--concurrency',
+        '4',
+      ),
+    ).toBe(true);
+    expect(buildStrykerArgs('command', 'src/app.ts', undefined, { concurrency: 0 })).not.toContain(
+      '--concurrency',
+    );
+    expect(buildStrykerArgs('command', 'src/app.ts', undefined, { concurrency: -2 })).not.toContain(
+      '--concurrency',
+    );
+  });
+
+  it('appends --dryRunOnly (never the removed v8 --dryRun) for a dry run', () => {
+    const args = buildStrykerArgs('command', 'src/app.ts', undefined, { dryRun: true });
+    expect(args).toContain('--dryRunOnly');
+    expect(args).not.toContain('--dryRun');
+  });
+
+  it('appends the incremental flag and its sandbox-relative file', () => {
+    const args = buildStrykerArgs('command', 'src/app.ts', undefined, { incremental: true });
+    expect(args).toContain('--incremental');
+    expect(argArgsContain(args, '--incrementalFile', '.stryker-incremental.json')).toBe(true);
+  });
+
+  it('appends --timeoutMs only for a positive perMutantTimeoutMs', () => {
+    expect(
+      argArgsContain(
+        buildStrykerArgs('command', 'src/app.ts', undefined, { perMutantTimeoutMs: 10_000 }),
+        '--timeoutMs',
+        '10000',
+      ),
+    ).toBe(true);
+    expect(
+      buildStrykerArgs('command', 'src/app.ts', undefined, { perMutantTimeoutMs: 0 }),
+    ).not.toContain('--timeoutMs');
+  });
+
+  it('emits every optional flag in a stable order when all are requested', () => {
+    expect(
+      buildStrykerArgs('vitest', 'src/app.ts', 'cfg.mjs', {
+        concurrency: 2,
+        dryRun: true,
+        incremental: true,
+        perMutantTimeoutMs: 7,
+      }),
+    ).toEqual([
+      'npx',
+      '--no-install',
+      'stryker',
+      'run',
+      'cfg.mjs',
+      '--mutate',
+      'src/app.ts',
+      '--testRunner',
+      'vitest',
+      '--reporters',
+      'json',
+      '--logLevel',
+      'off',
+      '--cleanTempDir',
+      'true',
+      '--tempDirName',
+      '.stryker-tmp',
+      '--plugins',
+      '@stryker-mutator/*',
+      '--plugins',
+      '@stryker-mutator/vitest-runner',
+      '--concurrency',
+      '2',
+      '--dryRunOnly',
+      '--incremental',
+      '--incrementalFile',
+      '.stryker-incremental.json',
+      '--timeoutMs',
+      '7',
+    ]);
+  });
+
+  it('touches no filesystem mock — it is pure', () => {
+    vi.clearAllMocks();
+    buildStrykerArgs('vitest', 'src/app.ts', 'cfg.mjs', { incremental: true, dryRun: true });
+    expect(mockExistsSync).not.toHaveBeenCalled();
+    expect(mockReadFileSync).not.toHaveBeenCalled();
+    expect(vi.mocked(writeFileSync)).not.toHaveBeenCalled();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// classifyStrykerFailure — the exit-code triage extracted out of runOnce.
+// Returning (rather than throwing) means "expected non-zero, go parse the
+// report". Branch order is most-specific-first and is load-bearing.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('classifyStrykerFailure', () => {
+  /**
+   * Run the classifier and hand back whatever it threw (undefined if it returned).
+   *
+   * `reportExists` defaults to false — the startup-class cases below never reach
+   * the report check, and the exit-1 cases are asserting the no-report branch.
+   * The recoverable "exit 1 WITH a report" path has its own dedicated tests.
+   */
+  const thrownBy = (error: unknown, filePath = 'src/app.ts', reportExists = false): unknown => {
+    try {
+      classifyStrykerFailure(error, filePath, reportExists);
+      return undefined;
+    } catch (caught) {
+      return caught;
+    }
+  };
+
+  it('rethrows an ABORTED ExecFailureError untouched, ahead of every other branch', () => {
+    // The marker `isCancel` keys on only survives if the SAME object comes back
+    // out. Ordered first because an aborted child otherwise looks like an
+    // ordinary `exit: null` failure and is waved through to parseReport.
+    const aborted = makeExecFailure({ code: 'ABORTED', signal: 'SIGKILL', exit: null });
+    expect(thrownBy(aborted)).toBe(aborted);
+    // Even with a report on disk it is still a cancel, never a recoverable exit.
+    expect(thrownBy(aborted, 'src/app.ts', true)).toBe(aborted);
+  });
+
+  it('re-types a startup TIMEOUT as StrykerTimeoutError, preserving message and cause', () => {
+    const startup = new MutationToolStartupError('StrykerJS', 'StrykerJS timed out after 5000ms.');
+    const thrown = thrownBy(startup);
+    expect(thrown).toBeInstanceOf(StrykerTimeoutError);
+    expect((thrown as StrykerTimeoutError).code).toBe('TIMEOUT');
+    expect((thrown as Error).message).toBe('StrykerJS timed out after 5000ms.');
+    expect((thrown as Error).cause).toBe(startup);
+  });
+
+  it('anchors the timeout check at the start, so tool-controlled text cannot forge it', () => {
+    const forged = new MutationToolStartupError(
+      'StrykerJS',
+      'StrykerJS crashed unexpectedly: StrykerJS timed out after 5000ms.',
+    );
+    const thrown = thrownBy(forged);
+    expect(thrown).not.toBeInstanceOf(StrykerTimeoutError);
+    expect((thrown as Error).message).toBe(
+      'StrykerJS crashed unexpectedly: StrykerJS timed out after 5000ms.',
+    );
+  });
+
+  it('surfaces other startup failures verbatim as a plain Error', () => {
+    const notInstalled = new MutationToolStartupError(
+      'StrykerJS',
+      'StrykerJS is not installed. Install it with: npm install --save-dev @stryker-mutator/core',
+    );
+    const thrown = thrownBy(notInstalled);
+    expect(thrown).toBeInstanceOf(Error);
+    expect(thrown).not.toBeInstanceOf(StrykerTimeoutError);
+    expect((thrown as Error).message).toBe(notInstalled.message);
+  });
+
+  it('rethrows a non-ExecFailure Error unchanged', () => {
+    const boom = new Error('boom');
+    expect(() => classifyStrykerFailure(boom, 'src/app.ts', false)).toThrow(boom);
+  });
+
+  it('wraps a non-Error throwable', () => {
+    expect(() => classifyStrykerFailure('kaput', 'src/app.ts', false)).toThrow(
+      'Stryker execution failed: kaput',
+    );
+  });
+
+  it('names the file when exit 1 reports that no tests were executed', () => {
+    expect(() =>
+      classifyStrykerFailure(
+        makeExecFailure({ exit: 1, stderr: 'ERROR No tests were executed. Stopping.' }),
+        'src/app.ts',
+        false,
+      ),
+    ).toThrow(
+      'StrykerJS ran zero tests in its dry run — no tests in this project appear to cover src/app.ts. ' +
+        'Add a test file exercising it, or check the test runner configuration if tests exist.',
+    );
+  });
+
+  it('reports any other exit 1 as a configuration error, capped at 500 chars of stderr', () => {
+    const stderr = 'x'.repeat(600);
+    expect(() =>
+      classifyStrykerFailure(makeExecFailure({ exit: 1, stderr }), 'src/app.ts', false),
+    ).toThrow(`StrykerJS configuration or internal error (exit 1): ${'x'.repeat(500)}`);
+  });
+
+  it('falls back to the error message when exit 1 carries no stderr', () => {
+    expect(() =>
+      classifyStrykerFailure(makeExecFailure({ exit: 1, stderr: '' }), 'src/app.ts', false),
+    ).toThrow('StrykerJS configuration or internal error (exit 1): Command failed');
+  });
+
+  it('returns for exit 2 and other non-zero exits — the report is still parseable', () => {
+    expect(
+      classifyStrykerFailure(makeExecFailure({ exit: 2 }), 'src/app.ts', false),
+    ).toBeUndefined();
+    expect(
+      classifyStrykerFailure(makeExecFailure({ exit: 3 }), 'src/app.ts', false),
+    ).toBeUndefined();
+    expect(
+      classifyStrykerFailure(makeExecFailure({ exit: null }), 'src/app.ts', false),
+    ).toBeUndefined();
+  });
+});
+
+describe('dryRunResult', () => {
+  it('reports the distinct dry-run shape: no mutants and a non-numeric score', () => {
+    expect(dryRunResult('src/app.ts')).toEqual({
+      target: 'src/app.ts',
+      totalMutants: 0,
+      killed: 0,
+      survived: 0,
+      mutationScore: 'n/a (dry run)',
+      vulnerabilities: [],
+      scopeNote:
+        'Dry run only: the test suite executed successfully against the sandboxed file. ' +
+        'No mutants were generated — re-run without dryRun to score coverage.',
+    });
+  });
+});
+
+describe('prepareStrykerConfig', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockExistsSync.mockReturnValue(false);
+  });
+
+  it('rejects a mutator allowlist, listing what was requested', () => {
+    expect(() => prepareStrykerConfig('/sb', { mutatorAllowlist: ['ArithmeticOperator'] })).toThrow(
+      'mutatorAllowlist is not supported in StrykerJS v9. ' +
+        'Use mutatorDenylist instead, or create a stryker.config.json with explicit mutator settings. ' +
+        'Requested allowlist: ArithmeticOperator',
+    );
+    expect(vi.mocked(writeFileSync)).not.toHaveBeenCalled();
+  });
+
+  // Stryker is never left to its own config discovery: which of the sixteen
+  // stryker.conf|config.{json,js,mjs,cjs} names it picks decides whether the
+  // denylist is honoured at all, and where the JSON report is written.
+  it('always writes the overlay and selects it, even for a plain run', () => {
+    expect(prepareStrykerConfig('/sb', {})).toBe('.chaos-mcp.stryker.config.mjs');
+    const [path] = vi.mocked(writeFileSync).mock.calls[0];
+    expect(path).toBe('/sb/.chaos-mcp.stryker.config.mjs');
+  });
+
+  it('writes the runtime overlay and returns its name for a command-runner run', () => {
+    expect(prepareStrykerConfig('/sb', { commandRunnerCommand: 'npm test' })).toBe(
+      '.chaos-mcp.stryker.config.mjs',
+    );
+    const [path, contents] = vi.mocked(writeFileSync).mock.calls[0];
+    expect(path).toBe('/sb/.chaos-mcp.stryker.config.mjs');
+    expect(String(contents)).toContain("testRunner: 'command'");
+  });
+
+  it('routes a denylist-only run through the overlay too, without a runner override', () => {
+    expect(
+      prepareStrykerConfig('/sb', { testRunner: 'vitest', mutatorDenylist: ['BlockStatement'] }),
+    ).toBe('.chaos-mcp.stryker.config.mjs');
+    const [path, contents] = vi.mocked(writeFileSync).mock.calls[0];
+    expect(path).toBe('/sb/.chaos-mcp.stryker.config.mjs');
+    expect(String(contents)).toContain('...["BlockStatement"],');
+    expect(String(contents)).not.toContain("testRunner: 'command'");
+  });
+
+  it('writes exactly one config file per run', () => {
+    expect(
+      prepareStrykerConfig('/sb', {
+        commandRunnerCommand: 'npm test',
+        mutatorDenylist: ['BlockStatement'],
+      }),
+    ).toBe('.chaos-mcp.stryker.config.mjs');
+    expect(vi.mocked(writeFileSync)).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Report provenance, status classification, and the structural scope field.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('report handling', () => {
+  let engine: TypeScriptEngine;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    engine = new TypeScriptEngine();
+    mockExistsSync.mockReturnValue(true);
+    mockRunShell.mockResolvedValue(makeExecResult());
+  });
+
+  // `parseReport` guards a FIXED path with nothing but existsSync, which cannot
+  // tell this invocation's report from the previous batch's — `runBatched` calls
+  // `runOnce` N times against the same cwd and `mergeBatchResults` SUMS totals
+  // and CONCATENATES vulnerabilities, so a re-read produces double-counted
+  // mutants and duplicate (line, mutator) suppression keys. Nor from one the
+  // audited workspace shipped: ALWAYS_EXCLUDE (utils/sandbox.ts) does not
+  // exclude `reports/`. Deleting first makes a missing report an honest error.
+  it('deletes any stale JSON report before invoking Stryker, once per batch', async () => {
+    const mockRm = vi.mocked(rmSync);
+    mockReadFileSync.mockImplementation((p: PathOrFileDescriptor) =>
+      String(p).endsWith('src/large.ts')
+        ? Array.from({ length: 121 }, () => 'const x = 1;').join('\n')
+        : makeJsonReport([]),
+    );
+
+    await engine.run('src/large.ts', {
+      workDir: '/sb',
+      testRunner: 'command',
+      timeoutMs: 30_000,
+    });
+
+    expect(mockRunShell).toHaveBeenCalledTimes(2);
+    expect(mockRm.mock.calls).toEqual([
+      ['/sb/reports/mutation/mutation.json', { force: true }],
+      ['/sb/reports/mutation/mutation.json', { force: true }],
+    ]);
+  });
+
+  it('deletes the report BEFORE the run, never after it', async () => {
+    const order: string[] = [];
+    vi.mocked(rmSync).mockImplementation(() => {
+      order.push('rm');
+    });
+    mockRunShell.mockImplementation(() => {
+      order.push('run');
+      return Promise.resolve(makeExecResult());
+    });
+    mockReadFileSync.mockReturnValue(makeJsonReport([]));
+
+    await engine.run('src/app.ts', { workDir: '/sb', testRunner: 'vitest' });
+
+    expect(order).toEqual(['rm', 'run']);
+  });
+
+  it('still runs when the stale report cannot be removed', async () => {
+    vi.mocked(rmSync).mockImplementation(() => {
+      throw new Error('EPERM');
+    });
+    mockReadFileSync.mockReturnValue(
+      makeJsonReport([{ status: 'Killed', mutatorName: 'BooleanLiteral', line: 1 }]),
+    );
+
+    const result = await engine.run('src/app.ts', { workDir: '/sb', testRunner: 'vitest' });
+    expect(result.killed).toBe(1);
+  });
+
+  // engines/base.ts documents `incompetent` as covering "Stryker compile
+  // errors", and format.ts has a guarded branch that reports it — but this
+  // engine never set the field, so a file where mutants fail to compile showed a
+  // shrunken total with no explanation of the missing mutants (gap audit I3).
+  it('counts CompileError and RuntimeError as incompetent, outside the denominator', () => {
+    mockReadFileSync.mockReturnValue(
+      makeJsonReport([
+        { status: 'Killed', mutatorName: 'A', line: 1 },
+        { status: 'Survived', mutatorName: 'B', line: 2 },
+        { status: 'CompileError', mutatorName: 'C', line: 3 },
+        { status: 'CompileError', mutatorName: 'D', line: 4 },
+        { status: 'RuntimeError', mutatorName: 'E', line: 5 },
+      ]),
+    );
+
+    const result = engine.parseReport('/wd', 'src/x.ts');
+
+    expect(result.totalMutants).toBe(2);
+    expect(result.killed).toBe(1);
+    expect(result.survived).toBe(1);
+    expect(result.incompetent).toBe(3);
+    expect(result.mutationScore).toBe('50.00%');
+  });
+
+  // `Ignored` is the operator's own choice (mutator.excludedMutations, `Stryker
+  // disable` comments), not a failure — reporting it as incompetent would blame
+  // the project for something it asked for.
+  it('keeps Ignored separate from incompetent and out of the score', () => {
+    mockReadFileSync.mockReturnValue(
+      makeJsonReport([
+        { status: 'Killed', mutatorName: 'A', line: 1 },
+        { status: 'Ignored', mutatorName: 'B', line: 2 },
+        { status: 'Ignored', mutatorName: 'C', line: 3 },
+      ]),
+    );
+
+    const result = engine.parseReport('/wd', 'src/x.ts');
+
+    expect(result.totalMutants).toBe(1);
+    expect(result.incompetent).toBeUndefined();
+    expect(vi.mocked(warn)).not.toHaveBeenCalled();
+  });
+
+  // The filter used to be a DENY-list (everything except CompileError/
+  // RuntimeError/Ignored counted), so any status the schema gains later landed
+  // in the denominator as "valid but neither killed nor survived", silently
+  // lowering the score. mutation-testing-report-schema@3.7.3 already declares a
+  // "Pending" status this engine never handled.
+  it('excludes unrecognised statuses from the score and warns once, naming each', () => {
+    mockReadFileSync.mockReturnValue(
+      makeJsonReport([
+        { status: 'Killed', mutatorName: 'A', line: 1 },
+        { status: 'Pending', mutatorName: 'B', line: 2 },
+        { status: 'Pending', mutatorName: 'C', line: 3 },
+        { status: 'SomethingNew', mutatorName: 'D', line: 4 },
+      ]),
+    );
+
+    const result = engine.parseReport('/wd', 'src/x.ts');
+
+    // Denominator is 1, not 4 — the score is not diluted by statuses we cannot judge.
+    expect(result.totalMutants).toBe(1);
+    expect(result.mutationScore).toBe('100.00%');
+    expect(vi.mocked(warn)).toHaveBeenCalledTimes(1);
+    const message = String(vi.mocked(warn).mock.calls[0][0]);
+    expect(message).toContain('Pending (2)');
+    expect(message).toContain('SomethingNew (1)');
+    expect(message).toContain('src/x.ts');
+  });
+
+  it('does not warn when every status is recognised', () => {
+    mockReadFileSync.mockReturnValue(
+      makeJsonReport([
+        { status: 'Killed', mutatorName: 'A', line: 1 },
+        { status: 'Survived', mutatorName: 'B', line: 2 },
+        { status: 'NoCoverage', mutatorName: 'C', line: 3 },
+        { status: 'Timeout', mutatorName: 'D', line: 4 },
+        { status: 'CompileError', mutatorName: 'E', line: 5 },
+        { status: 'Ignored', mutatorName: 'F', line: 6 },
+      ]),
+    );
+
+    const result = engine.parseReport('/wd', 'src/x.ts');
+
+    expect(result.totalMutants).toBe(4);
+    // Timeout counts as killed — the mutant was detected by hanging the suite.
+    expect(result.killed).toBe(2);
+    expect(vi.mocked(warn)).not.toHaveBeenCalled();
+  });
+
+  // hasNoMutableLogic (score-semantics.ts) must not key on the presence of free-text
+  // prose. These pin the structural discriminator the engine now emits.
+  it('labels an unscoped single run whole-file and a line-scoped one scoped', async () => {
+    mockReadFileSync.mockReturnValue(makeJsonReport([]));
+
+    const whole = await engine.run('src/app.ts', { workDir: '/sb', testRunner: 'vitest' });
+    expect(whole.scopeKind).toBe('whole-file');
+
+    const scopedRange = await engine.run('src/app.ts', {
+      workDir: '/sb',
+      testRunner: 'vitest',
+      lineScope: { start: 1, end: 10 },
+    });
+    expect(scopedRange.scopeKind).toBe('scoped');
+
+    const scopedRanges = await engine.run('src/app.ts', {
+      workDir: '/sb',
+      testRunner: 'vitest',
+      lineRanges: [{ start: 1, end: 10 }],
+    });
+    expect(scopedRanges.scopeKind).toBe('scoped');
+  });
+
+  it('labels a batched whole-file run whole-file, despite every batch being line-scoped', async () => {
+    mockReadFileSync.mockImplementation((p: PathOrFileDescriptor) =>
+      String(p).endsWith('src/large.ts')
+        ? Array.from({ length: 121 }, () => 'const x = 1;').join('\n')
+        : makeJsonReport([]),
+    );
+
+    const result = await engine.run('src/large.ts', {
+      workDir: '/sb',
+      testRunner: 'command',
+      timeoutMs: 30_000,
+    });
+
+    expect(result.batchesPlanned).toBe(2);
+    // The scopeNote is present on every batched run — which is exactly why
+    // hasNoMutableLogic cannot be inferred from it.
+    expect(result.scopeNote).toBeTruthy();
+    expect(result.scopeKind).toBe('whole-file');
+  });
+
+  it('labels a batched line-scoped run scoped', async () => {
+    mockReadFileSync.mockImplementation((p: PathOrFileDescriptor) =>
+      String(p).endsWith('src/large.ts')
+        ? Array.from({ length: 300 }, () => 'const x = 1;').join('\n')
+        : makeJsonReport([]),
+    );
+
+    const result = await engine.run('src/large.ts', {
+      workDir: '/sb',
+      testRunner: 'command',
+      timeoutMs: 30_000,
+      lineRanges: [{ start: 1, end: 200 }],
+    });
+
+    expect(result.batchesPlanned).toBe(3);
+    expect(result.scopeKind).toBe('scoped');
+  });
+
+  it('leaves scopeKind unset for a dry run, which enumerated nothing', () => {
+    expect(dryRunResult('src/app.ts').scopeKind).toBeUndefined();
+  });
+});
+
+/**
+ * Helper: the value passed after `--mutate`.
+ *
+ * Indexed lookups used to be fine because `--mutate` sat at a fixed offset, but
+ * every run now carries the generated overlay config as Stryker's `configFile`
+ * argument right after `run`, so the offset moved. Looking the flag up by name
+ * keeps these assertions about the mutate scope rather than about argv layout.
+ */
+function mutateValueOf(args: string[]): string | undefined {
+  const idx = args.indexOf('--mutate');
+  return idx === -1 ? undefined : args[idx + 1];
+}
 
 /** Helper: check if an args array contains a flag-value pair. */
 function argArgsContain(args: string[], flag: string, value: string): boolean {

@@ -47,7 +47,7 @@ describe('parseCosmicRayDump', () => {
       line('core/ReplaceBinaryOperator_Sub_Mul', [183, 18], 'killed'),
       line('core/ReplaceBinaryOperator_Add_Sub', [73, 60], 'survived', SURVIVED_DIFF),
     ].join('\n');
-    const r = parseCosmicRayDump(dump, target);
+    const { result: r } = parseCosmicRayDump(dump, target);
     expect(r.killed).toBe(1);
     expect(r.survived).toBe(1);
     expect(r.totalMutants).toBe(2);
@@ -60,7 +60,7 @@ describe('parseCosmicRayDump', () => {
       line('core/NumberReplacer', [11, 1], 'survived'),
       line('core/ReplaceBinaryOperator_Add_Sub', [12, 1], 'incompetent'),
     ].join('\n');
-    const r = parseCosmicRayDump(dump, target);
+    const { result: r } = parseCosmicRayDump(dump, target);
     expect(r.killed).toBe(1);
     expect(r.survived).toBe(1);
     expect(r.totalMutants).toBe(2); // incompetent dropped
@@ -69,7 +69,7 @@ describe('parseCosmicRayDump', () => {
 
   it('builds a survivor vulnerability with line (from start_pos), operator, and diff text', () => {
     const dump = line('core/ReplaceBinaryOperator_Add_Sub', [73, 60], 'survived', SURVIVED_DIFF);
-    const r = parseCosmicRayDump(dump, target);
+    const { result: r } = parseCosmicRayDump(dump, target);
     expect(r.vulnerabilities).toHaveLength(1);
     const v = r.vulnerabilities[0];
     expect(v.line).toBe(73); // start_pos[0]
@@ -80,7 +80,7 @@ describe('parseCosmicRayDump', () => {
 
   it('does not emit a vulnerability for killed mutants', () => {
     const dump = line('core/ReplaceBinaryOperator_Sub_Mul', [183, 18], 'killed');
-    expect(parseCosmicRayDump(dump, target).vulnerabilities).toHaveLength(0);
+    expect(parseCosmicRayDump(dump, target).result.vulnerabilities).toHaveLength(0);
   });
 
   it('ignores pending (null result) jobs', () => {
@@ -88,13 +88,13 @@ describe('parseCosmicRayDump', () => {
       line('core/NumberReplacer', [1, 1], 'killed'),
       line('core/NumberReplacer', [2, 1], null), // pending — exec interrupted
     ].join('\n');
-    const r = parseCosmicRayDump(dump, target);
+    const { result: r } = parseCosmicRayDump(dump, target);
     expect(r.totalMutants).toBe(1);
     expect(r.killed).toBe(1);
   });
 
   it('treats an empty dump as 100% (no mutants)', () => {
-    const r = parseCosmicRayDump('', target);
+    const { result: r } = parseCosmicRayDump('', target);
     expect(r.totalMutants).toBe(0);
     expect(r.mutationScore).toBe('100.00%');
     expect(r.vulnerabilities).toHaveLength(0);
@@ -105,14 +105,14 @@ describe('parseCosmicRayDump', () => {
       line('core/NumberReplacer', [1, 1], 'killed'),
       line('core/NumberReplacer', [2, 1], 'killed'),
     ].join('\n');
-    const r = parseCosmicRayDump(dump, target);
+    const { result: r } = parseCosmicRayDump(dump, target);
     expect(r.mutationScore).toBe('100.00%');
     expect(r.survived).toBe(0);
   });
 
   it('skips malformed dump lines without throwing', () => {
     const dump = ['{not json', line('core/NumberReplacer', [1, 1], 'killed')].join('\n');
-    const r = parseCosmicRayDump(dump, target);
+    const { result: r } = parseCosmicRayDump(dump, target);
     expect(r.killed).toBe(1);
     expect(r.totalMutants).toBe(1);
   });

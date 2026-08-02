@@ -1,260 +1,40 @@
+/**
+ * Mutation testing engine for Rust files (cargo-mutants).
+ *
+ * This module is the ENGINE and nothing else: it sequences one run — resolve
+ * jobs and the `--file` glob → probe the target → invoke cargo-mutants →
+ * diagnose a startup/baseline failure → parse the output — and owns the
+ * filesystem and subprocess work that sequencing needs. Every phase's substance
+ * lives under `engines/rust/`:
+ *
+ *   args.ts         — `-j` job policy and `--file` glob escaping (pure)
+ *   report.ts       — cargo-mutants text-output parsing and scoring (pure)
+ *   canonicalize.ts — mapping change descriptions to canonical mutators (pure)
+ *
+ * The helpers are re-exported here because that is the surface the test suite
+ * and callers (`src/estimate.ts` imports `escapeCargoFileGlob` from this path)
+ * already import; the split moved where they live, not what the module offers.
+ */
+import { existsSync } from 'node:fs';
 import { cpus } from 'node:os';
-import { BaseEngine, RunOptions, MutationResult, Vulnerability } from './base.js';
+import { resolve } from 'node:path';
+import { BaseEngine, RunOptions, MutationResult } from './base.js';
 import { invokeMutationTool } from '../utils/exec-classify.js';
 import { log, isVerbose } from '../utils/logger.js';
 import { DEFAULT_TIMEOUT_MS } from '../utils/constants.js';
+import { resolveCargoJobs, escapeCargoFileGlob } from './rust/args.js';
+import { parseCargoMutantsText } from './rust/report.js';
 
-/**
- * Resolve the cargo-mutants `-j` job count. Explicit `concurrency` (from a tool
- * arg or `rust.concurrency` config, already validated to 1–64) is honored as-is.
- * Otherwise a deliberately LOW default: `2` when the machine has spare cores
- * (`cpuCount >= 3`), else `1` (serial). cargo-mutants' own docs warn against
- * core-scaling `-j` for Rust — its build/test tooling is already parallel, and
- * each job needs its own multi-GB `target/` copy — so the default stays small.
- * A result of `1` means "serial"; the engine omits `-j` entirely in that case.
- */
-export function resolveCargoJobs(concurrency: number | undefined, cpuCount: number): number {
-  if (typeof concurrency === 'number' && Number.isInteger(concurrency) && concurrency >= 1) {
-    return concurrency;
-  }
-  return cpuCount >= 3 ? 2 : 1;
-}
-
-/**
- * Structured JSON output from `cargo mutants --output`.
- */
-interface CargoMutantsJsonOutput {
-  /** Summary statistics */
-  summary?: {
-    caught?: number;
-    missed?: number;
-    total?: number;
-  };
-  /** Detailed mutant results */
-  mutants?: {
-    file?: string;
-    line?: number;
-    description?: string;
-    caught?: boolean;
-    status?: string;
-  }[];
-}
-
-/**
- * Authoritative per-outcome counts extracted from cargo-mutants' final summary
- * line, e.g. "47 mutants tested in 30s: 4 missed, 42 caught, 1 unviable".
- */
-interface CargoSummary {
-  caught: number;
-  missed: number;
-  unviable: number;
-  timeout: number;
-}
-
-/**
- * Extract cargo-mutants' summary counts from its final report line.
- *
- * WHY this is load-bearing: by default cargo-mutants (v27) prints ONLY the
- * MISSED (and, with extra flags, TIMEOUT/UNVIABLE) result lines — CAUGHT mutants
- * are silent. So counting printed lines alone under-reports both `total` and
- * `killed`, yielding a bogus 0% score on a suite that actually kills most
- * mutants. The summary line is the ground truth for the totals; the per-line
- * MISSED entries remain the source of survivor detail.
- *
- * The line looks like:
- *   "47 mutants tested in 30s: 4 missed, 42 caught, 1 unviable"
- *   "13 mutants tested in 14s: 2 missed, 11 caught"
- * (order/set of categories varies; zero-count categories are omitted).
- * Returns null when no summary line is present (e.g. the synthetic fixtures
- * that predate v27's output format), so callers fall back to line-counting.
- */
-function parseCargoSummary(stdout: string): CargoSummary | null {
-  const lines = stdout.split('\n');
-  // Scan from the end: the summary is the last such line cargo-mutants prints.
-  for (let i = lines.length - 1; i >= 0; i--) {
-    // Match "<n> mutants tested ... : <tail>". "Found N mutants to test" says
-    // "to test", not "tested", so it is correctly excluded.
-    const head = lines[i].match(/\bmutants?\s+tested\b[^:]*:(.*)$/i);
-    if (!head) continue;
-
-    const summary: CargoSummary = { caught: 0, missed: 0, unviable: 0, timeout: 0 };
-    let matched = false;
-    const re = /(\d+)\s+([a-zA-Z]+)/g;
-    let g: RegExpExecArray | null;
-    while ((g = re.exec(head[1])) !== null) {
-      const n = parseInt(g[1], 10);
-      const label = g[2].toLowerCase();
-      if (label.startsWith('caught')) {
-        summary.caught += n;
-        matched = true;
-      } else if (label.startsWith('miss')) {
-        summary.missed += n;
-        matched = true;
-      } else if (label.startsWith('unviable')) {
-        summary.unviable += n;
-        matched = true;
-      } else if (label.startsWith('timeout')) {
-        summary.timeout += n;
-        matched = true;
-      }
-    }
-    if (matched) return summary;
-  }
-  return null;
-}
-
-/**
- * Strip cargo-mutants' trailing " in <build> build + <test> test" timing suffix
- * from a mutant description. WHY: the timing varies run-to-run ("in 0s build +
- * 0s test" vs "in 8s build + 2s test"), so leaving it in the `mutator` label
- * would give the SAME logical mutant a different suppression/verify key on every
- * run, silently breaking baseline re-tests. Only the trailing timing clause is
- * removed; an earlier "... in <fn_name>" in the mutation text is preserved.
- */
-function stripCargoTiming(desc: string): string {
-  return desc.replace(/\s+in\s+\S+\s+build\s+\+\s+\S+\s+test$/, '').trim();
-}
-
-/**
- * Parse cargo-mutants text output into a MutationResult.
- *
- * cargo-mutants stdout contains survivor lines like:
- *   "MISSED   src/main.rs:42:9: replace > with >= in fn foo in 0s build + 0s test"
- *   "UNCAUGHT src/main.rs:88:5: ..."
- * plus a final summary line ("N mutants tested in Xs: A missed, B caught, ...").
- *
- * Cargo-mutants uses the terms MISSED (survived) and CAUGHT (killed) — but only
- * MISSED lines are printed by default (see parseCargoSummary), so the summary
- * line is preferred for the totals when present.
- */
-function parseCargoMutantsText(stdout: string, filePath: string): MutationResult {
-  const lines = stdout.split('\n').filter((l) => l.trim());
-  let lineTotal = 0;
-  let lineKilled = 0;
-  const vulnerabilities: MutationResult['vulnerabilities'] = [];
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-    const upper = trimmed.toUpperCase();
-    const isMissed = upper.startsWith('MISSED');
-    const isCaught = upper.startsWith('CAUGHT');
-    const isUncaught = upper.startsWith('UNCAUGHT');
-    // `cargo mutants` text output uses mixed case (`timeout`, `Timeout`),
-    // unlike its JSON output. Normalise to uppercase before matching.
-    // (Live-audit L4 fix.)
-    const isTimeout = upper.startsWith('TIMEOUT');
-
-    if (!isMissed && !isCaught && !isUncaught && !isTimeout) continue;
-
-    lineTotal++;
-    // Audit finding H3: TIMEOUT mutants are tests that hung past the per-mutant
-    // timeout. They DID detect the mutant (the test suite hung trying to assert
-    // against it), so count them as caught, not skipped.
-    if (isCaught || isTimeout) {
-      lineKilled++;
-      continue;
-    }
-
-    // Extract line number and trailing description from
-    // "MISSED   src/file.rs:42:9: replace add -> sub with ..." (the description
-    // separator may be a colon or spaces). cargo-mutants sometimes drops the
-    // column (e.g. "MISSED src/file.rs:42: replace ..."), so accept either:
-    // ":<line>:<col>:" or a bare ":<line>:" / ":<line>" at end-of-line (audit L7).
-    const locMatch = trimmed.match(/:(\d+)(?::\d+)?:?\s*(.*)$/);
-    const mutantLine = locMatch ? parseInt(locMatch[1], 10) : 0;
-    const desc = locMatch && locMatch[2] ? stripCargoTiming(locMatch[2].trim()) : '';
-
-    const vuln: Vulnerability = {
-      line: mutantLine,
-      // Derive a per-mutant label from the description, mirroring the JSON
-      // branch below (H2/I4): two different mutations on the same line must
-      // get distinct `mutator` values, or suppression/verify keys (which are
-      // `keyOf(line, mutator)`) collapse them into one entry.
-      mutator: desc || 'Rust Mutation Operator',
-      description: `Mutation survived at line ${mutantLine}. The Rust test suite did not catch this change.`,
-    };
-    if (desc) vuln.mutated = desc;
-    vulnerabilities.push(vuln);
-  }
-
-  // Prefer the authoritative summary line over line counts — cargo-mutants only
-  // prints MISSED lines by default, so line-counting alone reports a false 0%.
-  // Unviable mutants (did not compile) are excluded from the denominator, since
-  // they were never actually exercised by a test.
-  const summary = parseCargoSummary(stdout);
-  let total: number;
-  let killed: number;
-  let survived: number;
-  // Unviable mutants (did not compile) are excluded from the denominator above;
-  // surface them via the shared `incompetent` field so callers can see how many
-  // mutants were skipped (base.ts MutationResult contract).
-  let incompetent = 0;
-  if (summary) {
-    killed = summary.caught + summary.timeout;
-    survived = summary.missed;
-    total = killed + survived;
-    incompetent = summary.unviable;
-  } else {
-    total = lineTotal;
-    killed = lineKilled;
-    survived = total - killed;
-  }
-
-  const score = total > 0 ? ((killed / total) * 100).toFixed(2) : '100.00';
-
-  return {
-    target: filePath,
-    totalMutants: total,
-    killed,
-    survived,
-    mutationScore: `${score}%`,
-    vulnerabilities,
-    ...(incompetent > 0 ? { incompetent } : {}),
-  };
-}
-
-/**
- * Attempt to parse cargo-mutants output as JSON, falling back to text parsing.
- */
-function parseCargoMutantsOutput(stdout: string, filePath: string): MutationResult {
-  // Try JSON first
-  try {
-    const parsed = JSON.parse(stdout) as CargoMutantsJsonOutput;
-
-    if (parsed.summary && parsed.mutants) {
-      const { caught = 0, missed = 0, total = caught + missed } = parsed.summary;
-
-      return {
-        target: filePath,
-        totalMutants: total,
-        killed: caught,
-        survived: missed,
-        mutationScore: `${total > 0 ? ((caught / total) * 100).toFixed(2) : '100.00'}%`,
-        vulnerabilities: parsed.mutants
-          .filter(
-            (m) =>
-              !m.caught &&
-              (m.status === 'MISSED' || m.status === 'missed' || m.status === 'UNCAUGHT'),
-          )
-          .map((m) => {
-            const vuln: Vulnerability = {
-              line: m.line ?? 0,
-              // `||` (not `??`) so empty-string descriptions fall back to the default label.
-              mutator: m.description || 'Rust Mutation Operator',
-              description: `Mutation survived at line ${m.line ?? 'unknown'}. The Rust test suite did not catch this change.`,
-            };
-            if (m.description) vuln.mutated = m.description;
-            return vuln;
-          }),
-      };
-    }
-  } catch {
-    // Not JSON — fall through to text parsing
-  }
-
-  // Fall back to text output
-  return parseCargoMutantsText(stdout, filePath);
-}
+export { resolveCargoJobs, escapeCargoFileGlob } from './rust/args.js';
+export {
+  type CargoSummary,
+  type ScoredCounts,
+  parseCargoSummary,
+  scoreCounts,
+  stripCargoTiming,
+  noMutantsError,
+  parseCargoMutantsText,
+} from './rust/report.js';
 
 /**
  * Mutation testing engine for Rust files.
@@ -270,15 +50,42 @@ export class RustEngine extends BaseEngine {
     const cwd = options?.workDir ?? process.cwd();
     const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
-    // cargo-mutants `--file` is a glob matched against the source path. Pass the
+    // cargo-mutants `--file` is a GLOB matched against the source path. Pass the
     // full workspace-relative path (Med#9) so the run is scoped to exactly this
-    // file — a bare basename would also match same-named files in other dirs.
+    // file — a bare basename would also match same-named files in other dirs —
+    // and escape it (Med#4) so a metacharacter that is legal in a filename does
+    // not turn the path into a pattern matching some other file, or none.
     const jobs = resolveCargoJobs(options?.concurrency, cpus().length);
-    const args = ['mutants', '--file', filePath];
+    const fileGlob = escapeCargoFileGlob(filePath);
+
+    // Does the target actually exist under the run's working directory? This is
+    // the signal that lets the zero-mutant guard tell "the glob matched nothing"
+    // (an error) from "this file has no mutable logic" (a legitimate zero) —
+    // cargo-mutants prints the identical "Found 0 mutants to test" and exits 0
+    // for both. See noMutantsError for why the distinction matters.
+    //
+    // Checked with the ORIGINAL, UNESCAPED `filePath`: the escaping exists only
+    // to stop the glob engine reinterpreting a metacharacter, whereas a `[` in a
+    // real filename is just a `[` to the filesystem — probing for the escaped
+    // `token[[]0[]].rs` would find nothing and turn every such file into a false
+    // error, exactly the bug Med#4 fixed on the glob side.
+    //
+    // `workDir` is a HOST path in both execution modes (the container session
+    // bind-mounts it to /workspace), so a host-side stat is correct for both.
+    // `resolve` rather than `join` so an absolute `filePath` is probed where it
+    // actually lives instead of being appended to the sandbox root. A stat that
+    // cannot see the file only ever routes us to the pre-existing error path, so
+    // the check can never manufacture a score that was not there before.
+    const targetExists = existsSync(resolve(cwd, filePath));
+
+    const args = ['mutants', '--file', fileGlob];
     if (jobs > 1) args.push('-j', String(jobs));
 
     if (isVerbose()) {
-      log(`RustEngine: cargo mutants --file "${filePath}"${jobs > 1 ? ` -j ${jobs}` : ''}`);
+      // Log the escaped pattern, i.e. the argument cargo-mutants actually
+      // receives — that is the string an operator needs in order to reproduce
+      // the run by hand. It is identical to `filePath` for ordinary paths.
+      log(`RustEngine: cargo mutants --file "${fileGlob}"${jobs > 1 ? ` -j ${jobs}` : ''}`);
     }
 
     let stdout: string;
@@ -298,6 +105,20 @@ export class RustEngine extends BaseEngine {
       // a typed ExecFailureError back for the rust-specific handling below.
       const execErr = this.toExecFailure(error, 'cargo-mutants');
 
+      // Cancellation FIRST — before the rewrap below.
+      //
+      // `invokeMutationTool` deliberately rethrows an abort as the raw
+      // `ExecFailureError` with `code: 'ABORTED'` so `isCancel` can still
+      // recognise it ("Rethrow the classified error untouched so the code (and
+      // `isCancel`) survive", utils/exec-classify.ts); python.ts guards the same
+      // way for the same reason. A killed child arrives here with empty stdout,
+      // so without this branch a deliberate stop came back wearing the phantom
+      // diagnosis `cargo-mutants failed (exit null) with no parseable output …
+      // run \`cargo test\``, and the marker `isCancel` keys on was gone. Callers
+      // with a request context are rescued by `ctx.signal.aborted`; `computeCount`
+      // in estimate.ts has none.
+      if (execErr.code === 'ABORTED') throw execErr;
+
       // Non-zero exit: cargo-mutants exits non-zero when mutants survive OR
       // when the baseline `cargo test` itself fails. If stdout is empty we
       // treat it as a baseline failure (no mutants parsed out); otherwise
@@ -305,7 +126,12 @@ export class RustEngine extends BaseEngine {
       stdout = execErr.stdout;
       stderr = execErr.stderr;
 
-      if (!stdout) {
+      // Whitespace-only stdout (e.g. a lone "\n" flushed before the run died)
+      // carries no mutants either, but is truthy — a bare `!stdout` check would
+      // let it through to the text parser and report a useless zero-mutant
+      // result instead of the accurate "baseline test suite failed" diagnosis.
+      // `!stdout ||` guards the case where stdout is absent entirely.
+      if (!stdout || !stdout.trim()) {
         throw new Error(
           `cargo-mutants failed (exit ${execErr.exit}) with no parseable output. ` +
             `This usually means the baseline test suite itself failed \u2014 run \`cargo test\` and fix those first. ` +
@@ -318,6 +144,11 @@ export class RustEngine extends BaseEngine {
       log(`cargo-mutants stderr: ${stderr.slice(0, 500)}`);
     }
 
-    return parseCargoMutantsOutput(stdout, filePath);
+    // Text only: `run` never asks for structured output (`--output` writes
+    // `mutants.out/outcomes.json` to DISK; stdout is always human-readable), so
+    // there is nothing to attempt a JSON parse on. The old JSON branch was
+    // unreachable, validated a shape `outcomes.json` does not have anyway, and
+    // cost a throwaway multi-MB `JSON.parse` on every run (audit L7).
+    return parseCargoMutantsText(stdout, filePath, targetExists);
   }
 }

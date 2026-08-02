@@ -6,6 +6,16 @@ vi.mock('../utils/exec-classify.js', async () => {
   );
   return { ...actual, invokeMutationTool: vi.fn() };
 });
+// The engine's diagnostics go through the logger; mock it so the verbose paths
+// are observable instead of writing to the test runner's stderr.
+vi.mock('../utils/logger.js', () => ({
+  log: vi.fn(),
+  isVerbose: vi.fn(() => false),
+  // `warn` is always-on (it does not check verbose), so the totals cross-check
+  // in parseInfectionJsonLog would write to the runner's stderr unmocked.
+  warn: vi.fn(),
+}));
+
 vi.mock('fs', async () => {
   const actual = await vi.importActual<typeof import('fs')>('fs');
   return {
@@ -20,13 +30,15 @@ vi.mock('fs', async () => {
 
 import { existsSync, writeFileSync, readFileSync, mkdirSync, rmSync } from 'fs';
 import { invokeMutationTool, MutationToolStartupError } from '../utils/exec-classify.js';
-import { ExecFailureError } from '../utils/exec.js';
+import { ExecFailureError } from '../utils/exec-error.js';
 import {
   PhpEngine,
   parseInfectionJsonLog,
   buildInfectionConfig,
   inferSourceDir,
   infectionDiagnostics,
+  diagnoseInfectionStartupFailure,
+  explainMissingJsonLog,
   phpunitFailsOnWarning,
 } from '../engines/php.js';
 
@@ -103,6 +115,44 @@ describe('phpunitFailsOnWarning', () => {
   it('is false for a file with no phpunit element at all', () => {
     expect(phpunitFailsOnWarning('<not-phpunit failOnWarning="true"/>')).toBe(false);
   });
+
+  it('strips a MULTI-LINE comment before looking for the root element', () => {
+    // The comment strip is lazy and spans newlines. Narrowed to a single
+    // character (or to whitespace/non-whitespace only) it stops matching real
+    // comments, and a commented-out root element is read as the live one.
+    const xml = `<!--
+      <phpunit failOnWarning="true">
+        an old config someone left behind
+      </phpunit>
+    -->
+<phpunit bootstrap="x.php"/>`;
+    expect(phpunitFailsOnWarning(xml)).toBe(false);
+  });
+
+  it('strips each comment separately rather than everything between the first and last', () => {
+    // Lazy `*?`: a greedy match would swallow the real root element sitting
+    // between two comments and report false for a config that does set it.
+    const xml = `<!-- first --><phpunit failOnWarning="true"/><!-- second -->`;
+    expect(phpunitFailsOnWarning(xml)).toBe(true);
+  });
+
+  it("tolerates whitespace around the attribute's equals sign", () => {
+    // `\s*=\s*` — XML permits padding, and tightening either side to `\S*`
+    // makes a legitimately-configured project look unconfigured.
+    expect(phpunitFailsOnWarning('<phpunit failOnWarning = "true"/>')).toBe(true);
+    expect(phpunitFailsOnWarning('<phpunit failOnWarning\t=\n"true"/>')).toBe(true);
+  });
+
+  it('requires the quotes around the value to match', () => {
+    // The `(["'])…\1` backreference: a mismatched pair is malformed XML, not a
+    // setting.
+    expect(phpunitFailsOnWarning(`<phpunit failOnWarning="true'/>`)).toBe(false);
+  });
+
+  it('does not match a longer attribute that merely ends in failOnWarning', () => {
+    // The `\b` word boundary.
+    expect(phpunitFailsOnWarning('<phpunit xfailOnWarning="true"/>')).toBe(false);
+  });
 });
 
 describe('inferSourceDir', () => {
@@ -114,15 +164,50 @@ describe('inferSourceDir', () => {
     expect(inferSourceDir('Calculator.php')).toBe('.');
   });
   it('returns "." for a leading-slash path rather than an empty source directory', () => {
-    // The `slash > 0` guard, not `>= 0`: a path starting with a separator has
-    // its first slash at index 0, and slicing there yields '' — which would be
-    // written into the generated config as `source.directories: [""]` and make
-    // Infection mutate nothing. Normalized backslashes take the same path.
+    // A path starting with a separator has no usable first segment, and an empty
+    // one would be written into the generated config as
+    // `source.directories: [""]`, making Infection mutate nothing. Its own
+    // directory is the filesystem root, which is not a source root either, so
+    // "." is the honest answer here. Normalized backslashes take the same path.
     expect(inferSourceDir('/Calculator.php')).toBe('.');
     expect(inferSourceDir('\\Calculator.php')).toBe('.');
   });
   it('normalizes backslash separators to forward slashes', () => {
     expect(inferSourceDir('src\\Domain\\Calculator.php')).toBe('src');
+  });
+
+  it('strips a leading "./" instead of reporting the whole project tree', () => {
+    // `./src/Calculator.php` has its first slash at index 1, so the raw
+    // first-segment slice was the literal "." — which tells Infection to treat
+    // the ENTIRE project (vendor/, tests/ and all) as mutable source. The
+    // provenance check in this same file already normalised a leading "./", so
+    // the two functions used to disagree about the same input.
+    expect(inferSourceDir('./src/Calculator.php')).toBe('src');
+    expect(inferSourceDir('.\\src\\Calculator.php')).toBe('src');
+    expect(inferSourceDir('././app/Service/Math.php')).toBe('app');
+  });
+
+  it('makes an absolute target relative to the directory Infection runs in', () => {
+    // The sandbox path shape: the config is written to `cwd`, so the source root
+    // must be expressed relative to it — not collapsed to "." because the first
+    // slash sits at index 0.
+    expect(inferSourceDir('/sb/src/Calculator.php', '/sb')).toBe('src');
+    expect(inferSourceDir('/sb/app/Service/Math.php', '/sb')).toBe('app');
+  });
+
+  it("falls back to the file's own directory when it lies outside cwd", () => {
+    // Nothing can be named as a top-level source directory here, but the file's
+    // own directory is still far narrower than the project root — and "." is
+    // exactly the over-broad scope that drags vendor/ and tests/ into the run.
+    expect(inferSourceDir('/opt/other/src/Calculator.php', '/sb')).toBe('../opt/other/src');
+    expect(inferSourceDir('/sb/../lib/Calculator.php', '/sb')).toBe('../lib');
+  });
+
+  it('never returns a bare ancestor chain, which would be broader than "."', () => {
+    // `/Calculator.php` relative to `/sb/deep` is `../../Calculator.php`; its
+    // directory is `../..`, an ancestor of the project root. Falling back to
+    // that would widen the mutation scope rather than narrow it.
+    expect(inferSourceDir('/Calculator.php', '/sb/deep')).toBe('.');
   });
 });
 
@@ -147,26 +232,401 @@ describe('parseInfectionJsonLog', () => {
     expect(r.vulnerabilities[0].mutated).toContain('>=');
   });
 
-  it('excludes notCovered/errored from the denominator', () => {
+  it('reads the legacy timedOutCount when the modern key is absent', () => {
+    // Infection renamed `timedOutCount` to `timeOutCount`. The `??` chain falls
+    // through key-by-key; as `&&` the legacy key is skipped and the count comes
+    // from the array instead — which a stats/array skew makes wrong.
+    const log = JSON.stringify({
+      stats: { killedCount: 2, timedOutCount: 3 },
+      escaped: [],
+      killed: [],
+      timeouted: [],
+    });
+    const r = parseInfectionJsonLog(log, 'src/X.php');
+    expect(r.killed).toBe(5); // 2 killed + 3 timed out
+  });
+
+  it('prefers the modern timeOutCount over the legacy key', () => {
+    const log = JSON.stringify({
+      stats: { killedCount: 0, timeOutCount: 7, timedOutCount: 99 },
+      escaped: [],
+      killed: [],
+    });
+    expect(parseInfectionJsonLog(log, 'src/X.php').killed).toBe(7);
+  });
+
+  it('falls back to the timed-out ARRAY when neither count is present', () => {
+    const log = JSON.stringify({
+      stats: { killedCount: 1 },
+      escaped: [],
+      killed: [],
+      timeouted: [{}, {}],
+    });
+    expect(parseInfectionJsonLog(log, 'src/X.php').killed).toBe(3);
+  });
+
+  it('accepts a log whose mutants record no file path at all', () => {
+    // "Mutants with no recorded path cannot contradict anything." A blank path
+    // must be filtered out, not treated as a path that disagrees with the
+    // target — which would reject a perfectly good log as stale.
+    const log = JSON.stringify({
+      stats: { killedCount: 1, escapedCount: 0 },
+      escaped: [],
+      killed: [{ mutator: { mutatorName: 'Plus', originalFilePath: '' } }],
+    });
+    expect(() => parseInfectionJsonLog(log, 'src/Calculator.php')).not.toThrow();
+  });
+
+  it('normalises Windows backslash paths on both sides of the comparison', () => {
+    // Infection on Windows records `C:\\sb\\src\\Calculator.php`; the audit target
+    // is POSIX. Without the backslash→slash rewrite the two never match and a
+    // valid log is rejected as stale.
+    const log = JSON.stringify({
+      stats: { killedCount: 1, escapedCount: 0 },
+      escaped: [],
+      killed: [
+        { mutator: { mutatorName: 'Plus', originalFilePath: 'C:\\sb\\src\\Calculator.php' } },
+      ],
+    });
+    expect(() => parseInfectionJsonLog(log, 'src\\Calculator.php')).not.toThrow();
+  });
+
+  it('strips a leading "./" from the target before comparing', () => {
+    const log = JSON.stringify({
+      stats: { killedCount: 1, escapedCount: 0 },
+      escaped: [],
+      killed: [{ mutator: { mutatorName: 'Plus', originalFilePath: '/sb/src/Calculator.php' } }],
+    });
+    expect(() => parseInfectionJsonLog(log, './src/Calculator.php')).not.toThrow();
+  });
+
+  it('still rejects a log that describes a genuinely different file', () => {
+    const log = JSON.stringify({
+      stats: { killedCount: 1, escapedCount: 0 },
+      escaped: [],
+      killed: [{ mutator: { mutatorName: 'Plus', originalFilePath: '/sb/src/Other.php' } }],
+    });
+    expect(() => parseInfectionJsonLog(log, 'src/Calculator.php')).toThrow(
+      /describes a different file/,
+    );
+  });
+
+  it('accepts a log where ANY mutant matches the target, not only when all do', () => {
+    // `.some(...)`. As `.every(...)` a log covering the target plus one other
+    // file is rejected as stale — and Infection's `--filter` is a prefix match,
+    // so mixed logs are normal.
+    const log = JSON.stringify({
+      stats: { killedCount: 2, escapedCount: 0 },
+      escaped: [],
+      killed: [
+        { mutator: { mutatorName: 'Plus', originalFilePath: '/sb/src/Calculator.php' } },
+        { mutator: { mutatorName: 'Minus', originalFilePath: '/sb/src/Helper.php' } },
+      ],
+    });
+    expect(() => parseInfectionJsonLog(log, 'src/Calculator.php')).not.toThrow();
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // notCovered / errored. Both used to vanish from the result entirely — no
+  // count, no note, nothing explaining why `totalMutants` was smaller than the
+  // run Infection actually performed. They are NOT the same outcome and are not
+  // reported the same way: see the parser's doc comment.
+  // ───────────────────────────────────────────────────────────────────────────
+  it('reports notCovered mutants as no-coverage vulnerabilities inside the denominator', () => {
+    // UPDATED (audit FIX 2): this case previously asserted totalMutants 2 —
+    // notCovered silently dropped. `notCovered` means "no test covers this
+    // line": nothing failed, the suite never looked. That is the same outcome
+    // the TypeScript engine reports as Stryker `NoCoverage` — an actionable hole
+    // that is unkilled and therefore inside the denominator — not an
+    // "unscoreable" mutant.
     const log = JSON.stringify({
       stats: { killedCount: 1, escapedCount: 1 },
       escaped: [{ mutator: { mutatorName: 'Plus', originalStartLine: 3 } }],
       killed: [{}],
-      notCovered: [{}, {}],
+      notCovered: [
+        { mutator: { mutatorName: 'Minus', originalStartLine: 7 }, diff: '  - $a - $b\n' },
+        { mutator: { mutatorName: 'Identical', originalStartLine: 9 } },
+      ],
       errored: [{}],
     });
     const r = parseInfectionJsonLog(log, 'src/X.php');
     expect(r.killed).toBe(1);
-    expect(r.survived).toBe(1);
-    expect(r.totalMutants).toBe(2); // notCovered + errored NOT counted
-    expect(r.mutationScore).toBe('50.00%');
+    expect(r.survived).toBe(1); // survivors only — notCovered is not a survivor
+    expect(r.totalMutants).toBe(4); // 1 killed + 1 escaped + 2 notCovered; errored excluded
+    expect(r.mutationScore).toBe('25.00%');
+    // `triage.ts` derives its noCoverage figure as vulnerabilities.length - survived.
+    expect(r.vulnerabilities).toHaveLength(3);
+    expect(r.vulnerabilities.filter((v) => v.kind === 'noCoverage')).toHaveLength(2);
+    const nc = r.vulnerabilities.find((v) => v.line === 7);
+    expect(nc).toMatchObject({ kind: 'noCoverage', mutator: 'Minus', mutated: '- $a - $b' });
+    expect(nc?.description).toMatch(/no test reached/i);
   });
 
-  it('returns a clean 100% when there are zero scored mutants', () => {
-    const r = parseInfectionJsonLog(JSON.stringify({ stats: {}, escaped: [] }), 'src/X.php');
+  it("reads Infection's REAL key `uncovered` into the denominator as no-coverage holes", () => {
+    // Infection's JSON reporter emits `uncovered`, NOT `notCovered` — verified
+    // at both ends of the supported range (0.27 JsonLogger, 0.34 JsonReporter).
+    // Reading only the alias meant `noCoverage` was ALWAYS 0 and every uncovered
+    // mutant vanished from both `vulnerabilities` and the denominator.
+    const log = JSON.stringify({
+      stats: { killedCount: 1, escapedCount: 1 },
+      escaped: [{ mutator: { mutatorName: 'Plus', originalStartLine: 3 } }],
+      killed: [{}],
+      uncovered: [
+        { mutator: { mutatorName: 'Minus', originalStartLine: 7 }, diff: '  - $a - $b\n' },
+        { mutator: { mutatorName: 'Identical', originalStartLine: 9 } },
+      ],
+    });
+    const r = parseInfectionJsonLog(log, 'src/X.php');
+    expect(r.killed).toBe(1);
+    expect(r.survived).toBe(1); // survivors only — uncovered is not a survivor
+    expect(r.totalMutants).toBe(4); // 1 killed + 1 escaped + 2 uncovered
+    expect(r.mutationScore).toBe('25.00%');
+    expect(r.vulnerabilities).toHaveLength(3);
+    expect(r.vulnerabilities.filter((v) => v.kind === 'noCoverage')).toHaveLength(2);
+    const nc = r.vulnerabilities.find((v) => v.line === 7);
+    expect(nc).toMatchObject({ kind: 'noCoverage', mutator: 'Minus', mutated: '- $a - $b' });
+    expect(nc?.description).toMatch(/no test reached/i);
+  });
+
+  it('still accepts the `notCovered` spelling as a tolerated alias', () => {
+    // Backwards compatibility for hand-written/legacy logs: the alias must keep
+    // producing exactly the same result as Infection's own key.
+    const entries = [
+      { mutator: { mutatorName: 'Minus', originalStartLine: 7 } },
+      { mutator: { mutatorName: 'Identical', originalStartLine: 9 } },
+    ];
+    const base = { stats: { killedCount: 1 }, escaped: [], killed: [{}] };
+    const viaAlias = parseInfectionJsonLog(
+      JSON.stringify({ ...base, notCovered: entries }),
+      'src/X.php',
+    );
+    const viaRealKey = parseInfectionJsonLog(
+      JSON.stringify({ ...base, uncovered: entries }),
+      'src/X.php',
+    );
+    expect(viaAlias.totalMutants).toBe(3);
+    expect(viaAlias.vulnerabilities.filter((v) => v.kind === 'noCoverage')).toHaveLength(2);
+    expect(viaAlias).toEqual(viaRealKey);
+  });
+
+  it('scores a file with NO TESTS AT ALL rather than reporting "no mutable logic"', () => {
+    // The failure this fix exists for: an untested PHP file's log carries ONLY
+    // `uncovered` entries. Reading the wrong key left killed 0 / survived 0 /
+    // total 0 → "n/a" / "no mutable logic" → ranked safest in triage and waved
+    // through the minScore gate.
+    const log = JSON.stringify({
+      stats: { totalMutantsCount: 2, killedCount: 0, escapedCount: 0, notCoveredCount: 2 },
+      escaped: [],
+      killed: [],
+      uncovered: [
+        { mutator: { mutatorName: 'Plus', originalStartLine: 4 } },
+        { mutator: { mutatorName: 'Minus', originalStartLine: 5 } },
+      ],
+    });
+    const r = parseInfectionJsonLog(log, 'src/Untested.php');
+    expect(r.totalMutants).toBe(2);
+    expect(r.killed).toBe(0);
+    expect(r.survived).toBe(0);
+    expect(r.mutationScore).toBe('0.00%');
+    expect(r.vulnerabilities).toHaveLength(2);
+    expect(r.vulnerabilities.every((v) => v.kind === 'noCoverage')).toBe(true);
+  });
+
+  it('folds killedByStaticAnalysis into the killed total (Infection 0.31+)', async () => {
+    // 0.31+ split `killedCount` into tests-only kills plus a separate
+    // `killedByStaticAnalysisCount`. Ignoring the latter dropped those mutants
+    // from numerator AND denominator and made the totals cross-check cry wolf.
+    const { warn } = await import('../utils/logger.js');
+    vi.mocked(warn).mockClear();
+    const log = JSON.stringify({
+      stats: {
+        totalMutantsCount: 6,
+        killedCount: 3,
+        killedByStaticAnalysisCount: 2,
+        escapedCount: 1,
+      },
+      escaped: [{ mutator: { mutatorName: 'Plus', originalStartLine: 3 } }],
+      killed: [{}, {}, {}],
+      killedByStaticAnalysis: [{}, {}],
+    });
+    const r = parseInfectionJsonLog(log, 'src/X.php');
+    expect(r.killed).toBe(5); // 3 by tests + 2 by static analysis
+    expect(r.totalMutants).toBe(6);
+    expect(r.mutationScore).toBe('83.33%');
+    expect(vi.mocked(warn)).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the killedByStaticAnalysis ARRAY when the count is absent', () => {
+    // Same convention as `timeouts`: the list drives no reported output, so the
+    // stat wins with the array length as fallback.
+    const log = JSON.stringify({
+      stats: { killedCount: 1 },
+      escaped: [],
+      killed: [{}],
+      killedByStaticAnalysis: [{}, {}],
+    });
+    expect(parseInfectionJsonLog(log, 'src/X.php').killed).toBe(3);
+  });
+
+  it('checks killedByStaticAnalysis mutants against the audited file too', () => {
+    // The list is fed into the provenance guard alongside every other list a
+    // stale log could carry.
+    const log = JSON.stringify({
+      stats: { killedCount: 0 },
+      escaped: [],
+      killed: [],
+      killedByStaticAnalysis: [
+        { mutator: { mutatorName: 'Plus', originalFilePath: '/sb/src/Other.php' } },
+      ],
+    });
+    expect(() => parseInfectionJsonLog(log, 'src/Calculator.php')).toThrow(/different file/i);
+  });
+
+  it('counts errored mutants as incompetent and keeps them out of the score', () => {
+    // base.ts defines `incompetent` as mutants the tool could not score because
+    // the mutated code failed before a real pass/fail — exactly Infection's
+    // `errored`. format.ts already renders it; it simply never fired for PHP.
+    const log = JSON.stringify({
+      stats: { killedCount: 2 },
+      escaped: [],
+      killed: [{}, {}],
+      errored: [{}, {}, {}],
+    });
+    const r = parseInfectionJsonLog(log, 'src/X.php');
+    expect(r.incompetent).toBe(3);
+    expect(r.totalMutants).toBe(2);
+    expect(r.mutationScore).toBe('100.00%');
+  });
+
+  it('omits incompetent entirely when nothing errored', () => {
+    // Present-but-zero reads as "the tool reported this" to consumers that only
+    // check for the key (format.ts guards on `> 0`, but the payload shape is
+    // user-visible). Matches the Rust engine's conditional spread.
+    const r = parseInfectionJsonLog(SAMPLE_LOG, 'src/Calculator.php');
+    expect(Object.keys(r)).not.toContain('incompetent');
+  });
+
+  it('checks notCovered mutants against the audited file too (stale-log provenance)', () => {
+    // notCovered entries are now REPORTED, so they need the same provenance
+    // guard as escaped/killed. A stale log whose only entries are another file's
+    // uncovered mutants would otherwise be published as this file's coverage holes.
+    const log = JSON.stringify({
+      stats: { killedCount: 0 },
+      escaped: [],
+      killed: [],
+      notCovered: [{ mutator: { mutatorName: 'Plus', originalFilePath: '/sb/src/Other.php' } }],
+    });
+    expect(() => parseInfectionJsonLog(log, 'src/Calculator.php')).toThrow(/different file/i);
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Schema drift. `JSON.parse` proves only that the bytes are JSON; every field
+  // read past it fails SOFT, so a log whose result keys this parser has never
+  // heard of scored killed 0 / survived 0 / total 0 — which formatMutationScore
+  // renders as a confident "100.00%".
+  // ───────────────────────────────────────────────────────────────────────────
+  it('refuses a log with no recognised result keys instead of scoring it 100%', () => {
+    // UPDATED (audit FIX 1): this case previously asserted the defect —
+    // `{"stats":{},"escaped":[]}` → totalMutants 0, "100.00%". Empty stats plus
+    // empty arrays is exactly what a wholesale key rename degrades to, and a
+    // real Infection run always emits its stats counts, so it cannot be
+    // mistaken for a genuinely mutant-free file.
+    expect(() =>
+      parseInfectionJsonLog(JSON.stringify({ stats: {}, escaped: [] }), 'src/X.php'),
+    ).toThrow(/no recognised result keys/);
+  });
+
+  it('names the supported Infection range and the keys it actually got', () => {
+    // A plausible future rename: the same data under names this parser cannot
+    // read. Without the guard it scores 100.00% for a file with 50 survivors.
+    const renamed = JSON.stringify({
+      summary: { totalCount: 50, detectedCount: 10 },
+      survivors: [{ mutator: { mutatorName: 'Plus', originalStartLine: 3 } }],
+    });
+    expect(() => parseInfectionJsonLog(renamed, 'src/X.php')).toThrow(/0\.27–0\.34/);
+    expect(() => parseInfectionJsonLog(renamed, 'src/X.php')).toThrow(/summary, survivors/);
+  });
+
+  it.each([
+    ['a JSON null', 'null'],
+    ['a JSON array', '[]'],
+    ['a bare number', '42'],
+    ['an empty object', '{}'],
+  ])('refuses %s rather than reading fields off it', (_label, text) => {
+    // `JSON.parse('null')` used to reach `parsed.escaped` and throw a raw
+    // TypeError; the others scored a silent 100%.
+    expect(() => parseInfectionJsonLog(text, 'src/X.php')).toThrow(/no recognised result keys/);
+  });
+
+  it('accepts a genuinely mutant-free run reported through stats alone', () => {
+    // The honest zero: Infection ran, found nothing to mutate, and said so with
+    // its own counts. That must still score (total 0 → "100.00%"), or a file of
+    // pure constants becomes an audit failure.
+    const log = JSON.stringify({
+      stats: { totalMutantsCount: 0, killedCount: 0, escapedCount: 0, timeOutCount: 0 },
+      escaped: [],
+      killed: [],
+    });
+    const r = parseInfectionJsonLog(log, 'src/X.php');
     expect(r.totalMutants).toBe(0);
     expect(r.mutationScore).toBe('100.00%');
     expect(r.vulnerabilities).toEqual([]);
+  });
+
+  it('accepts a log carrying only mutant lists, with no stats block at all', () => {
+    const log = JSON.stringify({ escaped: [{ mutator: { originalStartLine: 2 } }], killed: [{}] });
+    expect(parseInfectionJsonLog(log, 'src/X.php').totalMutants).toBe(2);
+  });
+
+  it('warns when Infection’s own total disagrees with what the parser read', async () => {
+    // The partial rename the recognised-keys guard cannot see: `stats` is
+    // intact, so the log looks understood, but the survivor list moved to a name
+    // we do not read and its 6 mutants vanish from the score.
+    const { warn } = await import('../utils/logger.js');
+    vi.mocked(warn).mockClear();
+    const log = JSON.stringify({
+      stats: { totalMutantsCount: 10, killedCount: 4 },
+      killed: [{}, {}, {}, {}],
+      survivedMutants: [{}, {}, {}, {}, {}, {}],
+    });
+    const r = parseInfectionJsonLog(log, 'src/X.php');
+    expect(r.mutationScore).toBe('100.00%'); // still the best reading of what was there…
+    expect(vi.mocked(warn)).toHaveBeenCalledWith(
+      expect.stringContaining('reports 10 mutant(s) in total but this parser accounted for 4'),
+    );
+  });
+
+  it('does not warn when the totals reconcile, including declared-but-unscored mutants', async () => {
+    // `ignored`/`skipped`/`syntaxError` mutants are legitimately part of
+    // Infection's total; counting them keeps the check from crying wolf on a
+    // perfectly well-read log.
+    const { warn } = await import('../utils/logger.js');
+    vi.mocked(warn).mockClear();
+    const log = JSON.stringify({
+      stats: {
+        totalMutantsCount: 8,
+        killedCount: 3,
+        escapedCount: 1,
+        timeOutCount: 1,
+        ignoredCount: 2,
+        skippedCount: 1,
+      },
+      escaped: [{ mutator: { originalStartLine: 5 } }],
+      killed: [{}, {}, {}],
+      timeouted: [{}],
+    });
+    parseInfectionJsonLog(log, 'src/X.php');
+    expect(vi.mocked(warn)).not.toHaveBeenCalled();
+  });
+
+  it('does not warn when the log carries no total to check against', async () => {
+    const { warn } = await import('../utils/logger.js');
+    vi.mocked(warn).mockClear();
+    parseInfectionJsonLog(
+      JSON.stringify({ stats: { killedCount: 1 }, escaped: [], killed: [{}] }),
+      'src/X.php',
+    );
+    expect(vi.mocked(warn)).not.toHaveBeenCalled();
   });
 
   it('throws on an unparseable (corrupt) JSON log rather than reporting a false 100%', () => {
@@ -513,6 +973,34 @@ describe('PhpEngine.run', () => {
     expect(result.survived).toBe(1);
   });
 
+  it('propagates an ABORTED ExecFailureError unchanged instead of rewrapping it', async () => {
+    // `invokeMutationTool` rethrows an abort as the raw ExecFailureError with
+    // `code: 'ABORTED'` so `isCancel` can still recognise it. Rewrapping it into
+    // a plain Error (which every branch below the guard does) destroys that
+    // marker and a cancelled run comes back wearing a plausible failure — or,
+    // when a log happens to be on disk, a plausible RESULT. Same guard as
+    // python.ts.
+    const aborted = new ExecFailureError(
+      { stdout: '', stderr: '', exit: null, signal: 'SIGTERM', code: 'ABORTED' },
+      'Infection aborted',
+    );
+
+    // No JSON log on disk: the pre-fix path rewrapped this as explainMissingJsonLog's
+    // plain Error.
+    mockExists.mockReturnValue(false);
+    mockInvoke.mockRejectedValue(aborted);
+    await expect(new PhpEngine().run('src/Calculator.php', { workDir: '/sb' })).rejects.toBe(
+      aborted,
+    );
+
+    // A log left on disk must not turn a cancelled run into a reported score.
+    mockExists.mockImplementation((p) => String(p).endsWith('chaos-infection-log.json'));
+    mockRead.mockReturnValue(SAMPLE_LOG);
+    await expect(new PhpEngine().run('src/Calculator.php', { workDir: '/sb' })).rejects.toBe(
+      aborted,
+    );
+  });
+
   it('throws a coverage-driver hint when no JSON log is produced', async () => {
     // A PHPUnit config IS present (so it is not the "unsupported runner" case),
     // but no log file ever appears → the coverage-driver hint.
@@ -719,6 +1207,201 @@ describe('PhpEngine.run', () => {
     );
   });
 
+  it('runs with no options object at all', async () => {
+    // `run(filePath)` is a valid call: workDir, timeoutMs, threads and
+    // test-framework options are each guarded by their own optional chain, and
+    // dropping ANY of them turns this into a TypeError before Infection starts.
+    mockExists.mockImplementation((p) => String(p).endsWith('chaos-infection-log.json'));
+    mockRead.mockReturnValue(SAMPLE_LOG);
+    mockInvoke.mockResolvedValue({ stdout: '', stderr: '', exit: 0, signal: null });
+
+    const engine = new PhpEngine();
+    await expect(engine.run('src/Calculator.php')).resolves.toMatchObject({
+      target: 'src/Calculator.php',
+    });
+  });
+
+  it('reports a config-write failure instead of running against a stale config', async () => {
+    // Without the generated config, Infection would run with whatever was on
+    // disk — a different scope than the caller asked for.
+    mockExists.mockImplementation((p) => String(p).endsWith('chaos-infection-log.json'));
+    mockWrite.mockImplementationOnce(() => {
+      throw new Error('EACCES: permission denied');
+    });
+
+    const engine = new PhpEngine();
+    await expect(engine.run('src/Calculator.php', { workDir: '/sb' })).rejects.toThrow(
+      'Failed to write generated infection.json: EACCES: permission denied',
+    );
+  });
+
+  it('logs the invocation only in verbose mode', async () => {
+    mockExists.mockImplementation((p) => String(p).endsWith('chaos-infection-log.json'));
+    mockRead.mockReturnValue(SAMPLE_LOG);
+    mockInvoke.mockResolvedValue({ stdout: '', stderr: '', exit: 0, signal: null });
+    const { isVerbose, log } = await import('../utils/logger.js');
+    const mockedLog = vi.mocked(log);
+    const engine = new PhpEngine();
+
+    vi.mocked(isVerbose).mockReturnValue(false);
+    mockedLog.mockClear();
+    await engine.run('src/Calculator.php', { workDir: '/sb' });
+    expect(mockedLog).not.toHaveBeenCalled();
+
+    vi.mocked(isVerbose).mockReturnValue(true);
+    mockedLog.mockClear();
+    await engine.run('src/Calculator.php', { workDir: '/sb' });
+    expect(mockedLog).toHaveBeenCalledWith(expect.stringContaining('PhpEngine: infection'));
+
+    vi.mocked(isVerbose).mockReturnValue(false);
+  });
+
+  it('logs Infection stderr in verbose mode, and nothing when stderr is empty', async () => {
+    // `isVerbose() && stderr` — both halves matter: a quiet run must not emit
+    // an empty "Infection stderr:" line, and a noisy one must surface it.
+    mockExists.mockImplementation((p) => String(p).endsWith('chaos-infection-log.json'));
+    mockRead.mockReturnValue(SAMPLE_LOG);
+    const { isVerbose, log } = await import('../utils/logger.js');
+    const mockedLog = vi.mocked(log);
+    const engine = new PhpEngine();
+    vi.mocked(isVerbose).mockReturnValue(true);
+
+    mockInvoke.mockResolvedValue({
+      stdout: '',
+      stderr: 'deprecation notice',
+      exit: 0,
+      signal: null,
+    });
+    mockedLog.mockClear();
+    await engine.run('src/Calculator.php', { workDir: '/sb' });
+    expect(mockedLog).toHaveBeenCalledWith(expect.stringContaining('Infection stderr:'));
+
+    mockInvoke.mockResolvedValue({ stdout: '', stderr: '', exit: 0, signal: null });
+    mockedLog.mockClear();
+    await engine.run('src/Calculator.php', { workDir: '/sb' });
+    expect(mockedLog).not.toHaveBeenCalledWith(expect.stringContaining('Infection stderr:'));
+
+    vi.mocked(isVerbose).mockReturnValue(false);
+  });
+
+  it('withholds the fidelity advisory when the project config cannot be read', async () => {
+    // An unreadable phpunit.xml answers "fails on warning = true", which
+    // SUPPRESSES the advisory: the note explains one specific misconfiguration,
+    // and speculating about a config we could not read would be noise.
+    mockExists.mockImplementation(
+      (p) => String(p).endsWith('chaos-infection-log.json') || String(p).endsWith('phpunit.xml'),
+    );
+    mockRead.mockImplementation((p: unknown) => {
+      if (String(p).endsWith('phpunit.xml')) throw new Error('EACCES');
+      return SAMPLE_LOG;
+    });
+    mockInvoke.mockResolvedValue({ stdout: '', stderr: '', exit: 0, signal: null });
+
+    const engine = new PhpEngine();
+    const result = await engine.run('src/Calculator.php', { workDir: '/sb' });
+
+    expect(result.survived).toBe(1);
+    expect(Object.keys(result)).not.toContain('fidelityNote');
+  });
+
+  it('emits the fidelity advisory when the project config does NOT fail on warnings', async () => {
+    // The other arm: a readable config that tolerates warnings is exactly the
+    // case the advisory exists for.
+    mockExists.mockImplementation(
+      (p) => String(p).endsWith('chaos-infection-log.json') || String(p).endsWith('phpunit.xml'),
+    );
+    mockRead.mockImplementation((p: unknown) =>
+      String(p).endsWith('phpunit.xml') ? '<phpunit failOnWarning="false"></phpunit>' : SAMPLE_LOG,
+    );
+    mockInvoke.mockResolvedValue({ stdout: '', stderr: '', exit: 0, signal: null });
+
+    const engine = new PhpEngine();
+    const result = await engine.run('src/Calculator.php', { workDir: '/sb' });
+
+    expect(result.fidelityNote).toBeTypeOf('string');
+  });
+
+  it.each(['infection.json', 'infection.json5'])(
+    'leaves an existing %s in place instead of overwriting it',
+    async (configName) => {
+      // Infection recognises both spellings. Dropping either name from the list
+      // makes the engine overwrite a config the project deliberately shipped.
+      mockExists.mockImplementation(
+        (p) =>
+          String(p).endsWith('chaos-infection-log.json') || String(p).endsWith(`/${configName}`),
+      );
+      mockRead.mockReturnValue(SAMPLE_LOG);
+      mockInvoke.mockResolvedValue({ stdout: '', stderr: '', exit: 0, signal: null });
+
+      await new PhpEngine().run('src/Calculator.php', { workDir: '/sb' });
+
+      expect(mockWrite).not.toHaveBeenCalledWith(
+        expect.stringContaining('infection.json'),
+        expect.anything(),
+        expect.anything(),
+      );
+    },
+  );
+
+  it.each([
+    'phpunit.xml',
+    'phpunit.xml.dist',
+    'phpunit.dist.xml',
+    'phpunit.yml',
+    'phpunit.yml.dist',
+    'phpunit.dist.yml',
+    'phpunit.php',
+  ])('reads %s when deciding whether to attach the fidelity advisory', async (configName) => {
+    // Each name Infection itself looks for must be probed here too: miss one and
+    // a project that DOES set failOnWarning still gets told its survivors may be
+    // overstated — advice that does not apply to it.
+    mockExists.mockImplementation(
+      (p) => String(p).endsWith('chaos-infection-log.json') || String(p).endsWith(`/${configName}`),
+    );
+    mockRead.mockImplementation((p: unknown) =>
+      String(p).endsWith(`/${configName}`) ? '<phpunit failOnWarning="true"/>' : SAMPLE_LOG,
+    );
+    mockInvoke.mockResolvedValue({ stdout: '', stderr: '', exit: 0, signal: null });
+
+    const result = await new PhpEngine().run('src/Calculator.php', { workDir: '/sb' });
+
+    expect(result.survived).toBe(1);
+    expect(Object.keys(result)).not.toContain('fidelityNote');
+  });
+
+  it("passes the caller's timeoutMs through to the Infection invocation", async () => {
+    // `options?.timeoutMs ?? DEFAULT_TIMEOUT_MS` — as `&&` an explicit timeout
+    // is discarded and every run silently takes the 5-minute default.
+    mockExists.mockImplementation((p) => String(p).endsWith('chaos-infection-log.json'));
+    mockRead.mockReturnValue(SAMPLE_LOG);
+    mockInvoke.mockResolvedValue({ stdout: '', stderr: '', exit: 0, signal: null });
+
+    const engine = new PhpEngine();
+    await engine.run('src/Calculator.php', { workDir: '/sb', timeoutMs: 12_345 });
+
+    expect(mockInvoke.mock.calls[0][3]).toMatchObject({ timeoutMs: 12_345 });
+  });
+
+  it('truncates a very long Infection stderr in the verbose log', async () => {
+    mockExists.mockImplementation((p) => String(p).endsWith('chaos-infection-log.json'));
+    mockRead.mockReturnValue(SAMPLE_LOG);
+    mockInvoke.mockResolvedValue({
+      stdout: '',
+      stderr: 'E'.repeat(5000),
+      exit: 0,
+      signal: null,
+    });
+    const { isVerbose, log } = await import('../utils/logger.js');
+    const mockedLog = vi.mocked(log);
+    vi.mocked(isVerbose).mockReturnValue(true);
+    mockedLog.mockClear();
+
+    await new PhpEngine().run('src/Calculator.php', { workDir: '/sb' });
+
+    expect(mockedLog).toHaveBeenCalledWith(`Infection stderr: ${'E'.repeat(500)}`);
+    vi.mocked(isVerbose).mockReturnValue(false);
+  });
+
   it('builds --threads: phpThreads wins, then concurrency, else max', async () => {
     mockExists.mockImplementation((p) => String(p).endsWith('chaos-infection-log.json'));
     mockRead.mockReturnValue(SAMPLE_LOG);
@@ -815,5 +1498,166 @@ describe('infectionDiagnostics', () => {
     const out = infectionDiagnostics({ stdout: '   \n\n  ', stderr: 'real failure' });
     expect(out).not.toContain('Infection output (tail)');
     expect(out).toContain('stderr (tail)');
+  });
+});
+
+describe('diagnoseInfectionStartupFailure', () => {
+  it('explains the exit-code-143 case as Infection killing its own test run', () => {
+    // Infection's InitialTestsRunner stops the process on the FIRST byte written
+    // to STDERR, so PHPUnit exits 143 (SIGTERM) even when every test passed.
+    // Reporting it as a failing suite sends the caller hunting a bug that is not
+    // there.
+    const out = diagnoseInfectionStartupFailure(
+      '[ERROR] Project tests must be in a passing state before running Infection.\n' +
+        'PHPUnit reported an exit code of 143.',
+    );
+    expect(out).toContain('first byte');
+    expect(out).toContain('STDERR');
+    expect(out).toContain('vendor/bin/phpunit 2>/tmp/suite.err');
+  });
+
+  it('explains the coverage-scope warning as a --filter artefact, not a test failure', () => {
+    const out = diagnoseInfectionStartupFailure(
+      'Warning: Class Foo is not a valid target for code coverage',
+    );
+    expect(out).toContain('coverage-scope warning');
+    expect(out).toContain('stopOnDefect');
+    expect(out).toContain('--filter');
+  });
+
+  it('returns null for output matching neither known signature', () => {
+    // Null is the signal to fall back to the raw diagnostics; inventing an
+    // explanation for an unrecognised failure would mislead.
+    expect(diagnoseInfectionStartupFailure('some unrelated failure')).toBeNull();
+    expect(diagnoseInfectionStartupFailure('')).toBeNull();
+  });
+
+  it('does not fire on an exit code that merely contains 143', () => {
+    // The probe matches the phrase "exit code of 143", not a bare number, so a
+    // line quoting e.g. 1143 or a duration of 143ms must not be diagnosed.
+    expect(diagnoseInfectionStartupFailure('finished in 143ms with exit code 1')).toBeNull();
+  });
+
+  it('prefers the 143 diagnosis when both signatures appear', () => {
+    // Order matters: the SIGTERM explanation is the root cause, and the coverage
+    // warning is frequently present in the same tail.
+    const out = diagnoseInfectionStartupFailure(
+      'is not a valid target for code coverage\nexit code of 143',
+    );
+    expect(out).toContain('first byte');
+    expect(out).not.toContain('coverage-scope warning');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// explainMissingJsonLog — the three-way failure diagnosis extracted out of
+// `run`. It RETURNS the error instead of throwing it, so each branch (and the
+// most-specific-first order between them) is a direct assertion.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('explainMissingJsonLog', () => {
+  const failure = (opts: { stdout?: string; stderr?: string; exit?: number | null }) =>
+    new ExecFailureError(
+      {
+        stdout: opts.stdout ?? '',
+        stderr: opts.stderr ?? '',
+        exit: opts.exit ?? 1,
+        signal: null,
+        code: undefined,
+      },
+      'Infection failed',
+    );
+
+  it('returns the error rather than throwing it', () => {
+    const returned = explainMissingJsonLog(failure({}), '/sb', true);
+    expect(returned).toBeInstanceOf(Error);
+  });
+
+  it('blames the missing PHPUnit config when we generated the Infection config', () => {
+    // No project Infection config (hasProjectConfig=false) and no phpunit.* at
+    // all: our generated config targets PHPUnit, so Infection can never run.
+    mockExists.mockReturnValue(false);
+    const message = explainMissingJsonLog(failure({ stdout: 'banner' }), '/sb', false).message;
+    expect(message).toContain(
+      'Infection could not run: no PHPUnit configuration found (looked for',
+    );
+    expect(message).toContain('phpunit.xml, phpunit.xml.dist');
+    expect(message).toContain('ship an Infection config (infection.json/infection.json5)');
+    expect(message).toContain('Infection output (tail):\nbanner');
+  });
+
+  it('does not blame the missing PHPUnit config when the project ships its own Infection config', () => {
+    // A project with its own Infection config may deliberately target another
+    // framework, so the PHPUnit branch must not fire for it.
+    mockExists.mockReturnValue(false);
+    const message = explainMissingJsonLog(failure({ exit: 7 }), '/sb', true).message;
+    expect(message).toContain('Infection failed (exit 7) without producing a JSON log.');
+    expect(message).not.toContain('no PHPUnit configuration found');
+  });
+
+  it('surfaces a named startup failure when Infection output identifies one', () => {
+    mockExists.mockImplementation((p) => String(p).endsWith('phpunit.xml'));
+    const message = explainMissingJsonLog(
+      failure({ stdout: 'Project tests must be in a passing state\nexit code of 143', exit: 1 }),
+      '/sb',
+      false,
+    ).message;
+    expect(message).toContain('Infection failed (exit 1) without producing a JSON log.');
+    expect(message).toContain('stops the test process on the first byte');
+    expect(message).toContain('Infection output (tail):');
+  });
+
+  it('reads the named startup failure from stderr as well as stdout', () => {
+    mockExists.mockImplementation((p) => String(p).endsWith('phpunit.xml'));
+    const message = explainMissingJsonLog(
+      failure({ stderr: 'is not a valid target for code coverage' }),
+      '/sb',
+      false,
+    ).message;
+    expect(message).toContain('PHPUnit stopped on a coverage-scope warning');
+  });
+
+  it('falls back to the generic suite/coverage-driver guidance', () => {
+    mockExists.mockImplementation((p) => String(p).endsWith('phpunit.xml'));
+    const message = explainMissingJsonLog(
+      failure({ stderr: 'something unrecognised', exit: 255 }),
+      '/sb',
+      false,
+    ).message;
+    expect(message).toBe(
+      'Infection failed (exit 255) without producing a JSON log. This usually means ' +
+        'the initial test run failed — ensure the PHPUnit suite passes (vendor/bin/phpunit) and a ' +
+        'coverage driver (Xdebug or PCOV) is enabled.\nstderr (tail):\nsomething unrecognised',
+    );
+  });
+
+  it('prefers the missing-PHPUnit-config branch over a named startup failure', () => {
+    // Branch order is load-bearing: with no PHPUnit config at all, "add a
+    // phpunit.xml" is the actionable cause even when the output also carries a
+    // recognisable startup signature.
+    mockExists.mockReturnValue(false);
+    const message = explainMissingJsonLog(
+      failure({ stdout: 'exit code of 143' }),
+      '/sb',
+      false,
+    ).message;
+    expect(message).toContain('no PHPUnit configuration found');
+    expect(message).not.toContain('first byte');
+  });
+
+  it('accepts any of the recognised PHPUnit config names as proof of a runner', () => {
+    for (const name of [
+      'phpunit.xml',
+      'phpunit.xml.dist',
+      'phpunit.dist.xml',
+      'phpunit.yml',
+      'phpunit.yml.dist',
+      'phpunit.dist.yml',
+      'phpunit.php',
+    ]) {
+      mockExists.mockImplementation((p) => String(p).endsWith(name));
+      expect(explainMissingJsonLog(failure({}), '/sb', false).message).not.toContain(
+        'no PHPUnit configuration found',
+      );
+    }
   });
 });

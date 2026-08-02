@@ -3,9 +3,9 @@ import { cpus } from 'os';
 import type { CallToolRequest } from '@modelcontextprotocol/sdk/types.js';
 
 // Mock estimate functions before importing the handler.
-vi.mock('../estimate.js', () => ({
+vi.mock('../core/estimate.js', () => ({
   estimateAudit: vi.fn(),
-  estimateNeedsSandbox: vi.fn().mockReturnValue(false),
+  estimateNeedsSandbox: vi.fn(() => false),
 }));
 
 // Partial mock: keep detectProjectType (real extension check), mock detectEnvironment.
@@ -48,10 +48,11 @@ vi.mock('fs', async () => {
 
 import { statSync } from 'fs';
 import { handleEstimateCall, resolveEstimateConcurrency } from '../estimate-handler.js';
-import { estimateAudit, estimateNeedsSandbox } from '../estimate.js';
+import { estimateAudit, estimateNeedsSandbox } from '../core/estimate.js';
 import { detectEnvironment } from '../utils/project-detector.js';
 import { createSandbox } from '../utils/sandbox.js';
 import { createExecutionSession } from '../utils/execution.js';
+import { MAX_TIMEOUT_MS } from '../utils/constants.js';
 
 const mockEstimateAudit = vi.mocked(estimateAudit);
 const mockEstimateNeedsSandbox = vi.mocked(estimateNeedsSandbox);
@@ -91,12 +92,14 @@ const approxResult = {
 
 describe('handleEstimateCall', () => {
   // Pin cwd so boundary and relFile calculations are deterministic on every runner.
-  const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue('/workspace');
+  // `restoreMocks: true` un-installs this spy before every test, so it has to be
+  // re-installed per test rather than once at describe-collection time.
+  let cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue('/workspace');
   afterAll(() => cwdSpy.mockRestore());
 
   beforeEach(() => {
     vi.clearAllMocks();
-    cwdSpy.mockReturnValue('/workspace');
+    cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue('/workspace');
     cleanupSpy.mockReset();
     mockEstimateNeedsSandbox.mockReturnValue(false);
     mockDetectEnv.mockReturnValue(defaultEnv);
@@ -129,6 +132,35 @@ describe('handleEstimateCall', () => {
     const res = await handleEstimateCall(req({ filePath: 'src/math.ts', withTiming: 'yes' }));
     expect(res.isError).toBe(true);
     expect(text(res)).toMatch(/withTiming must be a boolean/i);
+  });
+
+  /**
+   * `timeoutMs` used to reach `resolveAuditTimeoutMs` unvalidated — it accepts
+   * any `number > 0`, and Node CLAMPS a delay past MAX_TIMEOUT_MS to 1ms. The
+   * estimate's own subprocess was therefore killed instantly and the failure
+   * blamed on a timeout the caller had deliberately made enormous. Both sibling
+   * tools reject these; the estimate now borrows their validator.
+   */
+  it.each([-1, 0, NaN, '60000', MAX_TIMEOUT_MS + 1])(
+    'rejects timeoutMs=%p before doing any work',
+    async (v) => {
+      const res = await handleEstimateCall(req({ filePath: 'src/math.ts', timeoutMs: v }));
+      expect(res.isError).toBe(true);
+      expect(text(res)).toMatch(/timeoutMs must be/i);
+      // Rejected up-front: no estimate is attempted for an argument we refuse.
+      expect(mockEstimateAudit).not.toHaveBeenCalled();
+    },
+  );
+
+  it('accepts a timeoutMs at the clamp boundary', async () => {
+    mockEstimateAudit.mockResolvedValue(approxResult);
+    const res = await handleEstimateCall(
+      req({ filePath: 'src/math.ts', timeoutMs: MAX_TIMEOUT_MS }),
+    );
+    expect(res.isError).toBeUndefined();
+    expect(mockEstimateAudit).toHaveBeenCalledWith(
+      expect.objectContaining({ timeoutMs: MAX_TIMEOUT_MS }),
+    );
   });
 
   // ── C2 boundary enforcement ───────────────────────────────────────────────
@@ -172,6 +204,10 @@ describe('handleEstimateCall', () => {
     expect(res.isError).toBe(true);
     expect(text(res)).toMatch(/not found/i);
     expect(text(res)).toContain('src/typo.ts');
+    // The second sentence is the actionable half: without it a caller who typed
+    // a cwd-relative path has no idea the path is resolved against the
+    // workspace root instead.
+    expect(text(res)).toContain('Paths are resolved relative to the workspace root.');
     expect(mockEstimateAudit).not.toHaveBeenCalled();
   });
 
@@ -335,6 +371,88 @@ describe('handleEstimateCall', () => {
     );
   });
 
+  it('reports a mid-flight cancellation as a cancel, not an engine failure', async () => {
+    // The pre-abort check above returns before the try block, so nothing else
+    // reaches the catch-side isCancel. A caller branches on this exact string to
+    // tell "I cancelled this" from "the estimate broke".
+    mockEstimateAudit.mockRejectedValueOnce(
+      Object.assign(new Error('aborted'), { name: 'AbortError' }),
+    );
+    const controller = new AbortController();
+
+    const res = await handleEstimateCall(req({ filePath: 'src/math.ts' }), undefined, {
+      signal: controller.signal,
+    });
+
+    expect(res.isError).toBe(true);
+    expect(text(res)).toBe('Operation cancelled.');
+  });
+
+  it('reports a cancel that lands on a NON-throwing path as cancelled', async () => {
+    // The catch-side `isCancel` is only reachable when something throws, and
+    // estimateAudit has non-throwing paths that survive an abort — the Rust
+    // count degraded a startup failure to a heuristic result and returned
+    // normally, and a signal flipped between the last subprocess and the return
+    // is never observed at all. Without a post-run check the caller got a
+    // successful structuredContent estimate (isError unset) for cancelled work,
+    // which is indistinguishable from a completed one.
+    const controller = new AbortController();
+    mockEstimateAudit.mockImplementationOnce(async () => {
+      controller.abort(); // cancel lands mid-flight; nothing throws
+      return approxResult;
+    });
+
+    const res = await handleEstimateCall(req({ filePath: 'src/math.ts' }), undefined, {
+      signal: controller.signal,
+    });
+
+    expect(res.isError).toBe(true);
+    expect(text(res)).toBe('Operation cancelled.');
+    expect(res.structuredContent).toBeUndefined();
+  });
+
+  it('still returns the estimate when the signal was never aborted', async () => {
+    // The other arm of the post-run guard: an ordinary run must not be
+    // mistaken for a cancelled one.
+    const controller = new AbortController();
+    mockEstimateAudit.mockResolvedValue(approxResult);
+
+    const res = await handleEstimateCall(req({ filePath: 'src/math.ts' }), undefined, {
+      signal: controller.signal,
+    });
+
+    expect(res.isError).toBeUndefined();
+    expect((res.structuredContent as Record<string, unknown>).mutants).toBe(12);
+  });
+
+  it('reports a genuine engine failure as halted, not as a cancel', async () => {
+    // The other arm of the same branch: without it, forcing isCancel to false
+    // is invisible because no test distinguishes the two messages.
+    mockEstimateAudit.mockRejectedValueOnce(new Error('engine exploded'));
+    const res = await handleEstimateCall(req({ filePath: 'src/math.ts' }));
+    expect(text(res)).toBe('Chaos Engine Halted: engine exploded');
+  });
+
+  it('hands the abort signal to createSandbox so provisioning is cancellable', async () => {
+    // The sandbox copy is the slowest part of a timed estimate; without the
+    // signal a cancel cannot interrupt it and the copy runs to completion with
+    // nobody waiting for it.
+    mockEstimateNeedsSandbox.mockReturnValue(true);
+    mockEstimateAudit.mockResolvedValue(approxResult);
+    const controller = new AbortController();
+
+    await handleEstimateCall(req({ filePath: 'src/math.ts' }), undefined, {
+      signal: controller.signal,
+    });
+
+    expect(mockCreateSandbox).toHaveBeenCalledWith(
+      'src/math.ts',
+      '/workspace',
+      undefined,
+      expect.objectContaining({ signal: controller.signal }),
+    );
+  });
+
   it('does not throw when ctx is supplied without a signal', async () => {
     // `ctx?.signal?.aborted` must stay null-safe when signal is absent (kills the
     // mutant that drops the optional chain after `.signal`).
@@ -358,6 +476,37 @@ describe('handleEstimateCall', () => {
     mockDetectEnv.mockReturnValue({ ...defaultEnv, workspaceRoot: '/workspace/pkg' });
     mockEstimateAudit.mockResolvedValue(approxResult);
     await handleEstimateCall(req({ filePath: 'src/math.ts' }));
+    expect(mockEstimateAudit).toHaveBeenCalledWith(
+      expect.objectContaining({ relFile: 'src/math.ts' }),
+    );
+  });
+
+  it('re-anchors the target to the workspace root in a monorepo', async () => {
+    // The whole point of the re-anchor: cwd is the package, but the workspace
+    // root is the repo, so the engine must be given the repo-relative path.
+    // Every other case in this file has rawFilePath === relFromRoot, so the two
+    // arms of the ternary return the same string and none of them can tell a
+    // working re-anchor from one that always falls back.
+    cwdSpy.mockReturnValue('/workspace/pkg');
+    mockDetectEnv.mockReturnValue({ ...defaultEnv, workspaceRoot: '/workspace' });
+    mockEstimateAudit.mockResolvedValue(approxResult);
+
+    await handleEstimateCall(req({ filePath: 'src/math.ts' }));
+
+    expect(mockEstimateAudit).toHaveBeenCalledWith(
+      expect.objectContaining({ relFile: 'pkg/src/math.ts' }),
+    );
+  });
+
+  it('falls back to the raw filePath when the target IS the workspace root', async () => {
+    // `relative()` returns '' for a path equal to the root. An empty relFile
+    // would reach the engine as "mutate nothing"; the length guard is what
+    // sends the raw path through instead.
+    mockDetectEnv.mockReturnValue({ ...defaultEnv, workspaceRoot: '/workspace/src/math.ts' });
+    mockEstimateAudit.mockResolvedValue(approxResult);
+
+    await handleEstimateCall(req({ filePath: 'src/math.ts' }));
+
     expect(mockEstimateAudit).toHaveBeenCalledWith(
       expect.objectContaining({ relFile: 'src/math.ts' }),
     );
@@ -391,6 +540,86 @@ describe('handleEstimateCall', () => {
     mockEstimateAudit.mockResolvedValue(approxResult);
     await handleEstimateCall(req({ filePath: 'src/math.ts' }), {
       defaultTimeoutMs: 'soon' as never,
+    });
+    expect(mockEstimateAudit).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 300_000 }));
+  });
+
+  // ── The budget must be the one the AUDIT would use (audit finding: the
+  //    estimate graded fitsBudget against a different number) ────────────────
+
+  it('prefers the engine-section timeoutMs over defaultTimeoutMs, as the audit does', async () => {
+    // Scenario B: `"stryker": { "timeoutMs": 900000 }` with a 60s global
+    // default. audit_code_resilience resolves 900s (resolveAuditTimeoutMs:
+    // arg → engine section → global default). The estimate read only
+    // `cfg.defaultTimeoutMs`, so it graded `fitsBudget` against 60s and
+    // recommended narrowing a run that would have fit comfortably.
+    mockEstimateAudit.mockResolvedValue(approxResult);
+
+    await handleEstimateCall(req({ filePath: 'src/math.ts' }), {
+      defaultTimeoutMs: 60_000,
+      stryker: { timeoutMs: 900_000 },
+    });
+
+    expect(mockEstimateAudit).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 900_000 }));
+  });
+
+  it('ignores another engine section when resolving the budget', async () => {
+    // The section must match the engine that would run: a TypeScript target
+    // must not inherit the Rust budget.
+    mockEstimateAudit.mockResolvedValue(approxResult);
+
+    await handleEstimateCall(req({ filePath: 'src/math.ts' }), {
+      defaultTimeoutMs: 60_000,
+      rust: { timeoutMs: 900_000 },
+    });
+
+    expect(mockEstimateAudit).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 60_000 }));
+  });
+
+  // ── The runner must be resolved the same way the audit resolves it ────────
+
+  it('passes the config-resolved test runner, not the detected one', async () => {
+    // Scenario A: the project detects as vitest but config pins the Stryker
+    // command runner. The audit obeys the config; the estimate used to compare
+    // `env.testRunner` and so projected with the native constants — a ~4×
+    // under-estimate reported as fitting the budget.
+    mockEstimateAudit.mockResolvedValue(approxResult);
+
+    await handleEstimateCall(req({ filePath: 'src/math.ts', withTiming: true }), {
+      stryker: { testRunner: 'command' },
+    });
+
+    expect(mockEstimateAudit).toHaveBeenCalledWith(
+      expect.objectContaining({ testRunner: 'command' }),
+    );
+  });
+
+  it('falls back to the detected runner when no config overrides it', async () => {
+    mockEstimateAudit.mockResolvedValue(approxResult);
+
+    await handleEstimateCall(req({ filePath: 'src/math.ts', withTiming: true }));
+
+    expect(mockEstimateAudit).toHaveBeenCalledWith(
+      expect.objectContaining({ testRunner: 'vitest' }),
+    );
+  });
+
+  it('uses the global config testRunner over detection when no engine section applies', async () => {
+    mockEstimateAudit.mockResolvedValue(approxResult);
+
+    await handleEstimateCall(req({ filePath: 'src/math.ts' }), { testRunner: 'jest' });
+
+    expect(mockEstimateAudit).toHaveBeenCalledWith(expect.objectContaining({ testRunner: 'jest' }));
+  });
+
+  it('rejects a NUMERIC STRING defaultTimeoutMs rather than passing it through', async () => {
+    // `'90000' > 0` is true, so the `> 0` half of the guard accepts it and only
+    // the typeof check stops it. Passing the string on would hand the engine a
+    // budget it compares numerically elsewhere — the classic JSON-config
+    // mistake this guard exists for.
+    mockEstimateAudit.mockResolvedValue(approxResult);
+    await handleEstimateCall(req({ filePath: 'src/math.ts' }), {
+      defaultTimeoutMs: '90000' as never,
     });
     expect(mockEstimateAudit).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 300_000 }));
   });

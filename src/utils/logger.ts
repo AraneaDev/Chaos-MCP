@@ -12,6 +12,11 @@ export function enableVerbose(): void {
   verboseEnabled = true;
 }
 
+/** Test-only reset so an enabled flag cannot poison an unrelated case. */
+export function _resetVerbose(): void {
+  verboseEnabled = false;
+}
+
 /** Check whether verbose mode is active. */
 export function isVerbose(): boolean {
   return verboseEnabled;

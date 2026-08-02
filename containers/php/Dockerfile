@@ -4,9 +4,12 @@ FROM php:8.4.10-cli-bookworm@sha256:1aede5b0c2f414ea0ad5e746f2c5315008ea1b342bcf
 
 ARG XDEBUG_VERSION=3.5.3
 
+# procps supplies `ps`, absent from the slim base but a POSIX baseline that test
+# tooling assumes; its absence broke StrykerJS in the TypeScript image and the
+# same class of failure is open to any suite these sandboxes run.
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
-      git unzip $PHPIZE_DEPS \
+      git unzip procps $PHPIZE_DEPS \
     && pecl install "xdebug-${XDEBUG_VERSION}" \
     && docker-php-ext-enable xdebug \
     && apt-get purge --yes --auto-remove $PHPIZE_DEPS \

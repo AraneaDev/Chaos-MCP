@@ -1,17 +1,22 @@
-import { relative, isAbsolute } from 'path';
 import { statSync } from 'fs';
 import { cpus } from 'os';
 import type { CallToolRequest, CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { detectProjectType, detectEnvironment } from './utils/project-detector.js';
 import { createSandbox } from './utils/sandbox.js';
-import { toolError, mapCreateSandboxError } from './handler.js';
+import {
+  toolError,
+  mapCreateSandboxError,
+  mapHandlerFailure,
+  toStructuredContent,
+} from './core/tool-result.js';
 import { validateFilePath } from './utils/file-path.js';
-import { estimateAudit, estimateNeedsSandbox } from './estimate.js';
+import { validateTimeoutMs } from './core/tool-args-validation.js';
+import { supportedTypeOf, anchorTarget } from './audit/target.js';
+import { estimateAudit, estimateNeedsSandbox } from './core/estimate.js';
 import type { ChaosConfig } from './utils/config-loader.js';
-import type { ToolContext } from './tool-context.js';
-import { isCancel } from './utils/cancel.js';
+import type { ToolContext } from './core/tool-context.js';
 import { DEFAULT_TIMEOUT_MS } from './utils/constants.js';
 import { createExecutionSession } from './utils/execution.js';
+import { buildRunOptions, resolveAuditTimeoutMs } from './audit/run-options.js';
 
 export function resolveEstimateConcurrency(cpuCount: number): number {
   return Math.max(1, Math.min(2, cpuCount - 1));
@@ -56,7 +61,7 @@ export async function handleEstimateCall(
   // ── Validate filePath before any other work (C2 — shared via
   //    validateFilePath; audit A3). ──
   const filePathResult = validateFilePath(args.filePath);
-  if (!filePathResult.ok) return filePathResult.error;
+  if (!filePathResult.ok) return toolError(filePathResult.message);
   const { resolvedFile, raw: rawFilePath } = filePathResult.value;
 
   // Validate withTiming: boolean or absent.
@@ -64,10 +69,23 @@ export async function handleEstimateCall(
     return toolError('withTiming must be a boolean. Example: true.');
   }
 
-  try {
-    const projectType = detectProjectType(rawFilePath);
+  // ── timeoutMs: the audit tool's own rule, not a second copy of it. ──
+  //
+  // This handler runs no validator table, so `timeoutMs` reached
+  // `resolveAuditTimeoutMs` — which accepts any `number > 0` — completely
+  // unchecked. A value past MAX_TIMEOUT_MS is then CLAMPED TO 1ms by Node's
+  // timer, so `estimate_audit { timeoutMs: 3e9 }` killed its own subprocess
+  // instantly and blamed a "timed out after 3000000000ms"; with `withTiming`
+  // the failure degraded further into a bare " (timing unavailable)". Both
+  // sibling tools already reject it; borrowing their validator keeps the three
+  // from drifting apart again.
+  const timeoutError = validateTimeoutMs(args);
+  if (timeoutError !== null) return toolError(timeoutError);
 
-    if (projectType === 'unsupported') {
+  try {
+    const projectType = supportedTypeOf(rawFilePath);
+
+    if (!projectType) {
       return toolError(`Error: Extension unsupported for file target ${rawFilePath}`);
     }
 
@@ -84,16 +102,9 @@ export async function handleEstimateCall(
       );
     }
 
-    // Auto-detect the workspace environment (test runner, workspace root).
-    const env = detectEnvironment(rawFilePath);
-
-    // Re-anchor the target to the detected workspace root (matches the same
-    // expression handleToolCall and triage-handler use).
-    const relFromRoot = relative(env.workspaceRoot, resolvedFile);
-    const relFile =
-      relFromRoot.length > 0 && !relFromRoot.startsWith('..') && !isAbsolute(relFromRoot)
-        ? relFromRoot
-        : rawFilePath;
+    // Detect the workspace environment and re-anchor the target onto its root
+    // (the same step handleToolCall and triage run).
+    const { env, targetFile: relFile } = anchorTarget(rawFilePath, resolvedFile, projectType);
 
     const withTiming = args.withTiming === true;
     const cfg = config ?? {};
@@ -123,6 +134,43 @@ export async function handleEstimateCall(
           ? await createExecutionSession(projectType, sandbox.workDir, cfg.container, ctx?.signal)
           : undefined;
       try {
+        // ── Grade the estimate against the budget and the runner the AUDIT
+        //    would actually use, not an estimate-only approximation of them. ──
+        //
+        // Both used to be re-derived here and both diverged from
+        // audit_code_resilience:
+        //
+        //  * budget — this read `cfg.defaultTimeoutMs` only, so a config with
+        //    `"stryker": { "timeoutMs": 900000 }` over a 60s default graded
+        //    `fitsBudget` against 60s and recommended narrowing a run the audit
+        //    would have given 900s. `resolveAuditTimeoutMs` is the audit's own
+        //    resolver (arg → engine section → global default → DEFAULT).
+        //  * runner — estimate.ts compared `env.testRunner` against 'command',
+        //    ignoring the config file, so `"stryker": { "testRunner":
+        //    "command" }` on a vitest project was audited with the command
+        //    runner and estimated with the native constants (~4× low, with
+        //    `fitsBudget: true`).
+        //
+        // The runner comes from `buildRunOptions` — the audit's own resolver —
+        // rather than a local copy of its precedence chain: re-implementing it
+        // here is exactly the drift this finding is about. `buildRunOptions` is
+        // pure precedence logic (audit/run-options.ts), so calling it for one
+        // field costs nothing; `workDir` is only carried on the returned object
+        // and is unused by the estimate.
+        const auditRunOptions = buildRunOptions(
+          args,
+          cfg,
+          env,
+          sandbox?.workDir ?? env.workspaceRoot,
+          projectType,
+          relFile,
+        );
+        // Keep the defensive numeric guard the estimate has always applied:
+        // `resolveAuditTimeoutMs` trusts `cfg.defaultTimeoutMs` verbatim
+        // (the config loader validates it), but this handler is also called
+        // with hand-built configs, and a `0`/`"90000"` budget would make every
+        // estimate report `fitsBudget: false`.
+        const resolvedTimeoutMs = resolveAuditTimeoutMs(args, cfg, projectType);
         const result = await estimateAudit({
           absFile: resolvedFile,
           relFile,
@@ -130,18 +178,30 @@ export async function handleEstimateCall(
           workDir: sandbox?.workDir,
           withTiming,
           env,
+          testRunner: auditRunOptions.testRunner,
           concurrency,
           timeoutMs:
-            typeof cfg.defaultTimeoutMs === 'number' && cfg.defaultTimeoutMs > 0
-              ? cfg.defaultTimeoutMs
+            typeof resolvedTimeoutMs === 'number' && resolvedTimeoutMs > 0
+              ? resolvedTimeoutMs
               : DEFAULT_TIMEOUT_MS,
           signal: ctx?.signal,
           executor,
         });
 
+        // Defensive post-run cancellation check (audit C1 follow-up).
+        //
+        // The catch below is the ONLY place `isCancel` runs, and it is never
+        // entered when `estimateAudit` returns normally — which it can do even
+        // after a cancel, since not every phase throws on abort (the Rust
+        // count path degraded a startup failure to a heuristic result, and a
+        // signal that flips between the last subprocess and here is never
+        // observed at all). Without this, a cancelled `estimate_audit` handed
+        // the caller a successful estimate for work it had already abandoned.
+        if (ctx?.signal?.aborted) return toolError('Operation cancelled.');
+
         return {
           content: [{ type: 'text', text: JSON.stringify(result) }],
-          structuredContent: result as unknown as Record<string, unknown>,
+          structuredContent: toStructuredContent(result),
         };
       } finally {
         await executor?.dispose();
@@ -151,15 +211,9 @@ export async function handleEstimateCall(
       sandbox?.cleanup();
     }
   } catch (error: unknown) {
-    // Audit C1 follow-up: cancellation (mid-flight estimateAudit killed by
-    // the abort signal, or an AbortError from any other source) must surface
-    // as 'Operation cancelled.' — never as 'Chaos Engine Halted' — so the
-    // caller can reliably branch on the message. Otherwise a deliberate
-    // cancel from the MCP client looks identical to a real engine failure.
-    if (isCancel(error, ctx)) {
-      return toolError('Operation cancelled.');
-    }
-    const message = error instanceof Error ? error.message : String(error);
-    return toolError(`Chaos Engine Halted: ${message}`);
+    // A mid-flight estimateAudit killed by the abort signal, or an AbortError
+    // from any other source, reaches here; `mapHandlerFailure` owns the
+    // cancel-vs-halt branch shared with the audit and triage tools.
+    return mapHandlerFailure(error, ctx);
   }
 }

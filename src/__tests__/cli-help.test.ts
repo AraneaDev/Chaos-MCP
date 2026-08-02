@@ -13,15 +13,19 @@ import { performance } from 'perf_hooks';
  *   - stdout mentions both `--help` and `--version` flag names (a
  *     structural sanity check that HELP_TEXT still documents itself)
  *   - stderr is empty (no banner noise on --help)
- *   - wall-clock time < 2s (catches regressions where arg-parsing
- *     moves AFTER the MCP server lifecycle — `--help` would still
- *     print + exit eventually, but only after a stdio server started)
+ *   - the process exits on its own (catches regressions where arg-parsing
+ *     moves AFTER the MCP server lifecycle — `--help` would still print,
+ *     but the stdio server would hold the event loop open and the spawn
+ *     would never close)
  *
  * Mirrors cli-version.test.ts structurally (`close`-drained Promise,
- * stderr-quiet, wall-clock ceiling). Validates different content.
+ * stderr-quiet, hang guard). Validates different content.
  *
  * Requires `npm run build` to have produced `./build/index.js`.
  */
+
+/** SIGKILL deadline for the spawn; also the hang-guard ceiling asserted below. */
+const SPAWN_TIMEOUT_MS = 5000;
 
 describe('CLI --help flag', () => {
   const __filename = fileURLToPath(import.meta.url);
@@ -41,7 +45,7 @@ describe('CLI --help flag', () => {
     expectedVersion = pkg.version;
   });
 
-  it('prints help on stdout with synced version, exits 0, quiet stderr, <2s wall-clock', async () => {
+  it('prints help on stdout with synced version, exits 0, quiet stderr, without hanging', async () => {
     const start = performance.now();
     const result = await new Promise<{
       stdout: string;
@@ -68,10 +72,10 @@ describe('CLI --help flag', () => {
         child.kill('SIGKILL');
         reject(
           new Error(
-            `chaos-mcp --help timed out after 5s; stdout="${stdout.trim()}", stderr="${stderr.trim()}"`,
+            `chaos-mcp --help timed out after ${SPAWN_TIMEOUT_MS}ms; stdout="${stdout.trim()}", stderr="${stderr.trim()}"`,
           ),
         );
-      }, 5000);
+      }, SPAWN_TIMEOUT_MS);
 
       // Use 'close' instead of 'exit': 'close' fires after stdio
       // streams have closed (all output read by the parent); 'exit'
@@ -105,9 +109,16 @@ describe('CLI --help flag', () => {
     // substantive stderr content (e.g. real deprecation warnings)
     // still trips the assertion by design — fail-loud on Node bumps.
     expect(result.stderr.trim()).toBe('');
-    // --help must short-circuit BEFORE the MCP server lifecycle. Real
-    // CLI startup is ~50–300ms; 2s is a generous ceiling that still
-    // catches the regression where --help was moved past server-start.
-    expect(result.elapsedMs).toBeLessThan(2000);
+    // --help must short-circuit BEFORE the MCP server lifecycle. The
+    // regression this guards against is a HANG (the stdio server holds the
+    // event loop, so the spawn never closes), which the SIGKILL above
+    // already catches — this bound just states it as an assertion.
+    //
+    // It is deliberately NOT a performance benchmark. A 2s ceiling used to
+    // live here and failed on a loaded machine: cold Node startup was
+    // measured at 2.1–4.8s while six test processes ran concurrently, which
+    // is exactly the condition mutation testing creates. Matches the
+    // rationale already recorded in cli-smoke.test.ts.
+    expect(result.elapsedMs).toBeLessThan(SPAWN_TIMEOUT_MS);
   });
 });

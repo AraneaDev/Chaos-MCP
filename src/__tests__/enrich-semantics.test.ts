@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { MUTATOR_SEMANTICS, SEVERITY_RANK, UNKNOWN_SEMANTIC } from '../enrich.js';
+import { MUTATOR_SEMANTICS, SEVERITY_RANK, UNKNOWN_SEMANTIC } from '../core/enrich.js';
 
 describe('MUTATOR_SEMANTICS table integrity', () => {
   it('every entry has a non-empty why and hint and a valid tier', () => {

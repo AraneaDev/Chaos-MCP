@@ -4,16 +4,16 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 vi.mock('fs', () => ({ existsSync: vi.fn(() => false) }));
 
 import { existsSync } from 'fs';
+import { validateToolArgs } from '../handler.js';
 import {
-  validateToolArgs,
   buildRunOptions,
-  buildVitestRelatedCommand,
-  quoteCommandArg,
   resolveAuditTimeoutMs,
-  resolvePrebuildCommand,
-  auditFile,
   isPrebuildAllowed,
-} from '../handler.js';
+  resolveGatedPrebuild,
+} from '../audit/run-options.js';
+import { auditFile } from '../audit/audit-file.js';
+import { buildVitestRelatedCommand, quoteCommandArg } from '../utils/shell-quote.js';
+import { resolvePrebuildCommand } from '../engines/registry.js';
 import type { EnvironmentInfo } from '../utils/project-detector.js';
 
 const mockExistsSync = vi.mocked(existsSync);
@@ -273,7 +273,9 @@ describe('buildRunOptions', () => {
         'src/my module.ts',
       );
 
-      expect(options.commandRunnerCommand).toBe("npx vitest related 'src/my module.ts' --run");
+      expect(options.commandRunnerCommand).toBe(
+        "npx vitest related 'src/my module.ts' --run --no-file-parallelism --maxWorkers=1",
+      );
     } finally {
       platform.mockRestore();
     }
@@ -284,17 +286,47 @@ describe('buildRunOptions', () => {
     const platform = vi.spyOn(process, 'platform', 'get');
     try {
       platform.mockReturnValue('linux');
+      // The `--no-file-parallelism --maxWorkers=1` suffix is load-bearing, not
+      // cosmetic: without it vitest forks its own pool inside every mutant slot,
+      // and the measured cost of ONE 8-mutant audit was 20 node processes /
+      // 1561 MB instead of 6 / 440 MB. At fileConcurrency 4 that is ~6.2 GB and
+      // takes an 8 GB box down. Asserted on both platform branches so neither
+      // can lose the caps silently.
       expect(buildVitestRelatedCommand("src/a'b.ts")).toBe(
-        "npx vitest related 'src/a'\\''b.ts' --run",
+        "npx vitest related 'src/a'\\''b.ts' --run --no-file-parallelism --maxWorkers=1",
       );
       platform.mockReturnValue('win32');
-      expect(buildVitestRelatedCommand('src/app.ts')).toBe('npx vitest related src/app.ts --run');
+      expect(buildVitestRelatedCommand('src/app.ts')).toBe(
+        'npx vitest related src/app.ts --run --no-file-parallelism --maxWorkers=1',
+      );
       expect(buildVitestRelatedCommand('src/my module.ts')).toBeUndefined();
       expect(buildVitestRelatedCommand('src/a&whoami.ts')).toBeUndefined();
       expect(buildVitestRelatedCommand('src/a"b.ts')).toBeUndefined();
     } finally {
       platform.mockRestore();
     }
+  });
+
+  /**
+   * An unquoted `\` is the POSIX escape character, so returning a backslashed
+   * path verbatim silently rewrites it: `src/report\name.ts` reaches vitest as
+   * `src/reportname.ts` (no such file → zero tests → every mutant survives at
+   * 0%), and a TRAILING `\` escapes the separating space and swallows `--run`,
+   * leaving vitest in watch mode until the deadline. Quoting is the only safe
+   * treatment. The Windows separator case never reaches quoteCommandArg —
+   * buildVitestRelatedCommand returns early on win32.
+   */
+  it('quotes rather than passes through a POSIX target containing a backslash', () => {
+    expect(quoteCommandArg('src/report\\name.ts')).toBe("'src/report\\name.ts'");
+    expect(quoteCommandArg('src/foo\\nbar.ts')).toBe("'src/foo\\nbar.ts'");
+    expect(quoteCommandArg('src/app.ts\\')).toBe("'src/app.ts\\'");
+    expect(quoteCommandArg('src/app\nname.ts')).toBe("'src/app\nname.ts'");
+  });
+
+  it('leaves an ordinary POSIX path unquoted', () => {
+    // The common case must not regress into needless quoting.
+    expect(quoteCommandArg('src/utils/math-helpers_2.ts')).toBe('src/utils/math-helpers_2.ts');
+    expect(quoteCommandArg('./src/app.ts')).toBe('./src/app.ts');
   });
 
   it('does not invent a scoped command for native or non-Vitest runners', () => {
@@ -484,12 +516,16 @@ describe('buildRunOptions', () => {
 });
 
 describe('resolvePrebuildCommand', () => {
-  it('returns an explicit prebuildCommand verbatim', () => {
-    expect(resolvePrebuildCommand({ prebuildCommand: 'make' }, env(), 'typescript')).toBe('make');
+  it('returns an explicit prebuild command verbatim', () => {
+    expect(resolvePrebuildCommand('make', env(), 'typescript')).toBe('make');
   });
 
-  it('ignores a blank explicit prebuildCommand and falls through', () => {
-    expect(resolvePrebuildCommand({ prebuildCommand: '   ' }, env(), 'typescript')).toBeNull();
+  it('falls through to the registry default when no explicit command is given', () => {
+    // The signature takes the ALREADY-extracted command, not the ToolArgs bag:
+    // the engine layer no longer knows that the MCP argument is spelled
+    // `prebuildCommand`. Blank-means-absent now happens at the caller — see the
+    // `resolveGatedPrebuild` suite below.
+    expect(resolvePrebuildCommand(undefined, env(), 'typescript')).toBeNull();
   });
 
   it('does NOT auto-install for a uv Python project', () => {
@@ -497,14 +533,18 @@ describe('resolvePrebuildCommand', () => {
     // which is a symlink to the host's `.venv` — corrupting the real workspace.
     // The host's existing (symlinked) environment is already in place.
     expect(
-      resolvePrebuildCommand({}, env({ projectType: 'python', packageManager: 'uv' }), 'python'),
+      resolvePrebuildCommand(
+        undefined,
+        env({ projectType: 'python', packageManager: 'uv' }),
+        'python',
+      ),
     ).toBeNull();
   });
 
   it('does NOT auto-install for a poetry Python project', () => {
     expect(
       resolvePrebuildCommand(
-        {},
+        undefined,
         env({ projectType: 'python', packageManager: 'poetry' }),
         'python',
       ),
@@ -513,14 +553,72 @@ describe('resolvePrebuildCommand', () => {
 
   it('returns "cargo check" for Rust when Cargo.toml exists', () => {
     mockExistsSync.mockImplementation((p) => String(p).endsWith('Cargo.toml'));
-    expect(resolvePrebuildCommand({}, env({ projectType: 'rust' }), 'rust')).toBe('cargo check');
+    expect(resolvePrebuildCommand(undefined, env({ projectType: 'rust' }), 'rust')).toBe(
+      'cargo check',
+    );
   });
 
   it('returns null for a plain TypeScript or pip Python project', () => {
-    expect(resolvePrebuildCommand({}, env(), 'typescript')).toBeNull();
+    expect(resolvePrebuildCommand(undefined, env(), 'typescript')).toBeNull();
     expect(
-      resolvePrebuildCommand({}, env({ projectType: 'python', packageManager: 'pip' }), 'python'),
+      resolvePrebuildCommand(
+        undefined,
+        env({ projectType: 'python', packageManager: 'pip' }),
+        'python',
+      ),
     ).toBeNull();
+  });
+});
+
+describe('resolveGatedPrebuild — explicit-argument extraction', () => {
+  // The `typeof … === 'string' && trim().length > 0` check moved OUT of
+  // engines/registry.ts and into the handler layer that owns the argument name.
+  // These pin that the move kept every behaviour of the old in-engine version.
+  let saved: string | undefined;
+  beforeEach(() => {
+    saved = process.env.CHAOS_MCP_ALLOW_PREBUILD;
+    delete process.env.CHAOS_MCP_ALLOW_PREBUILD;
+  });
+  afterEach(() => {
+    if (saved === undefined) delete process.env.CHAOS_MCP_ALLOW_PREBUILD;
+    else process.env.CHAOS_MCP_ALLOW_PREBUILD = saved;
+  });
+
+  it('passes an explicit prebuildCommand through verbatim when allowed', () => {
+    expect(
+      resolveGatedPrebuild({ prebuildCommand: '  make  ' }, env(), 'typescript', {
+        allowPrebuild: true,
+      }),
+    ).toEqual({ ok: true, prebuildCmd: '  make  ' });
+  });
+
+  it('treats a whitespace-only prebuildCommand as absent — not explicit, not gated', () => {
+    // Blank must fall through to the registry default (null here) rather than
+    // trip the allowPrebuild gate: it is not a caller-supplied command.
+    expect(resolveGatedPrebuild({ prebuildCommand: '   ' }, env(), 'typescript', {})).toEqual({
+      ok: true,
+      prebuildCmd: null,
+    });
+  });
+
+  it('treats a non-string prebuildCommand as absent', () => {
+    expect(resolveGatedPrebuild({ prebuildCommand: 42 }, env(), 'typescript', {})).toEqual({
+      ok: true,
+      prebuildCmd: null,
+    });
+  });
+
+  it('refuses an explicit prebuildCommand when allowPrebuild is off', () => {
+    const res = resolveGatedPrebuild({ prebuildCommand: 'make' }, env(), 'typescript', {});
+    expect(res.ok).toBe(false);
+  });
+
+  it('does NOT gate the registry auto-prebuild, which is not caller-supplied', () => {
+    mockExistsSync.mockImplementation((p) => String(p).endsWith('Cargo.toml'));
+    expect(resolveGatedPrebuild({}, env({ projectType: 'rust' }), 'rust', {})).toEqual({
+      ok: true,
+      prebuildCmd: 'cargo check',
+    });
   });
 });
 
@@ -604,12 +702,13 @@ describe('buildRunOptions — mutation hardening', () => {
     ).toBe('json');
   });
 
-  it('filters non-string entries out of ignorePatterns', () => {
-    // Kills the dropped `.filter` and `typeof v === 'string' → true` mutants.
+  it('does not forward ignorePatterns to the engine', () => {
+    // ignorePatterns is consumed by createSandbox (it selects what the sandbox
+    // COPY excludes) and by nothing else. Populating it on RunOptions as well
+    // implied engines applied it too, which none ever did.
     expect(
-      buildRunOptions({ ignorePatterns: ['a', 1, 'b', null] }, {}, env(), '/sb', 'typescript')
-        .ignorePatterns,
-    ).toEqual(['a', 'b']);
+      buildRunOptions({ ignorePatterns: ['a', 'b'] }, {}, env(), '/sb', 'typescript'),
+    ).not.toHaveProperty('ignorePatterns');
   });
 
   it('rejects an out-of-range args.concurrency of 0 in favour of the config fallback', () => {

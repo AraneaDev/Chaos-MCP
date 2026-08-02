@@ -12,28 +12,37 @@ vi.mock('child_process', async (importOriginal) => {
 
 vi.mock('../utils/logger.js', () => ({
   log: vi.fn(),
-  isVerbose: vi.fn().mockReturnValue(false),
+  isVerbose: vi.fn(() => false),
 }));
 
 import { execFile, exec } from 'child_process';
-import { killProcessTree, runShell, runShellCommand } from '../utils/exec.js';
+import { runShell, runShellCommand } from '../utils/exec.js';
+import { killProcessTree } from '../utils/process-reaper.js';
 
 describe('process-tree termination', () => {
-  it('kills a Unix process group and returns without killing the child twice', () => {
+  it('never signals a process GROUP on Unix — only the child and its descendants', () => {
+    // This used to be `kill(-123)` followed by an early `return`. Node's
+    // callback exec/execFile discard `detached`, so the child is never a group
+    // leader and `-123` never names its own group: a SUCCESSFUL group kill could
+    // only mean an unrelated group carried that pgid, and the return then
+    // skipped both the descendant walk and the direct kill — so the engine this
+    // call exists to terminate survived while somebody else's processes died.
     const platform = vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
     const processKill = vi.spyOn(process, 'kill').mockReturnValue(true);
     const childKill = vi.fn();
     killProcessTree({ pid: 123, kill: childKill } as unknown as cpType.ChildProcess, true);
-    expect(processKill).toHaveBeenCalledWith(-123, 'SIGKILL');
-    expect(childKill).not.toHaveBeenCalled();
+    expect(processKill.mock.calls.map((call) => call[0] as number)).not.toContainEqual(-123);
+    expect(childKill).toHaveBeenCalledWith('SIGKILL');
     processKill.mockRestore();
     platform.mockRestore();
   });
 
-  it('falls back to the direct child when group termination fails', () => {
+  it('still terminates the child when every descendant signal throws', () => {
+    // The reap runs on timeout/cancellation paths that must not throw, and an
+    // already-reaped pid is the ordinary race rather than an error.
     const platform = vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
     const processKill = vi.spyOn(process, 'kill').mockImplementation(() => {
-      throw new Error('group gone');
+      throw new Error('ESRCH');
     });
     const childKill = vi.fn();
     killProcessTree({ pid: 123, kill: childKill } as unknown as cpType.ChildProcess, true);
@@ -88,13 +97,17 @@ describe('process-tree termination', () => {
     platform.mockRestore();
   });
 
-  it('uses the process group for every non-Windows platform token', () => {
+  it('takes the POSIX path for every non-Windows platform token', () => {
+    // The platform check is `!== 'win32'`, so anything else — including a token
+    // this test invents — must get the descendant walk plus a direct kill, and
+    // must NOT shell out to taskkill.
     const platform = vi.spyOn(process, 'platform', 'get').mockReturnValue('' as NodeJS.Platform);
     const processKill = vi.spyOn(process, 'kill').mockReturnValue(true);
     const childKill = vi.fn();
+    vi.mocked(execFile).mockClear();
     killProcessTree({ pid: 123, kill: childKill } as unknown as cpType.ChildProcess, true);
-    expect(processKill).toHaveBeenCalledWith(-123, 'SIGKILL');
-    expect(childKill).not.toHaveBeenCalled();
+    expect(childKill).toHaveBeenCalledWith('SIGKILL');
+    expect(execFile).not.toHaveBeenCalled();
     processKill.mockRestore();
     platform.mockRestore();
   });
@@ -230,15 +243,17 @@ describe('runShell signal forwarding', () => {
     vi.useFakeTimers();
     const platform = vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
     const processKill = vi.spyOn(process, 'kill').mockReturnValue(true);
+    const childKill = vi.fn();
     vi.mocked(execFile).mockImplementationOnce(
-      (() => ({ pid: 123, kill: vi.fn() }) as unknown as cpType.ChildProcess) as never,
+      (() => ({ pid: 123, kill: childKill }) as unknown as cpType.ChildProcess) as never,
     );
 
     void runShell('echo', ['hi'], { killTree: true, timeoutMs: 50 });
     vi.advanceTimersByTime(49);
     expect(processKill).not.toHaveBeenCalled();
+    expect(childKill).not.toHaveBeenCalled();
     vi.advanceTimersByTime(1);
-    expect(processKill).toHaveBeenCalledWith(-123, 'SIGKILL');
+    expect(childKill).toHaveBeenCalledWith('SIGKILL');
 
     processKill.mockRestore();
     platform.mockRestore();
@@ -308,15 +323,16 @@ describe('runShell signal forwarding', () => {
       }),
       removeEventListener: vi.fn(),
     } as unknown as AbortSignal;
+    const childKill = vi.fn();
     vi.mocked(execFile).mockImplementationOnce(
-      (() => ({ pid: 123, kill: vi.fn() }) as unknown as cpType.ChildProcess) as never,
+      (() => ({ pid: 123, kill: childKill }) as unknown as cpType.ChildProcess) as never,
     );
 
     void runShell('echo', ['hi'], { killTree: true, timeoutMs: 50, signal });
     expect(abortListener).toBeTypeOf('function');
     abortListener?.();
     abortListener?.();
-    expect(processKill).toHaveBeenCalledTimes(1);
+    expect(childKill).toHaveBeenCalledTimes(1);
     expect(signal.removeEventListener).toHaveBeenCalledWith('abort', abortListener);
 
     processKill.mockRestore();
@@ -448,8 +464,9 @@ describe('runShellCommand signal forwarding', () => {
     vi.useFakeTimers();
     const platform = vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
     const processKill = vi.spyOn(process, 'kill').mockReturnValue(true);
+    const childKill = vi.fn();
     vi.mocked(exec).mockImplementationOnce(
-      (() => ({ pid: 456, kill: vi.fn() }) as unknown as cpType.ChildProcess) as never,
+      (() => ({ pid: 456, kill: childKill }) as unknown as cpType.ChildProcess) as never,
     );
     const controller = new AbortController();
 
@@ -459,7 +476,7 @@ describe('runShellCommand signal forwarding', () => {
       signal: controller.signal,
     });
     controller.abort();
-    expect(processKill).toHaveBeenCalledWith(-456, 'SIGKILL');
+    expect(childKill).toHaveBeenCalledWith('SIGKILL');
 
     processKill.mockRestore();
     platform.mockRestore();
@@ -470,8 +487,9 @@ describe('runShellCommand signal forwarding', () => {
     vi.useFakeTimers();
     const platform = vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
     const processKill = vi.spyOn(process, 'kill').mockReturnValue(true);
+    const childKill = vi.fn();
     vi.mocked(exec).mockImplementationOnce(
-      (() => ({ pid: 789, kill: vi.fn() }) as unknown as cpType.ChildProcess) as never,
+      (() => ({ pid: 789, kill: childKill }) as unknown as cpType.ChildProcess) as never,
     );
     const controller = new AbortController();
     controller.abort();
@@ -481,7 +499,7 @@ describe('runShellCommand signal forwarding', () => {
       timeoutMs: 1_000,
       signal: controller.signal,
     });
-    expect(processKill).toHaveBeenCalledWith(-789, 'SIGKILL');
+    expect(childKill).toHaveBeenCalledWith('SIGKILL');
 
     processKill.mockRestore();
     platform.mockRestore();
@@ -533,6 +551,103 @@ describe('abort classification (audit M5)', () => {
       code: 'ABORTED',
       message: expect.stringContaining('cargo'),
     });
+  });
+
+  // The three cancel signals are checked as one `||` chain, and the case above
+  // sets code AND name together — so either clause alone satisfies it and
+  // neither can be shown to matter. These split them apart. The third has
+  // NEITHER marker on the error and relies solely on the caller's AbortSignal,
+  // which is the shape Node produces when the abort races the child's own exit.
+
+  it('runShell treats an ABORT_ERR code alone as a cancellation', async () => {
+    vi.mocked(execFile).mockImplementationOnce(((
+      _f: string,
+      _a: string[],
+      _opts: Record<string, unknown>,
+      cb: (e: unknown, o: string, er: string) => void,
+    ) => {
+      cb(Object.assign(new Error('aborted'), { code: 'ABORT_ERR' }), '', '');
+      return {} as cpType.ChildProcess;
+    }) as never);
+
+    await expect(runShell('cargo', ['mutants'])).rejects.toMatchObject({ code: 'ABORTED' });
+  });
+
+  it('runShell treats an AbortError NAME alone as a cancellation', async () => {
+    vi.mocked(execFile).mockImplementationOnce(((
+      _f: string,
+      _a: string[],
+      _opts: Record<string, unknown>,
+      cb: (e: unknown, o: string, er: string) => void,
+    ) => {
+      cb(Object.assign(new Error('aborted'), { name: 'AbortError' }), '', '');
+      return {} as cpType.ChildProcess;
+    }) as never);
+
+    await expect(runShell('cargo', ['mutants'])).rejects.toMatchObject({ code: 'ABORTED' });
+  });
+
+  it('runShell treats an already-aborted signal as a cancellation, whatever the error looks like', async () => {
+    vi.mocked(execFile).mockImplementationOnce(((
+      _f: string,
+      _a: string[],
+      _opts: Record<string, unknown>,
+      cb: (e: unknown, o: string, er: string) => void,
+    ) => {
+      // A plain failure with no abort markers at all — what Node reports when
+      // the abort lands as the child is already exiting.
+      cb(Object.assign(new Error('boom'), { code: 1 }), '', 'died');
+      return {} as cpType.ChildProcess;
+    }) as never);
+
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      runShell('cargo', ['mutants'], { signal: controller.signal }),
+    ).rejects.toMatchObject({ code: 'ABORTED' });
+  });
+
+  it('runShellCommand treats an ABORT_ERR code alone as a cancellation', async () => {
+    vi.mocked(exec).mockImplementationOnce(((
+      _c: string,
+      _opts: Record<string, unknown>,
+      cb: (e: unknown, o: string, er: string) => void,
+    ) => {
+      cb(Object.assign(new Error('aborted'), { code: 'ABORT_ERR' }), '', '');
+      return {} as cpType.ChildProcess;
+    }) as never);
+
+    await expect(runShellCommand('cargo mutants')).rejects.toMatchObject({ code: 'ABORTED' });
+  });
+
+  it('runShellCommand treats an AbortError NAME alone as a cancellation', async () => {
+    vi.mocked(exec).mockImplementationOnce(((
+      _c: string,
+      _opts: Record<string, unknown>,
+      cb: (e: unknown, o: string, er: string) => void,
+    ) => {
+      cb(Object.assign(new Error('aborted'), { name: 'AbortError' }), '', '');
+      return {} as cpType.ChildProcess;
+    }) as never);
+
+    await expect(runShellCommand('cargo mutants')).rejects.toMatchObject({ code: 'ABORTED' });
+  });
+
+  it('runShellCommand treats an already-aborted signal as a cancellation', async () => {
+    vi.mocked(exec).mockImplementationOnce(((
+      _c: string,
+      _opts: Record<string, unknown>,
+      cb: (e: unknown, o: string, er: string) => void,
+    ) => {
+      cb(Object.assign(new Error('boom'), { code: 1 }), '', 'died');
+      return {} as cpType.ChildProcess;
+    }) as never);
+
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      runShellCommand('cargo mutants', { signal: controller.signal }),
+    ).rejects.toMatchObject({ code: 'ABORTED' });
   });
 
   it('runShellCommand classifies an aborted child (code ABORT_ERR) as code "ABORTED"', async () => {

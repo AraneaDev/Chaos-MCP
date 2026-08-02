@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { estimateHeuristic } from '../estimate-heuristic.js';
+import { estimateHeuristic } from '../core/estimate-heuristic.js';
+import { ENGINE_REGISTRY } from '../engines/registry.js';
+import type { SupportedProjectType } from '../utils/project-detector.js';
 
 describe('estimateHeuristic', () => {
   it('returns 0 for an empty file', () => {
@@ -169,5 +171,242 @@ describe('estimateHeuristic', () => {
     // `1/* */2` -> "1 2" (two numbers). If the replacement were '' the tokens would
     // merge into "12" (one number) — this distinguishes the ' ' -> '' string mutant.
     expect(estimateHeuristic(`1/* */2`, 'typescript')).toEqual({ mutants: 2, constructs: 2 });
+  });
+
+  // ── stripNoise: the noise-removal regexes ────────────────────────────────
+  //
+  // The estimator's whole job is to count operators that are CODE. Every regex
+  // below is the difference between an estimate and a number inflated by the
+  // contents of comments, docstrings, and string literals. The "with vs
+  // without" comparisons above cannot see most of the ways these patterns can
+  // break, so these cases assert exact totals against a hand-derived count.
+
+  describe('python triple-quoted strings', () => {
+    it('strips a multi-word docstring whole, not one character of it', () => {
+      // Only `1` and `2` are code. A quantifier that matches a single character
+      // (`[\s\S]*?` -> `[\s\S]`), a class that matches nothing (`[^\s\S]`), or one
+      // narrowed to whitespace-only / non-whitespace-only (`[\s\s]` / `[\S\S]`)
+      // all fail to span "a + b > c" — leaving its operators in the count.
+      expect(estimateHeuristic("x = 1\n'''a + b > c'''\ny = 2", 'python')).toEqual({
+        mutants: 2,
+        constructs: 2,
+      });
+      expect(estimateHeuristic('x = 1\n"""a + b > c"""\ny = 2', 'python')).toEqual({
+        mutants: 2,
+        constructs: 2,
+      });
+    });
+
+    it('strips a docstring the ordinary quote-stripper would mangle', () => {
+      // The plain single/double-quote strippers run later and normally clean up
+      // whatever the triple-quote pass missed — which hides every way the
+      // triple-quote pattern can fail to match. A body carrying an ODD number
+      // of quotes defeats that fallback: it pairs the quotes off differently
+      // and leaves `b + c` (and its `+`) outside any literal. Only a working
+      // triple-quote pass reports the two numbers alone.
+      expect(estimateHeuristic("z = 1\n'''a ' b + c'''\ny = 2", 'python')).toEqual({
+        mutants: 2,
+        constructs: 2,
+      });
+      expect(estimateHeuristic('z = 1\n"""a " b + c"""\ny = 2', 'python')).toEqual({
+        mutants: 2,
+        constructs: 2,
+      });
+    });
+
+    it('matches each docstring lazily instead of spanning from the first to the last', () => {
+      // Two docstrings with real code between them. A greedy `[\s\S]*` swallows
+      // `z = 1 + 2` along with them and reports nothing at all.
+      expect(estimateHeuristic("'''a'''\nz = 1 + 2\n'''b'''", 'python')).toEqual({
+        mutants: 3,
+        constructs: 3,
+      });
+      expect(estimateHeuristic('"""a"""\nz = 1 + 2\n"""b"""', 'python')).toEqual({
+        mutants: 3,
+        constructs: 3,
+      });
+    });
+
+    it('leaves a separating space behind, so neighbouring tokens stay distinct', () => {
+      // `1'''x'''2` -> "1 2" (two numbers). Replacing with '' fuses them into the
+      // single number 12.
+      expect(estimateHeuristic("1'''x'''2", 'python').mutants).toBe(2);
+      expect(estimateHeuristic('1"""x"""2', 'python').mutants).toBe(2);
+    });
+  });
+
+  describe('PHP # comments', () => {
+    it('strips the whole comment body, not just the hash', () => {
+      // Only the two literals are code. `#[\n]*` (hash plus newlines) and
+      // `#[^\n]` (hash plus exactly one character) both leave `a + b > c`
+      // behind, which adds an arithmetic op and a double-weighted comparison.
+      expect(estimateHeuristic('<?php $x = 1; # a + b > c\n$y = 2;', 'php')).toEqual({
+        mutants: 2,
+        constructs: 2,
+      });
+    });
+  });
+
+  describe('template literals', () => {
+    it('strips EVERY template literal, not only the first', () => {
+      // Pins the 'g' flag on the constructed RegExp: without it the second
+      // literal survives and its `+` is counted as code.
+      const src = 'const a = `x + y`; const b = `p + q`; const n = 1;';
+      expect(estimateHeuristic(src, 'typescript')).toEqual({ mutants: 1, constructs: 1 });
+    });
+
+    it('leaves a separating space behind', () => {
+      expect(estimateHeuristic('1`x`2', 'typescript').mutants).toBe(2);
+    });
+  });
+
+  describe('double-quoted strings', () => {
+    it('strips EVERY double-quoted string, not only the first', () => {
+      const src = 'const a = "x + y"; const b = "p + q"; const n = 1;';
+      expect(estimateHeuristic(src, 'typescript')).toEqual({ mutants: 1, constructs: 1 });
+    });
+
+    it('leaves a separating space behind', () => {
+      expect(estimateHeuristic('1"x"2', 'typescript').mutants).toBe(2);
+    });
+
+    it('consumes an escaped quote instead of ending the literal there', () => {
+      // Source: const s = "x + y \" z"; const n = 1;
+      // If the `\\[\s\S]` escape branch cannot match, the scan ends at the
+      // backslash, re-anchors on the escaped quote, and leaves `"x + y \`
+      // outside any literal — so the `+` is counted as code.
+      const src = 'const s = "x + y \\" z"; const n = 1;';
+      expect(estimateHeuristic(src, 'typescript')).toEqual({ mutants: 1, constructs: 1 });
+    });
+
+    it('consumes a backslash-escaped whitespace character', () => {
+      // Source: const s = "x + y \ z"; const n = 1;
+      // Narrowing the escape branch to non-whitespace (`\\[\S]`) breaks here
+      // while the escaped-quote case above still passes.
+      const src = 'const s = "x + y \\ z"; const n = 1;';
+      expect(estimateHeuristic(src, 'typescript')).toEqual({ mutants: 1, constructs: 1 });
+    });
+  });
+
+  describe('comments and string literals are decided in one pass', () => {
+    it('does not treat `//` inside a string literal as a line comment', () => {
+      // Stripping comments BEFORE strings cut `"http://x"` at the `//`, leaving an
+      // unbalanced quote that then consumed everything up to the next quote —
+      // several lines away — and silently deleted real code from the count.
+      const src = 'const u = "http://x";\nconst n = 1 + 2;\nconst m = "y";';
+      // Only `1 + 2` is code: two numbers and one arithmetic op.
+      expect(estimateHeuristic(src, 'typescript')).toEqual({ mutants: 3, constructs: 3 });
+    });
+
+    it('handles `//` inside single-quoted and template literals too', () => {
+      expect(estimateHeuristic("const u = 'a//b'; const n = 1;", 'typescript')).toEqual({
+        mutants: 1,
+        constructs: 1,
+      });
+      expect(estimateHeuristic('const u = `a//b`; const n = 1;', 'typescript')).toEqual({
+        mutants: 1,
+        constructs: 1,
+      });
+    });
+
+    it('does not treat `#` inside a PHP string as a comment', () => {
+      expect(estimateHeuristic('<?php $u = "a#b"; $n = 1;', 'php')).toEqual({
+        mutants: 1,
+        constructs: 1,
+      });
+    });
+
+    it('still lets a quote inside a comment stay inside the comment', () => {
+      // The mirror image of the bug above — fixing the ordering must not simply
+      // move the breakage onto apostrophes in prose comments, which is what
+      // stripping strings first would do.
+      expect(estimateHeuristic("// don't count a + b\nconst n = 1;", 'typescript')).toEqual({
+        mutants: 1,
+        constructs: 1,
+      });
+      expect(estimateHeuristic("# don't count a + b\nn = 1", 'python')).toEqual({
+        mutants: 1,
+        constructs: 1,
+      });
+      expect(estimateHeuristic("/* don't count a + b */\nconst n = 1;", 'typescript')).toEqual({
+        mutants: 1,
+        constructs: 1,
+      });
+    });
+
+    it('does not treat a comment opener inside a string as a comment', () => {
+      // `/*` inside a literal used to open a block comment that ran to the next
+      // `*/` — or to end of file, deleting the rest of the source.
+      const src = 'const a = "/*"; const n = 1; const b = "*/"; const m = 2;';
+      expect(estimateHeuristic(src, 'typescript')).toEqual({ mutants: 2, constructs: 2 });
+    });
+
+    it('keeps python floor division as arithmetic, not a comment', () => {
+      // `//` must never be a comment opener in python.
+      expect(estimateHeuristic('z = 7 // 2', 'python')).toEqual({ mutants: 4, constructs: 4 });
+    });
+  });
+
+  describe('single-quoted strings', () => {
+    it('strips EVERY single-quoted string, not only the first', () => {
+      const src = "const a = 'x + y'; const b = 'p + q'; const n = 1;";
+      expect(estimateHeuristic(src, 'typescript')).toEqual({ mutants: 1, constructs: 1 });
+    });
+
+    it('leaves a separating space behind', () => {
+      expect(estimateHeuristic("1'x'2", 'typescript').mutants).toBe(2);
+    });
+
+    it('consumes an escaped quote instead of ending the literal there', () => {
+      // Source: const s = 'x + y \' z'; const n = 1;
+      const src = "const s = 'x + y \\' z'; const n = 1;";
+      expect(estimateHeuristic(src, 'typescript')).toEqual({ mutants: 1, constructs: 1 });
+    });
+
+    it('consumes a backslash-escaped whitespace character', () => {
+      // Source: const s = 'x + y \ z'; const n = 1;
+      const src = "const s = 'x + y \\ z'; const n = 1;";
+      expect(estimateHeuristic(src, 'typescript')).toEqual({ mutants: 1, constructs: 1 });
+    });
+  });
+  describe('lexical family comes from the engine registry (finding 35b)', () => {
+    // noisePattern switches on EngineDescriptor.syntaxFamily, not on the
+    // project type, so a language that shares a family shares the behaviour and
+    // a new language must state its family rather than inherit the C one.
+    const RUST = 'let n = 1; // + + + +\n';
+    const TS = 'const n = 1; // + + + +\n';
+
+    it('treats rust as the C family: // is a comment, exactly like typescript', () => {
+      expect(estimateHeuristic(RUST, 'rust')).toEqual(estimateHeuristic(TS, 'typescript'));
+      expect(estimateHeuristic(RUST, 'rust').mutants).toBe(1);
+    });
+
+    it('keeps python OUT of the C family: // is floor division, not a comment', () => {
+      // The same text under the python family keeps `//` as an operator, so the
+      // trailing arithmetic is still counted.
+      expect(estimateHeuristic('n = 1  // + + + +', 'python').mutants).toBeGreaterThan(
+        estimateHeuristic('n = 1;  // + + + +', 'typescript').mutants,
+      );
+    });
+
+    it('gives php BOTH C-family // and python-style # comments', () => {
+      expect(estimateHeuristic('<?php $n = 1; // + + +', 'php')).toEqual({
+        mutants: 1,
+        constructs: 1,
+      });
+      expect(estimateHeuristic('<?php $n = 1; # + + +', 'php')).toEqual({
+        mutants: 1,
+        constructs: 1,
+      });
+    });
+
+    it('every registry entry declares a family the stripper handles', () => {
+      // Guards the never-branch: a family with no case would fall through to the
+      // C-family patterns, silently mis-estimating that language.
+      for (const [type, entry] of Object.entries(ENGINE_REGISTRY)) {
+        expect(['c', 'python', 'php']).toContain(entry.syntaxFamily);
+        expect(() => estimateHeuristic('x = 1;', type as SupportedProjectType)).not.toThrow();
+      }
+    });
   });
 });

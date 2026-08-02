@@ -70,5 +70,5 @@ ${BOLD}${CYAN}Chaos-MCP${NC} — mutation-testing sandbox for AI test verificati
       }
     }
 
-  ${BOLD}Docs:${NC} https://github.com/codebuff/chaos-mcp
+  ${BOLD}Docs:${NC} https://github.com/AraneaDev/Chaos-MCP
 `);

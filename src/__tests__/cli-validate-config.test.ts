@@ -109,13 +109,16 @@ describe('CLI --validate-config flag', () => {
     expect(stderr).toContain('no warnings');
   });
 
-  it('exits 1 when config has warnings', async () => {
+  it('exits 0 when config has warnings but --strict is not set', async () => {
+    // Warnings are advisory: they name keys that will be ignored, not a broken
+    // config. Failing on them without --strict contradicted the documented
+    // meaning of --strict and broke any CI job that used this flag as a lint.
     const { code, stderr } = await spawnValidate([
       '--validate-config',
       '--config',
       warningConfigPath,
     ]);
-    expect(code).toBe(1);
+    expect(code).toBe(0);
     expect(stderr).toContain('bogusKey');
     expect(stderr).toContain('unknownStrykerKey');
   });
@@ -141,13 +144,14 @@ describe('CLI --validate-config flag', () => {
     expect(code).toBe(0);
   });
 
-  it('exits 1 when config file is missing (treated as a warning)', async () => {
+  it('exits 1 when an EXPLICITLY named config file is missing', async () => {
     const { code } = await spawnValidate([
       '--validate-config',
       '--config',
       '/tmp/nonexistent-chaos-config.json',
     ]);
-    // Missing config is not a fatal error for validate-config
+    // The operator named this path themselves, so a typo in it must not read
+    // as success. (A missing config at the DEFAULT path is exit 0 — see below.)
     expect(code).toBe(1);
   });
 
@@ -163,7 +167,8 @@ describe('CLI --validate-config flag', () => {
         malformedPath,
       ]);
       expect(code).toBe(1);
-      expect(stderr).toContain('warnings');
+      expect(stderr).toContain('Config error:');
+      expect(stderr).toContain('Failed to parse config file');
     } finally {
       try {
         unlinkSync(malformedPath);
@@ -179,11 +184,12 @@ describe('CLI --validate-config flag', () => {
       '--config',
       tmpdir(), // /tmp is a directory, not a file
     ]);
+    // Unreadable (EISDIR on read), which is a hard error regardless of --strict.
     expect(code).toBe(1);
-    expect(stderr).toContain('warnings');
+    expect(stderr).toContain('Config error:');
   });
 
-  it('exits 1 when --config has no value (falls back to default path)', async () => {
+  it('exits 0 when --config has no value (falls back to the default path)', async () => {
     // When --config is the last argument, the value is undefined and
     // loadConfig/validateConfig use the default path (cwd/chaos-mcp.config.json).
     // To guarantee this file doesn't exist, we chdir into a fresh temp directory
@@ -193,9 +199,10 @@ describe('CLI --validate-config flag', () => {
     try {
       process.chdir(tempDir);
       const { code, stderr } = await spawnValidate(['--validate-config', '--config']);
-      // Missing default config file is a warning → exit 1
-      expect(code).toBe(1);
-      expect(stderr).toContain('warnings');
+      // No file at the DEFAULT path just means "running on defaults" — the
+      // flag was dropped with a warning, so no explicit path was named.
+      expect(code).toBe(0);
+      expect(stderr).toContain('Config not found');
     } finally {
       process.chdir(originalCwd);
       try {

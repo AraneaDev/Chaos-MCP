@@ -28,11 +28,12 @@ vi.mock('child_process', async (importOriginal) => {
 // Mock logger for verbose tests
 vi.mock('../utils/logger.js', () => ({
   log: vi.fn(),
-  isVerbose: vi.fn().mockReturnValue(false),
+  isVerbose: vi.fn(() => false),
 }));
 
 import { execFile } from 'child_process';
-import { runShell, ExecFailureError } from '../utils/exec.js';
+import { runShell } from '../utils/exec.js';
+import { ExecFailureError } from '../utils/exec-error.js';
 
 /** Same shape as the helper in `exec-error.test.ts`. */
 async function expectRejection(fn: () => Promise<unknown>): Promise<ExecFailureError> {

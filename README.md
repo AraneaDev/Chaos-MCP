@@ -16,7 +16,7 @@ Chaos-MCP is an [MCP (Model Context Protocol)](https://modelcontextprotocol.io/)
 ## Features
 
 - **4 Languages Supported** — TypeScript/JavaScript (StrykerJS), Python (cosmic-ray), Rust (cargo-mutants), PHP (Infection)
-- **Sandbox Isolation** — all mutation runs execute in temporary directories; your real workspace is never touched
+- **Sandbox Isolation** — all mutation runs execute in temporary directories; your real workspace is never touched. The target's real path is verified to live inside the sandbox before any engine runs, so a symlinked source file (or one under a symlinked directory) is refused rather than mutated in place through the link
 - **Pinned Container Runners** — release-matched OCI images provide all four mutation engines without installing them on the host
 - **Auto-Detection** — automatically detects project type, test runner, and workspace root
 - **Async Subprocesses** — all mutation-tool execution uses async `execFile`/`exec` (subprocess runs never block the event loop; the one-time sandbox copy is synchronous)
@@ -180,7 +180,7 @@ Re-runs only the baseline lines and reports which previously-uncaught mutants ar
 
 ### 3. Interpret the Results
 
-The output is **bundled and deduplicated** to stay token-efficient: mutants are grouped by line (with a per-line count of each mutator type), `survivors` (tests ran but didn't catch) and `noCoverage` (no test reached the mutant) are reported separately at line+mutator granularity, and the explanatory note appears once instead of being repeated for every mutant. Because the split is per-mutator, the same line can appear in both lists (e.g. a live expression that survived next to an unreachable fallback that no test reached). Survivors and no-coverage entries also include a `changes` sample — a capped, deduped list of `original → mutated` edits — for TypeScript and Rust targets (best-effort; absent for Python, which doesn't expose per-mutant detail). When `diffBase` is used, the output may include a `scopeNote` (a top-level JSON field / a `Scope:` text line) reporting scoping decisions — e.g. a skipped run when nothing changed, or a whole-file fallback for Python/Rust targets.
+The output is **bundled and deduplicated** to stay token-efficient: mutants are grouped by line (with a per-line count of each mutator type), `survivors` (tests ran but didn't catch) and `noCoverage` (no test reached the mutant) are reported separately at line+mutator granularity, and the explanatory note appears once instead of being repeated for every mutant. Because the split is per-mutator, the same line can appear in both lists (e.g. a live expression that survived next to an unreachable fallback that no test reached). Survivors and no-coverage entries also include a `changes` sample — a capped, deduped list of per-mutant edits — for all four languages (best-effort). TypeScript (StrykerJS) and Python (cosmic-ray, read from each mutant's diff) report the full `original → mutated` form; Rust (cargo-mutants) and PHP (Infection) expose only the mutated side, so their entries carry just that. When `diffBase` is used, the output may include a `scopeNote` (a top-level JSON field / a `Scope:` text line) reporting scoping decisions — e.g. a skipped run when nothing changed, or a whole-file fallback for Python/Rust targets.
 
 **JSON output (default — emitted as a single compact line):**
 
@@ -222,27 +222,27 @@ Add or strengthen tests targeting these lines to kill the survivors.
 
 ## Tool Parameters
 
-| Parameter          | Type                              | Required | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| ------------------ | --------------------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `filePath`         | `string`                          | Yes      | Workspace-relative path to the file (`.ts`, `.js`, `.tsx`, `.jsx`, `.py`, `.rs`, `.php`)                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `timeoutMs`        | `number`                          | No       | Max run time in ms (default: 300000 / 5 min)                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| `lineScope`        | `{ start, end }`                  | No       | 1-based line range (StrykerJS only)                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `diffBase`         | `string`                          | No       | Auto-scope mutation to git-changed lines. `"HEAD"` (uncommitted), `"staged"`, or a git ref (e.g. `"main"`, via merge-base). Mutually exclusive with `lineScope`. Line-level scoping is StrykerJS-only; other languages run whole-file with a note. No changes vs base → run skipped.                                                                                                                                                                                                                |
-| `baseline`         | `object`                          | No       | Verify mode. Pass back a prior run's `{ survivors, noCoverage }` to re-test only those mutants and get a delta (`nowKilled` / `stillSurviving` / `newSurvivors`). Re-run auto-scopes to the baseline lines (StrykerJS) or whole-file (other languages). Mutually exclusive with `diffBase`/`lineScope`. Verify mode keys on line numbers, so run it after **adding tests** — not after editing the source under test, since edits shift line numbers and would misreport which mutants were killed. |
-| `mutatorAllowlist` | `string[]`                        | No       | Not supported in StrykerJS v9 — ignored (use `mutatorDenylist`)                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `mutatorDenylist`  | `string[]`                        | No       | Stryker mutator names to exclude                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `concurrency`      | `number`                          | No       | Parallel mutation workers (StrykerJS only)                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `dryRun`           | `boolean`                         | No       | Validate test suite only, no mutations (StrykerJS only)                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| `outputFormat`     | `"json"` \| `"text"`              | No       | Output format (default: `"json"`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `incremental`      | `boolean`                         | No       | Reuse previous run results (StrykerJS only)                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| `ignorePatterns`   | `string[]`                        | No       | Substring patterns to exclude from sandbox copy                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `enrich`           | `boolean`                         | No       | Annotate each survivor with severity, why-it-matters, a test hint, and source context — and rank severity-first. **Default: `true`** (pass `false` to disable and return plain unranked output). Richest for TypeScript; Python degrades to `severity: "unknown"`.                                                                                                                                                                                                                                  |
-| `maxSurvivors`     | `integer ≥ 1`                     | No       | Cap on how many survivor (and no-coverage) line groups are returned after severity ranking. Hidden groups counted in `survivorsTruncated`/`noCoverageTruncated`. Precedence: arg > `defaultMaxSurvivors` config > 10.                                                                                                                                                                                                                                                                               |
-| `severityFloor`    | `"high"` \| `"medium"` \| `"low"` | No       | Drop survivor groups below this severity (requires enrichment, on by default). Dropped groups counted in `survivorsFiltered`/`noCoverageFiltered`. `"unknown"`-severity groups are below `"low"` and are dropped by any floor.                                                                                                                                                                                                                                                                      |
-| `runId`            | `string`                          | No       | Verify mode by cached id: re-run against the survivor baseline saved from a prior audit (the `runId` it returned). Mutually exclusive with `baseline`, `diffBase`, and `lineScope`. Unknown or expired ids (cache TTL: ~24 h) return an error.                                                                                                                                                                                                                                                      |
-| `suppress`         | `object[]`                        | No       | Mark mutants as equivalent (unkillable). Each entry: `{ "line": N, "mutator": "MutatorName" }` (reason is an optional string explaining why the mutant is equivalent). Persisted to `.chaos-mcp/suppressions.json`; suppressed mutants are auto-excluded from the score denominator and from future `audit` and `triage` output. The output field `suppressedCount` reports how many were excluded.                                                                                                 |
-| `unsuppress`       | `object[]`                        | No       | Remove previously-suppressed mutants for this file. Each entry: `{ "line": N, "mutator": "MutatorName" }`.                                                                                                                                                                                                                                                                                                                                                                                          |
-| `minScore`         | `number 0–100`                    | No       | Gate threshold. When the mutation score is below this value, the output includes `gate: { minScore, passed: false }`. Never an error. Uses the suppression-adjusted score.                                                                                                                                                                                                                                                                                                                          |
+| Parameter          | Type                              | Required | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| ------------------ | --------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `filePath`         | `string`                          | Yes      | Workspace-relative path to the file (`.ts`, `.js`, `.tsx`, `.jsx`, `.py`, `.rs`, `.php`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `timeoutMs`        | `number`                          | No       | Max run time in ms (default: 300000 / 5 min)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `lineScope`        | `{ start, end }`                  | No       | 1-based line range (StrykerJS only)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `diffBase`         | `string`                          | No       | Auto-scope mutation to git-changed lines. `"HEAD"` (uncommitted), `"staged"`, or a git ref (e.g. `"main"`, via merge-base). Mutually exclusive with `lineScope`. Line-level scoping is StrykerJS-only; other languages run whole-file with a note. No changes vs base → run skipped.                                                                                                                                                                                                                                                                                                                                                                                      |
+| `baseline`         | `object`                          | No       | Verify mode. Pass back a prior run's `{ survivors, noCoverage }` to re-test only those mutants and get a delta (`nowKilled` / `stillSurviving` / `newSurvivors`). Re-run auto-scopes to the baseline lines (StrykerJS) or whole-file (other languages). Mutually exclusive with `diffBase`/`lineScope`. Verify mode keys on line numbers, so run it after **adding tests** — not after editing the source under test, since edits shift line numbers and would misreport which mutants were killed.                                                                                                                                                                       |
+| `mutatorAllowlist` | `string[]`                        | No       | Not supported in StrykerJS v9 — ignored (use `mutatorDenylist`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `mutatorDenylist`  | `string[]`                        | No       | Stryker mutator names to exclude                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `concurrency`      | `number`                          | No       | Parallel mutation workers (StrykerJS only)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `dryRun`           | `boolean`                         | No       | Validate test suite only, no mutations (StrykerJS only)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `outputFormat`     | `"json"` \| `"text"`              | No       | Output format (default: `"json"`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `incremental`      | `boolean`                         | No       | Reuse previous run results (StrykerJS only). State is cached per (workspace, file) OUTSIDE the sandbox — the sandbox is deleted after each run, so without that the option would have nothing to reuse                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `ignorePatterns`   | `string[]`                        | No       | Substring patterns to exclude from sandbox copy                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `enrich`           | `boolean`                         | No       | Annotate each survivor with severity, why-it-matters, a test hint, and source context — and rank severity-first. **Default: `true`** (pass `false` to disable and return plain unranked output). Richest for TypeScript; Python degrades to `severity: "unknown"`.                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `maxSurvivors`     | `integer ≥ 1`                     | No       | Cap on how many survivor (and no-coverage) line groups are returned after severity ranking. Hidden groups counted in `survivorsTruncated`/`noCoverageTruncated`. Precedence: arg > `defaultMaxSurvivors` config > 10.                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `severityFloor`    | `"high"` \| `"medium"` \| `"low"` | No       | Drop survivor groups below this severity (requires enrichment, on by default). Dropped groups counted in `survivorsFiltered`/`noCoverageFiltered`. `"unknown"`-severity groups are below `"low"` and are dropped by any floor.                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `runId`            | `string`                          | No       | Verify mode by cached id: re-run against the survivor baseline saved from a prior audit (the `runId` it returned). Mutually exclusive with `baseline`, `diffBase`, and `lineScope`. Unknown or expired ids (cache TTL: ~24 h) return an error.                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `suppress`         | `object[]`                        | No       | Mark mutants as equivalent (unkillable). Each entry: `{ "line": N, "mutator": "MutatorName" }` (reason is an optional string explaining why the mutant is equivalent). Persisted to `.chaos-mcp/suppressions.json`; suppressed mutants are auto-excluded from the score denominator and from future `audit` and `triage` output. Each entry is stamped with a fingerprint of its source line, so an edit to that line retires the suppression instead of silently re-pointing it; re-issue the entry to re-confirm it. The output fields `suppressedCount`, `driftedSuppressions` and `unverifiedSuppressions` report how many were excluded, and how many were rejected. |
+| `unsuppress`       | `object[]`                        | No       | Remove previously-suppressed mutants for this file. Each entry: `{ "line": N, "mutator": "MutatorName" }`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `minScore`         | `number 0–100`                    | No       | Gate threshold. When the mutation score is below this value, the output includes `gate: { minScore, passed: false }`. Never an error. Uses the suppression-adjusted score.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for development setup and the full parameter semantics.
 
@@ -256,7 +256,7 @@ Every successful, non-verify `audit_code_resilience` call returns a `runId` (an 
 2. **Fix or add tests.**
 3. **Verify:** `{ "filePath": "src/utils/math.ts", "runId": "a1b2c3d4" }` → reports which previously-surviving mutants are now killed.
 
-`runId` is mutually exclusive with `baseline`, `diffBase`, and `lineScope`. The baseline cache lives in `os.tmpdir()/chaos-mcp-runs/` and is ephemeral (default TTL: 24 h; default max: 200 entries). Passing an unknown or expired `runId` returns an error.
+`runId` is mutually exclusive with `baseline`, `diffBase`, and `lineScope`. The baseline cache lives in `os.tmpdir()/chaos-mcp-runs/<hash-of-server-cwd>/` — partitioned per server working directory, so two checkouts served by two servers never read each other's entries — and is ephemeral (default TTL: 24 h; default max: 200 entries). Passing an unknown or expired `runId` returns an error.
 
 `triage_test_coverage` also mints and returns a `runId` per ranking row, so you can drill into a weak file and immediately verify after fixing its tests.
 
@@ -276,6 +276,7 @@ Some mutants are _equivalent_ — logically identical to the original under all 
 Suppressed mutants are:
 
 - **Persisted** to `<workspaceRoot>/.chaos-mcp/suppressions.json` (keyed by workspace-relative file path).
+- **Fingerprinted** — each entry stores a short digest of the source line it targets, so a suppression only applies while that line still says the same thing.
 - **Auto-excluded** from every future `audit` and `triage` call for that file — no flag needed.
 - **Removed from the score denominator** — `mutationScore` rises and the output field `suppressedCount` tells you how many were excluded.
 - **Excluded from verify mode** — suppressed mutants won't appear as "still surviving".
@@ -291,7 +292,17 @@ To undo a wrong suppression:
 
 **`.gitignore` or commit?** Add `.chaos-mcp/` to `.gitignore` if the suppression list is personal, or commit it to share the equivalent-mutant list with the team. Suppression keys are workspace-relative, so the file is portable across machines.
 
-**Staleness caveat:** entries are keyed by `file + line + mutator`. Edits that shift line numbers can stale an entry. Each entry records an optional `reason` and an `addedAt` timestamp so you can audit and prune the list over time.
+**Staleness is detected, not assumed.** Entries are keyed by `file + line + mutator` _plus_ a `fingerprint`: a digest of the normalized source line (trimmed, internal whitespace collapsed) the suppression was recorded against. Reformatting the line does not break it; changing the code does. Each run resolves every stored entry one of three ways:
+
+| Outcome    | Meaning                                               | Applied?                                     |
+| ---------- | ----------------------------------------------------- | -------------------------------------------- |
+| applied    | the fingerprint still matches the source line         | yes — counted in `suppressedCount`           |
+| drifted    | the line moved or changed; the fingerprint mismatches | **no** — counted in `driftedSuppressions`    |
+| unverified | the entry has no fingerprint (written before v2)      | **no** — counted in `unverifiedSuppressions` |
+
+The bias is deliberate: a suppression that is not applied lowers your score _visibly_, while one applied to the wrong code hides a real coverage gap _invisibly_. To restore a drifted or unverified entry, re-issue the same `suppress` argument — that re-stamps the fingerprint and keeps the existing `reason` and `addedAt` (a new `reason`, if you pass one, replaces the old).
+
+**Migrating a v1 file:** `version: 1` files load unchanged; every entry keeps its `line`, `mutator`, `reason` and `addedAt`. Nothing is deleted and nothing is back-filled — the entries simply report as `unverified` until you re-confirm them.
 
 ### Config keys for state
 
@@ -368,17 +379,18 @@ TypeScript files are mutated only on the changed lines; Python and Rust files ru
 
 **Parameters:**
 
-| Parameter          | Type                 | Description                                                                                                                                                                                                               |
-| ------------------ | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `paths`            | `string[]`           | Workspace-relative files/dirs to triage. Optional when `diffBase` is provided.                                                                                                                                            |
-| `maxFiles`         | `integer ≥ 1`        | Cap on files audited (precedence: arg → `defaultMaxFiles` config → 25).                                                                                                                                                   |
-| `timeoutMs`        | `number`             | Per-file mutation-run timeout in ms (default: 300000).                                                                                                                                                                    |
-| `mutatorDenylist`  | `string[]`           | Stryker mutator names to exclude, applied to every TypeScript/JS file.                                                                                                                                                    |
-| `outputFormat`     | `"json"` \| `"text"` | Output format (default: `"json"`).                                                                                                                                                                                        |
-| `diffBase`         | `string`             | Auto-scope to git-changed files. `"HEAD"`, `"staged"`, or any git ref/SHA. Makes `paths` optional; with `paths`, intersects changed files under those paths. TypeScript: changed lines only. Other languages: whole-file. |
-| `survivorsPerFile` | `integer ≥ 0`        | Inline top-N enriched survivors per ranked file (default `0` = scores-only).                                                                                                                                              |
-| `fileConcurrency`  | `integer 1–64`       | Files audited in parallel (default `max(1, min(4, cpus-1))`). Per-file StrykerJS worker count is automatically capped (TypeScript/StrykerJS only; other engines ignore the worker-count cap).                             |
-| `minScore`         | `number 0–100`       | Gate threshold. Per-row `passed` field + top-level `gate: { minScore, passed, failingFiles }` in output. Never an error.                                                                                                  |
+| Parameter          | Type                 | Description                                                                                                                                                                                                                   |
+| ------------------ | -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `paths`            | `string[]`           | Workspace-relative files/dirs to triage. Optional when `diffBase` is provided.                                                                                                                                                |
+| `maxFiles`         | `integer ≥ 1`        | Cap on files audited (precedence: arg → `defaultMaxFiles` config → 25).                                                                                                                                                       |
+| `timeoutMs`        | `number > 0`         | Per-file mutation-run timeout in ms (default: 300000). Also clamped by whatever remains of `totalTimeoutMs`.                                                                                                                  |
+| `totalTimeoutMs`   | `number > 0`         | Wall-clock budget for the whole sweep (default: 900000 = 15 min). Files not started before it runs out are returned in `unaudited` with `stoppedReason: "time_budget_exhausted"`, so a large sweep still returns its ranking. |
+| `mutatorDenylist`  | `string[]`           | Stryker mutator names to exclude, applied to every TypeScript/JS file.                                                                                                                                                        |
+| `outputFormat`     | `"json"` \| `"text"` | Output format (default: `"json"`).                                                                                                                                                                                            |
+| `diffBase`         | `string`             | Auto-scope to git-changed files. `"HEAD"`, `"staged"`, or any git ref/SHA. Makes `paths` optional; with `paths`, intersects changed files under those paths. TypeScript: changed lines only. Other languages: whole-file.     |
+| `survivorsPerFile` | `integer ≥ 0`        | Inline top-N enriched survivors per ranked file (default `0` = scores-only).                                                                                                                                                  |
+| `fileConcurrency`  | `integer 1–64`       | Files audited in parallel (default `max(1, min(4, cpus-1))`). Per-file StrykerJS worker count is automatically capped (TypeScript/StrykerJS only; other engines ignore the worker-count cap).                                 |
+| `minScore`         | `number 0–100`       | Gate threshold. Per-row `passed` field + top-level `gate: { minScore, passed, failingFiles }` in output. Never an error. A row whose audit was cut short (`complete: false`) fails the gate regardless of its score.          |
 
 ## Pre-flight Estimate — `estimate_audit`
 
@@ -419,13 +431,13 @@ Additional output fields when `withTiming: true`:
 
 ### Fidelity
 
-| Language                | Fidelity | Basis                                 |
-| ----------------------- | -------- | ------------------------------------- |
-| Rust                    | `exact`  | `cargo-mutants --list` (no tests run) |
-| TypeScript / JavaScript | `approx` | source-parse heuristic                |
-| Python                  | `approx` | source-parse heuristic                |
+| Language                | Fidelity | Basis                                                    |
+| ----------------------- | -------- | -------------------------------------------------------- |
+| Rust                    | `exact`  | `cargo-mutants --list` (generated mutants; no tests run) |
+| TypeScript / JavaScript | `approx` | source-parse heuristic                                   |
+| Python                  | `approx` | source-parse heuristic                                   |
 
-For Rust, the estimate is exact because `cargo mutants --list` enumerates every planned mutant without running tests. For all other languages the count is approximate — a lightweight heuristic over the source AST; the actual audit may differ. Run `audit_code_resilience` for exact results.
+For Rust, the estimate is exact for the mutants `cargo mutants --list` _generates_ without running tests — the audit itself scores fewer, since mutants that fail to compile are excluded from its denominator and reported as `incompetent`. For all other languages the count is approximate — a lightweight heuristic over the source AST; the actual audit may differ. Run `audit_code_resilience` for exact results.
 
 If `cargo-mutants` is not installed, the Rust path falls back to the heuristic and reports `fidelity: "approx"` with a note.
 
@@ -477,12 +489,24 @@ Each ranking row gains a `passed` field. The top-level output includes:
   "gate": {
     "minScore": 75,
     "passed": false,
-    "failingFiles": ["src/utils/math.ts", "src/parser.ts"]
+    "failingFiles": ["src/utils/math.ts", "src/parser.ts"],
+    "notGraded": { "errored": 0, "unaudited": 0 },
+    "reason": "below_threshold"
   }
 }
 ```
 
-`gate.passed` is `false` if any file's score is below `minScore`. `failingFiles` lists the workspace-relative paths that did not pass. Files that errored during triage are reported in `errors[]` and do not affect the gate.
+**The triage gate fails closed.** `gate.passed` is `false` if any file's score is below `minScore` **or if any requested file was never measured** — one that errored during the sweep (also listed in `errors[]`) or that the `totalTimeoutMs` budget never reached (also listed in `unaudited[]`). Grading a sweep on whichever subset happened to finish would let a CI step keyed on `gate.passed` go green over ungraded code, so an incomplete sweep never passes. A file audited only partially (its `complete` is `false`) fails on the same basis.
+
+The gate object always carries `minScore`, `passed`, `failingFiles`, and `notGraded` whenever `minScore` was supplied:
+
+- `failingFiles` — workspace-relative paths that were measured and scored below `minScore`.
+- `notGraded` — `{ "errored": <count>, "unaudited": <count> }`, the files that produced no score at all.
+- `reason` — present only on a failure, and the only machine-readable way to tell the two causes apart:
+  - `"below_threshold"` — at least one file was measured and scored too low (`failingFiles` is non-empty).
+  - `"files_not_graded"` — every measured file passed, but something was never measured (`failingFiles` is empty and `notGraded` is non-zero).
+
+A `passed: false` with an empty `failingFiles` is therefore expected, not a bug: check `reason` and `notGraded` before assuming a score problem.
 
 ### CI use case
 
@@ -547,7 +571,8 @@ sandbox may be mounted separately and read-only, as described below.
     "cpus": 2,
     "memoryMb": 4096,
     "pidsLimit": 512,
-    "startupTimeoutMs": 60000
+    "startupTimeoutMs": 60000,
+    "tmpfsSizeMb": 2048
   }
 }
 ```
@@ -559,23 +584,43 @@ Modes:
 - `auto` uses containers when the configured runtime is reachable and otherwise
   falls back to native. Image or project failures do not silently fall back.
 
+Each image carries exactly one language runtime, so a suite that spawns another
+language's toolchain cannot run inside it. Override the mode for just that
+language rather than giving up containers everywhere:
+
+```json
+{
+  "container": {
+    "mode": "container",
+    "modes": { "php": "native" }
+  }
+}
+```
+
 Container settings:
 
-| Key                | Type                          | Default                   | Description                                                                   |
-| ------------------ | ----------------------------- | ------------------------- | ----------------------------------------------------------------------------- |
-| `mode`             | `native \| container \| auto` | `native`                  | Select the execution backend or runtime-only fallback behavior                |
-| `runtime`          | `docker \| podman`            | `docker`                  | OCI-compatible command used to create and manage audit containers             |
-| `network`          | `string`                      | `bridge`                  | Container network mode or name; use `none` when project tests need no network |
-| `cpus`             | positive number               | `2`                       | CPU limit for each audit container                                            |
-| `memoryMb`         | positive integer              | `4096`                    | Memory limit in MiB for each audit container                                  |
-| `pidsLimit`        | positive integer              | `512`                     | Maximum number of processes in each audit container                           |
-| `startupTimeoutMs` | positive integer              | 60 s startup; 10 s probe  | Override the timeout for runtime probing, container creation, and startup     |
-| `images`           | per-language image map        | release-matched GHCR tags | Override the `typescript`, `python`, `rust`, or `php` image                   |
+| Key                | Type                          | Default                   | Description                                                                                                                                                                                                                |
+| ------------------ | ----------------------------- | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mode`             | `native \| container \| auto` | `native`                  | Select the execution backend or runtime-only fallback behavior                                                                                                                                                             |
+| `modes`            | per-language mode map         | none                      | Override `mode` for `typescript`, `python`, `rust`, or `php` individually; wins over `mode` for that language                                                                                                              |
+| `runtime`          | `docker \| podman`            | `docker`                  | OCI-compatible command used to create and manage audit containers                                                                                                                                                          |
+| `network`          | `string`                      | `bridge`                  | Container network mode or name; use `none` when project tests need no network                                                                                                                                              |
+| `cpus`             | positive number               | `2`                       | CPU limit for each audit container                                                                                                                                                                                         |
+| `memoryMb`         | positive integer              | `4096`                    | Memory limit in MiB for each audit container                                                                                                                                                                               |
+| `pidsLimit`        | positive integer              | `512`                     | Maximum number of processes in each audit container                                                                                                                                                                        |
+| `startupTimeoutMs` | positive integer              | 60 s startup; 10 s probe  | Override the timeout for runtime probing, container creation, and startup                                                                                                                                                  |
+| `tmpfsSizeMb`      | positive integer              | `2048`                    | Size of the writable `/tmp`. The container root filesystem is read-only and host dependency directories are mounted read-only, so `/tmp` holds every toolchain cache (Cargo registry, npm cache, per-mutant working files) |
+| `images`           | per-language image map        | release-matched GHCR tags | Override the `typescript`, `python`, `rust`, or `php` image                                                                                                                                                                |
 
 The images pin the language runtime and mutation engine, while the project
 still supplies its own test dependencies. Existing sandbox dependency
 directories (`node_modules`, `.venv`/`venv`, and `vendor`) are mounted
-read-only when they are symlinked from the host. Dependencies containing native
+read-only when they are symlinked from the host, with one exception:
+`node_modules/.vite-temp` is a small writable tmpfs, because Vite writes a
+bundled copy of the config it is loading there and a read-only tree would fail
+the config load of every vitest project. The scratch is discarded with the
+container and project test code still cannot write to the real dependency tree.
+Dependencies containing native
 extensions must be compatible with the selected Linux image; use an image
 override when the project requires another runtime or platform build.
 Chaos-MCP selects release-matched GHCR images for all four languages by
@@ -624,6 +669,31 @@ govern the mutation audit itself.
 ### Enabling `prebuildCommand`
 
 The `prebuildCommand` tool argument runs an arbitrary shell command inside the sandbox, which can reach outside it. It is **disabled by default**. Enable it explicitly with `"allowPrebuild": true` in `chaos-mcp.config.json`, or by setting the `CHAOS_MCP_ALLOW_PREBUILD=1` environment variable. The auto-detected prebuild for Rust (`cargo check`) runs without this flag.
+
+### Python test commands declared by the audited project
+
+Mutation testing runs the audited project's test suite — that is the job. But
+the Python engine resolves its test command partly from the **audited
+project's own** `pyproject.toml`, via the `[tool.mutmut] runner` key, and
+cosmic-ray executes that string through a shell once per mutant. Accepting an
+arbitrary command line from repository content is the same hazard
+`prebuildCommand` is gated for, so it is bounded the same way:
+
+- A **bare executable name** (`nose2`, `ward`, `green`) is accepted. It can name
+  a program to run and nothing else — no arguments, no `;`, `|`, `&&`, `$(...)`,
+  or redirects.
+- Anything else is **refused with an explanation** rather than silently replaced
+  with pytest, which would quietly change which tests can kill a mutant.
+
+To run such a command deliberately, either set it in **your** config (which is
+trusted, being your file):
+
+```json
+{ "cosmicray": { "testRunner": "python -m unittest discover" } }
+```
+
+or set `CHAOS_MCP_ALLOW_REPO_TEST_COMMAND=1` to trust project-declared commands
+in this workspace.
 
 ### Auditing workspaces outside the working directory
 

@@ -3,7 +3,16 @@ import {
   TOOL_DEFINITION,
   TRIAGE_TOOL_DEFINITION,
   ESTIMATE_TOOL_DEFINITION,
-} from '../tool-schema.js';
+} from '../core/tool-schema.js';
+import {
+  MAX_LINE_NUMBER,
+  TOOL_ARG_VALIDATORS,
+  type ToolArgs,
+} from '../core/tool-args-validation.js';
+import { TRIAGE_ARG_VALIDATORS } from '../core/triage-args-validation.js';
+import { supportedSourceExtensions } from '../utils/project-detector.js';
+import { ENGINE_REGISTRY } from '../engines/registry.js';
+import type { ResultPayload } from '../core/format.js';
 
 describe('TOOL_DEFINITION contract', () => {
   it('exposes the audit_code_resilience tool with an object input schema', () => {
@@ -63,6 +72,29 @@ describe('TOOL_DEFINITION contract', () => {
     expect(concurrency.type).toBe('integer');
     expect(concurrency.minimum).toBe(1);
     expect(concurrency.maximum).toBe(64);
+  });
+
+  it('caps every millisecond field at the 32-bit timer maximum', () => {
+    // Without a `maximum`, a schema-driven client happily sends 3e9, which Node
+    // clamps to a 1ms timer — the run dies immediately instead of lasting longer.
+    const MAX_TIMEOUT = 2_147_483_647;
+    const audit = TOOL_DEFINITION.inputSchema.properties as Record<
+      string,
+      { exclusiveMinimum?: number; maximum?: number }
+    >;
+    const triage = TRIAGE_TOOL_DEFINITION.inputSchema.properties as Record<
+      string,
+      { exclusiveMinimum?: number; maximum?: number }
+    >;
+    for (const field of [
+      audit.timeoutMs,
+      audit.perMutantTimeoutMs,
+      triage.timeoutMs,
+      triage.totalTimeoutMs,
+    ]) {
+      expect(field.exclusiveMinimum).toBe(0);
+      expect(field.maximum).toBe(MAX_TIMEOUT);
+    }
   });
 
   it('restricts outputFormat to exactly the json and text values', () => {
@@ -293,5 +325,771 @@ describe('ESTIMATE_TOOL_DEFINITION contract', () => {
     expect(props.budgetMs).toEqual({ type: 'integer' });
     expect(props.fitsBudget).toEqual({ type: 'boolean' });
     expect(props.recommendation).toEqual({ type: 'string' });
+  });
+});
+
+/**
+ * Structural invariants for every schema node in the file.
+ *
+ * These schemas ARE the MCP contract: clients validate arguments against the
+ * input schema and read `description` to decide what to send. A blanked
+ * description or an emptied nested object still parses as valid JSON Schema and
+ * still lets the server start — it just stops constraining anything and stops
+ * telling the caller what the field means. Per-field assertions cannot scale to
+ * a structure this size, so these walk it instead.
+ */
+describe('schema structural invariants', () => {
+  type Node = Record<string, unknown>;
+
+  const SCHEMA_ROOTS: [string, Node][] = [
+    ['audit.inputSchema', TOOL_DEFINITION.inputSchema as unknown as Node],
+    ['audit.outputSchema', TOOL_DEFINITION.outputSchema as unknown as Node],
+    ['triage.inputSchema', TRIAGE_TOOL_DEFINITION.inputSchema as unknown as Node],
+    ['triage.outputSchema', TRIAGE_TOOL_DEFINITION.outputSchema as unknown as Node],
+    ['estimate.inputSchema', ESTIMATE_TOOL_DEFINITION.inputSchema as unknown as Node],
+    ['estimate.outputSchema', ESTIMATE_TOOL_DEFINITION.outputSchema as unknown as Node],
+  ];
+
+  const JSON_SCHEMA_TYPES = new Set([
+    'object',
+    'array',
+    'string',
+    'number',
+    'integer',
+    'boolean',
+    'null',
+  ]);
+
+  /** Every schema node reachable from a root, as [path, node] pairs. */
+  function walk(node: unknown, path: string, out: [string, Node][] = []): [string, Node][] {
+    if (node === null || typeof node !== 'object' || Array.isArray(node)) return out;
+    const n = node as Node;
+    out.push([path, n]);
+    const properties = n.properties;
+    if (properties !== null && typeof properties === 'object') {
+      for (const [key, child] of Object.entries(properties as Node)) {
+        walk(child, `${path}.${key}`, out);
+      }
+    }
+    if (n.items !== undefined) walk(n.items, `${path}[]`, out);
+    return out;
+  }
+
+  const ALL_NODES = SCHEMA_ROOTS.flatMap(([name, root]) => walk(root, name));
+
+  it('reaches a non-trivial number of schema nodes', () => {
+    // Guards the walker itself: if it stopped descending, every assertion below
+    // would pass vacuously.
+    expect(ALL_NODES.length).toBeGreaterThan(80);
+  });
+
+  it('gives every node a recognised JSON-schema type', () => {
+    // An emptied node (`{}`) loses its type and constrains nothing.
+    const untyped = ALL_NODES.filter(
+      ([, n]) => typeof n.type !== 'string' || !JSON_SCHEMA_TYPES.has(n.type),
+    ).map(([path]) => path);
+    expect(untyped).toEqual([]);
+  });
+
+  it('gives every object node a non-empty properties map', () => {
+    const empty = ALL_NODES.filter(
+      ([, n]) =>
+        n.type === 'object' &&
+        n.properties !== undefined &&
+        Object.keys(n.properties as Node).length === 0,
+    ).map(([path]) => path);
+    expect(empty).toEqual([]);
+  });
+
+  it('gives every array node an items schema', () => {
+    const missing = ALL_NODES.filter(
+      ([, n]) => n.type === 'array' && (n.items === null || typeof n.items !== 'object'),
+    ).map(([path]) => path);
+    expect(missing).toEqual([]);
+  });
+
+  it('never carries a blank description', () => {
+    const blank = ALL_NODES.filter(
+      ([, n]) => n.description !== undefined && String(n.description).trim().length === 0,
+    ).map(([path]) => path);
+    expect(blank).toEqual([]);
+  });
+
+  it('describes every INPUT parameter a caller can pass', () => {
+    // Output fields are self-describing by name; input fields are what the
+    // caller has to choose values for, so each one must say what it means.
+    const undescribed = SCHEMA_ROOTS.filter(([name]) => name.endsWith('inputSchema'))
+      .flatMap(([name, root]) => walk(root, name))
+      .filter(
+        ([path, n]) =>
+          // Top-level parameters only — not the `items` schema of an array
+          // parameter, which the parameter's own description already covers.
+          path.split('.').length === 3 && !path.endsWith('[]') && typeof n.description !== 'string',
+      )
+      .map(([path]) => path);
+    expect(undescribed).toEqual([]);
+  });
+
+  it('lists only non-empty strings in every required array', () => {
+    const bad = ALL_NODES.filter(
+      ([, n]) =>
+        Array.isArray(n.required) &&
+        (n.required as unknown[]).some((k) => typeof k !== 'string' || k.length === 0),
+    ).map(([path]) => path);
+    expect(bad).toEqual([]);
+  });
+
+  it('lists only non-empty strings in every enum', () => {
+    const bad = ALL_NODES.filter(
+      ([, n]) =>
+        Array.isArray(n.enum) &&
+        ((n.enum as unknown[]).length === 0 ||
+          (n.enum as unknown[]).some((v) => typeof v !== 'string' || v.length === 0)),
+    ).map(([path]) => path);
+    expect(bad).toEqual([]);
+  });
+
+  it('closes every input schema to unknown properties', () => {
+    // `additionalProperties: false` is what turns a typo in an argument name
+    // into an error instead of a silently ignored option.
+    const inputRoots = SCHEMA_ROOTS.filter(([n]) => n.endsWith('inputSchema'));
+    expect(inputRoots.map(([name, root]) => [name, root.additionalProperties, root.type])).toEqual(
+      inputRoots.map(([name]) => [name, false, 'object']),
+    );
+  });
+});
+
+/**
+ * `structuredContent` is assembled BY HAND in `format.ts` (`ResultPayload` +
+ * `buildResultPayload`) and described BY HAND in this file's `outputSchema`.
+ * Nothing links the two, and they have now drifted twice: the partial-audit
+ * fields (`complete`/`batchesCompleted`/`batchesPlanned`/`stoppedReason`) and
+ * `fidelityNote`, the PHPUnit phantom-survivor advisory, which was produced for
+ * releases without ever being declared — so an MCP client generating types or
+ * binding fields from the schema silently never surfaced it.
+ *
+ * These cases are that link. `PAYLOAD_FIELDS` below is typed
+ * `Record<keyof ResultPayload, true>`, so adding a field to the interface
+ * without listing it here is a COMPILE error under `tsc -p tsconfig.tests.json`
+ * — and every listed field is then required to exist in the schema. The reverse
+ * direction catches a schema field that nothing produces.
+ */
+describe('audit outputSchema ↔ ResultPayload parity', () => {
+  const PAYLOAD_FIELDS: Record<keyof ResultPayload, true> = {
+    target: true,
+    mutationScore: true,
+    summary: true,
+    survivors: true,
+    noCoverage: true,
+    suggestedTestFile: true,
+    ignoredOptions: true,
+    survivorsTruncated: true,
+    noCoverageTruncated: true,
+    survivorsFiltered: true,
+    noCoverageFiltered: true,
+    scopeNote: true,
+    fidelityNote: true,
+    enrichNote: true,
+    note: true,
+    runId: true,
+    suppressedCount: true,
+    driftedSuppressions: true,
+    unverifiedSuppressions: true,
+    gate: true,
+    incompetent: true,
+    complete: true,
+    batchesCompleted: true,
+    batchesPlanned: true,
+    stoppedReason: true,
+  };
+
+  /**
+   * Schema properties with no `ResultPayload` counterpart BY DESIGN: a verify
+   * run returns a different shape (built in `audit/audit-output.ts`, rendered by
+   * `verify.ts`), which the schema's `oneOf` discriminates from the audit
+   * report. Everything outside this list must have a producer.
+   */
+  const VERIFY_ONLY_FIELDS = [
+    'mode',
+    'baselineTotal',
+    'killedCount',
+    'nowKilled',
+    'stillSurviving',
+    'newSurvivors',
+  ];
+
+  const SCHEMA_PROPS = (TOOL_DEFINITION.outputSchema?.properties ?? {}) as Record<string, unknown>;
+
+  it('declares every ResultPayload field in the outputSchema', () => {
+    const undeclared = Object.keys(PAYLOAD_FIELDS).filter((field) => !(field in SCHEMA_PROPS));
+    expect(undeclared).toEqual([]);
+  });
+
+  it('declares no outputSchema field that nothing produces', () => {
+    const orphaned = Object.keys(SCHEMA_PROPS).filter(
+      (field) => !(field in PAYLOAD_FIELDS) && !VERIFY_ONLY_FIELDS.includes(field),
+    );
+    expect(orphaned).toEqual([]);
+  });
+
+  it('types every optional advisory note as a string', () => {
+    // The three note fields are the ones that drift: they are conditionally
+    // assigned (`if (result.x) payload.x = result.x`), so no fixture that omits
+    // them notices a missing or mistyped declaration.
+    for (const note of ['scopeNote', 'fidelityNote', 'enrichNote', 'note']) {
+      expect(SCHEMA_PROPS[note]).toEqual({ type: 'string' });
+    }
+  });
+
+  it('requires only fields the payload always populates', () => {
+    // `buildResultPayload` unconditionally sets these; everything else is
+    // conditional, so requiring it would reject a legitimate response.
+    const oneOf =
+      (TOOL_DEFINITION.outputSchema as { oneOf?: { required: string[] }[] }).oneOf ?? [];
+    expect(oneOf[0].required).toEqual([
+      'target',
+      'mutationScore',
+      'summary',
+      'survivors',
+      'noCoverage',
+      'note',
+    ]);
+    for (const field of oneOf[0].required) {
+      expect(PAYLOAD_FIELDS[field as keyof ResultPayload]).toBe(true);
+    }
+  });
+});
+
+describe('nested argument schemas', () => {
+  const props = TOOL_DEFINITION.inputSchema.properties as Record<string, Record<string, unknown>>;
+
+  it('shapes the baseline argument as two arrays of line-group objects', () => {
+    const baseline = props.baseline;
+    expect(baseline.type).toBe('object');
+    const inner = baseline.properties as Record<string, Record<string, unknown>>;
+    expect(Object.keys(inner).sort()).toEqual(['noCoverage', 'survivors']);
+    for (const key of ['survivors', 'noCoverage']) {
+      expect(inner[key].type).toBe('array');
+      const items = inner[key].items as Record<string, unknown>;
+      expect(items.type).toBe('object');
+      expect(Object.keys(items.properties as object).sort()).toEqual(['line', 'mutators']);
+      expect(items.required).toEqual(['line', 'mutators']);
+    }
+  });
+
+  it('shapes suppress entries as { line, mutator, reason? } with line and mutator required', () => {
+    const items = props.suppress.items as Record<string, unknown>;
+    const inner = items.properties as Record<string, Record<string, unknown>>;
+    expect(items.type).toBe('object');
+    expect(Object.keys(inner).sort()).toEqual(['line', 'mutator', 'reason']);
+    expect(inner.line.type).toBe('integer');
+    expect(inner.line.minimum).toBe(1);
+    expect(inner.mutator.type).toBe('string');
+    expect(inner.reason.type).toBe('string');
+    expect(items.required).toEqual(['line', 'mutator']);
+  });
+
+  it('shapes unsuppress entries WITHOUT a reason field', () => {
+    // The asymmetry is deliberate: a reason is recorded when suppressing and
+    // meaningless when undoing it.
+    const items = props.unsuppress.items as Record<string, unknown>;
+    const inner = items.properties as Record<string, Record<string, unknown>>;
+    expect(Object.keys(inner).sort()).toEqual(['line', 'mutator']);
+    expect(inner.line.type).toBe('integer');
+    expect(inner.line.minimum).toBe(1);
+    expect(inner.mutator.type).toBe('string');
+    expect(items.required).toEqual(['line', 'mutator']);
+  });
+
+  it('shapes lineScope as an inclusive 1-based start/end pair, both required', () => {
+    const lineScope = props.lineScope;
+    const inner = lineScope.properties as Record<string, Record<string, unknown>>;
+    expect(Object.keys(inner).sort()).toEqual(['end', 'start']);
+    expect(inner.start.minimum).toBe(1);
+    expect(inner.end.minimum).toBe(1);
+    expect(lineScope.required).toEqual(['start', 'end']);
+  });
+
+  it('requires exactly filePath on the audit tool, and no SINGLE field on triage', () => {
+    // `required: []` on triage is meaningful, not an oversight: a triage call
+    // may supply paths OR diffBase, so neither can be required on its own. The
+    // "at least one of the two" half is carried by `anyOf` — see the
+    // validator-parity block below.
+    expect(TOOL_DEFINITION.inputSchema.required).toEqual(['filePath']);
+    expect(TRIAGE_TOOL_DEFINITION.inputSchema.required).toEqual([]);
+    expect(ESTIMATE_TOOL_DEFINITION.inputSchema.required).toEqual(['filePath']);
+  });
+});
+
+/**
+ * Schema constraints that must be at least as tight as the runtime validator.
+ *
+ * The MCP SDK does NOT validate arguments against `inputSchema` (stated outright
+ * in `triage-args-validation.ts`), so the schema's entire job is to let a client
+ * PREDICT a rejection before making the call. Where a constraint is LOOSER here
+ * than in the validator, the schema actively misleads: the client believes the
+ * value is legal, sends it, and gets an error the schema said could not happen.
+ *
+ * Each case therefore pins BOTH halves — the schema keyword AND the validator
+ * actually rejecting the value that keyword now excludes — so the two cannot
+ * drift apart in either direction (audit finding 19).
+ */
+describe('input schema ↔ validator constraint parity', () => {
+  const props = TOOL_DEFINITION.inputSchema.properties as Record<string, Record<string, unknown>>;
+
+  /** Run the audit validator table and collect every message it produces. */
+  function auditErrors(args: ToolArgs): string[] {
+    return TOOL_ARG_VALIDATORS.map((v) => v(args)).filter((m): m is string => m !== null);
+  }
+
+  /** Run the triage validator table; its driver stops at the first failure. */
+  function triageError(args: ToolArgs): string | null {
+    for (const v of TRIAGE_ARG_VALIDATORS) {
+      const m = v(args);
+      if (m !== null) return m;
+    }
+    return null;
+  }
+
+  it.each(['suppress', 'unsuppress', 'mutatorAllowlist'])(
+    'declares minItems on %s, which the validator rejects when empty',
+    (field) => {
+      expect(props[field].minItems).toBe(1);
+      expect(auditErrors({ filePath: 'a.ts', [field]: [] }).join(' ')).toContain(field);
+    },
+  );
+
+  it('requires at least one of baseline.survivors / baseline.noCoverage', () => {
+    // A bare `{}` passes `type: 'object'` but is rejected at runtime, and
+    // neither key may be `required` alone — either one on its own is legal.
+    expect(props.baseline.anyOf).toEqual([
+      { required: ['survivors'] },
+      { required: ['noCoverage'] },
+    ]);
+    expect(auditErrors({ filePath: 'a.ts', baseline: {} }).join(' ')).toContain(
+      'at least one (line, mutator) entry',
+    );
+    // …and the anyOf must not over-reject: either key alone still validates.
+    expect(
+      auditErrors({
+        filePath: 'a.ts',
+        baseline: { survivors: [{ line: 1, mutators: { X: 1 } }] },
+      }),
+    ).toEqual([]);
+    expect(
+      auditErrors({
+        filePath: 'a.ts',
+        baseline: { noCoverage: [{ line: 1, mutators: { X: 1 } }] },
+      }),
+    ).toEqual([]);
+  });
+
+  it('floors baseline mutator counts at 1, as the validator does', () => {
+    const group = (props.baseline.properties as Record<string, Record<string, unknown>>).survivors
+      .items as Record<string, Record<string, unknown>>;
+    const mutators = (group.properties as unknown as Record<string, Record<string, unknown>>)
+      .mutators;
+    expect((mutators.additionalProperties as Record<string, unknown>).minimum).toBe(1);
+    expect(
+      auditErrors({
+        filePath: 'a.ts',
+        baseline: { survivors: [{ line: 1, mutators: { X: 0 } }] },
+      }).join(' '),
+    ).toContain('baseline mutator counts must be positive integers');
+  });
+
+  it('caps every line field at the validator MAX_LINE_NUMBER, imported not copied', () => {
+    // Imported from `tool-args-validation.ts` rather than hardcoded: a literal
+    // 100000 here is exactly how the schema and the validator drift apart.
+    const over = MAX_LINE_NUMBER + 1;
+    const lineScope = props.lineScope.properties as Record<string, Record<string, unknown>>;
+    expect(lineScope.start.maximum).toBe(MAX_LINE_NUMBER);
+    expect(lineScope.end.maximum).toBe(MAX_LINE_NUMBER);
+    for (const field of ['suppress', 'unsuppress']) {
+      const items = props[field].items as Record<string, Record<string, unknown>>;
+      expect(
+        (items.properties as unknown as Record<string, Record<string, unknown>>).line.maximum,
+      ).toBe(MAX_LINE_NUMBER);
+    }
+    const group = (props.baseline.properties as Record<string, Record<string, unknown>>).survivors
+      .items as Record<string, Record<string, unknown>>;
+    expect(
+      (group.properties as unknown as Record<string, Record<string, unknown>>).line.maximum,
+    ).toBe(MAX_LINE_NUMBER);
+
+    // …and each of those bounds is really enforced at runtime.
+    expect(auditErrors({ filePath: 'a.ts', lineScope: { start: 1, end: over } })).not.toEqual([]);
+    expect(auditErrors({ filePath: 'a.ts', suppress: [{ line: over, mutator: 'X' }] })).not.toEqual(
+      [],
+    );
+    expect(
+      auditErrors({ filePath: 'a.ts', unsuppress: [{ line: over, mutator: 'X' }] }),
+    ).not.toEqual([]);
+    expect(
+      auditErrors({
+        filePath: 'a.ts',
+        baseline: { survivors: [{ line: over, mutators: { X: 1 } }] },
+      }),
+    ).not.toEqual([]);
+  });
+
+  it('expresses the triage "paths or diffBase" rule the validator enforces', () => {
+    expect(TRIAGE_TOOL_DEFINITION.inputSchema.anyOf).toEqual([
+      { required: ['paths'] },
+      { required: ['diffBase'] },
+    ]);
+    // The bare `{}` the old `required: []` advertised as legal.
+    expect(triageError({})).toContain('at least one is required');
+    // Either selector alone still validates — the anyOf must not over-reject.
+    expect(triageError({ paths: ['src'] })).toBeNull();
+    expect(triageError({ diffBase: 'HEAD' })).toBeNull();
+  });
+
+  it('leaves lineScope end >= start to prose, as JSON Schema cannot express it', () => {
+    // Deliberately NOT expressed as a keyword: there is no cross-field ordering
+    // constraint in JSON Schema. The description is the only place a caller can
+    // learn the rule, so it must carry it.
+    expect(
+      (props.lineScope.properties as Record<string, { description: string }>).end.description,
+    ).toContain('Must be >= start');
+    expect(auditErrors({ filePath: 'a.ts', lineScope: { start: 10, end: 5 } })).not.toEqual([]);
+  });
+});
+
+describe('estimate_audit timeoutMs input (finding 13)', () => {
+  const ESTIMATE = ESTIMATE_TOOL_DEFINITION.inputSchema.properties as Record<
+    string,
+    { type?: string; exclusiveMinimum?: number; maximum?: number; description?: string }
+  >;
+
+  it('declares the timeoutMs the handler has always read', () => {
+    // `estimate-handler.ts` runs `validateTimeoutMs(args)` and then
+    // `resolveAuditTimeoutMs(args, …)`, but the schema declared only
+    // filePath/withTiming under `additionalProperties: false` — so the argument
+    // the handler acts on was advertised as forbidden.
+    expect(ESTIMATE.timeoutMs).toBeDefined();
+    expect(ESTIMATE.timeoutMs.type).toBe('number');
+  });
+
+  it('bounds it identically to the two sibling tools', () => {
+    const audit = TOOL_DEFINITION.inputSchema.properties as Record<
+      string,
+      { exclusiveMinimum?: number; maximum?: number }
+    >;
+    expect(ESTIMATE.timeoutMs.exclusiveMinimum).toBe(audit.timeoutMs.exclusiveMinimum);
+    expect(ESTIMATE.timeoutMs.maximum).toBe(audit.timeoutMs.maximum);
+    expect(ESTIMATE.timeoutMs.maximum).toBe(2_147_483_647);
+  });
+
+  it('explains that it is the budget the estimate is graded against', () => {
+    // budgetMs / fitsBudget / recommendation are gradeable ONLY against this
+    // argument; without the description a caller cannot tell what they mean.
+    const d = ESTIMATE.timeoutMs.description ?? '';
+    expect(d).toContain('budgetMs');
+    expect(d).toContain('fitsBudget');
+    expect(d).toContain('audit_code_resilience');
+  });
+
+  it('is optional — the estimate still runs on the default budget', () => {
+    expect(ESTIMATE_TOOL_DEFINITION.inputSchema.required).not.toContain('timeoutMs');
+  });
+});
+
+/**
+ * The triage gate's failure REASON and its not-graded counters.
+ *
+ * `buildTriagePayload` sets `notGraded` on every gated sweep and `reason` on
+ * every failure, but neither was declared — the same class of defect already
+ * fixed for `fidelityNote` on the audit schema: produced for releases, never
+ * advertised, so a client generating types or binding fields from the schema
+ * never saw it. `reason` matters more than most: the gate fails CLOSED over
+ * files that were never measured, so `passed: false` with an empty
+ * `failingFiles` is a real state and `reason` is the only machine-readable way
+ * to tell it from a genuine score failure (finding 14).
+ */
+describe('triage gate outputSchema (finding 14)', () => {
+  const gate = (
+    TRIAGE_TOOL_DEFINITION.outputSchema.properties as Record<string, Record<string, unknown>>
+  ).gate;
+  const gateProps = gate.properties as Record<string, Record<string, unknown>>;
+
+  it('declares the two failure reasons the code actually emits', () => {
+    expect(gateProps.reason.type).toBe('string');
+    expect(gateProps.reason.enum).toEqual(['below_threshold', 'files_not_graded']);
+  });
+
+  it('declares notGraded with both counters required', () => {
+    expect(gateProps.notGraded.type).toBe('object');
+    const inner = gateProps.notGraded.properties as Record<string, Record<string, unknown>>;
+    expect(Object.keys(inner).sort()).toEqual(['errored', 'unaudited']);
+    expect(inner.errored.type).toBe('integer');
+    expect(inner.unaudited.type).toBe('integer');
+    expect(gateProps.notGraded.required).toEqual(['errored', 'unaudited']);
+  });
+
+  it('requires every field the payload sets unconditionally, but not reason', () => {
+    // `reason` is set only on a failure; the other four accompany any gated
+    // sweep, so a client may bind them without a presence check.
+    expect(gate.required).toEqual(['minScore', 'passed', 'failingFiles', 'notGraded']);
+    expect(gate.required).not.toContain('reason');
+  });
+});
+
+describe('output schema contracts', () => {
+  /** The fields a client is guaranteed to receive, per response shape. */
+  it('requires the full audit summary triple', () => {
+    const summary = (
+      TOOL_DEFINITION.outputSchema.properties as Record<string, Record<string, unknown>>
+    ).summary;
+    expect(summary.required).toEqual(['total', 'killed', 'survived']);
+  });
+
+  it('offers exactly two audit response shapes, each with its own required set', () => {
+    // `oneOf` is what lets a client tell a standard report from a verify delta.
+    // Emptied, the schema accepts anything and the distinction disappears.
+    const oneOf = (TOOL_DEFINITION.outputSchema as unknown as { oneOf: { required: string[] }[] })
+      .oneOf;
+    expect(oneOf).toHaveLength(2);
+    expect(oneOf[0].required).toEqual([
+      'target',
+      'mutationScore',
+      'summary',
+      'survivors',
+      'noCoverage',
+      'note',
+    ]);
+    expect(oneOf[1].required).toEqual([
+      'target',
+      'mode',
+      'baselineTotal',
+      'killedCount',
+      'nowKilled',
+      'stillSurviving',
+      'newSurvivors',
+      'note',
+    ]);
+  });
+
+  it('requires the four triage summary counters', () => {
+    const summary = (
+      TRIAGE_TOOL_DEFINITION.outputSchema.properties as Record<string, Record<string, unknown>>
+    ).summary;
+    expect(summary.required).toEqual([
+      'filesDiscovered',
+      'filesAudited',
+      'filesSkipped',
+      'filesErrored',
+    ]);
+  });
+
+  it('requires the scoring fields on every triage ranking row', () => {
+    const ranking = (
+      TRIAGE_TOOL_DEFINITION.outputSchema.properties as Record<string, Record<string, unknown>>
+    ).ranking;
+    const row = ranking.items as Record<string, unknown>;
+    expect(row.required).toEqual([
+      'file',
+      'mutationScore',
+      'total',
+      'killed',
+      'survived',
+      'noCoverage',
+    ]);
+  });
+
+  it('requires the top-level triage response fields', () => {
+    expect(TRIAGE_TOOL_DEFINITION.outputSchema.required).toEqual([
+      'mode',
+      'summary',
+      'ranking',
+      'errors',
+      'note',
+    ]);
+  });
+});
+
+describe('parameter documentation facts', () => {
+  const inputProps = (def: { inputSchema: { properties: unknown } }) =>
+    def.inputSchema.properties as Record<string, { description?: string }>;
+
+  const AUDIT = inputProps(TOOL_DEFINITION);
+  const TRIAGE = inputProps(TRIAGE_TOOL_DEFINITION);
+  const ESTIMATE = inputProps(ESTIMATE_TOOL_DEFINITION);
+
+  it('keeps the worked example on every parameter that documents one', () => {
+    // The descriptions are what an LLM reads to choose argument VALUES, and the
+    // concrete example is the part it copies. These six are self-evident from
+    // their type (a boolean, a plain string array, a two-value enum) and carry
+    // no example today; every OTHER parameter must keep the one it has.
+    const KNOWN_WITHOUT_EXAMPLE = new Set([
+      'audit.mutatorAllowlist',
+      'audit.unsuppress',
+      'audit.enrich',
+      'triage.timeoutMs',
+      'triage.mutatorDenylist',
+      'triage.outputFormat',
+    ]);
+    const missing = [
+      ...Object.entries(AUDIT).map(([k, v]) => [`audit.${k}`, v] as const),
+      ...Object.entries(TRIAGE).map(([k, v]) => [`triage.${k}`, v] as const),
+    ]
+      .filter(([, v]) => !(v.description ?? '').includes('Example:'))
+      .map(([k]) => k)
+      .filter((k) => !KNOWN_WITHOUT_EXAMPLE.has(k));
+    expect(missing).toEqual([]);
+  });
+
+  it('states the documented default or range for each bounded parameter', () => {
+    // These numbers are the reason the parameter is optional at all; without
+    // them a caller cannot tell what happens when they leave it out.
+    expect(AUDIT.timeoutMs.description).toContain('Default: 300000');
+    expect(AUDIT.concurrency.description).toContain('integer between 1 and 64');
+    expect(AUDIT.maxSurvivors.description).toContain(
+      'Precedence: this arg > config.defaultMaxSurvivors > 10',
+    );
+    expect(AUDIT.perMutantTimeoutMs.description).toContain('Distinct from timeoutMs');
+    expect(TRIAGE.maxFiles.description).toContain('config.defaultMaxFiles > 25');
+    expect(TRIAGE.totalTimeoutMs.description).toContain('Default: 900000');
+    expect(TRIAGE.fileConcurrency.description).toContain('Default min(4, cpus-1)');
+    expect(TRIAGE.survivorsPerFile.description).toContain('0 (default)');
+  });
+
+  it('warns, in the parameter itself, where an option is ignored or unsupported', () => {
+    // A caller who passes one of these gets no error — the only signal that it
+    // did nothing is this text.
+    expect(AUDIT.mutatorAllowlist.description).toContain('NOT SUPPORTED in StrykerJS v9');
+    expect(AUDIT.mutatorAllowlist.description).toContain('Use mutatorDenylist');
+    expect(AUDIT.lineScope.description).toContain('ignored for Python, Rust, and PHP targets');
+    expect(AUDIT.prebuildCommand.description).toContain('DISABLED BY DEFAULT');
+    expect(AUDIT.severityFloor.description).toContain('requires enrichment');
+  });
+
+  it('states each mutual-exclusion rule on the arguments it applies to', () => {
+    // Passing two scoping arguments is a validation error; the schema is where
+    // a caller finds out before making the call.
+    expect(AUDIT.baseline.description).toContain('Mutually exclusive with diffBase and lineScope');
+    expect(AUDIT.lineScope.description).toContain('Only supported by StrykerJS');
+    expect(AUDIT.runId.description).toContain('Mutually exclusive with baseline, diffBase');
+    expect(AUDIT.diffBase.description).toContain('Mutually exclusive with lineScope');
+  });
+
+  it('documents what the estimate tool trades away for its speed', () => {
+    expect(ESTIMATE.withTiming.description).toContain('run the test suite once');
+    expect(ESTIMATE.filePath.description).toContain('Example:');
+    expect(ESTIMATE_TOOL_DEFINITION.description).toContain('WITHOUT running the full mutation');
+  });
+
+  it('describes each tool by what it does and which engines back it', () => {
+    expect(TOOL_DEFINITION.description).toContain('sandbox-isolated mutation testing');
+    expect(TOOL_DEFINITION.description).toContain('Surviving mutants indicate test coverage holes');
+    expect(TOOL_DEFINITION.description).toContain('StrykerJS');
+    expect(TOOL_DEFINITION.description).toContain('cosmic-ray');
+    expect(TOOL_DEFINITION.description).toContain('cargo-mutants');
+    expect(TOOL_DEFINITION.description).toContain('Infection');
+    expect(TRIAGE_TOOL_DEFINITION.description).toContain('weakest-first');
+  });
+
+  it('renders the engine-support sentence from the registry, byte-identically', () => {
+    // Finding 38: this sentence was a hardcoded literal that a new language
+    // would silently contradict. It is now rendered from ENGINE_REGISTRY's
+    // label + displayName pairs — and an LLM client reads it verbatim, so the
+    // exact punctuation (Oxford comma, `and` before the last pair, trailing
+    // full stop) is the contract.
+    expect(TOOL_DEFINITION.description).toContain(
+      'Supports TypeScript/JavaScript (StrykerJS), Python (cosmic-ray), Rust (cargo-mutants), and PHP (Infection).',
+    );
+    // …and it really is derived: every registry pair appears, in registry order.
+    const rendered = TOOL_DEFINITION.description;
+    let cursor = -1;
+    for (const entry of Object.values(ENGINE_REGISTRY)) {
+      const pair = `${entry.label} (${entry.displayName})`;
+      const at = rendered.indexOf(pair);
+      expect(at).toBeGreaterThan(cursor);
+      cursor = at;
+    }
+  });
+
+  it('renders both line-scope warnings from supportsLineScope, byte-identically', () => {
+    // Finding 4: the two "no line scoping here" language lists were hardcoded,
+    // so flipping `supportsLineScope` for a language left the schema telling the
+    // model the opposite of the truth. They are now derived from the registry.
+    // The two sites use DIFFERENT separators on purpose and an LLM client reads
+    // both verbatim, so each exact rendering is the contract.
+    expect(AUDIT.lineScope.description).toBe(
+      'Constrain mutations to a 1-based line range (inclusive). Only supported by StrykerJS; ' +
+        'ignored for Python, Rust, and PHP targets. ' +
+        'Useful for surgically auditing a specific function or block. ' +
+        'Example: { "start": 10, "end": 45 }',
+    );
+    expect(AUDIT.diffBase.description).toContain(
+      'Line-level scoping is StrykerJS-only; Python/Rust/PHP targets run whole-file with a note.',
+    );
+  });
+
+  it('names exactly the engines that lack line scoping, in registry order', () => {
+    // …and it really is derived: the list must track `supportsLineScope` in both
+    // directions, so a language that gains line scoping drops out of both
+    // warnings and one that loses it is added.
+    const expected = Object.values(ENGINE_REGISTRY)
+      .filter((entry) => !entry.supportsLineScope)
+      .map((entry) => entry.label);
+    expect(expected.length).toBeGreaterThan(0);
+
+    expect(AUDIT.diffBase.description).toContain(`${expected.join('/')} targets run whole-file`);
+
+    const lineScopeDesc = AUDIT.lineScope.description ?? '';
+    for (const entry of Object.values(ENGINE_REGISTRY)) {
+      expect(lineScopeDesc.includes(entry.label)).toBe(!entry.supportsLineScope);
+    }
+  });
+});
+
+// ─── Extension prose derived from the detection registry (audit F15) ────────
+//
+// The extension lists an LLM client reads to decide whether a file is auditable
+// used to be hardcoded here, so adding a language left the schema telling the
+// model the new extension was unsupported. They are now rendered from
+// `project-detector`'s per-language registry — these tests pin BOTH that the
+// rendering is byte-identical to the hand-written prose it replaced AND that it
+// actually tracks the registry.
+describe('supported-extension prose', () => {
+  const AUDIT = TOOL_DEFINITION.inputSchema.properties as Record<string, { description: string }>;
+
+  it('renders the audit filePath list byte-identically to the hand-written prose', () => {
+    expect(AUDIT.filePath.description).toBe(
+      'Workspace-relative path to the file to audit. ' +
+        'Must end in .ts, .js, .tsx, .jsx, .mjs, .cjs, .mts, .cts, .py, .rs, or .php. ' +
+        'Example: "src/utils/math.ts"',
+    );
+  });
+
+  it('keeps the Oxford comma and the "or" before the final extension', () => {
+    // An LLM reads this to decide whether to call the tool at all; a mangled
+    // list ("..., .rs, .php" or ".rs or, .php") is a real regression.
+    expect(AUDIT.filePath.description).toContain(', .rs, or .php.');
+  });
+
+  it('renders the triage directory-expansion list byte-identically', () => {
+    expect(TRIAGE_TOOL_DEFINITION.description).toContain(
+      'Directories are recursively expanded to supported source files (.ts/.js/.py/.rs/.php), skipping ' +
+        'test files.',
+    );
+  });
+
+  it('advertises every extension the detection registry claims to support', () => {
+    for (const ext of supportedSourceExtensions()) {
+      expect(AUDIT.filePath.description).toContain(ext);
+    }
+  });
+
+  it('advertises no extension the detection registry does not support', () => {
+    // Guards the other direction: prose must not promise support for a language
+    // that was removed from the registry (as Go once was).
+    const advertised = AUDIT.filePath.description.match(/\.[a-z]+/g) ?? [];
+    const known = new Set([...supportedSourceExtensions(), '.']);
+    for (const token of advertised) {
+      // '.' terminates the sentence; 'src/utils/math.ts' is the example path.
+      expect(known.has(token) || token === '.').toBe(true);
+    }
   });
 });

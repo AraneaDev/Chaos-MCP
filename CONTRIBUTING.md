@@ -53,21 +53,30 @@ npx tsc --noEmit        # Typecheck without emitting files
 
 ## Project Structure
 
+Abridged — the notable modules, not every file.
+
 ```
 src/
 ├── index.ts                     # MCP server entry point, tool definition & handler
+├── handler.ts                   # audit_code_resilience dispatch & option wiring
+├── audit/                       # Audit pipeline: scope, run options, suppressions, output
+├── triage/                      # triage_test_coverage: target discovery + per-file audit
 ├── engines/
 │   ├── base.ts                  # Abstract BaseEngine + RunOptions + MutationResult types
+│   ├── registry.ts              # ENGINE_REGISTRY + the authoritative "Adding a language" note
+│   ├── dependency-dirs.ts       # DEPENDENCY_DIRS: the one home for per-language dep dirs
 │   ├── typescript.ts            # StrykerJS engine (async, concurrency, dryRun, incremental)
 │   ├── python.ts                # Cosmic Ray engine
 │   ├── rust.ts                  # cargo-mutants engine
 │   └── php.ts                   # Infection engine
 ├── utils/
 │   ├── exec.ts                  # Async runShell helper + ExecFailureError class
+│   ├── constants.ts             # Shared exec constants (DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS)
 │   ├── logger.ts                # Verbose-mode logging utility
 │   ├── sandbox.ts               # Sandbox isolation (os.tmpdir, symlinks, size guard)
 │   ├── execution.ts             # Native/container execution-session boundary
-│   ├── config-loader.ts         # chaos-mcp.config.json loader
+│   ├── config-loader.ts         # Barrel (26 lines) re-exporting config/ — see below
+│   ├── config/                  # types.ts, rules.ts (one rule table), parse.ts, validate.ts
 │   └── project-detector.ts      # Auto-detect project types & test runners
 └── __tests__/
     ├── handler.test.ts           # Tool dispatch + option wiring unit tests
@@ -87,11 +96,30 @@ src/
 1. Create `src/engines/<lang>.ts` extending `BaseEngine`
 2. Implement `async run(filePath, options?)` returning `MutationResult`
 3. Use `runShell()` from `src/utils/exec.ts` for async subprocess execution
-4. Add file extension to `detectProjectType` in `project-detector.ts`
-5. Add test runner detection (e.g. `detect<Lang>TestRunner`) if applicable
-6. Add an `ENGINE_REGISTRY` entry in `src/engines/registry.ts` (`make`, `configKey`, `supportsLineScope`, optional `prebuild`) and a config section in `config-loader.ts`
-7. Add tests in `src/__tests__/<lang>-engine.test.ts`
-8. Run `npm run check` to verify everything passes
+4. Add a `LANGUAGE_DETECTORS` entry in `src/utils/project-detector.ts` — extension
+   matcher, extension list, root markers, and test-runner detection. It is a
+   `Record<SupportedProjectType, …>`, so `tsc` fails until you do;
+   `detectProjectType()` and the tool schema's extension prose are derived from it
+   rather than hand-edited
+5. Add an `ENGINE_REGISTRY` entry in `src/engines/registry.ts`. Every
+   `EngineDescriptor` field is mandatory — `make`, `configKey`,
+   `supportsLineScope`, `honorsConcurrency`, `dependencyDirs`, `syntaxFamily`,
+   `displayName`, `label` — plus an optional `prebuild`
+6. Add the language's dependency directories to `DEPENDENCY_DIRS` in
+   `src/engines/dependency-dirs.ts` and point `dependencyDirs` at that entry
+7. Add a config section under `src/utils/config/` — the type in `config/types.ts`
+   (including the `EngineConfigKey` member `configKey` must name) and its
+   validation rules in `config/rules.ts`. `src/utils/config-loader.ts` is only a
+   26-line barrel re-exporting that directory; it needs no change
+8. Add tests in `src/__tests__/<lang>-engine.test.ts`
+9. Run `npm run check` to verify everything passes
+
+> **The authoritative list is the "Adding a language" note at the bottom of
+> `src/engines/registry.ts`.** It is kept next to the code, splits the work into
+> the steps `tsc` will FAIL on until you handle them and the steps that fail
+> silently at runtime, and covers the files this summary omits (container image,
+> baseline timing, test-file conventions, enrichment). Read it before starting;
+> if the two ever disagree, that note wins.
 
 ## Commit Conventions
 

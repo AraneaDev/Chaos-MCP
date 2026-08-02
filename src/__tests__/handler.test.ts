@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest';
 import { firstText } from './helpers/content.js';
 import type { CallToolRequest } from '@modelcontextprotocol/sdk/types.js';
 
@@ -34,7 +34,7 @@ vi.mock('fs', async () => {
   const actual = await vi.importActual<typeof import('fs')>('fs');
   return {
     ...actual,
-    existsSync: vi.fn().mockReturnValue(false),
+    existsSync: vi.fn(() => false),
     realpathSync: vi.fn((p: string) => p),
   };
 });
@@ -43,11 +43,16 @@ vi.mock('fs', async () => {
 // on disk, so the real workspace scan would always report "no Python tests".
 // Default it to true; the pre-flight itself is covered in test-file.test.ts and
 // by the dedicated case below.
-vi.mock('../test-file.js', async () => {
-  const actual = await vi.importActual<typeof import('../test-file.js')>('../test-file.js');
+vi.mock('../core/test-file.js', async () => {
+  const actual =
+    await vi.importActual<typeof import('../core/test-file.js')>('../core/test-file.js');
   return {
     ...actual,
-    workspaceHasPythonTests: vi.fn().mockReturnValue({ found: true, depthLimited: false }),
+    // The default lives in the `vi.fn(impl)` constructor rather than a chained
+    // `.mockReturnValue(...)`: `restoreMocks` wipes chained configuration but
+    // preserves the implementation the factory supplied, so this default
+    // survives into every test instead of decaying to `undefined`.
+    workspaceHasPythonTests: vi.fn(() => ({ found: true, depthLimited: false })),
   };
 });
 
@@ -64,16 +69,33 @@ vi.mock('../utils/git-diff.js', () => ({
   computeChangedRanges: vi.fn(),
 }));
 
+// Scope resolution is DELEGATED, not stubbed: every other test in this file needs the
+// real short-circuits (no-changes, runId-not-found, verify baselines). The wrapper only
+// exists so the options object the handler hands it can be inspected — see the
+// 'forwards cancellation and budget to scope resolution' block at the end of the file.
+vi.mock('../audit/scope.js', async () => {
+  const actual = await vi.importActual<typeof import('../audit/scope.js')>('../audit/scope.js');
+  return { ...actual, computeScope: vi.fn(actual.computeScope) };
+});
+
 // Mock logger for verbose logging tests
+vi.mock('../audit/suppression-io.js', async () => {
+  const actual = await vi.importActual<typeof import('../audit/suppression-io.js')>(
+    '../audit/suppression-io.js',
+  );
+  return { ...actual, applyAndCountSuppressions: vi.fn(actual.applyAndCountSuppressions) };
+});
+
 vi.mock('../utils/logger.js', () => ({
   enableVerbose: vi.fn(),
-  isVerbose: vi.fn().mockReturnValue(false),
+  isVerbose: vi.fn(() => false),
   log: vi.fn(),
   warn: vi.fn(),
 }));
 
 import { handleToolCall } from '../index.js';
 import { validateToolArgs } from '../handler.js';
+import { mapCreateSandboxError } from '../core/tool-result.js';
 import { TypeScriptEngine } from '../engines/typescript.js';
 import { RustEngine } from '../engines/rust.js';
 import { detectEnvironment } from '../utils/project-detector.js';
@@ -82,7 +104,10 @@ import { runShellCommand } from '../utils/exec.js';
 import { isVerbose, log } from '../utils/logger.js';
 import { existsSync } from 'fs';
 import { computeChangedRanges } from '../utils/git-diff.js';
-import { workspaceHasPythonTests } from '../test-file.js';
+import { applyAndCountSuppressions } from '../audit/suppression-io.js';
+import { workspaceHasPythonTests } from '../core/test-file.js';
+import { computeScope } from '../audit/scope.js';
+import { AuditDeadline } from '../utils/deadline.js';
 
 const MockTSEngine = vi.mocked(TypeScriptEngine);
 const MockRustEngine = vi.mocked(RustEngine);
@@ -93,6 +118,8 @@ const mockIsVerbose = vi.mocked(isVerbose);
 const mockLog = vi.mocked(log);
 const mockExistsSync = vi.mocked(existsSync);
 const mockComputeChangedRanges = vi.mocked(computeChangedRanges);
+const mockApplySuppressions = vi.mocked(applyAndCountSuppressions);
+const mockComputeScope = vi.mocked(computeScope);
 
 function makeRequest(name: string, args: Record<string, unknown>): CallToolRequest {
   return {
@@ -112,17 +139,18 @@ describe('handleToolCall', () => {
   // would make '/workspace' an ancestor and change the re-anchored targetFile,
   // breaking the 'src/math.ts' assertions. Pinning cwd to '/workspace' makes the
   // re-anchoring resolve to the file's workspace-relative path on every runner.
-  const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue('/workspace');
+  // `restoreMocks: true` un-installs this spy before every test, so it has to be
+  // re-installed per test rather than once at describe-collection time.
+  let cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue('/workspace');
   afterAll(() => cwdSpy.mockRestore());
 
   beforeEach(() => {
     vi.clearAllMocks();
-    cwdSpy.mockReturnValue('/workspace');
+    cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue('/workspace');
 
-    // Reset logger mock to silent default (prevents leak from verbose tests)
-    mockIsVerbose.mockReturnValue(false);
-    // Reset existsSync mock to false (prevents leak from Go/Rust prebuild tests)
-    mockExistsSync.mockReturnValue(false);
+    // `restoreMocks` already returns `isVerbose` and `existsSync` to the silent
+    // /false defaults their `vi.mock()` factories declare, so the verbose and
+    // Go/Rust-prebuild cases can no longer leak into later tests.
 
     // Default sandbox mock
     mockCreateSandbox.mockResolvedValue({
@@ -610,7 +638,7 @@ describe('handleToolCall', () => {
     );
   });
 
-  it('passes ignorePatterns to createSandbox and RunOptions', async () => {
+  it('passes ignorePatterns to createSandbox only — never to the engine', async () => {
     const mockRun = vi.fn().mockResolvedValue({
       target: 'src/math.ts',
       totalMutants: 0,
@@ -643,11 +671,11 @@ describe('handleToolCall', () => {
       ['.test.ts', 'fixtures/'],
       expect.objectContaining({ signal: undefined }),
     );
-    // RunOptions should also contain ignorePatterns
-    expect(mockRun).toHaveBeenCalledWith(
-      'src/math.ts',
-      expect.objectContaining({ ignorePatterns: ['.test.ts', 'fixtures/'] }),
-    );
+    // ...and NOT to the engine. ignorePatterns governs what the sandbox copy
+    // excludes; no engine has ever read it, so carrying it on RunOptions only
+    // advertised a filter that did not exist.
+    const runOptions = mockRun.mock.calls[0][1] as Record<string, unknown>;
+    expect(runOptions).not.toHaveProperty('ignorePatterns');
   });
 
   // Regression (C1 follow-up): the AbortSignal from the MCP request context must
@@ -1128,11 +1156,20 @@ describe('handleToolCall', () => {
 
     expect(response.isError).toBeUndefined();
     // Prebuild must run in sandbox cwd before engine
-    expect(mockRunShellCommand).toHaveBeenCalledWith('npm run build', {
-      cwd: '/tmp/chaos-mcp-sandbox',
-      timeoutMs: 298000,
-      killTree: true,
-    });
+    expect(mockRunShellCommand).toHaveBeenCalledWith(
+      'npm run build',
+      expect.objectContaining({ cwd: '/tmp/chaos-mcp-sandbox', killTree: true }),
+    );
+    // The prebuild inherits what is LEFT of the audit budget, not a fresh one:
+    // 300_000 default minus the 2_000 cleanup reserve, minus whatever the audit
+    // has already spent. Asserting the exact 298_000 turned this into a clock
+    // benchmark — under load the elapsed time is non-zero and the equality
+    // fails (observed while six suites ran concurrently). The upper bound is
+    // what carries the meaning: a prebuild handed the full 300_000 would have
+    // skipped the reserve deduction entirely.
+    const prebuildTimeoutMs = mockRunShellCommand.mock.calls[0][1]?.timeoutMs;
+    expect(prebuildTimeoutMs).toBeLessThanOrEqual(298_000);
+    expect(prebuildTimeoutMs).toBeGreaterThan(240_000);
     expect(mockRun).toHaveBeenCalled();
   });
 
@@ -1432,7 +1469,15 @@ describe('handleToolCall', () => {
     );
   });
 
-  it('renders the no-change short-circuit in text format with a perfect score', async () => {
+  // REWRITTEN (Finding 7): this used to assert the text block contained
+  // "100.00%". That was the defect, not the contract — `nothingToMutateResult`
+  // hard-codes `mutationScore: '100.00%'` for a run that generated ZERO
+  // mutants, and the reader saw a perfect kill rate for a file nothing was ever
+  // run against. `displayMutationScore` now substitutes "n/a" for every
+  // zero-mutant result, so the assertion pins the honest score plus the scope
+  // note that explains it. Everything else the test legitimately checked (text
+  // branch rather than JSON, report header, and that no engine ran) is kept.
+  it('renders the no-change short-circuit in text format with an honest "n/a" score', async () => {
     const mockRun = vi.fn();
     MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
     mockDetectEnv.mockReturnValue({
@@ -1456,8 +1501,13 @@ describe('handleToolCall', () => {
     // Text branch, not JSON (kills `outputFormat === 'text' → false` / `'text' → ""`).
     expect(text.startsWith('{')).toBe(false);
     expect(text).toContain('Chaos-MCP Audit Report');
-    // Synthetic 100% score (kills the `'100.00%' → ""` StringLiteral mutant).
-    expect(text).toContain('100.00%');
+    // Zero mutants were generated, so there is no percentage to report and the
+    // raw "100.00%" must never reach the reader.
+    expect(text).toContain('Mutation score: n/a (0/0 killed, 0 survived)');
+    expect(text).not.toContain('100.00%');
+    // …and the scope note says why the number is missing, so "n/a" is never
+    // left unexplained.
+    expect(text).toContain('No changed lines in');
     expect(mockRun).not.toHaveBeenCalled();
   });
 
@@ -3398,11 +3448,14 @@ describe('handleToolCall', () => {
         }),
       );
 
+      // Whole-file re-run: this used to assert one single-line range per
+      // baseline line. Stryker only generates a mutant whose ENTIRE span fits
+      // the range, so that scoping silently excluded every multi-line mutant
+      // from the re-run, and computeVerifyDelta — which infers "killed" from
+      // absence — reported each of them as `nowKilled`. The baseline is now a
+      // post-run filter instead of a mutate scope.
       const runOpts = mockRun.mock.calls[0][1] as { lineRanges?: { start: number; end: number }[] };
-      expect(runOpts.lineRanges).toEqual([
-        { start: 42, end: 42 },
-        { start: 88, end: 88 },
-      ]);
+      expect(runOpts.lineRanges).toBeUndefined();
 
       const json = JSON.parse((res.content[0] as { text: string }).text);
       expect(json.mode).toBe('verify');
@@ -3442,6 +3495,168 @@ describe('handleToolCall', () => {
       expect(json.mode).toBe('verify');
       expect(json.killedCount).toBe(1);
       expect(json.nowKilled).toEqual([{ line: 7, mutator: 'RustMut' }]);
+    });
+
+    // ── Finding 2, end to end ──
+    it('does not claim "now killed" when the verify re-run stopped early', async () => {
+      // Verify is deliberately whole-file on every engine, so a batched TS
+      // re-run plans the MAXIMUM number of batches and is the run most likely
+      // to be truncated. `formatVerifyOutput` never read `complete`, so a
+      // baseline mutant sitting in a batch that never ran came back as proof
+      // the caller's fix worked.
+      const mockRun = vi.fn().mockResolvedValue({
+        target: 'src/x.ts',
+        totalMutants: 4,
+        killed: 4,
+        survived: 0,
+        mutationScore: '100.00%',
+        vulnerabilities: [],
+        complete: false,
+        batchesCompleted: 2,
+        batchesPlanned: 7,
+        stoppedReason: 'time_budget_exhausted',
+      });
+      MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+      mockDetectEnv.mockReturnValue(tsEnv);
+
+      const res = await handleToolCall(
+        makeRequest('audit_code_resilience', {
+          filePath: 'src/x.ts',
+          baseline: { survivors: [{ line: 42, mutators: { ConditionalExpression: 1 } }] },
+        }),
+      );
+
+      const sc = res.structuredContent as Record<string, unknown>;
+      expect(sc.mode).toBe('verify');
+      expect(sc.killedCount).toBe(0);
+      expect(sc.nowKilled).toEqual([]);
+      expect(sc.notReChecked).toEqual([{ line: 42, mutator: 'ConditionalExpression' }]);
+      // The partial provenance reaches structuredContent, not just the text
+      // block — a client reading only the structured payload could not
+      // otherwise tell a whole-file re-run from a truncated one.
+      expect(sc.complete).toBe(false);
+      expect(sc.batchesCompleted).toBe(2);
+      expect(sc.batchesPlanned).toBe(7);
+      expect(sc.stoppedReason).toBe('time_budget_exhausted');
+      expect(sc.note as string).toContain('PARTIAL RE-RUN');
+      // Text and JSON are two projections of one payload.
+      expect(JSON.parse((res.content[0] as { text: string }).text)).toEqual(sc);
+    });
+
+    // ── Finding 8, end to end ──
+    it('emits the promised gate when minScore is supplied in verify mode', async () => {
+      // `{ filePath, runId|baseline, minScore }` validates cleanly — nothing
+      // makes minScore mutually exclusive with the verify inputs — and the
+      // schema promises "the result reports gate.passed=false (never an
+      // error)". Verify mode emitted no `gate` key at all, so
+      // `if (!result.gate.passed)` threw a TypeError and
+      // `result.gate?.passed === true` read it as a FAILURE.
+      const mockRun = vi.fn().mockResolvedValue({
+        target: 'src/x.ts',
+        totalMutants: 4,
+        killed: 3,
+        survived: 1,
+        mutationScore: '75.00%',
+        vulnerabilities: [{ line: 42, mutator: 'ConditionalExpression', description: 'survived' }],
+      });
+      MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+      mockDetectEnv.mockReturnValue(tsEnv);
+
+      const res = await handleToolCall(
+        makeRequest('audit_code_resilience', {
+          filePath: 'src/x.ts',
+          baseline: { survivors: [{ line: 42, mutators: { ConditionalExpression: 1 } }] },
+          minScore: 80,
+        }),
+      );
+
+      const sc = res.structuredContent as Record<string, unknown>;
+      expect(sc.mode).toBe('verify');
+      // The baseline mutant is still alive, so the gate fails — and it is a
+      // graded result, never an error.
+      expect(sc.gate).toEqual({ minScore: 80, passed: false });
+      expect(res.isError).toBeUndefined();
+      expect(JSON.parse((res.content[0] as { text: string }).text)).toEqual(sc);
+    });
+
+    it('renders the verify gate in the TEXT projection too', async () => {
+      const mockRun = vi.fn().mockResolvedValue({
+        target: 'src/x.ts',
+        totalMutants: 4,
+        killed: 4,
+        survived: 0,
+        mutationScore: '100.00%',
+        vulnerabilities: [],
+      });
+      MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+      mockDetectEnv.mockReturnValue(tsEnv);
+
+      const res = await handleToolCall(
+        makeRequest('audit_code_resilience', {
+          filePath: 'src/x.ts',
+          baseline: { survivors: [{ line: 42, mutators: { ConditionalExpression: 1 } }] },
+          minScore: 80,
+          outputFormat: 'text',
+        }),
+      );
+
+      const text = (res.content[0] as { text: string }).text;
+      expect(text).toContain('Gate: passed (minScore 80)');
+    });
+
+    it('fails the verify gate closed when the re-run was partial', async () => {
+      // Findings 2 + 8 together: the delta looks spotless because the mutants
+      // were never generated, and a CI gate must not go green on that.
+      const mockRun = vi.fn().mockResolvedValue({
+        target: 'src/x.ts',
+        totalMutants: 4,
+        killed: 4,
+        survived: 0,
+        mutationScore: '100.00%',
+        vulnerabilities: [],
+        complete: false,
+        batchesCompleted: 1,
+        batchesPlanned: 6,
+        stoppedReason: 'time_budget_exhausted',
+      });
+      MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+      mockDetectEnv.mockReturnValue(tsEnv);
+
+      const res = await handleToolCall(
+        makeRequest('audit_code_resilience', {
+          filePath: 'src/x.ts',
+          baseline: { survivors: [{ line: 42, mutators: { ConditionalExpression: 1 } }] },
+          minScore: 80,
+        }),
+      );
+
+      expect((res.structuredContent as Record<string, unknown>).gate).toEqual({
+        minScore: 80,
+        passed: false,
+        reason: 'partial_audit',
+      });
+    });
+
+    it('omits the gate from a verify response when no minScore was supplied', async () => {
+      const mockRun = vi.fn().mockResolvedValue({
+        target: 'src/x.ts',
+        totalMutants: 4,
+        killed: 4,
+        survived: 0,
+        mutationScore: '100.00%',
+        vulnerabilities: [],
+      });
+      MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+      mockDetectEnv.mockReturnValue(tsEnv);
+
+      const res = await handleToolCall(
+        makeRequest('audit_code_resilience', {
+          filePath: 'src/x.ts',
+          baseline: { survivors: [{ line: 42, mutators: { ConditionalExpression: 1 } }] },
+        }),
+      );
+
+      expect(res.structuredContent as Record<string, unknown>).not.toHaveProperty('gate');
     });
   });
 
@@ -3604,5 +3819,467 @@ describe('validateToolArgs minScore', () => {
 
   it('accepts a valid minScore', () => {
     expect(validateToolArgs({ filePath: 'a.ts', minScore: 80 })).toBeNull();
+  });
+});
+
+describe('mapCreateSandboxError', () => {
+  const text = (result: ReturnType<typeof mapCreateSandboxError>): string => firstText(result);
+
+  it('maps a real provisioning failure to the halted message, naming the file and the cause', () => {
+    const result = mapCreateSandboxError(new Error('ENOSPC: no space left'), 'src/math.ts');
+    expect(result.isError).toBe(true);
+    expect(text(result)).toBe(
+      'Chaos Engine Halted: Failed to provision sandbox isolation for src/math.ts: ' +
+        'ENOSPC: no space left. Ensure the file exists and the workspace is accessible.',
+    );
+  });
+
+  it('stringifies a non-Error rejection rather than dropping the cause', () => {
+    // Engines and fs shims can reject with a bare string; `error.message` on it
+    // would be undefined and erase the only diagnostic the caller gets.
+    expect(text(mapCreateSandboxError('plain string reason', 'src/math.ts'))).toContain(
+      'plain string reason',
+    );
+  });
+
+  it('collapses an aborted request to the single shared cancel message', () => {
+    // Every cancel path must surface the SAME string so a caller can branch on
+    // it without parsing which layer noticed the abort first.
+    const controller = new AbortController();
+    controller.abort();
+    const result = mapCreateSandboxError(new Error('whatever'), 'src/math.ts', {
+      signal: controller.signal,
+    });
+    expect(text(result)).toBe('Operation cancelled.');
+    expect(result.isError).toBe(true);
+  });
+
+  it('treats an AbortError as a cancel even with no context signal', () => {
+    // The signal can flip between the throw and the catch, leaving only the
+    // error's own name as evidence.
+    const abortError = Object.assign(new Error('aborted'), { name: 'AbortError' });
+    expect(text(mapCreateSandboxError(abortError, 'src/math.ts'))).toBe('Operation cancelled.');
+  });
+
+  it('does not treat a non-aborted context signal as a cancel', () => {
+    // Pins `signal.aborted === true`: merely passing a live signal must not
+    // swallow a genuine provisioning failure as a cancellation.
+    const controller = new AbortController();
+    const result = mapCreateSandboxError(new Error('EACCES'), 'src/math.ts', {
+      signal: controller.signal,
+    });
+    expect(text(result)).toContain('Chaos Engine Halted');
+    expect(text(result)).toContain('EACCES');
+  });
+});
+
+/**
+ * The three abort short-circuits are numbered in handler.ts because each one guards a
+ * different expensive stage. A mutation audit found #2 (line 209) and #3 (line 253)
+ * both survive being forced to false, and their 'Operation cancelled.' messages survive
+ * being blanked — only #1 was covered.
+ *
+ * Aborting up front cannot test #2 or #3: short-circuit #1 catches it and the later
+ * guards are never reached. Each test therefore aborts INSIDE a mock that runs in the
+ * window the guard protects, so only that guard can catch it. Asserting what did NOT
+ * run is what pins the stage down — a guard that fires too late would still return the
+ * same message.
+ */
+describe('handleToolCall cancellation short-circuits', () => {
+  const tsEnv = {
+    projectType: 'typescript' as const,
+    testRunner: 'vitest',
+    detectedRunner: 'vitest',
+    packageManager: '',
+    workspaceRoot: '/workspace',
+  };
+
+  it('honours cancellation raised during scope resolution, before provisioning a sandbox', async () => {
+    const controller = new AbortController();
+    const mockRun = vi.fn();
+    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    // detectEnvironment runs after short-circuit #1 and before #2.
+    mockDetectEnv.mockImplementation(() => {
+      controller.abort();
+      return tsEnv;
+    });
+
+    const response = await handleToolCall(
+      makeRequest('audit_code_resilience', { filePath: 'src/math.ts' }),
+      undefined,
+      { signal: controller.signal },
+    );
+
+    expect(response.isError).toBe(true);
+    expect((response.content[0] as { text: string }).text).toContain('Operation cancelled.');
+    // Short-circuit #2 exists precisely to avoid paying for a sandbox copy.
+    expect(mockCreateSandbox).not.toHaveBeenCalled();
+    expect(mockRun).not.toHaveBeenCalled();
+  });
+
+  it('honours cancellation raised during sandbox provisioning, before running the engine', async () => {
+    const controller = new AbortController();
+    const mockRun = vi.fn();
+    const cleanup = vi.fn();
+    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    mockDetectEnv.mockReturnValue(tsEnv);
+    // Sandbox provisioning runs after short-circuit #2 and before #3.
+    mockCreateSandbox.mockImplementation(async () => {
+      controller.abort();
+      return { workDir: '/tmp/chaos-mcp-sandbox', targetFile: '', cleanup };
+    });
+
+    const response = await handleToolCall(
+      makeRequest('audit_code_resilience', { filePath: 'src/math.ts' }),
+      undefined,
+      { signal: controller.signal },
+    );
+
+    expect(response.isError).toBe(true);
+    expect((response.content[0] as { text: string }).text).toContain('Operation cancelled.');
+    expect(mockCreateSandbox).toHaveBeenCalled();
+    expect(mockRun).not.toHaveBeenCalled();
+    // handler.ts:252 promises the finally-block still cleans up on this path.
+    expect(cleanup).toHaveBeenCalled();
+  });
+});
+
+/**
+ * The defensive paths a mutation audit found unprotected in handler.ts. The existing
+ * suite drives the happy path through all of them, which is why line coverage looked
+ * healthy while every one of these mutated freely.
+ */
+describe('handleToolCall defensive paths', () => {
+  // This is a separate top-level describe, so the sandbox default and the pinned cwd
+  // from the main `handleToolCall` block do not apply here — they have to be restated.
+  let cwdSpy2: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    cwdSpy2 = vi.spyOn(process, 'cwd').mockReturnValue('/workspace');
+    mockCreateSandbox.mockResolvedValue({
+      workDir: '/tmp/chaos-mcp-sandbox',
+      targetFile: '',
+      cleanup: vi.fn(),
+    });
+  });
+  afterEach(() => cwdSpy2.mockRestore());
+
+  const tsEnv = {
+    projectType: 'typescript' as const,
+    testRunner: 'vitest',
+    detectedRunner: 'vitest',
+    packageManager: '',
+    workspaceRoot: '/workspace',
+  };
+
+  const cleanResult = (over: Record<string, unknown> = {}) => ({
+    target: 'src/math.ts',
+    totalMutants: 2,
+    killed: 2,
+    survived: 0,
+    mutationScore: '100.00%',
+    vulnerabilities: [],
+    ...over,
+  });
+
+  it('emits the completion milestone on a successful short-circuit', async () => {
+    const reportProgress = vi.fn();
+    mockDetectEnv.mockReturnValue(tsEnv);
+    mockComputeChangedRanges.mockResolvedValue({ kind: 'no-changes' });
+
+    const response = await handleToolCall(
+      makeRequest('audit_code_resilience', { filePath: 'src/math.ts', diffBase: 'HEAD' }),
+      undefined,
+      { reportProgress },
+    );
+
+    expect(response.isError).toBeUndefined();
+    expect(reportProgress).toHaveBeenCalledWith(4, 4, 'complete');
+  });
+
+  it('does not claim completion when the short-circuit is an error', async () => {
+    // "No changes" is a success — the question was answered. A runId that is not in the
+    // cache is not, and reporting 4/4 complete for it tells the caller the work finished.
+    const reportProgress = vi.fn();
+    mockDetectEnv.mockReturnValue(tsEnv);
+
+    const response = await handleToolCall(
+      makeRequest('audit_code_resilience', { filePath: 'src/math.ts', runId: 'deadbeef' }),
+      undefined,
+      { reportProgress },
+    );
+
+    expect(response.isError).toBe(true);
+    expect(reportProgress).not.toHaveBeenCalledWith(4, 4, 'complete');
+  });
+
+  it('appends the scope note to one the engine already set, rather than replacing it', async () => {
+    // The engine's note says the run was PARTIAL. Overwriting it drops that fact from the
+    // text output, which prints this one field — the caller then reads a partial run as
+    // whole-file. Rust + diffBase produces a scope note of its own, so both exist here.
+    const mockRun = vi
+      .fn()
+      .mockResolvedValue(cleanResult({ scopeNote: 'Partial audit: completed 3 of 7 batches.' }));
+    MockRustEngine.mockImplementation(() => ({ run: mockRun }) as unknown as RustEngine);
+    mockDetectEnv.mockReturnValue({ ...tsEnv, projectType: 'rust', testRunner: 'cargo' });
+    mockComputeChangedRanges.mockResolvedValue({
+      kind: 'ranges',
+      ranges: [{ start: 1, end: 5 }],
+    });
+
+    const response = await handleToolCall(
+      makeRequest('audit_code_resilience', { filePath: 'src/x.rs', diffBase: 'HEAD' }),
+    );
+
+    const note = (response.structuredContent as { scopeNote?: string }).scopeNote ?? '';
+    expect(note).toContain('Partial audit: completed 3 of 7 batches.');
+    expect(note.length).toBeGreaterThan('Partial audit: completed 3 of 7 batches.'.length);
+  });
+
+  it('leaves the engine note alone when the run has no scope note of its own', async () => {
+    // The other arm. Forced true, the append runs with an undefined scope note and
+    // corrupts the engine's own text.
+    const mockRun = vi
+      .fn()
+      .mockResolvedValue(cleanResult({ scopeNote: 'Partial audit: completed 3 of 7 batches.' }));
+    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    mockDetectEnv.mockReturnValue(tsEnv);
+
+    const response = await handleToolCall(
+      makeRequest('audit_code_resilience', { filePath: 'src/math.ts' }),
+    );
+
+    expect((response.structuredContent as { scopeNote?: string }).scopeNote).toBe(
+      'Partial audit: completed 3 of 7 batches.',
+    );
+  });
+
+  it('returns the suppression phase failure instead of continuing to format a report', async () => {
+    // Cancelling DURING the engine run lands after abort short-circuit #3, so the
+    // suppression phase is the first thing to notice. Its failure must be returned, not
+    // swallowed — continuing would report a run the caller stopped as if it completed.
+    const controller = new AbortController();
+    const mockRun = vi.fn().mockImplementation(() => {
+      controller.abort();
+      return Promise.resolve(cleanResult());
+    });
+    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    mockDetectEnv.mockReturnValue(tsEnv);
+
+    const response = await handleToolCall(
+      makeRequest('audit_code_resilience', { filePath: 'src/math.ts' }),
+      undefined,
+      { signal: controller.signal },
+    );
+
+    expect(response.isError).toBe(true);
+    // Exact, not `toContain`. If the failure is swallowed, the cancelled CallToolResult
+    // is assigned into `auditResults` and its text is EMBEDDED in the formatted payload
+    // — so a substring check still matches while the run reports as if it completed.
+    expect((response.content[0] as { text: string }).text).toBe('Operation cancelled.');
+    expect(response.structuredContent).toBeUndefined();
+  });
+});
+
+describe('handleToolCall progress reporting is optional', () => {
+  beforeEach(() => {
+    vi.spyOn(process, 'cwd').mockReturnValue('/workspace');
+  });
+
+  it('does not throw when a context supplies no reportProgress', async () => {
+    // `ctx?.reportProgress?.()` — the SECOND `?.` matters. A caller may pass a context
+    // carrying only a signal, and calling an absent reporter would abort the whole run
+    // at the moment it tried to announce success.
+    mockDetectEnv.mockReturnValue({
+      projectType: 'typescript',
+      testRunner: 'vitest',
+      detectedRunner: 'vitest',
+      packageManager: '',
+      workspaceRoot: '/workspace',
+    });
+    mockComputeChangedRanges.mockResolvedValue({ kind: 'no-changes' });
+
+    const response = await handleToolCall(
+      makeRequest('audit_code_resilience', { filePath: 'src/math.ts', diffBase: 'HEAD' }),
+      undefined,
+      {},
+    );
+
+    expect(response.isError).toBeUndefined();
+  });
+});
+
+describe('handleToolCall returns a suppression write failure verbatim', () => {
+  beforeEach(() => {
+    vi.spyOn(process, 'cwd').mockReturnValue('/workspace');
+    mockCreateSandbox.mockResolvedValue({
+      workDir: '/tmp/chaos-mcp-sandbox',
+      targetFile: '',
+      cleanup: vi.fn(),
+    });
+  });
+
+  it('stops rather than formatting a report the suppressions never reached', async () => {
+    // A write failure, NOT a cancellation. Under cancellation this branch cannot be
+    // distinguished — the outer isCancel catch produces the same response whether the
+    // phase returns early or the formatting later throws — so only a non-cancel failure
+    // shows whether the result is actually returned. Swallowing it would report a
+    // successful audit while the caller's suppressions silently failed to save.
+    mockApplySuppressions.mockResolvedValue({
+      ok: false,
+      result: {
+        content: [{ type: 'text', text: 'Failed to update suppression list: disk on fire' }],
+        isError: true,
+      },
+    });
+    const mockRun = vi.fn().mockResolvedValue({
+      target: 'src/math.ts',
+      totalMutants: 1,
+      killed: 1,
+      survived: 0,
+      mutationScore: '100.00%',
+      vulnerabilities: [],
+    });
+    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    mockDetectEnv.mockReturnValue({
+      projectType: 'typescript',
+      testRunner: 'vitest',
+      detectedRunner: 'vitest',
+      packageManager: '',
+      workspaceRoot: '/workspace',
+    });
+
+    const response = await handleToolCall(
+      makeRequest('audit_code_resilience', { filePath: 'src/math.ts' }),
+    );
+
+    expect(response.isError).toBe(true);
+    expect((response.content[0] as { text: string }).text).toBe(
+      'Failed to update suppression list: disk on fire',
+    );
+    expect(response.structuredContent).toBeUndefined();
+  });
+});
+
+/**
+ * Scope resolution runs BEFORE the sandbox exists and makes git calls of its own, so it
+ * is handed the request's abort signal and what is left of the audit's wall-clock budget.
+ * A mutation audit found that whole options object can be emptied without a single test
+ * noticing: the run would look cancellable while git ran to completion, and the git calls
+ * would get an unbounded timeout while spending from a clock everything else is measured
+ * against. This repo already shipped 5157ab0 for a cancellation bug of exactly that
+ * shape, and the sibling gap at triage/discover-targets.ts:83 was closed the same way —
+ * by asserting the options argument WHOLE rather than asserting the call happened.
+ *
+ * The verbose dump below is in the same block because it is the other thing this stage
+ * of the handler does that nothing observed: the existing suite only ever drives it with
+ * verbosity forced ON, so the guard could be deleted and stay green.
+ */
+describe('handleToolCall forwards cancellation and budget to scope resolution', () => {
+  // Separate top-level describe: the sandbox default and the pinned cwd from the main
+  // `handleToolCall` block do not reach here and have to be restated.
+  let cwdSpy3: ReturnType<typeof vi.spyOn>;
+
+  const tsEnv = {
+    projectType: 'typescript' as const,
+    testRunner: 'vitest',
+    detectedRunner: 'vitest',
+    packageManager: '',
+    workspaceRoot: '/workspace',
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    cwdSpy3 = vi.spyOn(process, 'cwd').mockReturnValue('/workspace');
+    mockCreateSandbox.mockResolvedValue({
+      workDir: '/tmp/chaos-mcp-sandbox',
+      targetFile: '',
+      cleanup: vi.fn(),
+    });
+    mockDetectEnv.mockReturnValue(tsEnv);
+    MockTSEngine.mockImplementation(
+      () =>
+        ({
+          run: vi.fn().mockResolvedValue({
+            target: 'src/math.ts',
+            totalMutants: 2,
+            killed: 2,
+            survived: 0,
+            mutationScore: '100.00%',
+            vulnerabilities: [],
+          }),
+        }) as unknown as TypeScriptEngine,
+    );
+  });
+
+  afterEach(() => cwdSpy3.mockRestore());
+
+  it('hands computeScope the request signal and a live deadline, not an empty context', async () => {
+    const controller = new AbortController();
+
+    const response = await handleToolCall(
+      makeRequest('audit_code_resilience', { filePath: 'src/math.ts' }),
+      undefined,
+      { signal: controller.signal },
+    );
+
+    expect(response.isError).toBeUndefined();
+    // Emptying this object is the surviving mutation. Asserting the call happened, or
+    // even that the signal alone arrived, leaves half of it unpinned — so the argument
+    // is compared as a whole: exactly these two keys, both populated.
+    const gitCtx = mockComputeScope.mock.calls[0]?.[6];
+    expect(gitCtx).toEqual({ signal: controller.signal, deadline: expect.any(AuditDeadline) });
+  });
+
+  it("gives scope resolution the run's own budget rather than a fresh clock", async () => {
+    // The git calls spend from the SAME wall-clock the rest of the audit is measured
+    // against; a deadline minted here (or a missing one) would let scoping burn the whole
+    // timeout and still report time remaining to the engine afterwards. 30s is the
+    // caller's number, not a default, so a deadline built from anything else shows up.
+    await handleToolCall(
+      makeRequest('audit_code_resilience', { filePath: 'src/math.ts', timeoutMs: 30_000 }),
+    );
+
+    const deadline = mockComputeScope.mock.calls[0]?.[6]?.deadline;
+    expect(deadline?.budgetMs).toBe(30_000);
+    // Already ticking: the budget handed over is what is LEFT, not a full reset.
+    expect(deadline?.remainingMs()).toBeGreaterThan(0);
+    expect(deadline?.remainingMs()).toBeLessThanOrEqual(30_000);
+  });
+
+  it('stays silent about the run context at the default verbosity', async () => {
+    // `if (isVerbose())` survives being forced to true because every existing verbose
+    // assertion turns verbosity ON first. Without this case the guard could be dropped
+    // and stderr would carry the target path, workspace root and sandbox path of every
+    // audit on a server nobody asked to be verbose.
+    const response = await handleToolCall(
+      makeRequest('audit_code_resilience', { filePath: 'src/math.ts' }),
+    );
+
+    expect(response.isError).toBeUndefined();
+    const contextLines = mockLog.mock.calls
+      .map((c) => String(c[0] ?? ''))
+      .filter(
+        (m) =>
+          m.startsWith('Tool call:') ||
+          m.startsWith('  filePath:') ||
+          m.startsWith('  projectType:') ||
+          m.startsWith('  workspaceRoot:') ||
+          m.startsWith('  sandboxDir:'),
+      );
+    expect(contextLines).toEqual([]);
+  });
+
+  it('dumps the resolved run context once verbosity is on', async () => {
+    // The other arm, asserted on the lines logAuditContext emits unconditionally, so the
+    // pairing above cannot be satisfied by a handler that simply never logs.
+    mockIsVerbose.mockReturnValue(true);
+
+    await handleToolCall(makeRequest('audit_code_resilience', { filePath: 'src/math.ts' }));
+
+    expect(mockLog).toHaveBeenCalledWith('Tool call: audit_code_resilience');
+    expect(mockLog).toHaveBeenCalledWith('  filePath: src/math.ts');
+    // The SANDBOX path, not the workspace path: this dump is written after provisioning
+    // and is the only place the caller can see where the mutants actually ran.
+    expect(mockLog).toHaveBeenCalledWith('  sandboxDir: /tmp/chaos-mcp-sandbox');
   });
 });

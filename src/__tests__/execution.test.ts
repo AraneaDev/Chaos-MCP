@@ -22,15 +22,27 @@ vi.mock('../utils/exec.js', async (importOriginal) => {
 
 vi.mock('../utils/logger.js', () => ({ warn: vi.fn() }));
 
-import { ExecFailureError, runShell, runShellCommand } from '../utils/exec.js';
+// The process-exit sweep removes containers with `spawnSync` — it runs from an
+// `exit` handler, where a promise is never awaited. Partial mock: the reaper
+// imports from this module too.
+vi.mock('child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('child_process')>();
+  return { ...actual, spawnSync: vi.fn() };
+});
+
+import { spawnSync } from 'child_process';
+import { runShell, runShellCommand } from '../utils/exec.js';
+import { ExecFailureError } from '../utils/exec-error.js';
 import {
   _resetExecutionCaches,
   CONTAINER_IMAGE_VERSION,
   createExecutionSession,
   defaultContainerImage,
-  inspectContainerRuntime,
 } from '../utils/execution.js';
 import { warn } from '../utils/logger.js';
+// Exactly the specifier utils/execution.ts registers through, so the sweep here
+// walks the very Map the sessions below write into — see the registry docblock.
+import { cleanupAllSandboxes } from '../utils/sandbox/registry.js';
 
 const ok = (stdout = '') => ({ stdout, stderr: '', exit: 0, signal: null }) as const;
 
@@ -88,6 +100,22 @@ describe('execution sessions', () => {
     );
   });
 
+  it('lets one language stay native while the rest run in containers', async () => {
+    // Each image carries exactly one runtime, so a suite that crosses languages
+    // cannot run in any of them: Knossos-MCP's PHPUnit tests spawn its Node and
+    // Python scanner workers as subprocesses, which the PHP-only image has no
+    // way to start. Before per-language modes the choice was all or nothing —
+    // containers fixed that project's TypeScript audit and broke its PHP one.
+    vi.mocked(runShell).mockResolvedValue(ok('27.0.0'));
+    const config = { mode: 'container', modes: { php: 'native' } } as const;
+
+    const php = await createExecutionSession('php', '/tmp/work', config);
+    const typescript = await createExecutionSession('typescript', '/tmp/work', config);
+
+    expect(php.kind).toBe('native');
+    expect(typescript.kind).toBe('container');
+  });
+
   it('falls back to native only when auto mode cannot reach the runtime', async () => {
     vi.mocked(runShell).mockRejectedValueOnce(new Error('missing'));
     const session = await createExecutionSession('python', '/tmp/work', {
@@ -132,6 +160,186 @@ describe('execution sessions', () => {
     await createExecutionSession('rust', '/tmp/two', { mode: 'container' });
 
     expect(runShell).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-probes the runtime once the cached result has expired', async () => {
+    // The cache exists so a triage sweep does not run `docker version` per file,
+    // but a daemon that dies mid-sweep must not stay "available" forever. With
+    // the age check forced true, a single early success would be trusted for the
+    // rest of the process's life.
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date(1_000_000));
+      vi.mocked(runShell).mockResolvedValue(ok('27.0.0'));
+
+      await createExecutionSession('typescript', '/tmp/one', { mode: 'container' });
+      expect(runShell).toHaveBeenCalledTimes(1);
+
+      // Still inside the 30s window: served from cache.
+      vi.setSystemTime(new Date(1_000_000 + 29_999));
+      await createExecutionSession('typescript', '/tmp/two', { mode: 'container' });
+      expect(runShell).toHaveBeenCalledTimes(1);
+
+      // Exactly ON the TTL the entry is stale — the comparison is `<`, not `<=`.
+      vi.setSystemTime(new Date(1_000_000 + 30_000));
+      await createExecutionSession('typescript', '/tmp/three', { mode: 'container' });
+      expect(runShell).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('provisions a fresh container for a command issued after a dispose', async () => {
+    // `dispose()` removes the container, so the id it used is gone — and so is
+    // the container itself. A session that is used again must create a new one:
+    // exec-ing against the removed container (or against the session name, which
+    // now resolves to nothing) fails with a bare exit 1 that the engines
+    // misreport as a mutation-tool configuration error.
+    vi.mocked(runShell)
+      .mockResolvedValueOnce(ok('27.0.0'))
+      .mockResolvedValueOnce(ok('container-id\n'))
+      .mockResolvedValueOnce(ok('container-id\n'))
+      .mockResolvedValueOnce(ok('first'))
+      .mockResolvedValueOnce(ok())
+      .mockResolvedValueOnce(ok('second-id\n'))
+      .mockResolvedValueOnce(ok())
+      .mockResolvedValueOnce(ok('later'))
+      .mockResolvedValue(ok());
+
+    const session = await createExecutionSession('typescript', '/tmp/work', {
+      mode: 'container',
+    });
+    await session.run('tool', ['arg']);
+    await session.dispose();
+
+    expect((await session.run('tool', ['again'])).stdout).toBe('later');
+    await session.dispose();
+
+    const calls = vi.mocked(runShell).mock.calls;
+    expect(calls.map((call) => call[1]?.[0])).toEqual([
+      'version',
+      'create',
+      'start',
+      'exec',
+      'rm',
+      'create',
+      'start',
+      'exec',
+      'rm',
+    ]);
+    // The replacement exec targets the new container, never the removed one.
+    expect(calls[7]?.[1]).toEqual([
+      'exec',
+      '--workdir',
+      '/workspace',
+      'second-id',
+      'tool',
+      'again',
+    ]);
+    // And the restarted session is itself disposable again.
+    expect(calls[8]?.[1]).toEqual(['rm', '-f', 'second-id']);
+    expect(calls.slice(5).every((call) => !(call[1] ?? []).includes('container-id'))).toBe(true);
+  });
+
+  it('re-provisions after a timed-out command destroys the container', async () => {
+    // The reachable path: `run()` disposes on TIMEOUT, and
+    // TypeScriptEngine.runBatched swallows that timeout and runs the next batch
+    // through the very same session.
+    vi.mocked(runShell)
+      .mockResolvedValueOnce(ok('27.0.0'))
+      .mockResolvedValueOnce(ok('cid'))
+      .mockResolvedValueOnce(ok())
+      .mockRejectedValueOnce(
+        new ExecFailureError(
+          { stdout: '', stderr: '', exit: null, signal: 'SIGKILL', code: 'TIMEOUT' },
+          'timeout',
+        ),
+      )
+      .mockResolvedValueOnce(ok())
+      .mockResolvedValueOnce(ok('cid-2'))
+      .mockResolvedValueOnce(ok())
+      .mockResolvedValueOnce(ok('batch two'));
+    const session = await createExecutionSession('typescript', '/tmp/work', {
+      mode: 'container',
+    });
+
+    await expect(session.run('stryker', ['batch-one'])).rejects.toMatchObject({
+      code: 'TIMEOUT',
+    });
+    expect(vi.mocked(runShell).mock.calls[4]?.[1]).toEqual(['rm', '-f', 'cid']);
+
+    expect((await session.run('stryker', ['batch-two'])).stdout).toBe('batch two');
+    expect(vi.mocked(runShell).mock.calls[5]?.[1]?.[0]).toBe('create');
+    expect(vi.mocked(runShell).mock.calls[7]?.[1]).toEqual([
+      'exec',
+      '--workdir',
+      '/workspace',
+      'cid-2',
+      'stryker',
+      'batch-two',
+    ]);
+  });
+
+  it('does not leak the old abort listener across a dispose and restart', async () => {
+    const controller = new AbortController();
+    const addListener = vi.spyOn(controller.signal, 'addEventListener');
+    const removeListener = vi.spyOn(controller.signal, 'removeEventListener');
+    vi.mocked(runShell)
+      .mockResolvedValueOnce(ok('27.0.0'))
+      .mockResolvedValueOnce(ok('cid'))
+      .mockResolvedValueOnce(ok())
+      .mockResolvedValueOnce(ok())
+      .mockResolvedValueOnce(ok())
+      .mockResolvedValueOnce(ok('cid-2'))
+      .mockResolvedValue(ok());
+    const session = await createExecutionSession(
+      'rust',
+      '/tmp/work',
+      { mode: 'container' },
+      controller.signal,
+    );
+
+    await session.run('cargo', ['check']);
+    await session.dispose();
+    expect(removeListener).toHaveBeenCalledTimes(1);
+    await session.run('cargo', ['test']);
+
+    // Exactly one listener per provisioned container — the disposed one was
+    // removed, so the abort below tears down only the current container.
+    expect(addListener).toHaveBeenCalledTimes(2);
+    controller.abort();
+    await vi.waitFor(() => {
+      expect(vi.mocked(runShell).mock.calls.filter((call) => call[1]?.[0] === 'rm')).toHaveLength(
+        2,
+      );
+    });
+    const removals = vi.mocked(runShell).mock.calls.filter((call) => call[1]?.[0] === 'rm');
+    expect(removals.map((call) => call[1]?.[2])).toEqual(['cid', 'cid-2']);
+  });
+
+  it('refuses to re-provision a container once the session signal is aborted', async () => {
+    const controller = new AbortController();
+    vi.mocked(runShell)
+      .mockResolvedValueOnce(ok('27.0.0'))
+      .mockResolvedValueOnce(ok('cid'))
+      .mockResolvedValue(ok());
+    const session = await createExecutionSession(
+      'rust',
+      '/tmp/work',
+      { mode: 'container' },
+      controller.signal,
+    );
+
+    await session.run('cargo', ['check']);
+    controller.abort();
+    await vi.waitFor(() => {
+      expect(vi.mocked(runShell).mock.calls.some((call) => call[1]?.[0] === 'rm')).toBe(true);
+    });
+
+    await expect(session.run('cargo', ['test'])).rejects.toThrow('cancelled before startup');
+    expect(vi.mocked(runShell).mock.calls.filter((call) => call[1]?.[0] === 'create')).toHaveLength(
+      1,
+    );
   });
 
   it('passes runtime probe overrides through exactly', async () => {
@@ -203,7 +411,11 @@ describe('execution sessions', () => {
           'type=bind,src=/tmp/work,dst=/workspace',
           '--read-only',
           '--tmpfs',
-          '/tmp:rw,exec,nosuid,nodev,size=512m',
+          // /tmp is the only writable space under the read-only rootfs, so it
+          // has to hold the whole toolchain's scratch (Cargo registry, npm
+          // cache, per-mutant files) — 512 MiB was not enough for a Cargo
+          // registry download. Configurable via container.tmpfsSizeMb.
+          '/tmp:rw,exec,nosuid,nodev,size=2048m',
           '--cap-drop',
           'ALL',
           '--security-opt',
@@ -221,6 +433,17 @@ describe('execution sessions', () => {
           'HOME=/tmp/chaos-home',
           '--env',
           'XDG_CACHE_HOME=/tmp/chaos-cache',
+          // Every toolchain cache is redirected onto the writable tmpfs: the
+          // rootfs is read-only and the host dependency trees are mounted
+          // read-only, so a tool writing to its default cache cannot start.
+          // The rust image pins CARGO_HOME=/usr/local/cargo, which is on that
+          // read-only root, and cargo must write its registry and lock there.
+          '--env',
+          'CARGO_HOME=/tmp/chaos-cargo',
+          '--env',
+          'npm_config_cache=/tmp/chaos-npm',
+          '--env',
+          'COMPOSER_HOME=/tmp/chaos-composer-home',
           defaultContainerImage(language),
           'sh',
           '-c',
@@ -236,7 +459,10 @@ describe('execution sessions', () => {
       expect(vi.mocked(runShell).mock.calls[3]).toEqual([
         'docker',
         ['exec', '--workdir', '/workspace', 'container-id', 'tool', 'arg'],
-        { timeoutMs: undefined, signal: undefined, killTree: true },
+        // `cwd` is the HOST directory the exec CLIENT runs in — the sandbox, so
+        // the reaper's per-sandbox sweep can reach it (the guest working
+        // directory is the `--workdir` above).
+        { timeoutMs: undefined, signal: undefined, killTree: true, cwd: '/tmp/work' },
       ]);
       expect(vi.mocked(runShell).mock.calls[4]).toEqual([
         'docker',
@@ -534,6 +760,196 @@ describe('execution sessions', () => {
     expect(removeListener).toHaveBeenCalledWith('abort', expect.any(Function));
   });
 
+  it('arms the abort listener BEFORE the container is created', async () => {
+    // `addEventListener('abort', ...)` on an already-aborted signal never fires,
+    // so a listener registered at the END of startup covers none of startup —
+    // and startup is where the container comes into existence.
+    const controller = new AbortController();
+    const addListener = vi.spyOn(controller.signal, 'addEventListener');
+    let armedBeforeCreate = false;
+    vi.mocked(runShell)
+      .mockResolvedValueOnce(ok('27.0.0'))
+      .mockImplementationOnce(async () => {
+        armedBeforeCreate = addListener.mock.calls.length > 0;
+        return ok('cid');
+      })
+      .mockResolvedValue(ok());
+    const session = await createExecutionSession(
+      'rust',
+      '/tmp/work',
+      { mode: 'container' },
+      controller.signal,
+    );
+
+    await session.run('cargo', ['check']);
+
+    expect(armedBeforeCreate).toBe(true);
+    // Still exactly one listener for the one container that was provisioned.
+    expect(addListener).toHaveBeenCalledTimes(1);
+  });
+
+  it('removes the container when the abort lands as `start` resolves', async () => {
+    // The window the late registration left open: the request is cancelled
+    // after `start` returns but before anything is listening. The listener that
+    // was supposed to tear the container down was attached to a signal that had
+    // already fired, so it never ran and the session held a RUNNING container
+    // with no remaining teardown path of its own. The post-start re-check closes
+    // it.
+    const controller = new AbortController();
+    vi.mocked(runShell)
+      .mockResolvedValueOnce(ok('27.0.0'))
+      .mockResolvedValueOnce(ok('cid'))
+      .mockImplementationOnce(async () => {
+        controller.abort();
+        return ok();
+      })
+      .mockResolvedValue(ok());
+    const session = await createExecutionSession(
+      'rust',
+      '/tmp/work',
+      { mode: 'container' },
+      controller.signal,
+    );
+
+    await expect(session.run('cargo', ['check'])).rejects.toThrow('cancelled during startup');
+
+    const removals = vi.mocked(runShell).mock.calls.filter((call) => call[1]?.[0] === 'rm');
+    expect(removals.map((call) => call[1])).toEqual([['rm', '-f', 'cid']]);
+    // Cancelled during startup means no work was ever dispatched into it.
+    expect(vi.mocked(runShell).mock.calls.some((call) => call[1]?.[0] === 'exec')).toBe(false);
+  });
+
+  it('re-issues the removal when the abort lands DURING `create`', async () => {
+    // The ordering no other case covers: the cancellation arrives while the
+    // container is still being created, so the listener's `rm -f` races the
+    // daemon and loses, and the daemon then finishes creating the container.
+    // Teardown that latched its first settled promise made every later attempt
+    // a no-op and leaked that container for the lifetime of the process.
+    const controller = new AbortController();
+    const rmTargets: string[] = [];
+    vi.mocked(runShell).mockImplementation(async (_command, args) => {
+      const argv = args;
+      if (argv[0] === 'version') return ok('27.0.0');
+      if (argv[0] === 'create') {
+        controller.abort();
+        throw new ExecFailureError(
+          { stdout: '', stderr: '', exit: null, signal: 'SIGTERM', code: 'ABORTED' },
+          'cancelled',
+        );
+      }
+      if (argv[0] === 'rm') {
+        rmTargets.push(String(argv[2]));
+        // First attempt: the daemon has not registered the container yet.
+        if (rmTargets.length === 1) throw new Error('No such container');
+        return ok();
+      }
+      return ok();
+    });
+    const session = await createExecutionSession(
+      'rust',
+      '/tmp/work',
+      { mode: 'container' },
+      controller.signal,
+    );
+
+    await expect(session.run('cargo', ['check'])).rejects.toMatchObject({ code: 'ABORTED' });
+
+    // Two attempts at the SAME container, addressed by name because `create`
+    // never returned an id.
+    expect(rmTargets).toHaveLength(2);
+    expect(new Set(rmTargets).size).toBe(1);
+    expect(rmTargets[0]).toMatch(/^chaos-mcp-\d+-[0-9a-f-]{12}$/);
+  });
+
+  it('removes a still-running container from the process-exit sweep', async () => {
+    // On SIGINT the server calls process.exit() from a `.finally()`, so the
+    // request's own `finally { dispose() }` never runs. The container's
+    // entrypoint is an infinite sleep, so nothing else would ever stop it.
+    vi.mocked(runShell)
+      .mockResolvedValueOnce(ok('27.0.0'))
+      .mockResolvedValueOnce(ok('cid'))
+      .mockResolvedValue(ok());
+    const session = await createExecutionSession('typescript', '/tmp/work', {
+      mode: 'container',
+      runtime: 'podman',
+    });
+    await session.run('stryker', []);
+    const containerName = vi.mocked(runShell).mock.calls[1]?.[1]?.[2];
+
+    cleanupAllSandboxes();
+
+    // Synchronous, because an `exit` handler cannot await anything.
+    expect(spawnSync).toHaveBeenCalledWith(
+      'podman',
+      ['rm', '-f', containerName],
+      expect.objectContaining({ timeout: expect.any(Number) }),
+    );
+
+    // …and the sweep is idempotent: a second signal removes nothing again.
+    vi.mocked(spawnSync).mockClear();
+    cleanupAllSandboxes();
+    expect(spawnSync).not.toHaveBeenCalled();
+  });
+
+  it('leaves nothing for the exit sweep once the session has disposed', async () => {
+    vi.mocked(runShell)
+      .mockResolvedValueOnce(ok('27.0.0'))
+      .mockResolvedValueOnce(ok('disposed-cid'))
+      .mockResolvedValue(ok());
+    // Two sessions, one torn down normally and one still holding its container,
+    // so the assertion below cannot pass merely because the sweep did nothing.
+    const disposed = await createExecutionSession('typescript', '/tmp/work', {
+      mode: 'container',
+      runtime: 'podman',
+    });
+    await disposed.run('stryker', []);
+    await disposed.dispose();
+    const live = await createExecutionSession('typescript', '/tmp/work', {
+      mode: 'container',
+      runtime: 'podman',
+    });
+    await live.run('stryker', []);
+    const calls = vi.mocked(runShell).mock.calls;
+    const disposedName = calls[1]?.[1]?.[2];
+    const liveName = calls.filter((call) => call[1]?.[0] === 'create')[1]?.[1]?.[2];
+
+    cleanupAllSandboxes();
+
+    expect(spawnSync).toHaveBeenCalledWith(
+      'podman',
+      ['rm', '-f', liveName],
+      expect.objectContaining({ timeout: expect.any(Number) }),
+    );
+    // The disposed session's container is already gone; sweeping it again would
+    // misreport what this process still owns.
+    const swept = vi.mocked(spawnSync).mock.calls.flatMap((call) => [...(call[1] ?? [])]);
+    expect(swept).not.toContain(disposedName);
+  });
+
+  it('runs the exec client itself inside the sandbox directory', async () => {
+    // `--workdir` is the GUEST path; the exec client is a host process, and the
+    // reaper indexes host processes by cwd. Left at process.cwd(), every
+    // `docker exec` this session started was invisible to
+    // killProcessesUnder(sandboxDir) — the sandbox's only reaping path.
+    vi.mocked(runShell)
+      .mockResolvedValueOnce(ok('27.0.0'))
+      .mockResolvedValueOnce(ok('cid'))
+      .mockResolvedValue(ok());
+    const session = await createExecutionSession('typescript', '/tmp/sandbox-abc', {
+      mode: 'container',
+    });
+
+    await session.run('stryker', ['run'], { cwd: '/tmp/sandbox-abc/src' });
+    await session.dispose();
+
+    expect(vi.mocked(runShell).mock.calls[3]?.[1]?.slice(0, 3)).toEqual([
+      'exec',
+      '--workdir',
+      '/workspace/src',
+    ]);
+    expect(vi.mocked(runShell).mock.calls[3]?.[2]).toMatchObject({ cwd: '/tmp/sandbox-abc' });
+  });
+
   it('does not forward the host environment wholesale into containers', async () => {
     vi.mocked(runShell)
       .mockResolvedValueOnce(ok('27.0.0'))
@@ -650,6 +1066,7 @@ describe('execution sessions', () => {
       timeoutMs: undefined,
       signal: commandController.signal,
       killTree: true,
+      cwd: '/tmp/work',
     });
   });
 
@@ -680,10 +1097,50 @@ describe('execution sessions', () => {
 
     const createArgs = vi.mocked(runShell).mock.calls[1]?.[1] ?? [];
     for (const mount of expectedMounts) expect(createArgs).toContain(mount);
+    // Dependency mounts are emitted in SHARED_DEPENDENCY_DIRS order, so pin the
+    // argv ORDER too — not just membership.
+    expect(createArgs.filter((arg) => expectedMounts.includes(arg))).toEqual(expectedMounts);
     expect(createArgs.filter((arg) => arg === '--mount')).toHaveLength(4);
     expect(createArgs).toEqual(expect.arrayContaining(['--network', 'bridge', '--cpus', '2']));
     expect(createArgs).toEqual(expect.arrayContaining(['--memory', '4096m']));
     expect(createArgs.some((arg) => arg.startsWith('PATH='))).toBe(false);
+  });
+
+  it('gives Vite a writable scratch inside the read-only node_modules mount', async () => {
+    // Vite writes `<node_modules>/.vite-temp/<config>.timestamp-*.mjs` to load
+    // ANY config file, so a read-only dependency tree fails the config load
+    // outright: every test errors and StrykerJS reports "There were failed tests
+    // in the initial test run" before a mutant runs. Auditing a vitest project
+    // in a container was impossible. A tmpfs over just that directory keeps the
+    // tree read-only and discards the scratch with the container.
+    const root = mkdtempSync(join(tmpdir(), 'chaos-execution-vite-'));
+    const workDir = join(root, 'sandbox');
+    tempDirs.push(root);
+    mkdirSync(workDir);
+    const target = join(root, 'project-node_modules');
+    mkdirSync(target);
+    symlinkSync(target, join(workDir, 'node_modules'), 'dir');
+    const venv = join(root, 'project-venv');
+    mkdirSync(venv);
+    symlinkSync(venv, join(workDir, 'venv'), 'dir');
+    vi.mocked(runShell)
+      .mockResolvedValueOnce(ok('27.0.0'))
+      .mockResolvedValueOnce(ok('cid'))
+      .mockResolvedValueOnce(ok())
+      .mockResolvedValueOnce(ok())
+      .mockResolvedValueOnce(ok());
+    const session = await createExecutionSession('typescript', workDir, { mode: 'container' });
+
+    await session.run('stryker', []);
+    await session.dispose();
+
+    const createArgs = vi.mocked(runShell).mock.calls[1]?.[1] ?? [];
+    expect(createArgs).toContain(`${target}/.vite-temp:rw,nosuid,nodev,size=16m`);
+    // The tree itself stays read-only — only the scratch directory is writable.
+    expect(createArgs).toContain(`type=bind,src=${target},dst=${target},readonly`);
+    // No other dependency tree gets one: the path is Vite's, not a general
+    // "make dependencies writable" hole.
+    expect(createArgs.some((arg) => arg.startsWith(`${venv}/`))).toBe(false);
   });
 
   it('does not mount an ordinary dependency directory outside the sandbox', async () => {
@@ -817,85 +1274,5 @@ describe('execution sessions', () => {
     expect(createArgs).toContain(
       `PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${virtualenv}/bin`,
     );
-  });
-
-  it('reports runtime and all four local image states without pulling', async () => {
-    vi.mocked(runShell)
-      .mockResolvedValueOnce(ok('27.0.0\n'))
-      .mockResolvedValueOnce(ok())
-      .mockRejectedValueOnce(new Error('python image missing'))
-      .mockResolvedValueOnce(ok())
-      .mockResolvedValueOnce(ok());
-
-    const report = await inspectContainerRuntime({
-      mode: 'container',
-      images: { python: 'custom/python:test' },
-    });
-
-    expect(report).toMatchObject({
-      runtime: 'docker',
-      available: true,
-      serverVersion: '27.0.0',
-      mode: 'container',
-    });
-    expect(report.images.typescript.present).toBe(true);
-    expect(report.images.python).toEqual({
-      image: 'custom/python:test',
-      present: false,
-    });
-    expect(report.images.rust.present).toBe(true);
-    expect(report.images.php.present).toBe(true);
-    expect(vi.mocked(runShell).mock.calls.some((call) => call[1]?.[0] === 'pull')).toBe(false);
-    expect(
-      vi
-        .mocked(runShell)
-        .mock.calls.slice(1)
-        .map((call) => call[1]),
-    ).toEqual([
-      ['image', 'inspect', defaultContainerImage('typescript')],
-      ['image', 'inspect', 'custom/python:test'],
-      ['image', 'inspect', defaultContainerImage('rust')],
-      ['image', 'inspect', defaultContainerImage('php')],
-    ]);
-    for (const call of vi.mocked(runShell).mock.calls.slice(1)) {
-      expect(call[2]).toEqual({ timeoutMs: 10_000, killTree: true });
-    }
-  });
-
-  it('reports defaults when the runtime is available without explicit config', async () => {
-    vi.mocked(runShell).mockResolvedValue(ok('27.0.0'));
-
-    const report = await inspectContainerRuntime(undefined);
-
-    expect(report.mode).toBe('native');
-    expect(report.runtime).toBe('docker');
-    expect(Object.values(report.images).every((image) => image.present)).toBe(true);
-  });
-
-  it('reports an unavailable runtime without inspecting images', async () => {
-    vi.mocked(runShell).mockRejectedValueOnce(new Error('daemon unavailable'));
-
-    const report = await inspectContainerRuntime(undefined);
-
-    expect(report).toEqual({
-      runtime: 'docker',
-      available: false,
-      mode: 'native',
-      images: {
-        typescript: {
-          image: defaultContainerImage('typescript'),
-          present: false,
-        },
-        python: { image: defaultContainerImage('python'), present: false },
-        rust: { image: defaultContainerImage('rust'), present: false },
-        php: { image: defaultContainerImage('php'), present: false },
-      },
-    });
-    expect(vi.mocked(runShell).mock.calls[0]).toEqual([
-      'docker',
-      ['version', '--format', '{{.Server.Version}}'],
-      { timeoutMs: 10_000, killTree: true },
-    ]);
-    expect(runShell).toHaveBeenCalledTimes(1);
   });
 });

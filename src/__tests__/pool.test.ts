@@ -47,4 +47,49 @@ describe('mapPool', () => {
     expect(out[2]).toBe(2);
     expect(out[1]).toBeInstanceOf(Error);
   });
+
+  it('actually runs the requested number of tasks in parallel', async () => {
+    // `peak <= concurrency` alone cannot tell a working pool from a serial one.
+    // This pins the LOWER bound too: with 10 items and concurrency 3, exactly 3
+    // tasks must be in flight at once. Every mutant that collapses
+    // `Math.min(concurrency, items.length || 1)` to 1 — `|| 1` forced to
+    // true/false, or rewritten as `&& 1` — leaves the pool correct but serial,
+    // which is invisible to an upper-bound assertion.
+    let inFlight = 0;
+    let peak = 0;
+    await mapPool(
+      Array.from({ length: 10 }, (_, i) => i),
+      3,
+      async (n) => {
+        inFlight++;
+        peak = Math.max(peak, inFlight);
+        await tick();
+        inFlight--;
+        return n;
+      },
+    );
+    expect(peak).toBe(3);
+  });
+
+  it('never spawns more workers than there are items', async () => {
+    // Pins the `Math.min(...)` against the item count: asking for 8 workers for
+    // 2 items must not start 8.
+    let inFlight = 0;
+    let peak = 0;
+    await mapPool([1, 2], 8, async (n) => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await tick();
+      inFlight--;
+      return n;
+    });
+    expect(peak).toBe(2);
+  });
+
+  it('returns an empty array for no items without hanging', async () => {
+    // The `items.length || 1` fallback keeps at least one worker alive so
+    // Promise.all resolves; a zero-worker pool would resolve too, but a
+    // negative/NaN limit would make Array.from throw.
+    await expect(mapPool([], 4, async (n: number) => n)).resolves.toEqual([]);
+  });
 });

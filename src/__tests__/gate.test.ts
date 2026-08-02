@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { evaluateGate, validateMinScore } from '../gate.js';
+import { evaluateGate, validateMinScore } from '../core/gate.js';
 
 describe('evaluateGate', () => {
   it('passes when score >= minScore', () => {
@@ -50,5 +50,41 @@ describe('validateMinScore', () => {
     expect(validateMinScore(101)).toMatch(/minScore/);
     expect(validateMinScore('80')).toMatch(/minScore/);
     expect(validateMinScore(NaN)).toMatch(/minScore/);
+  });
+});
+
+/**
+ * A batched TypeScript run that exhausts its time budget returns the score of
+ * the batches it FINISHED, flagged `complete: false`. Grading that as if it
+ * covered the whole file let a gate report green over code that was never
+ * mutated — the exact failure the gate exists to prevent, in CI, silently.
+ */
+describe('evaluateGate — partial audits', () => {
+  it('fails a partial run even when its score clears the threshold', () => {
+    expect(evaluateGate('100.00%', 80, false)).toEqual({
+      minScore: 80,
+      passed: false,
+      reason: 'partial_audit',
+    });
+  });
+
+  it('reports why it failed, so the caller can tell it apart from a low score', () => {
+    expect(evaluateGate('95.00%', 90, false).reason).toBe('partial_audit');
+    expect(evaluateGate('50.00%', 90, true).reason).toBeUndefined();
+  });
+
+  it('grades a complete run normally', () => {
+    expect(evaluateGate('95.00%', 90, true)).toEqual({ minScore: 90, passed: true });
+  });
+
+  it('defaults to complete so callers with no batching concept are unaffected', () => {
+    expect(evaluateGate('95.00%', 90)).toEqual({ minScore: 90, passed: true });
+  });
+
+  it('fails a partial run whose score is unparseable, rather than passing it', () => {
+    // An unparseable score passes by design (nothing gradable), but incomplete
+    // must still win — otherwise "n/a" would be a way to launder a partial run
+    // through the gate.
+    expect(evaluateGate('n/a', 80, false).passed).toBe(false);
   });
 });

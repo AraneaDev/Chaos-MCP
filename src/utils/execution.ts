@@ -1,10 +1,14 @@
 import { randomUUID } from 'node:crypto';
-import { lstatSync, readdirSync, realpathSync } from 'node:fs';
 import { sep } from 'node:path';
 import type { SupportedProjectType } from './project-detector.js';
 import type { ContainerConfig } from './config-loader.js';
-import { ExecFailureError, type ExecResult, runShell, runShellCommand } from './exec.js';
+import { ExecFailureError, type ExecResult } from './exec-error.js';
+import { runShell, runShellCommand } from './exec.js';
 import { warn } from './logger.js';
+import { buildCreateArgs, changedEnvironment } from './container/args.js';
+// Exactly one specifier for the process-lifetime registry — see the docblock in
+// ./sandbox/registry.ts for why a second copy of that module would be silent.
+import { registerContainer, unregisterContainer } from './sandbox/registry.js';
 
 export type ExecutionMode = 'native' | 'container' | 'auto';
 
@@ -27,16 +31,28 @@ export interface ExecutionSession {
 
 export const CONTAINER_IMAGE_VERSION = '1.6.0'; // x-release-please-version
 
-const DEFAULT_IMAGES: Record<SupportedProjectType, string> = {
+/** @internal Exported for utils/container/doctor.ts and tests. */
+export const DEFAULT_IMAGES: Record<SupportedProjectType, string> = {
   typescript: `ghcr.io/araneadev/chaos-mcp-typescript:v${CONTAINER_IMAGE_VERSION}`,
   python: `ghcr.io/araneadev/chaos-mcp-python:v${CONTAINER_IMAGE_VERSION}`,
   rust: `ghcr.io/araneadev/chaos-mcp-rust:v${CONTAINER_IMAGE_VERSION}`,
   php: `ghcr.io/araneadev/chaos-mcp-php:v${CONTAINER_IMAGE_VERSION}`,
 };
 
-/** Host dependency trees that the sandbox may represent as symlinks. */
-const SHARED_DEPENDENCY_DIRS = ['node_modules', '.venv', 'venv', 'vendor'];
-const availableRuntimes = new Set<string>();
+/**
+ * Positive runtime probes, with the time each was taken.
+ *
+ * A successful probe is cached only briefly. An MCP server outlives the daemon
+ * it talks to — Docker gets restarted, a socket goes away — and a permanently
+ * cached "yes" makes `mode: 'auto'` keep choosing the container backend and
+ * failing at `create`, which is precisely the case the native fallback exists
+ * to cover. Negative results are deliberately not cached at all, so recovery is
+ * immediate in the other direction.
+ */
+const availableRuntimes = new Map<string, number>();
+
+/** How long a successful runtime probe is trusted before being re-taken. */
+const RUNTIME_PROBE_TTL_MS = 30_000;
 
 class NativeExecutionSession implements ExecutionSession {
   readonly kind = 'native' as const;
@@ -62,28 +78,21 @@ class NativeExecutionSession implements ExecutionSession {
   }
 }
 
-function changedEnvironment(env: NodeJS.ProcessEnv | undefined): [string, string][] {
-  if (!env) return [];
-  const result: [string, string][] = [];
-  for (const [key, value] of Object.entries(env)) {
-    if (value !== undefined && value !== process.env[key]) result.push([key, value]);
-  }
-  return result;
-}
-
-function mountArg(source: string, target: string, readonly = false): string {
-  if (source.includes(',') || target.includes(',')) {
-    throw new Error('Container execution does not support bind-mount paths containing commas.');
-  }
-  return `type=bind,src=${source},dst=${target}${readonly ? ',readonly' : ''}`;
-}
-
 class ContainerExecutionSession implements ExecutionSession {
   readonly kind = 'container' as const;
   private readonly name = `chaos-mcp-${process.pid}-${randomUUID().slice(0, 12)}`;
   private containerId: string | undefined;
   private startPromise: Promise<void> | undefined;
+  /** In-flight teardown, for de-duplicating CONCURRENT callers only. */
   private disposePromise: Promise<void> | undefined;
+  /**
+   * Whether a teardown has actually removed this session's container.
+   *
+   * Set only when `rm -f` SUCCEEDS, and cleared whenever a new container is
+   * provisioned. A failed removal deliberately leaves it false so the next
+   * {@link dispose} retries — see that method for the leak that caused.
+   */
+  private removed = false;
   private abortListener: (() => void) | undefined;
 
   constructor(
@@ -102,93 +111,43 @@ class ContainerExecutionSession implements ExecutionSession {
   }
 
   private createArgs(): string[] {
-    const args = [
-      'create',
-      '--name',
-      this.name,
-      '--label',
-      'io.chaos-mcp.runner=true',
-      '--label',
-      `io.chaos-mcp.language=${this.language}`,
-      '--workdir',
-      '/workspace',
-      '--mount',
-      mountArg(this.workDir, '/workspace'),
-      '--read-only',
-      '--tmpfs',
-      '/tmp:rw,exec,nosuid,nodev,size=512m',
-      '--cap-drop',
-      'ALL',
-      '--security-opt',
-      'no-new-privileges',
-      '--pids-limit',
-      String(this.config.pidsLimit ?? 512),
-      '--network',
-      this.config.network ?? 'bridge',
-    ];
-
-    args.push('--cpus', String(this.config.cpus ?? 2));
-    args.push('--memory', `${this.config.memoryMb ?? 4096}m`);
-    const uid = process.getuid?.();
-    const gid = process.getgid?.();
-    if (uid !== undefined && gid !== undefined) args.push('--user', `${uid}:${gid}`);
-
-    const dependencyTargets = new Map<string, string>();
-    for (const dir of SHARED_DEPENDENCY_DIRS) {
-      try {
-        const candidate = `${this.workDir}/${dir}`;
-        if (!lstatSync(candidate).isSymbolicLink()) continue;
-        const target = realpathSync(candidate);
-        dependencyTargets.set(dir, target);
-        args.push('--mount', mountArg(target, target, true));
-      } catch {
-        // Missing or unreadable dependency directories remain absent in the
-        // container; the engine will surface its normal dependency error.
-      }
-    }
-
-    if (this.language === 'python') {
-      const virtualenv = dependencyTargets.get('.venv') ?? dependencyTargets.get('venv');
-      if (virtualenv) {
-        const sitePackages: string[] = [];
-        try {
-          for (const entry of readdirSync(`${virtualenv}/lib`, { withFileTypes: true })) {
-            if (!entry.isDirectory() || !entry.name.startsWith('python')) continue;
-            sitePackages.push(`${virtualenv}/lib/${entry.name}/site-packages`);
-          }
-        } catch {
-          // The engine will surface missing project dependencies normally.
-        }
-        if (sitePackages.length > 0) {
-          args.push('--env', `PYTHONPATH=${sitePackages.sort().join(':')}`);
-        }
-        // Keep the image's pinned Python and mutation engine ahead of project
-        // scripts, while still exposing console scripts installed by the project.
-        args.push(
-          '--env',
-          `PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${virtualenv}/bin`,
-        );
-      }
-    }
-
-    args.push(
-      '--env',
-      'HOME=/tmp/chaos-home',
-      '--env',
-      'XDG_CACHE_HOME=/tmp/chaos-cache',
-      this.image,
-      'sh',
-      '-c',
-      'while :; do sleep 3600; done',
-    );
-    return args;
+    return buildCreateArgs(this.name, this.workDir, this.language, this.config, this.image);
   }
 
   private async ensureStarted(): Promise<void> {
     if (this.containerId) return;
     if (this.startPromise) return this.startPromise;
+    // A new provision supersedes any completed teardown: the container about to
+    // be created has not been removed, whatever happened to its predecessor.
+    this.removed = false;
     this.startPromise = (async () => {
       if (this.signal?.aborted) throw new Error('Container execution cancelled before startup.');
+      // Arm cancellation BEFORE anything is created, not after `start` returns.
+      // `addEventListener('abort', ...)` on an already-aborted signal never
+      // fires, so registering at the end left a window — abort landing between
+      // `start` resolving and the registration — in which the session owned a
+      // RUNNING container and nothing was left that would ever tear it down.
+      // (Both current callers also dispose in a `finally`, which masked it; the
+      // listener is this class's stated cancellation mechanism and must actually
+      // arm.) Registering first is safe because `dispose()` de-duplicates
+      // concurrent callers and removes the container by name when `containerId`
+      // is not set yet, which is exactly the state an abort during `create`
+      // leaves behind.
+      //
+      // RESIDUAL RACE, by design: an abort landing mid-`create` runs `rm -f`
+      // against a container the daemon may not have registered yet, and that
+      // removal simply fails. Deferring the removal until `create` settles was
+      // considered and rejected — every deferral scheme reopens a window
+      // between the last in-flight check and the flag being cleared. Recovery
+      // is what covers it instead: teardown is RETRYABLE (see `dispose`), so
+      // the `catch` below issues a second `rm`, and the process-exit sweep
+      // removes whatever still survives that.
+      this.abortListener = () => void this.dispose();
+      this.signal?.addEventListener('abort', this.abortListener, { once: true });
+      // Process-lifetime ownership, taken BEFORE `create` is issued: from here
+      // on a SIGINT/SIGTERM removes this container even though `process.exit()`
+      // abandons the request's own `finally { dispose() }`.
+      registerContainer(this.name, this.runtime);
       const created = await runShell(this.runtime, this.createArgs(), {
         timeoutMs: this.config.startupTimeoutMs ?? 60_000,
         signal: this.signal,
@@ -200,8 +159,15 @@ class ContainerExecutionSession implements ExecutionSession {
         signal: this.signal,
         killTree: true,
       });
-      this.abortListener = () => void this.dispose();
-      this.signal?.addEventListener('abort', this.abortListener, { once: true });
+      // The listener above may have already fired and disposed a container that
+      // `start` then finished bringing up, and an abort that lands in this exact
+      // turn has no listener left to fire (it was removed by that dispose). Re-check
+      // and tear down explicitly so a cancelled request never leaves the runtime
+      // holding a started container.
+      if (this.signal?.aborted) {
+        await this.dispose();
+        throw new Error('Container execution cancelled during startup.');
+      }
     })();
     try {
       await this.startPromise;
@@ -234,6 +200,12 @@ class ContainerExecutionSession implements ExecutionSession {
         timeoutMs: options.timeoutMs,
         signal: options.signal ?? this.signal,
         killTree: true,
+        // The HOST cwd of the `docker exec` client (the guest working directory
+        // is the `--workdir` above). Without it the client is tracked under
+        // `process.cwd()`, so `killProcessesUnder(sandboxDir)` — how a sandbox
+        // teardown reaps the engines still running in it — matches nothing in
+        // container mode and every exec client survives the sandbox.
+        cwd: this.workDir,
       });
     } catch (error) {
       if (
@@ -250,9 +222,41 @@ class ContainerExecutionSession implements ExecutionSession {
     return this.run('sh', ['-c', command], options);
   }
 
+  /**
+   * Remove this session's container. Safe to call repeatedly and from several
+   * places at once; never throws.
+   *
+   * De-duplicates CONCURRENT callers through {@link disposePromise}, but does
+   * NOT latch that promise once it settles: teardown has to stay RETRYABLE.
+   * The sequence that made a permanent latch a leak: an abort lands while
+   * `create` is in flight, the abort listener's `dispose()` runs `rm -f`
+   * against a container the daemon has not registered yet, that removal fails
+   * and is swallowed, the daemon then finishes creating the container, and
+   * `ensureStarted`'s `catch { await this.dispose(); }` returned the already
+   * settled promise instead of issuing a second `rm` — leaking the container
+   * for the lifetime of the process.
+   *
+   * What DOES latch is {@link removed}, and only on a successful removal, so a
+   * repeat call for a container that is already gone stays a cheap no-op.
+   */
   async dispose(): Promise<void> {
-    if (this.disposePromise) return this.disposePromise;
-    this.disposePromise = (async () => {
+    // Two passes at most: one to wait out a teardown already in flight (so two
+    // callers never `rm` the same container concurrently), one to re-issue the
+    // removal if that teardown did not actually get rid of it.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (this.removed) return;
+      const inFlight = this.disposePromise;
+      if (!inFlight) {
+        await (this.disposePromise = this.removeContainer());
+        return;
+      }
+      await inFlight;
+    }
+  }
+
+  /** One `rm -f` attempt. Never throws; see {@link dispose} for the retry rule. */
+  private removeContainer(): Promise<void> {
+    return (async () => {
       if (this.abortListener) {
         this.signal?.removeEventListener('abort', this.abortListener);
         this.abortListener = undefined;
@@ -262,29 +266,48 @@ class ContainerExecutionSession implements ExecutionSession {
           timeoutMs: 15_000,
           killTree: true,
         });
+        this.removed = true;
       } catch {
         // Best effort: the container may not have been created, or Docker may
-        // already have removed it after a daemon-side failure.
+        // already have removed it after a daemon-side failure. `removed` stays
+        // false so a later dispose() — and, failing that, the process-exit
+        // sweep over ACTIVE_CONTAINERS — tries again.
       } finally {
         this.containerId = undefined;
+        // Drop the settled startup promise as well. A session survives its own
+        // teardown — `run()` disposes the container on TIMEOUT/ABORTED and
+        // TypeScriptEngine.runBatched keeps going with the next batch — so the
+        // next command must provision a fresh container instead of being handed
+        // this already-resolved promise and exec-ing into a removed container.
+        this.startPromise = undefined;
+        // Release the shutdown registry only for a container that is genuinely
+        // gone; one whose removal failed must stay registered so the exit sweep
+        // still reaches it.
+        if (this.removed) unregisterContainer(this.name);
+        // Clear the concurrency guard last: a dispose that starts AFTER this one
+        // settles must be able to issue its own `rm`.
+        this.disposePromise = undefined;
       }
     })();
-    return this.disposePromise;
   }
 }
 
 async function runtimeAvailable(config: ContainerConfig, signal?: AbortSignal): Promise<boolean> {
   const runtime = config.runtime ?? 'docker';
-  if (availableRuntimes.has(runtime)) return true;
+  const probedAt = availableRuntimes.get(runtime);
+  if (probedAt !== undefined && Date.now() - probedAt < RUNTIME_PROBE_TTL_MS) return true;
   try {
     await runShell(runtime, ['version', '--format', '{{.Server.Version}}'], {
       timeoutMs: config.startupTimeoutMs ?? 10_000,
       signal,
       killTree: true,
     });
-    availableRuntimes.add(runtime);
+    availableRuntimes.set(runtime, Date.now());
     return true;
   } catch {
+    // Drop any stale positive so the next call re-probes rather than trusting
+    // a result the daemon has since invalidated.
+    availableRuntimes.delete(runtime);
     return false;
   }
 }
@@ -299,6 +322,10 @@ export function _resetExecutionCaches(): void {
  * it falls back to native only when the container runtime itself is unavailable;
  * image or project failures after selection remain visible instead of silently
  * producing results under a different environment.
+ *
+ * A per-language entry in `modes` wins over the global `mode`, so a project
+ * whose suite crosses languages can keep the one language its images cannot
+ * serve on native execution without giving up containers for the others.
  */
 export async function createExecutionSession(
   language: SupportedProjectType,
@@ -306,7 +333,7 @@ export async function createExecutionSession(
   config: ContainerConfig | undefined,
   signal?: AbortSignal,
 ): Promise<ExecutionSession> {
-  const mode = config?.mode ?? 'native';
+  const mode = config?.modes?.[language] ?? config?.mode ?? 'native';
   if (mode === 'native') return new NativeExecutionSession(workDir);
   const available = await runtimeAvailable(config ?? {}, signal);
   if (!available) {
@@ -325,55 +352,4 @@ export async function createExecutionSession(
 
 export function defaultContainerImage(language: SupportedProjectType): string {
   return DEFAULT_IMAGES[language];
-}
-
-export interface ContainerDoctorReport {
-  runtime: string;
-  available: boolean;
-  serverVersion?: string;
-  mode: ExecutionMode;
-  images: Record<SupportedProjectType, { image: string; present: boolean }>;
-}
-
-/** Read-only runtime/image diagnostics used by the CLI doctor command. */
-export async function inspectContainerRuntime(
-  config: ContainerConfig | undefined,
-): Promise<ContainerDoctorReport> {
-  const runtime = config?.runtime ?? 'docker';
-  const images = Object.fromEntries(
-    (Object.keys(DEFAULT_IMAGES) as SupportedProjectType[]).map((language) => [
-      language,
-      {
-        image: config?.images?.[language] ?? DEFAULT_IMAGES[language],
-        present: false,
-      },
-    ]),
-  ) as ContainerDoctorReport['images'];
-  let version: ExecResult;
-  try {
-    version = await runShell(runtime, ['version', '--format', '{{.Server.Version}}'], {
-      timeoutMs: config?.startupTimeoutMs ?? 10_000,
-      killTree: true,
-    });
-  } catch {
-    return { runtime, available: false, mode: config?.mode ?? 'native', images };
-  }
-  for (const language of Object.keys(images) as SupportedProjectType[]) {
-    try {
-      await runShell(runtime, ['image', 'inspect', images[language].image], {
-        timeoutMs: config?.startupTimeoutMs ?? 10_000,
-        killTree: true,
-      });
-      images[language].present = true;
-    } catch {
-      // Missing images are reported, not pulled or treated as a doctor crash.
-    }
-  }
-  return {
-    runtime,
-    available: true,
-    serverVersion: version.stdout.trim(),
-    mode: config?.mode ?? 'native',
-    images,
-  };
 }

@@ -141,7 +141,7 @@ describe('chaos-mcp integration', () => {
 
     expect(response.id).toBe(1);
     expect(response.result).toBeDefined();
-    expect(response.result?.serverInfo?.name).toBe('chaos-mcp');
+    expect(response.result?.serverInfo?.name).toBe('chaos');
     expect(response.result?.capabilities?.tools).toBeDefined();
   });
 

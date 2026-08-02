@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { makeToolContext } from '../tool-context.js';
+import { makeToolContext } from '../core/tool-context.js';
 
 describe('makeToolContext', () => {
   it('builds a reporter that sends a progress notification when a token is present', async () => {

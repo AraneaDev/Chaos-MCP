@@ -1,5 +1,5 @@
-import type { ToolContext } from '../tool-context.js';
-import { ExecFailureError } from './exec.js';
+import type { ToolContext } from '../core/tool-context.js';
+import { ExecFailureError } from './exec-error.js';
 
 /**
  * True when `error` (or the MCP request context's abort signal) signals a
