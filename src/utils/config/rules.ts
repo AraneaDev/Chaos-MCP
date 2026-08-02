@@ -354,6 +354,24 @@ export function pickImages(value: unknown): Record<string, string> {
   return images;
 }
 
+/**
+ * The valid per-language execution modes found in a raw `modes` value.
+ *
+ * Mirrors {@link pickImages}: an unknown language or an unrecognised mode is
+ * dropped rather than failing the whole section, and the validator reports it.
+ */
+export function pickModes(value: unknown): Record<string, string> {
+  const modes: Record<string, string> = {};
+  if (!isPlainObject(value)) return modes;
+  for (const language of KNOWN_CONTAINER_IMAGE_KEYS) {
+    const mode = value[language];
+    if (mode === 'native' || mode === 'container' || mode === 'auto') {
+      modes[language] = mode;
+    }
+  }
+  return modes;
+}
+
 const positiveIntRule = (key: string): FieldRule => ({
   key,
   check: (v) => typeof v === 'number' && Number.isInteger(v) && v > 0,
@@ -377,6 +395,14 @@ export const CONTAINER_FIELD_RULES: readonly FieldRule[] = [
       v === 'native' || v === 'container' || v === 'auto'
         ? undefined
         : 'must be one of "native", "container", or "auto"',
+  },
+  {
+    key: 'modes',
+    // A modes map whose entries are all invalid is dropped entirely, exactly as
+    // an images map is; the per-language warnings explain why.
+    check: (v) => Object.keys(pickModes(v)).length > 0,
+    coerce: pickModes,
+    describe: (v) => (isPlainObject(v) ? undefined : 'must be an object'),
   },
   {
     key: 'runtime',

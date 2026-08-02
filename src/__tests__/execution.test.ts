@@ -100,6 +100,22 @@ describe('execution sessions', () => {
     );
   });
 
+  it('lets one language stay native while the rest run in containers', async () => {
+    // Each image carries exactly one runtime, so a suite that crosses languages
+    // cannot run in any of them: Knossos-MCP's PHPUnit tests spawn its Node and
+    // Python scanner workers as subprocesses, which the PHP-only image has no
+    // way to start. Before per-language modes the choice was all or nothing —
+    // containers fixed that project's TypeScript audit and broke its PHP one.
+    vi.mocked(runShell).mockResolvedValue(ok('27.0.0'));
+    const config = { mode: 'container', modes: { php: 'native' } } as const;
+
+    const php = await createExecutionSession('php', '/tmp/work', config);
+    const typescript = await createExecutionSession('typescript', '/tmp/work', config);
+
+    expect(php.kind).toBe('native');
+    expect(typescript.kind).toBe('container');
+  });
+
   it('falls back to native only when auto mode cannot reach the runtime', async () => {
     vi.mocked(runShell).mockRejectedValueOnce(new Error('missing'));
     const session = await createExecutionSession('python', '/tmp/work', {

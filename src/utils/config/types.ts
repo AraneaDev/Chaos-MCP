@@ -80,6 +80,16 @@ export interface InfectionConfig {
 export interface ContainerConfig {
   /** Native subprocesses, pinned containers, or containers with native fallback. */
   mode?: 'native' | 'container' | 'auto';
+  /**
+   * Per-language override of {@link ContainerConfig.mode}.
+   *
+   * Each image carries exactly one language runtime, so a test suite that
+   * spawns another language's toolchain cannot run inside it however healthy
+   * the image is. Without an override such a project had to choose between
+   * containers for every language or none, even though only one of them was
+   * actually incompatible.
+   */
+  modes?: Partial<Record<SupportedProjectType, 'native' | 'container' | 'auto'>>;
   /** OCI-compatible CLI. Docker is the default; Podman is also supported. */
   runtime?: 'docker' | 'podman';
   /** Container network name/mode. Defaults to bridge for project dependency resolution. */

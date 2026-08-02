@@ -322,6 +322,10 @@ export function _resetExecutionCaches(): void {
  * it falls back to native only when the container runtime itself is unavailable;
  * image or project failures after selection remain visible instead of silently
  * producing results under a different environment.
+ *
+ * A per-language entry in `modes` wins over the global `mode`, so a project
+ * whose suite crosses languages can keep the one language its images cannot
+ * serve on native execution without giving up containers for the others.
  */
 export async function createExecutionSession(
   language: SupportedProjectType,
@@ -329,7 +333,7 @@ export async function createExecutionSession(
   config: ContainerConfig | undefined,
   signal?: AbortSignal,
 ): Promise<ExecutionSession> {
-  const mode = config?.mode ?? 'native';
+  const mode = config?.modes?.[language] ?? config?.mode ?? 'native';
   if (mode === 'native') return new NativeExecutionSession(workDir);
   const available = await runtimeAvailable(config ?? {}, signal);
   if (!available) {

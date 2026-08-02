@@ -584,11 +584,25 @@ Modes:
 - `auto` uses containers when the configured runtime is reachable and otherwise
   falls back to native. Image or project failures do not silently fall back.
 
+Each image carries exactly one language runtime, so a suite that spawns another
+language's toolchain cannot run inside it. Override the mode for just that
+language rather than giving up containers everywhere:
+
+```json
+{
+  "container": {
+    "mode": "container",
+    "modes": { "php": "native" }
+  }
+}
+```
+
 Container settings:
 
 | Key                | Type                          | Default                   | Description                                                                                                                                                                                                                |
 | ------------------ | ----------------------------- | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `mode`             | `native \| container \| auto` | `native`                  | Select the execution backend or runtime-only fallback behavior                                                                                                                                                             |
+| `modes`            | per-language mode map         | none                      | Override `mode` for `typescript`, `python`, `rust`, or `php` individually; wins over `mode` for that language                                                                                                              |
 | `runtime`          | `docker \| podman`            | `docker`                  | OCI-compatible command used to create and manage audit containers                                                                                                                                                          |
 | `network`          | `string`                      | `bridge`                  | Container network mode or name; use `none` when project tests need no network                                                                                                                                              |
 | `cpus`             | positive number               | `2`                       | CPU limit for each audit container                                                                                                                                                                                         |

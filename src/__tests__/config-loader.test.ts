@@ -919,6 +919,7 @@ describe('config-loader mutation hardening', () => {
     ['startupTimeoutMs', 60_000],
     ['tmpfsSizeMb', 2048],
     ['images', { typescript: 'img' }],
+    ['modes', { php: 'native' }],
   ])('recognises the container key %s on its own', (key, value) => {
     setConfig({ container: { [key]: value } });
     const { warnings } = validateConfig('/tmp/config.json');
@@ -1391,6 +1392,27 @@ describe('container execution config', () => {
         warning.includes('container.mode'),
       ),
     ).toBe(false);
+  });
+
+  it('loads a per-language mode override alongside the global one', () => {
+    setContainer({ mode: 'container', modes: { php: 'native', typescript: 'auto' } });
+    expect(loadConfig('/tmp/config.json').container).toEqual({
+      mode: 'container',
+      modes: { php: 'native', typescript: 'auto' },
+    });
+    expect(
+      validateConfig('/tmp/config.json').warnings.some((warning) =>
+        warning.includes('container.modes'),
+      ),
+    ).toBe(false);
+  });
+
+  it('drops an unrecognised per-language mode rather than the whole section', () => {
+    setContainer({ mode: 'container', modes: { php: 'sometimes', python: 'native' } });
+    expect(loadConfig('/tmp/config.json').container).toEqual({
+      mode: 'container',
+      modes: { python: 'native' },
+    });
   });
 
   it.each(['docker', 'podman'] as const)('loads isolated %s runtime', (runtime) => {
