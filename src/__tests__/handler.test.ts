@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest';
 import { firstText } from './helpers/content.js';
 import type { CallToolRequest } from '@modelcontextprotocol/sdk/types.js';
 
@@ -70,6 +70,13 @@ vi.mock('../utils/git-diff.js', () => ({
 }));
 
 // Mock logger for verbose logging tests
+vi.mock('../audit/suppression-io.js', async () => {
+  const actual = await vi.importActual<typeof import('../audit/suppression-io.js')>(
+    '../audit/suppression-io.js',
+  );
+  return { ...actual, applyAndCountSuppressions: vi.fn(actual.applyAndCountSuppressions) };
+});
+
 vi.mock('../utils/logger.js', () => ({
   enableVerbose: vi.fn(),
   isVerbose: vi.fn(() => false),
@@ -88,6 +95,7 @@ import { runShellCommand } from '../utils/exec.js';
 import { isVerbose, log } from '../utils/logger.js';
 import { existsSync } from 'fs';
 import { computeChangedRanges } from '../utils/git-diff.js';
+import { applyAndCountSuppressions } from '../audit/suppression-io.js';
 import { workspaceHasPythonTests } from '../core/test-file.js';
 
 const MockTSEngine = vi.mocked(TypeScriptEngine);
@@ -99,6 +107,7 @@ const mockIsVerbose = vi.mocked(isVerbose);
 const mockLog = vi.mocked(log);
 const mockExistsSync = vi.mocked(existsSync);
 const mockComputeChangedRanges = vi.mocked(computeChangedRanges);
+const mockApplySuppressions = vi.mocked(applyAndCountSuppressions);
 
 function makeRequest(name: string, args: Record<string, unknown>): CallToolRequest {
   return {
@@ -3920,5 +3929,221 @@ describe('handleToolCall cancellation short-circuits', () => {
     expect(mockRun).not.toHaveBeenCalled();
     // handler.ts:252 promises the finally-block still cleans up on this path.
     expect(cleanup).toHaveBeenCalled();
+  });
+});
+
+/**
+ * The defensive paths a mutation audit found unprotected in handler.ts. The existing
+ * suite drives the happy path through all of them, which is why line coverage looked
+ * healthy while every one of these mutated freely.
+ */
+describe('handleToolCall defensive paths', () => {
+  // This is a separate top-level describe, so the sandbox default and the pinned cwd
+  // from the main `handleToolCall` block do not apply here — they have to be restated.
+  let cwdSpy2: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    cwdSpy2 = vi.spyOn(process, 'cwd').mockReturnValue('/workspace');
+    mockCreateSandbox.mockResolvedValue({
+      workDir: '/tmp/chaos-mcp-sandbox',
+      targetFile: '',
+      cleanup: vi.fn(),
+    });
+  });
+  afterEach(() => cwdSpy2.mockRestore());
+
+  const tsEnv = {
+    projectType: 'typescript' as const,
+    testRunner: 'vitest',
+    detectedRunner: 'vitest',
+    packageManager: '',
+    workspaceRoot: '/workspace',
+  };
+
+  const cleanResult = (over: Record<string, unknown> = {}) => ({
+    target: 'src/math.ts',
+    totalMutants: 2,
+    killed: 2,
+    survived: 0,
+    mutationScore: '100.00%',
+    vulnerabilities: [],
+    ...over,
+  });
+
+  it('emits the completion milestone on a successful short-circuit', async () => {
+    const reportProgress = vi.fn();
+    mockDetectEnv.mockReturnValue(tsEnv);
+    mockComputeChangedRanges.mockResolvedValue({ kind: 'no-changes' });
+
+    const response = await handleToolCall(
+      makeRequest('audit_code_resilience', { filePath: 'src/math.ts', diffBase: 'HEAD' }),
+      undefined,
+      { reportProgress },
+    );
+
+    expect(response.isError).toBeUndefined();
+    expect(reportProgress).toHaveBeenCalledWith(4, 4, 'complete');
+  });
+
+  it('does not claim completion when the short-circuit is an error', async () => {
+    // "No changes" is a success — the question was answered. A runId that is not in the
+    // cache is not, and reporting 4/4 complete for it tells the caller the work finished.
+    const reportProgress = vi.fn();
+    mockDetectEnv.mockReturnValue(tsEnv);
+
+    const response = await handleToolCall(
+      makeRequest('audit_code_resilience', { filePath: 'src/math.ts', runId: 'deadbeef' }),
+      undefined,
+      { reportProgress },
+    );
+
+    expect(response.isError).toBe(true);
+    expect(reportProgress).not.toHaveBeenCalledWith(4, 4, 'complete');
+  });
+
+  it('appends the scope note to one the engine already set, rather than replacing it', async () => {
+    // The engine's note says the run was PARTIAL. Overwriting it drops that fact from the
+    // text output, which prints this one field — the caller then reads a partial run as
+    // whole-file. Rust + diffBase produces a scope note of its own, so both exist here.
+    const mockRun = vi
+      .fn()
+      .mockResolvedValue(cleanResult({ scopeNote: 'Partial audit: completed 3 of 7 batches.' }));
+    MockRustEngine.mockImplementation(() => ({ run: mockRun }) as unknown as RustEngine);
+    mockDetectEnv.mockReturnValue({ ...tsEnv, projectType: 'rust', testRunner: 'cargo' });
+    mockComputeChangedRanges.mockResolvedValue({
+      kind: 'ranges',
+      ranges: [{ start: 1, end: 5 }],
+    });
+
+    const response = await handleToolCall(
+      makeRequest('audit_code_resilience', { filePath: 'src/x.rs', diffBase: 'HEAD' }),
+    );
+
+    const note = (response.structuredContent as { scopeNote?: string }).scopeNote ?? '';
+    expect(note).toContain('Partial audit: completed 3 of 7 batches.');
+    expect(note.length).toBeGreaterThan('Partial audit: completed 3 of 7 batches.'.length);
+  });
+
+  it('leaves the engine note alone when the run has no scope note of its own', async () => {
+    // The other arm. Forced true, the append runs with an undefined scope note and
+    // corrupts the engine's own text.
+    const mockRun = vi
+      .fn()
+      .mockResolvedValue(cleanResult({ scopeNote: 'Partial audit: completed 3 of 7 batches.' }));
+    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    mockDetectEnv.mockReturnValue(tsEnv);
+
+    const response = await handleToolCall(
+      makeRequest('audit_code_resilience', { filePath: 'src/math.ts' }),
+    );
+
+    expect((response.structuredContent as { scopeNote?: string }).scopeNote).toBe(
+      'Partial audit: completed 3 of 7 batches.',
+    );
+  });
+
+  it('returns the suppression phase failure instead of continuing to format a report', async () => {
+    // Cancelling DURING the engine run lands after abort short-circuit #3, so the
+    // suppression phase is the first thing to notice. Its failure must be returned, not
+    // swallowed — continuing would report a run the caller stopped as if it completed.
+    const controller = new AbortController();
+    const mockRun = vi.fn().mockImplementation(() => {
+      controller.abort();
+      return Promise.resolve(cleanResult());
+    });
+    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    mockDetectEnv.mockReturnValue(tsEnv);
+
+    const response = await handleToolCall(
+      makeRequest('audit_code_resilience', { filePath: 'src/math.ts' }),
+      undefined,
+      { signal: controller.signal },
+    );
+
+    expect(response.isError).toBe(true);
+    // Exact, not `toContain`. If the failure is swallowed, the cancelled CallToolResult
+    // is assigned into `auditResults` and its text is EMBEDDED in the formatted payload
+    // — so a substring check still matches while the run reports as if it completed.
+    expect((response.content[0] as { text: string }).text).toBe('Operation cancelled.');
+    expect(response.structuredContent).toBeUndefined();
+  });
+});
+
+describe('handleToolCall progress reporting is optional', () => {
+  beforeEach(() => {
+    vi.spyOn(process, 'cwd').mockReturnValue('/workspace');
+  });
+
+  it('does not throw when a context supplies no reportProgress', async () => {
+    // `ctx?.reportProgress?.()` — the SECOND `?.` matters. A caller may pass a context
+    // carrying only a signal, and calling an absent reporter would abort the whole run
+    // at the moment it tried to announce success.
+    mockDetectEnv.mockReturnValue({
+      projectType: 'typescript',
+      testRunner: 'vitest',
+      detectedRunner: 'vitest',
+      packageManager: '',
+      workspaceRoot: '/workspace',
+    });
+    mockComputeChangedRanges.mockResolvedValue({ kind: 'no-changes' });
+
+    const response = await handleToolCall(
+      makeRequest('audit_code_resilience', { filePath: 'src/math.ts', diffBase: 'HEAD' }),
+      undefined,
+      {},
+    );
+
+    expect(response.isError).toBeUndefined();
+  });
+});
+
+describe('handleToolCall returns a suppression write failure verbatim', () => {
+  beforeEach(() => {
+    vi.spyOn(process, 'cwd').mockReturnValue('/workspace');
+    mockCreateSandbox.mockResolvedValue({
+      workDir: '/tmp/chaos-mcp-sandbox',
+      targetFile: '',
+      cleanup: vi.fn(),
+    });
+  });
+
+  it('stops rather than formatting a report the suppressions never reached', async () => {
+    // A write failure, NOT a cancellation. Under cancellation this branch cannot be
+    // distinguished — the outer isCancel catch produces the same response whether the
+    // phase returns early or the formatting later throws — so only a non-cancel failure
+    // shows whether the result is actually returned. Swallowing it would report a
+    // successful audit while the caller's suppressions silently failed to save.
+    mockApplySuppressions.mockResolvedValue({
+      ok: false,
+      result: {
+        content: [{ type: 'text', text: 'Failed to update suppression list: disk on fire' }],
+        isError: true,
+      },
+    });
+    const mockRun = vi.fn().mockResolvedValue({
+      target: 'src/math.ts',
+      totalMutants: 1,
+      killed: 1,
+      survived: 0,
+      mutationScore: '100.00%',
+      vulnerabilities: [],
+    });
+    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    mockDetectEnv.mockReturnValue({
+      projectType: 'typescript',
+      testRunner: 'vitest',
+      detectedRunner: 'vitest',
+      packageManager: '',
+      workspaceRoot: '/workspace',
+    });
+
+    const response = await handleToolCall(
+      makeRequest('audit_code_resilience', { filePath: 'src/math.ts' }),
+    );
+
+    expect(response.isError).toBe(true);
+    expect((response.content[0] as { text: string }).text).toBe(
+      'Failed to update suppression list: disk on fire',
+    );
+    expect(response.structuredContent).toBeUndefined();
   });
 });
