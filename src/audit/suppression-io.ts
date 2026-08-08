@@ -199,6 +199,19 @@ export async function applyAndCountSuppressions(
   // land in `unverified` in this very response.
   const counts: SuppressionCounts = { applied: 0, drifted: 0, unverified: 0, orphaned: 0 };
   if (!baselineKeys) {
+    // Evaluated on the PRE-suppression result, before `result` is reassigned
+    // to `filtered.result` below. "Was this run whole-file?" is a property of
+    // what the engine enumerated, not of what is left after suppression
+    // filtering — but `applySuppressions` can SYNTHESISE a scopeNote when
+    // suppression drives `totalMutants` to exactly 0 (every mutant suppressed
+    // as equivalent), and `isWholeFileRun`'s fallback branch reads `scopeNote`.
+    // Gating on the post-suppression result let that synthesised note flip a
+    // scope answer and mask a real orphan in exactly the case this counter
+    // exists for: every mutant in the file declared equivalent, one of those
+    // declarations gone stale. `triage/audit-one.ts` already evaluates this on
+    // the pre-suppression result; this must match it so the two tools cannot
+    // disagree about the same underlying fact.
+    const wholeFileRun = isWholeFileRun(result);
     const verdict = loadVerifiedSuppressions(wsRoot, relFromRoot, supPath);
     const filtered = applySuppressions(result, verdict.applied);
     result = filtered.result;
@@ -208,7 +221,7 @@ export async function applyAndCountSuppressions(
     // See `isWholeFileRun` above for why the count is gated on it (a scoped
     // audit legitimately generates no mutant for a suppressed line outside its
     // range, and calling that an orphan would cry wolf).
-    counts.orphaned = isWholeFileRun(result) ? filtered.orphanedKeys.length : 0;
+    counts.orphaned = wholeFileRun ? filtered.orphanedKeys.length : 0;
   }
   return { ok: true, result, counts };
 }

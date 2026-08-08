@@ -300,5 +300,69 @@ describe('applyAndCountSuppressions', () => {
       if (!outcome.ok) return;
       expect(outcome.counts.orphaned).toBe(0);
     });
+
+    it('still reports the orphan when suppression itself synthesises a scopeNote', async () => {
+      // The gate must read the PRE-suppression result. `applySuppressions`
+      // synthesises a scopeNote ("All N mutant(s) ... suppressed as
+      // equivalent") whenever suppression drives totalMutants to exactly 0 —
+      // and that synthesised note is a statement about SUPPRESSION, not about
+      // scope. If the gate reads the POST-suppression result instead, that
+      // note flips the scopeKind-less fallback from true to false and masks a
+      // real orphan in exactly the case this counter exists for: every mutant
+      // in the file declared equivalent, and one of those declarations gone
+      // stale.
+      //
+      // Two entries in the same batch: the ConditionalExpression suppression
+      // matches the file's only vulnerability and alone exhausts
+      // totalMutants (1 -> 0), triggering the synthesised scopeNote. The
+      // EqualityOperator suppression is fingerprint-verified (so it lands in
+      // `verdict.applied`) but names a mutator nothing in the result carries
+      // — the orphan.
+      writeSuppressions([
+        {
+          line: 1,
+          mutator: 'ConditionalExpression',
+          reason: 'ok',
+          fingerprint: LINE_1_FINGERPRINT,
+        },
+        { line: 1, mutator: 'EqualityOperator', reason: 'gone', fingerprint: LINE_1_FINGERPRINT },
+      ]);
+
+      const oneMutantResult: MutationResult = {
+        target: REL,
+        totalMutants: 1,
+        killed: 0,
+        survived: 1,
+        mutationScore: '0.00%',
+        vulnerabilities: [
+          {
+            line: 1,
+            mutator: 'ConditionalExpression',
+            kind: 'survived',
+            description: 'ConditionalExpression survived at line 1',
+          },
+        ],
+        // scopeKind-less, Rust/PHP/Python-shaped: the fallback branch of
+        // isWholeFileRun is the one under test.
+      };
+
+      const outcome = await applyAndCountSuppressions(
+        {},
+        oneMutantResult,
+        undefined,
+        ws,
+        REL,
+        undefined,
+      );
+
+      expect(outcome.ok).toBe(true);
+      if (!outcome.ok) return;
+      // Confirms the synthesised-scopeNote branch was actually reached, so a
+      // future change that stops synthesising it can't make this test pass
+      // for the wrong reason.
+      expect(outcome.result.totalMutants).toBe(0);
+      expect(outcome.result.scopeNote).toContain('suppressed as equivalent');
+      expect(outcome.counts.orphaned).toBe(1);
+    });
   });
 });
