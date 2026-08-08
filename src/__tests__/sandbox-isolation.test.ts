@@ -1,0 +1,57 @@
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createSandbox } from '../utils/sandbox.js';
+
+/**
+ * The guarantee this file exists to defend (README: "your real workspace is
+ * never touched"): a process running inside the sandbox must not be able to
+ * create or overwrite files in the audited workspace's dependency tree.
+ *
+ * Real filesystem, no fs mock — the defect these tests were written for was
+ * invisible to a mocked symlinkSync.
+ */
+describe('sandbox isolation: dependency directories', () => {
+  let workspace: string;
+  let cwd: string;
+
+  beforeEach(() => {
+    cwd = process.cwd();
+    workspace = mkdtempSync(join(tmpdir(), 'chaos-isolation-'));
+    mkdirSync(join(workspace, 'src'));
+    mkdirSync(join(workspace, 'node_modules', 'somepkg'), { recursive: true });
+    writeFileSync(join(workspace, 'package.json'), '{}');
+    writeFileSync(join(workspace, 'src', 'a.ts'), 'export const a = 1;\n');
+    writeFileSync(join(workspace, 'node_modules', 'somepkg', 'index.js'), 'original\n');
+    process.chdir(workspace);
+  });
+
+  afterEach(() => {
+    process.chdir(cwd);
+    rmSync(workspace, { recursive: true, force: true });
+  });
+
+  it('keeps a new path created under node_modules inside the sandbox', async () => {
+    const sandbox = await createSandbox('src/a.ts', workspace);
+    try {
+      // What Vite does on every config load (see utils/container/args.ts).
+      mkdirSync(join(sandbox.workDir, 'node_modules', '.vite-temp'), { recursive: true });
+      writeFileSync(join(sandbox.workDir, 'node_modules', '.vite-temp', 'x.mjs'), 'scratch');
+    } finally {
+      sandbox.cleanup();
+    }
+
+    expect(() => readFileSync(join(workspace, 'node_modules', '.vite-temp', 'x.mjs'))).toThrow();
+  });
+
+  it('still resolves an installed package from inside the sandbox', async () => {
+    const sandbox = await createSandbox('src/a.ts', workspace);
+    try {
+      const pkg = join(sandbox.workDir, 'node_modules', 'somepkg', 'index.js');
+      expect(readFileSync(pkg, 'utf8')).toBe('original\n');
+    } finally {
+      sandbox.cleanup();
+    }
+  });
+});
