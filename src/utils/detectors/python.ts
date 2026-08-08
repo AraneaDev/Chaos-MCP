@@ -30,6 +30,22 @@ export const PY_ROOT_MARKERS = [
 const MUTMUT_SECTION_RE = /^[ \t]*\[tool\.mutmut\][ \t]*(?:#.*)?$/m;
 
 /**
+ * The pytest table headers, on a line of their own.
+ *
+ * Anchored for the same reason `MUTMUT_SECTION_RE` is: a bare
+ * `content.includes('[tool.pytest]')` matched the literal ANYWHERE — inside a
+ * `# migrate the [tool.pytest] block` comment, or inside a string value. This
+ * probe is priority 1 and returns immediately, so a false hit also suppresses
+ * the `[tool.mutmut] runner` key at priority 5 and runs the wrong suite per
+ * mutant. Two readers of the same file sat twenty lines apart; only one was
+ * hardened.
+ */
+const PYTEST_SECTION_RE = /^[ \t]*\[tool\.pytest(?:\.ini_options)?\][ \t]*(?:#.*)?$/m;
+
+/** The setup.cfg equivalent, same rule. */
+const SETUP_CFG_PYTEST_RE = /^[ \t]*\[tool:pytest\][ \t]*(?:#.*)?$/m;
+
+/**
  * The `runner` key inside that table.
  *
  * `^\s*` (with `m`) is load-bearing: the previous unanchored `runner\s*=` also
@@ -96,13 +112,8 @@ export function detectPythonTestRunner(workspaceRoot: string): string {
   const pyprojectPath = join(workspaceRoot, 'pyproject.toml');
   const pyprojectContent = readTextSafe(pyprojectPath);
 
-  if (pyprojectContent) {
-    if (
-      pyprojectContent.includes('[tool.pytest]') ||
-      pyprojectContent.includes('[tool.pytest.ini_options]')
-    ) {
-      return 'pytest';
-    }
+  if (pyprojectContent && PYTEST_SECTION_RE.test(pyprojectContent)) {
+    return 'pytest';
   }
 
   // ── Priority 2: standalone pytest markers ──
@@ -111,7 +122,7 @@ export function detectPythonTestRunner(workspaceRoot: string): string {
 
   // ── Priority 3: setup.cfg pytest markers ──
   const setupCfgContent = readTextSafe(join(workspaceRoot, 'setup.cfg'));
-  if (setupCfgContent && setupCfgContent.includes('[tool:pytest]')) {
+  if (setupCfgContent && SETUP_CFG_PYTEST_RE.test(setupCfgContent)) {
     return 'pytest';
   }
 
