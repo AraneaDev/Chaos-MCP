@@ -689,6 +689,54 @@ describe('estimateAudit withTiming', () => {
     expect(r.baselineMs).toBeUndefined();
   });
 
+  it('reports a baseline that outran the budget as not fitting it', async () => {
+    mockRunShell.mockRejectedValue(
+      new ExecFailureError(
+        { stdout: '', stderr: '', exit: null, signal: 'SIGTERM', code: 'TIMEOUT' },
+        'Command timed out after 30000ms: npx vitest',
+      ),
+    );
+
+    const result = await estimateAudit({
+      absFile: '/ws/src/a.ts',
+      relFile: 'src/a.ts',
+      projectType: 'typescript',
+      workDir: '/sandbox',
+      withTiming: true,
+      env: baseEnv(),
+      timeoutMs: 30_000,
+    });
+
+    expect(result.budgetMs).toBe(30_000);
+    expect(result.fitsBudget).toBe(false);
+    expect(result.recommendation).toContain('baseline test run');
+  });
+
+  it('falls back to "timing unavailable" for a baseline timeout when no budget was given', async () => {
+    // budgetMs === undefined means there is nothing to grade against: the
+    // TIMEOUT branch must fall through to the pre-existing note rather than
+    // reporting a budget that was never configured.
+    mockRunShell.mockRejectedValueOnce(
+      new ExecFailureError(
+        { stdout: '', stderr: '', exit: null, signal: 'SIGTERM', code: 'TIMEOUT' },
+        'Command timed out after 60000ms: npx vitest',
+      ),
+    );
+
+    const r = await estimateAudit({
+      absFile: __filename,
+      relFile: 'src/__tests__/estimate.test.ts',
+      projectType: 'typescript',
+      workDir: '/sandbox',
+      withTiming: true,
+      env: baseEnv(),
+    });
+
+    expect(r.note).toContain('timing unavailable');
+    expect(r.budgetMs).toBeUndefined();
+    expect(r.fitsBudget).toBeUndefined();
+  });
+
   it('reports timing unavailable when no baseline command resolves for the project type', async () => {
     // resolveBaselineTestCommand returns undefined for an unrecognized type → the
     // `cmd === undefined` guard appends "(timing unavailable)" and returns without

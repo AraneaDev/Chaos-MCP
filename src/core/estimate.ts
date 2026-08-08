@@ -5,6 +5,7 @@ import { invokeMutationTool, MutationToolStartupError } from '../utils/exec-clas
 import { escapeCargoFileGlob } from '../engines/rust.js';
 import { ENGINE_REGISTRY } from '../engines/registry.js';
 import { runShell } from '../utils/exec.js';
+import { ExecFailureError } from '../utils/exec-error.js';
 import { isCancel } from '../utils/cancel.js';
 import { resolveBaselineTestCommand, projectTimingRange } from './baseline-timing.js';
 import type { ExecutionSession } from '../utils/execution.js';
@@ -244,11 +245,19 @@ async function applyTiming(result: EstimateResult, opts: EstimateOptions): Promi
     result.note += ' (timing unavailable)';
     return;
   }
+  // The budget is what the estimate is GRADED against; the cap is how long the
+  // baseline itself may run. They used to be the same number, so the single
+  // most useful answer this tool can give — "the suite alone blows your budget"
+  // — came back as " (timing unavailable)" with budgetMs, fitsBudget and
+  // recommendation all unset, indistinguishable from "no baseline command could
+  // be resolved".
+  const budgetMs = opts.timeoutMs;
+  const baselineCapMs = Math.min(budgetMs ?? ESTIMATE_TIMEOUT_MS, ESTIMATE_TIMEOUT_MS);
   try {
     const t0 = Date.now();
     const execOptions = {
       cwd: opts.workDir,
-      timeoutMs: opts.timeoutMs ?? ESTIMATE_TIMEOUT_MS,
+      timeoutMs: baselineCapMs,
       signal: opts.signal,
       killTree: true,
     };
@@ -264,9 +273,9 @@ async function applyTiming(result: EstimateResult, opts: EstimateOptions): Promi
     result.estimatedMs = projection.estimatedMs;
     result.upperBoundMs = projection.upperBoundMs;
     result.timingConfidence = projection.confidence;
-    if (opts.timeoutMs !== undefined) {
-      result.budgetMs = opts.timeoutMs;
-      result.fitsBudget = projection.upperBoundMs <= opts.timeoutMs;
+    if (budgetMs !== undefined) {
+      result.budgetMs = budgetMs;
+      result.fitsBudget = projection.upperBoundMs <= budgetMs;
       result.recommendation = result.fitsBudget
         ? 'Estimated to fit the configured audit budget.'
         : 'Upper estimate exceeds the configured audit budget; narrow lineScope/diffBase or use a larger budget.';
@@ -278,6 +287,18 @@ async function applyTiming(result: EstimateResult, opts: EstimateOptions): Promi
     // branch unreachable for the timing phase, so a client that cancelled
     // mid-baseline got a SUCCESSFUL estimate back for work it had cancelled.
     if (isCancel(err)) throw err;
+    // A baseline killed by its own cap IS a result: one unmutated run of the
+    // suite already costs more than the cap, so the audit — which runs it once
+    // per mutant — cannot fit any budget at or below it.
+    if (err instanceof ExecFailureError && err.code === 'TIMEOUT' && budgetMs !== undefined) {
+      result.budgetMs = budgetMs;
+      result.fitsBudget = false;
+      result.recommendation =
+        `The baseline test run alone exceeded ${baselineCapMs}ms, so a mutation audit — which runs ` +
+        `the suite once per mutant — cannot fit this budget. Speed up or scope down the test suite ` +
+        `(cosmicray.testSelection, a smaller lineScope/diffBase), or raise timeoutMs.`;
+      return;
+    }
     result.note += ' (timing unavailable)';
   }
 }
