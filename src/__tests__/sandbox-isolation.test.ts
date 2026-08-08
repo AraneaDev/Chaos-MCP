@@ -109,4 +109,31 @@ describe('sandbox isolation: dependency directories', () => {
       sandbox.cleanup();
     }
   });
+
+  it('omits a NESTED dependency directory the caller asked to ignore', async () => {
+    // The layout the "Nested occurrences" comment on linkHeavyDirs describes
+    // (e.g. workers/typescript/node_modules): the root node_modules/ is
+    // absorbed and deleted from skippedHeavyDirs by loop 1, so it can never
+    // exercise loop 2's segment-exclusion check. Only a SECOND, nested
+    // node_modules survives into skippedHeavyDirs for loop 2 to see.
+    mkdirSync(join(workspace, 'workers', 'typescript', 'node_modules', 'nested-pkg'), {
+      recursive: true,
+    });
+    writeFileSync(
+      join(workspace, 'workers', 'typescript', 'node_modules', 'nested-pkg', 'index.js'),
+      'nested\n',
+    );
+
+    const sandbox = await createSandbox('src/a.ts', workspace, ['node_modules']);
+    try {
+      // The containing directory was copied normally (not excluded)...
+      expect(existsSync(join(sandbox.workDir, 'workers', 'typescript'))).toBe(true);
+      // ...but the nested node_modules was not linked into it.
+      expect(existsSync(join(sandbox.workDir, 'workers', 'typescript', 'node_modules'))).toBe(
+        false,
+      );
+    } finally {
+      sandbox.cleanup();
+    }
+  });
 });
