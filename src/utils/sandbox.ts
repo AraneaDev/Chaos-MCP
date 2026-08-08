@@ -291,6 +291,12 @@ async function copyWorkspaceTree(
  * entry (so a partially-materialised directory is completed rather than
  * clobbered); `safeSymlink` cannot target an existing path at all, so `'share'`
  * checks `existsSync(dst)` itself before calling it.
+ *
+ * `excludes` is the caller's `ignorePatterns`, normalised (see
+ * `copyPolicy.normalisedExcludes`). A root dir excluded here is still removed
+ * from `skippedHeavyDirs` above the exclusion check, so it isn't picked up
+ * again by the nested-occurrence loop below; a nested dir is skipped when any
+ * path segment relative to the workspace root matches an exclusion.
  */
 function linkHeavyDirs(
   absoluteWorkspace: string,
@@ -298,20 +304,24 @@ function linkHeavyDirs(
   symlinkDirs: readonly string[],
   skippedHeavyDirs: Set<string>,
   mode: DependencyMode,
+  excludes: ReadonlySet<string>,
 ): void {
   const materialise = mode === 'share' ? safeSymlink : linkDependencyEntries;
   for (const dirName of symlinkDirs) {
     const src = join(absoluteWorkspace, dirName);
     const dst = join(sandboxDir, dirName);
-    if (existsSync(src) && !(mode === 'share' && existsSync(dst))) materialise(src, dst);
     skippedHeavyDirs.delete(src); // handled above; do not link it twice
+    if (excludes.has(dirName)) continue;
+    if (existsSync(src) && !(mode === 'share' && existsSync(dst))) materialise(src, dst);
   }
   // Nested occurrences (e.g. workers/typescript/node_modules). Their parent
   // directories were copied, so the link destination's parent already exists.
   for (const src of skippedHeavyDirs) {
     if (!src.startsWith(absoluteWorkspace + sep)) continue;
+    const rel = src.slice(absoluteWorkspace.length + 1);
+    if (rel.split(sep).some((segment) => excludes.has(segment))) continue;
     if (!existsSync(src)) continue;
-    const dst = join(sandboxDir, src.slice(absoluteWorkspace.length + 1));
+    const dst = join(sandboxDir, rel);
     if (mode === 'share' && existsSync(dst)) continue;
     materialise(src, dst);
   }
@@ -490,7 +500,14 @@ export async function createSandbox(
     );
 
     // ── Step 2: Symlink heavyweight directories ──
-    linkHeavyDirs(absoluteWorkspace, sandboxDir, symlinkDirs, skippedHeavyDirs, mode);
+    linkHeavyDirs(
+      absoluteWorkspace,
+      sandboxDir,
+      symlinkDirs,
+      skippedHeavyDirs,
+      mode,
+      copyPolicy.normalisedExcludes,
+    );
 
     if (options?.signal?.aborted) throw abortError();
 

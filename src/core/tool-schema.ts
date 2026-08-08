@@ -213,8 +213,10 @@ export const TOOL_DEFINITION = {
         type: 'array',
         items: { type: 'string' },
         description:
-          'Substring patterns for files/directories to exclude from the sandbox copy, applied in addition to built-in exclusions. ' +
-          'Any path containing the pattern string is skipped. Example: [".test.ts", "fixtures/", "snapshots/"]',
+          'Path segments for files/directories to exclude from the sandbox, applied in addition to ' +
+          'built-in exclusions. A path is skipped when any of its segments equals the pattern exactly. ' +
+          'This now also suppresses the dependency-directory link, so excluding "node_modules" leaves ' +
+          'the sandbox without it — which will usually break the run. Example: [".test.ts", "fixtures/"]',
       },
       prebuildCommand: {
         type: 'string',

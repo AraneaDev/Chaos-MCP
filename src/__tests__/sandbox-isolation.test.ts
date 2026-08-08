@@ -1,5 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, lstatSync } from 'node:fs';
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  readFileSync,
+  rmSync,
+  lstatSync,
+  existsSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createSandbox } from '../utils/sandbox.js';
@@ -88,6 +96,15 @@ describe('sandbox isolation: dependency directories', () => {
     });
     try {
       expect(lstatSync(join(sandbox.workDir, 'node_modules')).isSymbolicLink()).toBe(true);
+    } finally {
+      sandbox.cleanup();
+    }
+  });
+
+  it('omits a dependency directory the caller asked to ignore', async () => {
+    const sandbox = await createSandbox('src/a.ts', workspace, ['node_modules']);
+    try {
+      expect(existsSync(join(sandbox.workDir, 'node_modules'))).toBe(false);
     } finally {
       sandbox.cleanup();
     }
