@@ -1,5 +1,6 @@
 import {
   cpSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -123,14 +124,20 @@ describe('discoverSitePackages', () => {
 });
 
 /**
- * `buildCreateArgs` (via `dependencyMountArgs`/`pythonEnvArgs`) has to tell
- * three different on-disk shapes of a sandbox dependency directory apart —
- * one per `DependencyMode` (utils/config/types.ts) — and produce the right
- * `--mount`/`--env` argv for each. Real filesystem fixtures throughout, no
- * `lstatSync`/`realpathSync` mocking: the bug this covers (link-entries, the
- * new DEFAULT sandbox shape, silently emitted no mount at all) was invisible
- * to the existing mocked-`readdirSync`-only tests above precisely because
- * they never modelled a real symlink tree.
+ * `buildCreateArgs` (via `dependencyMountArgs`/`pythonEnvArgs`) now takes the
+ * host `workspaceRoot` and the resolved `DependencyMode` as EXPLICIT
+ * parameters instead of trying to infer the host dependency root by
+ * `realpathSync`-resolving a sandbox entry. That inference approach was tried
+ * and reverted: `realpathSync` returns an entry's FINAL target, not
+ * `join(hostDir, entry.name)` (what `linkDependencyEntries` actually links
+ * to), so it broke on npm/pnpm workspaces (`web -> ../packages/web` resolves
+ * to `<repo>/packages`, not `<repo>/node_modules`), on pnpm's own store
+ * layout, and — via the same unguarded suffix-stripping arithmetic — on a
+ * plain `python3 -m venv`'s `lib64 -> lib` on Linux, in one case producing a
+ * truncated, nonexistent bind source that made `docker create` fail outright
+ * under 'copy' mode. The fixtures below are built to reproduce exactly those
+ * shapes (not simplified ones an inference-based implementation could still
+ * pass), so each one pins the corresponding failure mode directly.
  */
 describe('buildCreateArgs dependency mounts across sandbox.dependencies shapes', () => {
   const tempDirs: string[] = [];
@@ -154,54 +161,121 @@ describe('buildCreateArgs dependency mounts across sandbox.dependencies shapes',
     return `type=bind,src=${hostPath},dst=${hostPath},readonly`;
   }
 
+  /** Every `--mount type=bind,src=X,...` argv entry actually names a source path that exists. */
+  function mountSources(argv: string[]): string[] {
+    return argv
+      .filter((a) => a.startsWith('type=bind,'))
+      .map((a) => /,src=([^,]+),/.exec(a)?.[1])
+      .filter((src): src is string => src !== undefined);
+  }
+
   describe('node_modules (typescript)', () => {
     it("'share': mounts the whole host tree the sandbox symlinks to", () => {
-      const host = tempDir('share-host');
-      const hostNodeModules = join(host, 'node_modules');
+      const workspaceRoot = tempDir('share-host');
+      const hostNodeModules = join(workspaceRoot, 'node_modules');
       mkdirSync(join(hostNodeModules, 'lodash'), { recursive: true });
       writeFileSync(join(hostNodeModules, 'lodash', 'index.js'), '');
 
       const sandbox = tempDir('share-sandbox');
       symlinkSync(hostNodeModules, join(sandbox, 'node_modules'), 'dir');
 
-      const argv = buildCreateArgs('c', sandbox, 'typescript', config, 'img');
+      const argv = buildCreateArgs(
+        'c',
+        sandbox,
+        workspaceRoot,
+        'share',
+        'typescript',
+        config,
+        'img',
+      );
 
       expect(argv).toContain(readonlyMount(hostNodeModules));
       expect(argv).toContain(`${hostNodeModules}/.vite-temp:rw,nosuid,nodev,size=16m`);
     });
 
-    it("'link-entries' (the new default sandbox shape): resolves and mounts the SAME host tree via any one linked entry, including a scoped package", () => {
-      // Regression for the finding this suite exists to cover: before this
-      // fix, `dependencyMountArgs` only checked whether the top-level dir
-      // ITSELF was a symlink. Under 'link-entries' it never is (the sandbox
-      // owns a REAL directory of per-package symlinks), so no mount was ever
-      // emitted and every entry symlink dangled inside the container.
-      const host = tempDir('link-host');
-      const hostNodeModules = join(host, 'node_modules');
-      mkdirSync(join(hostNodeModules, 'lodash'), { recursive: true });
-      writeFileSync(join(hostNodeModules, 'lodash', 'index.js'), '');
-      mkdirSync(join(hostNodeModules, '@scope', 'pkg'), { recursive: true });
-      writeFileSync(join(hostNodeModules, '@scope', 'pkg', 'index.js'), '');
+    it("'link-entries' (the default sandbox shape): mounts the WORKSPACE ROOT's node_modules directly — not an entry's resolved target — so a workspace-style entry symlink still resolves inside the container", () => {
+      // The exact shape that broke the realpathSync-inference approach: npm
+      // workspaces symlink a package to another directory in the repo
+      // (`node_modules/web -> ../packages/web`), so resolving THAT entry's
+      // ultimate target landed on `<repo>/packages`, not `<repo>/node_modules`
+      // — the wrong directory was mounted (or, for a name whose basename
+      // didn't match the entry's own name, an unguarded slice truncated it
+      // into a nonexistent path entirely). The fix does not look at a single
+      // sandbox entry at all: `linkDependencyEntries` always links to
+      // `join(hostDir, entry.name)` by construction, so mounting `hostDir`
+      // itself (workspaceRoot/node_modules) is sufficient regardless of what
+      // any individual entry points at.
+      const workspaceRoot = tempDir('link-workspace');
+      const hostNodeModules = join(workspaceRoot, 'node_modules');
+      mkdirSync(hostNodeModules, { recursive: true });
+      const webPackage = join(workspaceRoot, 'packages', 'web');
+      mkdirSync(webPackage, { recursive: true });
+      writeFileSync(join(webPackage, 'index.js'), '');
+      // Workspace-style symlink: node_modules/web -> ../packages/web
+      symlinkSync(join('..', 'packages', 'web'), join(hostNodeModules, 'web'), 'dir');
 
       const sandbox = tempDir('link-sandbox');
+      // The real production materialiser: sandbox/node_modules is a real
+      // directory whose one entry (`web`) is a symlink to the HOST's own
+      // `node_modules/web` entry — which is ITSELF the workspace symlink above.
       linkDependencyEntries(hostNodeModules, join(sandbox, 'node_modules'));
 
-      const argv = buildCreateArgs('c', sandbox, 'typescript', config, 'img');
+      const argv = buildCreateArgs(
+        'c',
+        sandbox,
+        workspaceRoot,
+        'link-entries',
+        'typescript',
+        config,
+        'img',
+      );
 
       expect(argv).toContain(readonlyMount(hostNodeModules));
       expect(argv).toContain(`${hostNodeModules}/.vite-temp:rw,nosuid,nodev,size=16m`);
+      // NOT the entry's resolved target, and not a truncated fragment of it.
+      expect(argv.some((a) => a.includes(join(workspaceRoot, 'packages')))).toBe(false);
+      // Every mount source this argv asks the runtime to bind actually exists
+      // — the concrete way "docker create would fail" is ruled out here.
+      for (const src of mountSources(argv)) expect(existsSync(src)).toBe(true);
+    });
+
+    it("'link-entries': mounts nothing when the host directory does not exist", () => {
+      const workspaceRoot = tempDir('link-missing-workspace');
+      const sandbox = tempDir('link-missing-sandbox');
+
+      const argv = buildCreateArgs(
+        'c',
+        sandbox,
+        workspaceRoot,
+        'link-entries',
+        'typescript',
+        config,
+        'img',
+      );
+
+      expect(argv.filter((a) => a.startsWith('type=bind,') && a.includes('node_modules'))).toEqual(
+        [],
+      );
     });
 
     it("'copy': mounts nothing extra for node_modules — the copied tree is already inside the writable /workspace mount", () => {
-      const host = tempDir('copy-host');
-      const hostNodeModules = join(host, 'node_modules');
+      const workspaceRoot = tempDir('copy-host');
+      const hostNodeModules = join(workspaceRoot, 'node_modules');
       mkdirSync(join(hostNodeModules, 'lodash'), { recursive: true });
       writeFileSync(join(hostNodeModules, 'lodash', 'index.js'), '');
 
       const sandbox = tempDir('copy-sandbox');
       cpSync(hostNodeModules, join(sandbox, 'node_modules'), { recursive: true });
 
-      const argv = buildCreateArgs('c', sandbox, 'typescript', config, 'img');
+      const argv = buildCreateArgs(
+        'c',
+        sandbox,
+        workspaceRoot,
+        'copy',
+        'typescript',
+        config,
+        'img',
+      );
 
       expect(argv.filter((a) => a.includes('node_modules'))).toEqual([]);
       // The whole sandbox (including its node_modules copy) is already
@@ -209,37 +283,20 @@ describe('buildCreateArgs dependency mounts across sandbox.dependencies shapes',
       expect(argv).toContain(`type=bind,src=${sandbox},dst=/workspace`);
     });
 
-    it("'link-entries': treats an unreadable dependency directory the same as an empty one, without crashing", () => {
-      // `findLinkedEntry`'s own readdirSync can fail independently of the
-      // lstatSync that already got past (a node_modules that exists but
-      // becomes unreadable in between, or an NFS permission edge case) — it
-      // must degrade the same way an empty directory does, not throw.
-      const sandbox = tempDir('unreadable-sandbox');
-      mkdirSync(join(sandbox, 'node_modules'));
-
-      vi.mocked(readdirSync).mockImplementationOnce(() => {
-        throw new Error('EACCES: permission denied');
-      });
-
-      const argv = buildCreateArgs('c', sandbox, 'typescript', config, 'img');
-
-      expect(argv.filter((a) => a.startsWith('type=bind') && a.includes('node_modules'))).toEqual(
-        [],
-      );
-    });
-
-    it("'copy': still mounts a pnpm-style symlink fs.cp rebased onto its original host location", () => {
-      // pnpm symlinks `node_modules/<pkg>` to
-      // `node_modules/.pnpm/<pkg>@ver/node_modules/<pkg>` using a RELATIVE
-      // target. `fs.cp`'s `dereference: false` (what 'copy' mode uses) copies
-      // that symlink rather than dereferencing it — but, verified
-      // empirically, it does NOT preserve the raw relative string: it
-      // rebases the target onto the symlink's ORIGINAL (host) location, so
-      // the copied symlink still points at the host's pnpm store, not at
-      // the sandbox copy. That host directory genuinely needs a bind mount
-      // for the symlink to resolve inside the container.
-      const host = tempDir('pnpm-host');
-      const hostNodeModules = join(host, 'node_modules');
+    it("'copy': mounts nothing, even with TWO dependencies and a pnpm-style symlink fs.cp rebased onto its original host location among them", () => {
+      // Verified end-to-end against the built artifact: the previous
+      // (reverted) approach re-inspected the COPIED tree for symlinks even
+      // under 'copy' mode, found the rebased pnpm-style symlink, and tried to
+      // mount a truncated, nonexistent path derived from it — `docker create`
+      // FAILED outright. A single-dependency fixture could not catch this: it
+      // takes a second, ordinary dependency present alongside the symlinked
+      // one to prove the fix doesn't merely mount the ONE it happens to find.
+      // The correct behaviour under 'copy' needs no inspection at all: the
+      // whole tree is already inside the writable /workspace mount.
+      const workspaceRoot = tempDir('pnpm-host');
+      const hostNodeModules = join(workspaceRoot, 'node_modules');
+      mkdirSync(join(hostNodeModules, 'axios'), { recursive: true });
+      writeFileSync(join(hostNodeModules, 'axios', 'index.js'), '');
       const hostPnpmStore = join(hostNodeModules, '.pnpm', 'lodash@1.0.0', 'node_modules');
       mkdirSync(join(hostPnpmStore, 'lodash'), { recursive: true });
       writeFileSync(join(hostPnpmStore, 'lodash', 'index.js'), '');
@@ -252,57 +309,86 @@ describe('buildCreateArgs dependency mounts across sandbox.dependencies shapes',
       const sandbox = tempDir('pnpm-sandbox');
       cpSync(hostNodeModules, join(sandbox, 'node_modules'), { recursive: true });
 
-      const argv = buildCreateArgs('c', sandbox, 'typescript', config, 'img');
+      const argv = buildCreateArgs(
+        'c',
+        sandbox,
+        workspaceRoot,
+        'copy',
+        'typescript',
+        config,
+        'img',
+      );
 
-      expect(argv).toContain(readonlyMount(hostPnpmStore));
+      expect(argv.filter((a) => a.includes('node_modules'))).toEqual([]);
     });
   });
 
   describe('.venv (python)', () => {
+    /**
+     * `lib64 -> lib` is what every real `python3 -m venv` produces on Linux —
+     * exactly the shape whose realpath-and-slice arithmetic silently
+     * truncated to `<workspaceRoot>/.ve` under the reverted approach. Real,
+     * not mocked: the bug was invisible to the earlier hand-built fixtures
+     * that never included this symlink at all.
+     */
     function makeVenv(root: string): string {
       const venv = join(root, '.venv');
       mkdirSync(join(venv, 'lib', 'python3.11', 'site-packages'), { recursive: true });
+      symlinkSync('lib', join(venv, 'lib64'), 'dir');
       writeFileSync(join(venv, 'pyvenv.cfg'), '');
       return venv;
     }
 
     it("'share': PYTHONPATH/PATH reference the host virtualenv the sandbox symlinks to", () => {
-      const host = tempDir('py-share-host');
-      const hostVenv = makeVenv(host);
+      const workspaceRoot = tempDir('py-share-host');
+      const hostVenv = makeVenv(workspaceRoot);
 
       const sandbox = tempDir('py-share-sandbox');
       symlinkSync(hostVenv, join(sandbox, '.venv'), 'dir');
 
-      const argv = buildCreateArgs('c', sandbox, 'python', config, 'img');
+      const argv = buildCreateArgs('c', sandbox, workspaceRoot, 'share', 'python', config, 'img');
 
       expect(argv).toContain(`PYTHONPATH=${hostVenv}/lib/python3.11/site-packages`);
       expect(argv.some((a) => a.startsWith('PATH=') && a.endsWith(`:${hostVenv}/bin`))).toBe(true);
     });
 
-    it("'link-entries': PYTHONPATH/PATH reference the SAME host virtualenv, resolved through any one linked entry", () => {
-      const host = tempDir('py-link-host');
-      const hostVenv = makeVenv(host);
+    it("'link-entries': mounts the workspace root's .venv directly (lib64 -> lib included) and PYTHONPATH/PATH reference it untruncated", () => {
+      const workspaceRoot = tempDir('py-link-host');
+      const hostVenv = makeVenv(workspaceRoot);
 
       const sandbox = tempDir('py-link-sandbox');
       linkDependencyEntries(hostVenv, join(sandbox, '.venv'));
 
-      const argv = buildCreateArgs('c', sandbox, 'python', config, 'img');
+      const argv = buildCreateArgs(
+        'c',
+        sandbox,
+        workspaceRoot,
+        'link-entries',
+        'python',
+        config,
+        'img',
+      );
 
+      expect(argv).toContain(readonlyMount(hostVenv));
       expect(argv).toContain(`PYTHONPATH=${hostVenv}/lib/python3.11/site-packages`);
       expect(argv.some((a) => a.startsWith('PATH=') && a.endsWith(`:${hostVenv}/bin`))).toBe(true);
+      // No truncated fragment (e.g. the reverted code's `<workspaceRoot>/.ve`)
+      // reaches the argv, and every bind-mount source genuinely exists.
+      for (const src of mountSources(argv)) expect(existsSync(src)).toBe(true);
+      expect(argv.some((a) => a.includes('/.ve,') || a.endsWith('/.ve'))).toBe(false);
     });
 
-    it("'copy': PYTHONPATH/PATH reference the GUEST /workspace path, not the host sandbox path", () => {
+    it("'copy': PYTHONPATH/PATH reference the GUEST /workspace path, not the host sandbox path, with lib64 -> lib present", () => {
       // Create-time --env values never pass through the exec-time
       // `guestValue` translation (execution.ts), so a bare sandbox-host path
       // here would be a dangling reference inside the container.
-      const host = tempDir('py-copy-host');
-      const hostVenv = makeVenv(host);
+      const workspaceRoot = tempDir('py-copy-host');
+      const hostVenv = makeVenv(workspaceRoot);
 
       const sandbox = tempDir('py-copy-sandbox');
       cpSync(hostVenv, join(sandbox, '.venv'), { recursive: true });
 
-      const argv = buildCreateArgs('c', sandbox, 'python', config, 'img');
+      const argv = buildCreateArgs('c', sandbox, workspaceRoot, 'copy', 'python', config, 'img');
 
       expect(argv).toContain('PYTHONPATH=/workspace/.venv/lib/python3.11/site-packages');
       expect(argv.some((a) => a.startsWith('PATH=') && a.endsWith(':/workspace/.venv/bin'))).toBe(

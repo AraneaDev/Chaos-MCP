@@ -1,6 +1,6 @@
-import { lstatSync, readdirSync, realpathSync } from 'node:fs';
+import { existsSync, lstatSync, readdirSync, realpathSync } from 'node:fs';
 import type { SupportedProjectType } from '../project-detector.js';
-import type { ContainerConfig } from '../config-loader.js';
+import type { ContainerConfig, DependencyMode } from '../config-loader.js';
 import { ALL_DEPENDENCY_DIRS } from '../dependency-dirs.js';
 
 /**
@@ -118,126 +118,80 @@ function pythonEnvArgs(workDir: string, dependencyTargets: Map<string, string>):
 }
 
 /**
- * npm/pnpm scope directories are containers, not packages — the same
- * exception `linkDependencyEntries` (utils/sandbox/dependency-link.ts) makes
- * when materialising them. {@link findLinkedEntry} mirrors it so it recurses
- * into exactly the directories that function does, and no others.
- */
-function isScopeDir(name: string): boolean {
-  return name.startsWith('@');
-}
-
-/**
- * The path of any ONE symlinked entry under a `'link-entries'`-mode sandbox
- * dependency directory, relative to it (e.g. `"lodash"` or `"@scope/pkg"`).
- * `undefined` when the directory is empty, unreadable, or holds no symlinked
- * entry at all — the `'copy'`-mode shape: real files and directories all the
- * way down, nothing to resolve.
- *
- * `linkDependencyEntries(hostDir, sandboxDir)` links EVERY entry of exactly
- * one `hostDir` into `sandboxDir`, so any single symlinked entry is enough to
- * recover that host directory (see {@link dependencyMountArgs}) — there is no
- * need to find them all.
- */
-function findLinkedEntry(dir: string, relPrefix = ''): string | undefined {
-  let entries;
-  try {
-    entries = readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return undefined;
-  }
-  for (const entry of entries) {
-    const rel = relPrefix ? `${relPrefix}/${entry.name}` : entry.name;
-    if (entry.isSymbolicLink()) return rel;
-    if (entry.isDirectory() && isScopeDir(entry.name)) {
-      const nested = findLinkedEntry(`${dir}/${entry.name}`, rel);
-      if (nested !== undefined) return nested;
-    }
-  }
-  return undefined;
-}
-
-/**
  * Read-only bind mounts for the host dependency trees the sandbox represents,
  * plus the resolved target of each one so the caller can derive
  * language-specific environment from them.
  *
- * `workDir` (the sandbox dir) can present a dependency directory three ways,
- * one per `DependencyMode` (utils/config/types.ts), and this function tells
- * them apart by their shape on disk rather than by being told which mode was
- * used (container/args.ts has no reason to depend on `utils/config`):
- *  - `'share'` — `workDir/<dir>` is ITSELF a symlink to the host tree. Mount
- *    its target read-only at its own path (identity mount) — unchanged from
- *    before this function knew about the other two shapes.
- *  - `'link-entries'` (the default since this mode was introduced) —
- *    `workDir/<dir>` is a REAL directory whose entries are individually
- *    symlinked to the host tree. {@link findLinkedEntry} resolves any one of
- *    them to recover the SAME single host directory every entry came from,
- *    which is then identity-mounted exactly like the `'share'` case — so a
- *    tool resolving through an entry symlink finds its target inside the
- *    container, and `pythonEnvArgs` keeps working unmodified.
- *  - `'copy'` — `workDir/<dir>` is a real, fully self-contained copy with no
- *    symlinked entries anywhere in it. It is already inside the read-write
- *    `/workspace` bind mount from {@link buildCreateArgs}, so nothing needs
- *    mounting; `targets` records its own (real, host-readable) sandbox path
- *    so `pythonEnvArgs` can still discover site-packages under it, and
- *    translates that path to `/workspace/...` before it reaches `--env`.
+ * `dependencyMode` is passed in rather than inferred from the shape of
+ * `workDir/<dir>` on disk — an earlier version tried to recover the host root
+ * by resolving a sandbox entry's symlink with `realpathSync`, which broke on
+ * every layout where an entry symlink's ultimate target is not the host
+ * directory itself: npm/pnpm workspaces (`web -> ../packages/web` resolves to
+ * `<repo>/packages`, not `<repo>/node_modules`), pnpm's own store layout, and
+ * a plain `python3 -m venv`'s `lib64 -> lib` on Linux. The CALLER already
+ * knows which mode provisioned the sandbox (the same value it passed to
+ * `createSandbox`) and the workspace root the sandbox was copied from, so
+ * there is nothing left to guess:
+ *  - `'share'` — `workDir/<dir>` is ITSELF a symlink to the host tree (the
+ *    only shape this function used to handle). Mount its target read-only at
+ *    its own path (identity mount).
+ *  - `'link-entries'` (the default) — `workDir/<dir>` is a REAL directory
+ *    whose entries are individually symlinked to `join(workspaceRoot, dir)`
+ *    BY CONSTRUCTION (`linkDependencyEntries` in
+ *    utils/sandbox/dependency-link.ts always links to `join(hostDir,
+ *    entry.name)`) — so mounting `join(workspaceRoot, dir)` itself, without
+ *    looking at a single sandbox entry, makes every one of those symlinks
+ *    resolve inside the container, regardless of what THEY point at.
+ *  - `'copy'` — `workDir/<dir>` is a real, fully self-contained copy. It is
+ *    already inside the read-write `/workspace` bind mount from
+ *    {@link buildCreateArgs}, so nothing needs mounting; `targets` records its
+ *    own (real, host-readable) sandbox path so `pythonEnvArgs` can still
+ *    discover site-packages under it, translating that path to
+ *    `/workspace/...` before it reaches `--env`.
  */
-function dependencyMountArgs(workDir: string): { args: string[]; targets: Map<string, string> } {
+function dependencyMountArgs(
+  workDir: string,
+  workspaceRoot: string,
+  dependencyMode: DependencyMode,
+): { args: string[]; targets: Map<string, string> } {
   const args: string[] = [];
   const targets = new Map<string, string>();
   for (const dir of SHARED_DEPENDENCY_DIRS) {
-    const candidate = `${workDir}/${dir}`;
     try {
-      const stat = lstatSync(candidate);
-      let target: string | undefined;
-      if (stat.isSymbolicLink()) {
-        target = realpathSync(candidate);
-      } else if (stat.isDirectory()) {
-        const relEntry = findLinkedEntry(candidate);
-        if (relEntry !== undefined) {
-          const entryTarget = realpathSync(`${candidate}/${relEntry}`);
-          const resolvedRoot = entryTarget.slice(0, entryTarget.length - relEntry.length - 1);
-          // Defensive: nothing on the known production paths produces a
-          // "linked entry" whose target resolves back INSIDE workDir — every
-          // symlink `linkDependencyEntries` creates is an absolute host path,
-          // and `fs.cp`'s `dereference: false` (what 'copy' mode uses)
-          // rebases even a RELATIVE symlink's target onto its ORIGINAL host
-          // location rather than leaving it self-referential in the copy
-          // (verified empirically; Node does not preserve the raw relative
-          // string). If that ever changed, treating an in-workDir result the
-          // same as "no linked entry" is the safe interpretation — mounting
-          // the sandbox onto itself read-only would wrongly shadow part of
-          // the writable /workspace mount instead of doing nothing.
-          if (resolvedRoot !== workDir && !resolvedRoot.startsWith(`${workDir}/`)) {
-            target = resolvedRoot;
-          }
+      if (dependencyMode === 'share') {
+        const candidate = `${workDir}/${dir}`;
+        if (!lstatSync(candidate).isSymbolicLink()) continue;
+        const target = realpathSync(candidate);
+        targets.set(dir, target);
+        args.push('--mount', mountArg(target, target, true));
+        if (dir === 'node_modules') {
+          args.push('--tmpfs', `${target}/${VITE_TEMP_DIR}:rw,nosuid,nodev,size=16m`);
         }
-      }
-      if (target === undefined) {
-        // 'copy' mode (or an empty dependency dir): no separate host tree to
-        // mount — record the sandbox's OWN real path. It is a genuine host
-        // filesystem path (the copy is real), so `discoverSitePackages` can
-        // still walk it directly; `pythonEnvArgs` translates it (and the
-        // site-packages paths it discovers under it) to `/workspace/...` via
-        // `toGuestPath` before baking them into `--env`.
-        if (stat.isDirectory()) targets.set(dir, candidate);
         continue;
       }
-      targets.set(dir, target);
-      args.push('--mount', mountArg(target, target, true));
-      if (dir === 'node_modules') {
-        // Vite writes a bundled copy of the config it is loading to
-        // `<node_modules>/.vite-temp/` — for ANY config file, not just a
-        // TypeScript one — so a read-only dependency tree makes every
-        // vitest project fail its config load, which StrykerJS reports as
-        // failed tests in the initial run. Overlay just that directory rather
-        // than mounting the tree writable: project test code never gets write
-        // access to the host's real dependencies, and the scratch is discarded
-        // with the container. Not needed under 'copy' (handled above): that
-        // node_modules is already inside the writable /workspace mount.
-        args.push('--tmpfs', `${target}/${VITE_TEMP_DIR}:rw,nosuid,nodev,size=16m`);
+      if (dependencyMode === 'link-entries') {
+        const hostDir = `${workspaceRoot}/${dir}`;
+        if (!existsSync(hostDir)) continue;
+        targets.set(dir, hostDir);
+        args.push('--mount', mountArg(hostDir, hostDir, true));
+        if (dir === 'node_modules') {
+          // Vite writes a bundled copy of the config it is loading to
+          // `<node_modules>/.vite-temp/` — for ANY config file, not just a
+          // TypeScript one — so a read-only dependency tree makes every
+          // vitest project fail its config load, which StrykerJS reports as
+          // failed tests in the initial run. Overlay just that directory
+          // rather than mounting the tree writable: project test code never
+          // gets write access to the host's real dependencies, and the
+          // scratch is discarded with the container.
+          args.push('--tmpfs', `${hostDir}/${VITE_TEMP_DIR}:rw,nosuid,nodev,size=16m`);
+        }
+        continue;
       }
+      // 'copy': the tree is already inside the sandbox, itself bind-mounted at
+      // /workspace — nothing to mount, and no writable-tmpfs workaround needed
+      // (that node_modules is already part of the writable /workspace mount).
+      const candidate = `${workDir}/${dir}`;
+      if (existsSync(candidate)) targets.set(dir, candidate);
     } catch {
       // Missing or unreadable dependency directories remain absent in the
       // container; the engine will surface its normal dependency error.
@@ -251,13 +205,17 @@ function dependencyMountArgs(workDir: string): { args: string[]; targets: Map<st
  *
  * Pure: everything it needs is a parameter, so the argv (mount ordering, tmpfs
  * size, uid/gid, python PATH) can be unit-tested without provisioning anything.
- * It does still read the host filesystem through {@link dependencyMountArgs},
- * which is what decides whether a dependency directory is a symlink worth
- * bind-mounting.
+ * It does still read the host filesystem through {@link dependencyMountArgs} to
+ * confirm a dependency directory it was told about actually exists — `workDir`
+ * is the sandbox copy, `workspaceRoot` is the ORIGINAL host tree it was copied
+ * from, and `dependencyMode` is the same `sandbox.dependencies` value the
+ * caller already passed to `createSandbox` for this same audit.
  */
 export function buildCreateArgs(
   name: string,
   workDir: string,
+  workspaceRoot: string,
+  dependencyMode: DependencyMode,
   language: SupportedProjectType,
   config: ContainerConfig,
   image: string,
@@ -297,7 +255,7 @@ export function buildCreateArgs(
   const gid = process.getgid?.();
   if (uid !== undefined && gid !== undefined) args.push('--user', `${uid}:${gid}`);
 
-  const dependencies = dependencyMountArgs(workDir);
+  const dependencies = dependencyMountArgs(workDir, workspaceRoot, dependencyMode);
   args.push(...dependencies.args);
   if (language === 'python') args.push(...pythonEnvArgs(workDir, dependencies.targets));
 

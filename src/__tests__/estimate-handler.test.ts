@@ -673,6 +673,8 @@ describe('handleEstimateCall', () => {
     expect(mockCreateExecutionSession).toHaveBeenCalledWith(
       'typescript',
       '/tmp/chaos-estimate-sandbox',
+      '/workspace',
+      'link-entries',
       { mode: 'container' },
       undefined,
     );
@@ -681,6 +683,33 @@ describe('handleEstimateCall', () => {
     expect(cleanupSpy).toHaveBeenCalledOnce();
     expect(executor.dispose.mock.invocationCallOrder[0]).toBeLessThan(
       cleanupSpy.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('forwards config.sandbox.dependencies into createExecutionSession, not just createSandbox', async () => {
+    mockEstimateNeedsSandbox.mockReturnValue(true);
+    const executor = {
+      kind: 'container' as const,
+      workDir: '/tmp/chaos-estimate-sandbox',
+      run: vi.fn(),
+      runCommand: vi.fn(),
+      dispose: vi.fn().mockResolvedValue(undefined),
+    };
+    mockCreateExecutionSession.mockResolvedValue(executor);
+    mockEstimateAudit.mockResolvedValue(approxResult);
+
+    await handleEstimateCall(req({ filePath: 'src/math.ts', withTiming: true }), {
+      container: { mode: 'container' },
+      sandbox: { dependencies: 'copy' },
+    });
+
+    expect(mockCreateExecutionSession).toHaveBeenCalledWith(
+      'typescript',
+      '/tmp/chaos-estimate-sandbox',
+      '/workspace',
+      'copy',
+      { mode: 'container' },
+      undefined,
     );
   });
 

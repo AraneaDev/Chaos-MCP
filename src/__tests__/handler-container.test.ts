@@ -87,6 +87,8 @@ describe('auditFile container execution', () => {
       expect(createExecutionSession).toHaveBeenCalledWith(
         projectType,
         '/tmp/sandbox',
+        '/workspace',
+        'link-entries',
         container,
         undefined,
       );
@@ -94,6 +96,42 @@ describe('auditFile container execution', () => {
       expect(session.dispose).toHaveBeenCalledOnce();
     },
   );
+
+  it('forwards config.sandbox.dependencies into createExecutionSession, not just createSandbox', async () => {
+    // The container backend needs the SAME dependency mode the sandbox was
+    // provisioned with — a mismatch here (e.g. sandbox 'copy' vs container
+    // 'link-entries') would make dependencyMountArgs mount a host tree the
+    // sandbox never symlinked to, or vice versa.
+    const session = fakeSession();
+    vi.mocked(createExecutionSession).mockResolvedValue(session);
+    const engine = { run: vi.fn().mockResolvedValue(result) } as unknown as BaseEngine;
+
+    await auditFile({
+      targetFile: 'src/app.ts',
+      env: {
+        projectType: 'typescript',
+        testRunner: 'command',
+        detectedRunner: 'unknown',
+        packageManager: '',
+        workspaceRoot: '/my/workspace',
+      },
+      projectType: 'typescript',
+      engine,
+      args: {},
+      config: { container: { mode: 'container' }, sandbox: { dependencies: 'copy' } },
+      workDir: '/tmp/sandbox',
+      prebuildCmd: null,
+    });
+
+    expect(createExecutionSession).toHaveBeenCalledWith(
+      'typescript',
+      '/tmp/sandbox',
+      '/my/workspace',
+      'copy',
+      { mode: 'container' },
+      undefined,
+    );
+  });
 
   it('runs prebuild in the container and disposes after engine failure', async () => {
     const session = fakeSession();

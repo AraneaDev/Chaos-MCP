@@ -38,13 +38,41 @@ import {
   CONTAINER_IMAGE_VERSION,
   createExecutionSession,
   defaultContainerImage,
+  type ExecutionSession,
 } from '../utils/execution.js';
 import { warn } from '../utils/logger.js';
+import type { ContainerConfig } from '../utils/config-loader.js';
+import type { SupportedProjectType } from '../utils/project-detector.js';
 // Exactly the specifier utils/execution.ts registers through, so the sweep here
 // walks the very Map the sessions below write into — see the registry docblock.
 import { cleanupAllSandboxes } from '../utils/sandbox/registry.js';
 
 const ok = (stdout = '') => ({ stdout, stderr: '', exit: 0, signal: null }) as const;
+
+/**
+ * `createExecutionSession` gained two required parameters — `workspaceRoot`
+ * and `dependencyMode` — when the container backend stopped INFERRING the
+ * host dependency root from the sandbox's own symlink shape (which broke on
+ * npm/pnpm workspaces and a plain `python3 -m venv`'s `lib64 -> lib`) and
+ * started being TOLD it instead. Every fixture in this file below either
+ * builds a `'share'`-shaped sandbox (`workDir/<dep>` itself a symlink — see
+ * "mounts every supported symlinked dependency tree read-only" and its
+ * neighbours) or does not touch dependency mounts at all, so `'share'`
+ * reproduces this file's pre-existing behaviour byte-for-byte; `workspaceRoot`
+ * is unused by that mode and is any placeholder. Tests that specifically cover
+ * `'link-entries'`/`'copy'` threading call `createExecutionSession` directly
+ * with their own values instead of this helper.
+ */
+const UNUSED_WORKSPACE_ROOT = '/tmp/chaos-execution-test-unused-workspace-root';
+
+function createTestSession(
+  language: SupportedProjectType,
+  workDir: string,
+  config?: ContainerConfig,
+  signal?: AbortSignal,
+): Promise<ExecutionSession> {
+  return createExecutionSession(language, workDir, UNUSED_WORKSPACE_ROOT, 'share', config, signal);
+}
 
 function hostUserArgs(): string[] {
   const uid = process.getuid?.();
@@ -67,7 +95,7 @@ describe('execution sessions', () => {
   });
 
   it('keeps native execution as the default', async () => {
-    const session = await createExecutionSession('typescript', '/tmp/work', undefined);
+    const session = await createTestSession('typescript', '/tmp/work', undefined);
     expect(session.kind).toBe('native');
 
     await session.run('node', ['--version']);
@@ -109,8 +137,8 @@ describe('execution sessions', () => {
     vi.mocked(runShell).mockResolvedValue(ok('27.0.0'));
     const config = { mode: 'container', modes: { php: 'native' } } as const;
 
-    const php = await createExecutionSession('php', '/tmp/work', config);
-    const typescript = await createExecutionSession('typescript', '/tmp/work', config);
+    const php = await createTestSession('php', '/tmp/work', config);
+    const typescript = await createTestSession('typescript', '/tmp/work', config);
 
     expect(php.kind).toBe('native');
     expect(typescript.kind).toBe('container');
@@ -118,7 +146,7 @@ describe('execution sessions', () => {
 
   it('falls back to native only when auto mode cannot reach the runtime', async () => {
     vi.mocked(runShell).mockRejectedValueOnce(new Error('missing'));
-    const session = await createExecutionSession('python', '/tmp/work', {
+    const session = await createTestSession('python', '/tmp/work', {
       mode: 'auto',
       runtime: 'podman',
     });
@@ -132,7 +160,7 @@ describe('execution sessions', () => {
   it('fails closed when explicit container mode cannot reach the runtime', async () => {
     vi.mocked(runShell).mockRejectedValueOnce(new Error('missing'));
     await expect(
-      createExecutionSession('rust', '/tmp/work', {
+      createTestSession('rust', '/tmp/work', {
         mode: 'container',
         runtime: 'docker',
       }),
@@ -141,23 +169,23 @@ describe('execution sessions', () => {
 
   it('uses the Docker default in fallback and failure messages', async () => {
     vi.mocked(runShell).mockRejectedValueOnce(new Error('missing'));
-    await createExecutionSession('python', '/tmp/work', { mode: 'auto' });
+    await createTestSession('python', '/tmp/work', { mode: 'auto' });
     expect(warn).toHaveBeenCalledWith(
       'Container runtime "docker" unavailable; using native execution.',
     );
 
     _resetExecutionCaches();
     vi.mocked(runShell).mockRejectedValueOnce(new Error('missing'));
-    await expect(
-      createExecutionSession('python', '/tmp/work', { mode: 'container' }),
-    ).rejects.toThrow('Container execution requested, but runtime "docker" is unavailable.');
+    await expect(createTestSession('python', '/tmp/work', { mode: 'container' })).rejects.toThrow(
+      'Container execution requested, but runtime "docker" is unavailable.',
+    );
   });
 
   it('caches a successful runtime probe for subsequent audit sessions', async () => {
     vi.mocked(runShell).mockResolvedValue(ok('27.0.0'));
 
-    await createExecutionSession('typescript', '/tmp/one', { mode: 'container' });
-    await createExecutionSession('rust', '/tmp/two', { mode: 'container' });
+    await createTestSession('typescript', '/tmp/one', { mode: 'container' });
+    await createTestSession('rust', '/tmp/two', { mode: 'container' });
 
     expect(runShell).toHaveBeenCalledTimes(1);
   });
@@ -172,17 +200,17 @@ describe('execution sessions', () => {
       vi.setSystemTime(new Date(1_000_000));
       vi.mocked(runShell).mockResolvedValue(ok('27.0.0'));
 
-      await createExecutionSession('typescript', '/tmp/one', { mode: 'container' });
+      await createTestSession('typescript', '/tmp/one', { mode: 'container' });
       expect(runShell).toHaveBeenCalledTimes(1);
 
       // Still inside the 30s window: served from cache.
       vi.setSystemTime(new Date(1_000_000 + 29_999));
-      await createExecutionSession('typescript', '/tmp/two', { mode: 'container' });
+      await createTestSession('typescript', '/tmp/two', { mode: 'container' });
       expect(runShell).toHaveBeenCalledTimes(1);
 
       // Exactly ON the TTL the entry is stale — the comparison is `<`, not `<=`.
       vi.setSystemTime(new Date(1_000_000 + 30_000));
-      await createExecutionSession('typescript', '/tmp/three', { mode: 'container' });
+      await createTestSession('typescript', '/tmp/three', { mode: 'container' });
       expect(runShell).toHaveBeenCalledTimes(2);
     } finally {
       vi.useRealTimers();
@@ -206,7 +234,7 @@ describe('execution sessions', () => {
       .mockResolvedValueOnce(ok('later'))
       .mockResolvedValue(ok());
 
-    const session = await createExecutionSession('typescript', '/tmp/work', {
+    const session = await createTestSession('typescript', '/tmp/work', {
       mode: 'container',
     });
     await session.run('tool', ['arg']);
@@ -259,7 +287,7 @@ describe('execution sessions', () => {
       .mockResolvedValueOnce(ok('cid-2'))
       .mockResolvedValueOnce(ok())
       .mockResolvedValueOnce(ok('batch two'));
-    const session = await createExecutionSession('typescript', '/tmp/work', {
+    const session = await createTestSession('typescript', '/tmp/work', {
       mode: 'container',
     });
 
@@ -292,7 +320,7 @@ describe('execution sessions', () => {
       .mockResolvedValueOnce(ok())
       .mockResolvedValueOnce(ok('cid-2'))
       .mockResolvedValue(ok());
-    const session = await createExecutionSession(
+    const session = await createTestSession(
       'rust',
       '/tmp/work',
       { mode: 'container' },
@@ -323,7 +351,7 @@ describe('execution sessions', () => {
       .mockResolvedValueOnce(ok('27.0.0'))
       .mockResolvedValueOnce(ok('cid'))
       .mockResolvedValue(ok());
-    const session = await createExecutionSession(
+    const session = await createTestSession(
       'rust',
       '/tmp/work',
       { mode: 'container' },
@@ -346,7 +374,7 @@ describe('execution sessions', () => {
     const controller = new AbortController();
     vi.mocked(runShell).mockResolvedValue(ok('5.4.0'));
 
-    const session = await createExecutionSession(
+    const session = await createTestSession(
       'php',
       '/tmp/work',
       {
@@ -375,7 +403,7 @@ describe('execution sessions', () => {
         .mockResolvedValueOnce(ok('tool output'))
         .mockResolvedValueOnce(ok('container-id\n'));
 
-      const session = await createExecutionSession(language, '/tmp/work', {
+      const session = await createTestSession(language, '/tmp/work', {
         mode: 'container',
         cpus: 2,
         memoryMb: 1024,
@@ -474,7 +502,7 @@ describe('execution sessions', () => {
 
   it('rejects bind-mount paths that the runtime cannot parse safely', async () => {
     vi.mocked(runShell).mockResolvedValueOnce(ok('27.0.0'));
-    const session = await createExecutionSession('typescript', '/tmp/work,unsafe', {
+    const session = await createTestSession('typescript', '/tmp/work,unsafe', {
       mode: 'container',
     });
 
@@ -494,7 +522,7 @@ describe('execution sessions', () => {
         .mockResolvedValueOnce(ok())
         .mockResolvedValueOnce(ok())
         .mockResolvedValueOnce(ok());
-      const session = await createExecutionSession('typescript', '/tmp/work', {
+      const session = await createTestSession('typescript', '/tmp/work', {
         mode: 'container',
       });
 
@@ -522,7 +550,7 @@ describe('execution sessions', () => {
           .mockResolvedValueOnce(ok())
           .mockResolvedValueOnce(ok())
           .mockResolvedValueOnce(ok());
-        const session = await createExecutionSession('typescript', '/tmp/work', {
+        const session = await createTestSession('typescript', '/tmp/work', {
           mode: 'container',
         });
 
@@ -545,7 +573,7 @@ describe('execution sessions', () => {
       .mockResolvedValueOnce(ok('cid'))
       .mockResolvedValueOnce(ok('built'))
       .mockResolvedValueOnce(ok());
-    const session = await createExecutionSession('php', '/tmp/work', {
+    const session = await createTestSession('php', '/tmp/work', {
       mode: 'container',
       images: { php: 'example/php@sha256:abc' },
     });
@@ -572,7 +600,7 @@ describe('execution sessions', () => {
         ),
       )
       .mockResolvedValueOnce(ok());
-    const session = await createExecutionSession('rust', '/tmp/work', {
+    const session = await createTestSession('rust', '/tmp/work', {
       mode: 'container',
     });
 
@@ -594,7 +622,7 @@ describe('execution sessions', () => {
         ),
       )
       .mockResolvedValueOnce(ok());
-    const session = await createExecutionSession('typescript', '/tmp/work', {
+    const session = await createTestSession('typescript', '/tmp/work', {
       mode: 'container',
     });
 
@@ -612,7 +640,7 @@ describe('execution sessions', () => {
       .mockResolvedValueOnce(ok('cid'))
       .mockRejectedValueOnce(new Error('start failed'))
       .mockResolvedValueOnce(ok());
-    const session = await createExecutionSession('php', '/tmp/work', {
+    const session = await createTestSession('php', '/tmp/work', {
       mode: 'container',
     });
 
@@ -628,7 +656,7 @@ describe('execution sessions', () => {
       .mockResolvedValueOnce(ok('cid'))
       .mockRejectedValueOnce(new Error('tool failed'))
       .mockResolvedValueOnce(ok());
-    const session = await createExecutionSession('php', '/tmp/work', {
+    const session = await createTestSession('php', '/tmp/work', {
       mode: 'container',
     });
 
@@ -652,7 +680,7 @@ describe('execution sessions', () => {
         ),
       )
       .mockResolvedValueOnce(ok());
-    const session = await createExecutionSession('php', '/tmp/work', {
+    const session = await createTestSession('php', '/tmp/work', {
       mode: 'container',
     });
 
@@ -671,7 +699,7 @@ describe('execution sessions', () => {
       .mockResolvedValueOnce(ok('first'))
       .mockResolvedValueOnce(ok('second'))
       .mockResolvedValueOnce(ok());
-    const session = await createExecutionSession('typescript', '/tmp/work', {
+    const session = await createTestSession('typescript', '/tmp/work', {
       mode: 'container',
     });
 
@@ -696,7 +724,7 @@ describe('execution sessions', () => {
       .mockResolvedValueOnce(ok('27.0.0'))
       .mockReturnValueOnce(createPending)
       .mockResolvedValue(ok());
-    const session = await createExecutionSession('typescript', '/tmp/work', {
+    const session = await createTestSession('typescript', '/tmp/work', {
       mode: 'container',
     });
 
@@ -721,7 +749,7 @@ describe('execution sessions', () => {
     const controller = new AbortController();
     controller.abort();
     vi.mocked(runShell).mockResolvedValueOnce(ok('27.0.0')).mockResolvedValueOnce(ok());
-    const session = await createExecutionSession(
+    const session = await createTestSession(
       'rust',
       '/tmp/work',
       { mode: 'container' },
@@ -742,7 +770,7 @@ describe('execution sessions', () => {
       .mockResolvedValueOnce(ok())
       .mockResolvedValueOnce(ok())
       .mockResolvedValueOnce(ok());
-    const session = await createExecutionSession(
+    const session = await createTestSession(
       'rust',
       '/tmp/work',
       { mode: 'container' },
@@ -774,7 +802,7 @@ describe('execution sessions', () => {
         return ok('cid');
       })
       .mockResolvedValue(ok());
-    const session = await createExecutionSession(
+    const session = await createTestSession(
       'rust',
       '/tmp/work',
       { mode: 'container' },
@@ -804,7 +832,7 @@ describe('execution sessions', () => {
         return ok();
       })
       .mockResolvedValue(ok());
-    const session = await createExecutionSession(
+    const session = await createTestSession(
       'rust',
       '/tmp/work',
       { mode: 'container' },
@@ -845,7 +873,7 @@ describe('execution sessions', () => {
       }
       return ok();
     });
-    const session = await createExecutionSession(
+    const session = await createTestSession(
       'rust',
       '/tmp/work',
       { mode: 'container' },
@@ -869,7 +897,7 @@ describe('execution sessions', () => {
       .mockResolvedValueOnce(ok('27.0.0'))
       .mockResolvedValueOnce(ok('cid'))
       .mockResolvedValue(ok());
-    const session = await createExecutionSession('typescript', '/tmp/work', {
+    const session = await createTestSession('typescript', '/tmp/work', {
       mode: 'container',
       runtime: 'podman',
     });
@@ -898,13 +926,13 @@ describe('execution sessions', () => {
       .mockResolvedValue(ok());
     // Two sessions, one torn down normally and one still holding its container,
     // so the assertion below cannot pass merely because the sweep did nothing.
-    const disposed = await createExecutionSession('typescript', '/tmp/work', {
+    const disposed = await createTestSession('typescript', '/tmp/work', {
       mode: 'container',
       runtime: 'podman',
     });
     await disposed.run('stryker', []);
     await disposed.dispose();
-    const live = await createExecutionSession('typescript', '/tmp/work', {
+    const live = await createTestSession('typescript', '/tmp/work', {
       mode: 'container',
       runtime: 'podman',
     });
@@ -935,7 +963,7 @@ describe('execution sessions', () => {
       .mockResolvedValueOnce(ok('27.0.0'))
       .mockResolvedValueOnce(ok('cid'))
       .mockResolvedValue(ok());
-    const session = await createExecutionSession('typescript', '/tmp/sandbox-abc', {
+    const session = await createTestSession('typescript', '/tmp/sandbox-abc', {
       mode: 'container',
     });
 
@@ -957,7 +985,7 @@ describe('execution sessions', () => {
       .mockResolvedValueOnce(ok('cid'))
       .mockResolvedValueOnce(ok())
       .mockResolvedValueOnce(ok());
-    const session = await createExecutionSession('php', '/tmp/work', {
+    const session = await createTestSession('php', '/tmp/work', {
       mode: 'container',
     });
 
@@ -978,7 +1006,7 @@ describe('execution sessions', () => {
       .mockResolvedValueOnce(ok())
       .mockResolvedValueOnce(ok())
       .mockResolvedValueOnce(ok());
-    const session = await createExecutionSession('typescript', '/tmp/work', {
+    const session = await createTestSession('typescript', '/tmp/work', {
       mode: 'container',
     });
 
@@ -1003,7 +1031,7 @@ describe('execution sessions', () => {
       .mockResolvedValueOnce(ok('cid'))
       .mockResolvedValueOnce(ok())
       .mockResolvedValueOnce(ok());
-    const session = await createExecutionSession('python', '/tmp/work', {
+    const session = await createTestSession('python', '/tmp/work', {
       mode: 'container',
     });
 
@@ -1031,7 +1059,7 @@ describe('execution sessions', () => {
       .mockResolvedValueOnce(ok('cid'))
       .mockResolvedValueOnce(ok())
       .mockResolvedValueOnce(ok());
-    const session = await createExecutionSession('rust', '/tmp/work', {
+    const session = await createTestSession('rust', '/tmp/work', {
       mode: 'container',
     });
 
@@ -1052,7 +1080,7 @@ describe('execution sessions', () => {
       .mockResolvedValueOnce(ok())
       .mockResolvedValueOnce(ok())
       .mockResolvedValueOnce(ok());
-    const session = await createExecutionSession(
+    const session = await createTestSession(
       'rust',
       '/tmp/work',
       { mode: 'container' },
@@ -1088,7 +1116,7 @@ describe('execution sessions', () => {
       .mockResolvedValueOnce(ok())
       .mockResolvedValueOnce(ok())
       .mockResolvedValueOnce(ok());
-    const session = await createExecutionSession('php', workDir, {
+    const session = await createTestSession('php', workDir, {
       mode: 'container',
     });
 
@@ -1129,7 +1157,7 @@ describe('execution sessions', () => {
       .mockResolvedValueOnce(ok())
       .mockResolvedValueOnce(ok())
       .mockResolvedValueOnce(ok());
-    const session = await createExecutionSession('typescript', workDir, { mode: 'container' });
+    const session = await createTestSession('typescript', workDir, { mode: 'container' });
 
     await session.run('stryker', []);
     await session.dispose();
@@ -1154,7 +1182,7 @@ describe('execution sessions', () => {
       .mockResolvedValueOnce(ok())
       .mockResolvedValueOnce(ok())
       .mockResolvedValueOnce(ok());
-    const session = await createExecutionSession('typescript', workDir, {
+    const session = await createTestSession('typescript', workDir, {
       mode: 'container',
     });
 
@@ -1193,7 +1221,7 @@ describe('execution sessions', () => {
       .mockResolvedValueOnce(ok('cid'))
       .mockResolvedValueOnce(ok())
       .mockResolvedValueOnce(ok());
-    const session = await createExecutionSession('python', workDir, {
+    const session = await createTestSession('python', workDir, {
       mode: 'container',
     });
 
@@ -1236,7 +1264,7 @@ describe('execution sessions', () => {
       .mockResolvedValueOnce(ok())
       .mockResolvedValueOnce(ok())
       .mockResolvedValueOnce(ok());
-    const session = await createExecutionSession('python', workDir, {
+    const session = await createTestSession('python', workDir, {
       mode: 'container',
     });
 
@@ -1262,7 +1290,7 @@ describe('execution sessions', () => {
       .mockResolvedValueOnce(ok())
       .mockResolvedValueOnce(ok())
       .mockResolvedValueOnce(ok());
-    const session = await createExecutionSession('python', workDir, {
+    const session = await createTestSession('python', workDir, {
       mode: 'container',
     });
 

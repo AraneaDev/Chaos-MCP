@@ -17,8 +17,10 @@ export type {
   ConfigValidation,
   ContainerConfig,
   CosmicRayConfig,
+  DependencyMode,
   EngineConfigKey,
   InfectionConfig,
+  SandboxConfig,
   StrykerConfig,
 } from './config/types.js';
 
