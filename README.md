@@ -21,7 +21,7 @@ Chaos-MCP is an [MCP (Model Context Protocol)](https://modelcontextprotocol.io/)
 - **Auto-Detection** — automatically detects project type, test runner, and workspace root
 - **Async Subprocesses** — all mutation-tool execution uses async `execFile`/`exec`, and the sandbox's workspace copy uses async `fs.cp`, so neither blocks the event loop; the entry-linking pass that follows runs synchronously afterward and scales with the number of installed packages, not workspace size
 - **Rich Tool Schema** — supports line scoping, mutator denylists, concurrency control, dry-run mode, incremental runs, and output format selection
-- **Pre-flight Estimation** — `estimate_audit` gives a fast mutant count (exact for Rust, approximate for others) and optional timing estimate before you commit to a full run
+- **Pre-flight Estimation** — `estimate_audit` gives a fast mutant count and an optional timing estimate before you commit to a full run. For Rust it is an exact count of the mutants `cargo-mutants --list` **generates**; the audit itself scores fewer, because mutants that fail to compile leave its denominator and are reported as `incompetent`. The other three languages use a source heuristic
 - **Gate Mode** — pass `minScore` to `audit_code_resilience` or `triage_test_coverage` to get a machine-readable pass/fail field for CI pipelines
 - **Cross-Platform** — works on macOS, Linux, and Windows (with junction fallback for symlinks)
 
@@ -235,12 +235,12 @@ Add or strengthen tests targeting these lines to kill the survivors.
 | `dryRun`           | `boolean`                         | No       | Validate test suite only, no mutations (StrykerJS only)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `outputFormat`     | `"json"` \| `"text"`              | No       | Output format (default: `"json"`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | `incremental`      | `boolean`                         | No       | Reuse previous run results (StrykerJS only). State is cached per (workspace, file) OUTSIDE the sandbox — the sandbox is deleted after each run, so without that the option would have nothing to reuse                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `ignorePatterns`   | `string[]`                        | No       | Substring patterns to exclude from sandbox copy                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `ignorePatterns`   | `string[]`                        | No       | Path segments to exclude from the sandbox, in addition to the built-in exclusions. A path is skipped when any of its segments **equals** the pattern exactly — not a substring match, so `"dist"` excludes `dist/` but not `src/dist-utils.js`. One trailing separator is stripped (`"fixtures/"` works); empty patterns are ignored. Naming a dependency directory (`node_modules`, `.venv`/`venv`, `vendor`) also suppresses the dependency link, so the sandbox is left without it and the run will usually fail — Chaos-MCP warns when an exclusion does that to a directory that exists.                                                                                |
 | `enrich`           | `boolean`                         | No       | Annotate each survivor with severity, why-it-matters, a test hint, and source context — and rank severity-first. **Default: `true`** (pass `false` to disable and return plain unranked output). Richest for TypeScript; Python degrades to `severity: "unknown"`.                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `maxSurvivors`     | `integer ≥ 1`                     | No       | Cap on how many survivor (and no-coverage) line groups are returned after severity ranking. Hidden groups counted in `survivorsTruncated`/`noCoverageTruncated`. Precedence: arg > `defaultMaxSurvivors` config > 10.                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `severityFloor`    | `"high"` \| `"medium"` \| `"low"` | No       | Drop survivor groups below this severity (requires enrichment, on by default). Dropped groups counted in `survivorsFiltered`/`noCoverageFiltered`. `"unknown"`-severity groups are below `"low"` and are dropped by any floor.                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `runId`            | `string`                          | No       | Verify mode by cached id: re-run against the survivor baseline saved from a prior audit (the `runId` it returned). Mutually exclusive with `baseline`, `diffBase`, and `lineScope`. Unknown or expired ids (cache TTL: ~24 h) return an error.                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `suppress`         | `object[]`                        | No       | Mark mutants as equivalent (unkillable). Each entry: `{ "line": N, "mutator": "MutatorName" }` (reason is an optional string explaining why the mutant is equivalent). Persisted to `.chaos-mcp/suppressions.json`; suppressed mutants are auto-excluded from the score denominator and from future `audit` and `triage` output. Each entry is stamped with a fingerprint of its source line, so an edit to that line retires the suppression instead of silently re-pointing it; re-issue the entry to re-confirm it. The output fields `suppressedCount`, `driftedSuppressions` and `unverifiedSuppressions` report how many were excluded, and how many were rejected. |
+| `suppress`         | `object[]`                        | No       | Mark mutants as equivalent (unkillable). Each entry: `{ "line": N, "mutator": "MutatorName" }` (reason is an optional string explaining why the mutant is equivalent). Persisted to `.chaos-mcp/suppressions.json`; suppressed mutants are auto-excluded from the score denominator and from future `audit` and `triage` output. Each entry is stamped with a fingerprint of its source line, so an edit to that line retires the suppression instead of silently re-pointing it; re-issue the entry to re-confirm it. The output fields `suppressedCount`, `driftedSuppressions`, `unverifiedSuppressions` and `orphanedSuppressions` report how many were excluded, how many were rejected, and how many were applied but matched no surviving mutant (inert — the mutant may now be killed, or its line/mutator may be gone). |
 | `unsuppress`       | `object[]`                        | No       | Remove previously-suppressed mutants for this file. Each entry: `{ "line": N, "mutator": "MutatorName" }`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `minScore`         | `number 0–100`                    | No       | Gate threshold. When the mutation score is below this value, the output includes `gate: { minScore, passed: false }`. Never an error. Uses the suppression-adjusted score.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 
@@ -552,6 +552,23 @@ Tool call arguments override config defaults.
 | `defaultSeverityFloor`   | `"high"` \| `"medium"` \| `"low"` | —                        | Default severity floor for survivor reporting; overridden by the `severityFloor` argument                                               |
 | `defaultFileConcurrency` | `number`                          | `max(1, min(4, cpus-1))` | Default parallel file count for `triage_test_coverage` (integer 1–64); overridden by the `fileConcurrency` argument                     |
 | `container`              | `object`                          | `{ "mode": "native" }`   | Optional shared OCI execution backend for TypeScript, Python, Rust, and PHP                                                             |
+| `sandbox`                | `object`                          | `{ "dependencies": "link-entries" }` | Sandbox provisioning. `dependencies` chooses how `node_modules`, `.venv`/`venv` and `vendor` are materialised — see below |
+
+### Sandbox dependencies
+
+```json
+{ "sandbox": { "dependencies": "link-entries" } }
+```
+
+| `dependencies` | What the sandbox gets                                                                    | A write under it                                                                        |
+| -------------- | ---------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `link-entries` | **Default.** A real directory holding one symlink per installed package                    | To a **new** path (`.vite-temp`, a lockfile, a cache) stays in the sandbox; **through** an existing package still reaches your tree |
+| `copy`         | A full copy of the tree                                                                    | Always stays in the sandbox. The only mode that fully contains a suite which writes through its own dependencies — and the slowest |
+| `share`        | One symlink for the whole directory (the pre-1.8 behaviour)                                | Always reaches your real workspace. Opt in knowingly                                     |
+
+PHP's `vendor/` is always copied regardless of this setting, because Composer's
+autoloader resolves `__DIR__` through symlinks back to the real workspace.
+An unrecognised value is dropped and the default applies.
 
 ### Container execution
 
@@ -613,9 +630,13 @@ Container settings:
 | `images`           | per-language image map        | release-matched GHCR tags | Override the `typescript`, `python`, `rust`, or `php` image                                                                                                                                                                |
 
 The images pin the language runtime and mutation engine, while the project
-still supplies its own test dependencies. Existing sandbox dependency
-directories (`node_modules`, `.venv`/`venv`, and `vendor`) are mounted
-read-only when they are symlinked from the host, with one exception:
+still supplies its own test dependencies. Which dependency trees get mounted
+follows `sandbox.dependencies`: under `link-entries` (the default) and `share`
+the **host** trees (`node_modules`, `.venv`/`venv`, and `vendor`) are
+bind-mounted read-only at their own absolute paths, which is what makes the
+sandbox's symlinks into them resolve inside the container; under `copy` nothing
+extra is mounted, because the copies already live inside the sandbox that is
+itself mounted at `/workspace`. There is one exception:
 `node_modules/.vite-temp` is a small writable tmpfs, because Vite writes a
 bundled copy of the config it is loading there and a read-only tree would fail
 the config load of every vitest project. The scratch is discarded with the
@@ -636,10 +657,11 @@ The official images are published for Linux AMD64 and ARM64:
 | Rust                    | `ghcr.io/araneadev/chaos-mcp-rust:vX.Y.Z`       |
 | PHP                     | `ghcr.io/araneadev/chaos-mcp-php:vX.Y.Z`        |
 
-The server never installs target-project dependencies. It reuses recognized
-dependency directories from the sandbox when available (`node_modules`,
-`.venv`/`venv`, and `vendor`), mounting host-linked directories read-only.
-Install the target project's dependencies before auditing it.
+The server never installs target-project dependencies. It reuses the recognized
+dependency directories the project already has (`node_modules`, `.venv`/`venv`,
+and `vendor`), mounting the host trees read-only under `link-entries` and
+`share` and using the sandbox's own copies under `copy`. Install the target
+project's dependencies before auditing it.
 
 Containers run with a read-only root filesystem, all Linux capabilities
 dropped, `no-new-privileges`, a private temporary filesystem, and configurable
