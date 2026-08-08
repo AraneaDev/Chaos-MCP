@@ -8,6 +8,7 @@
  */
 import { spawnSync } from 'node:child_process';
 import type { RunOptions } from '../base.js';
+import { quoteCommandArg } from '../../utils/shell-quote.js';
 
 /**
  * A bare executable name — letters, digits, and the few punctuation characters
@@ -198,8 +199,22 @@ export function resolveTestCommand(interpreter: string, options?: RunOptions): s
     base = runner;
   }
 
+  // Quote each entry individually. cosmic-ray splits `test-command` with
+  // `shlex.split` (8.4.6, testing.py:46), so an unquoted path containing
+  // whitespace becomes two argv entries — pytest then gets two paths that do
+  // not exist, exits 4, and `cosmic-ray baseline` reports the project's test
+  // suite as broken. A path containing a quote character is worse: shlex.split
+  // raises, cosmic-ray records `incompetent` for every mutant, and the
+  // degenerate-run guard blames the Python interpreter.
+  //
+  // These strings are the ONE contributor to this command that is not otherwise
+  // validated: when the operator has not configured `cosmicray.testSelection`,
+  // `findPythonTestSelection` (core/test-file.ts) fills it from paths it found
+  // by walking the AUDITED repository's tests/ tree.
   const selection = options?.pythonTestSelection;
-  if (selection && selection.length > 0) base += ` ${selection.join(' ')}`;
+  if (selection && selection.length > 0) {
+    base += ` ${selection.map(quoteCommandArg).join(' ')}`;
+  }
   return base;
 }
 
