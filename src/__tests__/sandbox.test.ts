@@ -768,6 +768,32 @@ describe('createSandbox', () => {
     );
   });
 
+  it('reports the threshold rather than a truncated measurement', async () => {
+    const { warn } = await import('../utils/logger.js');
+    const mockedWarn = vi.mocked(warn);
+    // The root holds two subdirectories. The walk pops one (LIFO: the last
+    // pushed, dirB), reads its 250MB file, and only THEN re-checks the
+    // running total with dirA still on the stack — that is what exercises the
+    // early-return branch (stack still non-empty when the cap is crossed),
+    // not just a walk that happens to finish over the cap.
+    vi.mocked(readdir).mockResolvedValueOnce([
+      { name: 'dirA', isDirectory: () => true, isFile: () => false },
+      { name: 'dirB', isDirectory: () => true, isFile: () => false },
+    ] as never);
+    vi.mocked(readdir).mockResolvedValueOnce([
+      { name: 'big.bin', isDirectory: () => false, isFile: () => true },
+    ] as never);
+    vi.mocked(statSync).mockReturnValue({ size: 250 * 1024 * 1024 } as never);
+
+    await createSandbox('src/utils/math.ts', TEST_PROJECT);
+
+    expect(mockedWarn.mock.calls[0][0]).toContain('exceeds 200MB');
+    expect(mockedWarn.mock.calls[0][0]).not.toMatch(/~\d+MB/);
+    // dirA is never read — the early return skipped it before its own readdir
+    // call — proving the walk really did stop early rather than finishing.
+    expect(mockReaddir).toHaveBeenCalledTimes(2);
+  });
+
   it('does not count ALWAYS_EXCLUDE directories toward the size estimate', async () => {
     const { warn } = await import('../utils/logger.js');
     const mockedWarn = vi.mocked(warn);
@@ -1210,7 +1236,7 @@ describe('createSandbox', () => {
     expect(filter(`${TEST_PROJECT}/src/utils/math.ts`)).toBe(true);
   });
 
-  it('warns with the computed size and does not warn exactly at the threshold', async () => {
+  it('warns with the threshold and does not warn exactly at the cap', async () => {
     const { warn } = await import('../utils/logger.js');
     const mockedWarn = vi.mocked(warn);
 
@@ -1227,14 +1253,14 @@ describe('createSandbox', () => {
     await createSandbox('src/utils/math.ts', TEST_PROJECT);
     expect(mockedWarn.mock.calls.filter((c) => String(c[0]).includes('MB'))).toHaveLength(0);
 
-    // 300MB → warns, and the human-readable size is computed correctly.
+    // 300MB → warns, quoting the fixed threshold rather than the measured size.
     mockedWarn.mockClear();
     mockReaddir.mockResolvedValueOnce([
       { name: 'big.bin', isDirectory: () => false, isFile: () => true },
     ] as never);
     vi.mocked(statSync).mockReturnValueOnce({ size: 300 * 1024 * 1024 } as never);
     await createSandbox('src/utils/math.ts', TEST_PROJECT);
-    expect(mockedWarn).toHaveBeenCalledWith(expect.stringContaining('~300MB'));
+    expect(mockedWarn).toHaveBeenCalledWith(expect.stringContaining('exceeds 200MB'));
   });
 
   // ─── Audit C1: AbortSignal support ────────────────────────────────────

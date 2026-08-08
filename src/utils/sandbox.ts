@@ -170,7 +170,7 @@ async function estimateWorkspaceSize(
   workspaceRoot: string,
   policy: CopyPolicy,
   signal?: AbortSignal,
-): Promise<number> {
+): Promise<{ bytes: number; truncated: boolean }> {
   try {
     const stack: string[] = [workspaceRoot];
     let total = 0;
@@ -194,11 +194,11 @@ async function estimateWorkspaceSize(
       // walks on the event loop and freezing the MCP server for that window.
       //
       // Stop early once we already know the workspace exceeds the warning
-      // threshold — the result is only used for a boolean
-      // `size > MAX_WORKSPACE_SIZE_BYTES` warning, so there is nothing to gain
-      // by continuing to walk past the cap.
+      // threshold: the result only drives a boolean, and continuing would buy
+      // a number we deliberately do not report (the partial total is pinned
+      // to the threshold and would understate a very large tree).
       if (signal?.aborted) throw abortError();
-      if (total > MAX_WORKSPACE_SIZE_BYTES) break;
+      if (total > MAX_WORKSPACE_SIZE_BYTES) return { bytes: total, truncated: true };
       const current = stack.pop();
       if (current === undefined) break;
       if (++dirsSinceYield >= SIZE_WALK_YIELD_EVERY_DIRS) {
@@ -228,12 +228,12 @@ async function estimateWorkspaceSize(
       }
     }
 
-    return total;
+    return { bytes: total, truncated: false };
   } catch (err) {
     // Cancellation must escape — the enclosing best-effort catch only exists to
     // swallow transient fs errors during the size estimate, not to mask an abort.
     if (err instanceof Error && err.name === 'AbortError') throw err;
-    return 0;
+    return { bytes: 0, truncated: false };
   }
 }
 
@@ -460,9 +460,9 @@ export async function createSandbox(
     }),
     options?.signal,
   );
-  if (size > MAX_WORKSPACE_SIZE_BYTES) {
+  if (size.truncated || size.bytes > MAX_WORKSPACE_SIZE_BYTES) {
     warn(
-      `Workspace is ~${(size / 1024 / 1024).toFixed(0)}MB — sandbox copy may be slow. ` +
+      `Workspace exceeds ${MAX_WORKSPACE_SIZE_BYTES / 1024 / 1024}MB — sandbox copy may be slow. ` +
         'Consider using ignorePatterns to exclude large directories.',
     );
   }
