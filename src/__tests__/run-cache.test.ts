@@ -7,13 +7,20 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 // `readdirSync` is wrapped the same way so one test can hand back a reversed
 // listing: directory order is filesystem-defined, and on ext4 it happens to
 // match the order the tie-break wants, which would let an eviction that relies
-// on luck pass. Both wrappers delegate to the real implementation otherwise.
+// on luck pass.
+// `rmSync` is wrapped the same way so one test can force a single deletion to
+// throw (simulating EACCES/EBUSY, which `force: true` does not suppress) and
+// assert the in-memory index does not forget an entry it failed to remove.
+// All three wrappers delegate to the real implementation otherwise — every
+// other real filesystem interaction in this suite, including this file's own
+// cleanup, is unaffected.
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
   return {
     ...actual,
     renameSync: vi.fn(actual.renameSync),
     readdirSync: vi.fn(actual.readdirSync),
+    rmSync: vi.fn(actual.rmSync),
   };
 });
 
@@ -421,6 +428,39 @@ describe('run-cache', () => {
     expect(loadRun(id1, { dir, now: 3 })).toBeUndefined();
     expect(loadRun(id2, { dir, now: 3 })?.file).toBe('f2');
     expect(loadRun(id3, { dir, now: 3 })?.file).toBe('f3');
+  });
+
+  it('keeps a failed-to-delete entry in the index so the next evict retries it', () => {
+    // `force: true` on rmSync only swallows ENOENT; EACCES/EBUSY still throw.
+    // Before the in-memory index, a failed delete simply reappeared on the next
+    // directory scan and was retried. If the index forgot it regardless of
+    // whether the physical delete succeeded, the file would become permanently
+    // invisible to eviction for the rest of the process — never retried, and
+    // no longer counting against `max`.
+    _resetRunCacheIndex();
+    const idA = saveRun(
+      { file: 'a', projectType: 't', survivors: [], noCoverage: [] },
+      { dir, ttlMs: 100, now: 1000 },
+    );
+
+    // `idA` is now TTL-expired; force its removal to fail once.
+    vi.mocked(rmSync).mockImplementationOnce(() => {
+      throw new Error('simulated EACCES on rmSync');
+    });
+    saveRun(
+      { file: 'b', projectType: 't', survivors: [], noCoverage: [] },
+      { dir, ttlMs: 100, now: 5000 },
+    );
+    // The failed delete must leave the file on disk...
+    expect(existsSync(join(dir, `${idA}.json`))).toBe(true);
+
+    // ...and, critically, still tracked by the index: this eviction (rmSync no
+    // longer forced to fail) must retry and finally remove it.
+    saveRun(
+      { file: 'c', projectType: 't', survivors: [], noCoverage: [] },
+      { dir, ttlMs: 100, now: 9000 },
+    );
+    expect(existsSync(join(dir, `${idA}.json`))).toBe(false);
   });
 });
 

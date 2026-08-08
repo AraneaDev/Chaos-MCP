@@ -120,6 +120,17 @@ function cacheDir(opts?: RunCacheOptions): string {
  * to this index until the next restart, so eviction may retain slightly more
  * than `max`. The cap is a soft resource bound, not a correctness invariant,
  * and `loadRun` still grades every hit against the TTL from the file itself.
+ *
+ * The same staleness covers corrupt-file reaping. Before this change,
+ * `listEntries` re-read the directory on every `evict` and dropped any file it
+ * could not `JSON.parse`, so a corrupt `.json` was cleaned up the next time
+ * ANY run saved. Now that reaping happens only inside `scanEntries`, i.e. only
+ * on the FIRST `evict` this process runs against a given directory — a corrupt
+ * file that appears afterwards (a concurrent writer, a differently-versioned
+ * process sharing the cache dir, a crash mid-write) is invisible to this
+ * process's index and is never reaped by it again before restart. It still
+ * cannot be loaded (`loadRun` parses fresh and fails the same way it always
+ * did), so this is a lost cleanup, not a correctness gap.
  */
 const CACHE_INDEX = new Map<string, Map<string, number>>();
 
@@ -171,10 +182,15 @@ function evict(dir: string, ttlMs: number, max: number, now: number): void {
     if (now - e.createdAt > ttlMs) {
       try {
         rmSync(join(dir, `${e.id}.json`), { force: true });
+        // Only forget it once it is actually gone: `force: true` swallows
+        // ENOENT, but EACCES/EBUSY still throw, and dropping the index entry
+        // regardless would make an undeleted file permanently invisible to
+        // every later `evict` in this process — never retried, and no longer
+        // counting against `max`.
+        CACHE_INDEX.get(dir)?.delete(e.id);
       } catch {
-        /* best-effort */
+        /* best-effort; entry stays in the index so the next evict retries it */
       }
-      CACHE_INDEX.get(dir)?.delete(e.id);
     }
   }
   // Oldest first, with the id breaking a same-millisecond tie. Without the
@@ -187,10 +203,12 @@ function evict(dir: string, ttlMs: number, max: number, now: number): void {
   for (let i = 0; i < live.length - max + 1; i++) {
     try {
       rmSync(join(dir, `${live[i].id}.json`), { force: true });
+      // See the matching comment in the TTL loop above: only forget an entry
+      // once the file is actually gone.
+      CACHE_INDEX.get(dir)?.delete(live[i].id);
     } catch {
-      /* best-effort */
+      /* best-effort; entry stays in the index so the next evict retries it */
     }
-    CACHE_INDEX.get(dir)?.delete(live[i].id);
   }
 }
 
