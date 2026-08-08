@@ -712,6 +712,38 @@ describe('estimateAudit withTiming', () => {
     expect(result.recommendation).toContain('baseline test run');
   });
 
+  it('does not claim a baseline that outran only the estimation cap misses the budget', async () => {
+    // The DEFAULT path: `estimate-handler.ts` resolves `timeoutMs` to
+    // DEFAULT_TIMEOUT_MS (300_000) when nothing is configured, while the
+    // baseline itself is capped at ESTIMATE_TIMEOUT_MS (60_000) so the estimate
+    // cannot cost more than a minute. Blowing the CAP says nothing about the
+    // BUDGET — a 90-second suite with a handful of mutants fits 300_000
+    // comfortably — so `fitsBudget` must stay unset rather than assert a
+    // verdict from evidence that does not support it. The budget is still
+    // reported, and the recommendation states only what happened.
+    mockRunShell.mockRejectedValue(
+      new ExecFailureError(
+        { stdout: '', stderr: '', exit: null, signal: 'SIGTERM', code: 'TIMEOUT' },
+        'Command timed out after 60000ms: npx vitest',
+      ),
+    );
+
+    const result = await estimateAudit({
+      absFile: '/ws/src/a.ts',
+      relFile: 'src/a.ts',
+      projectType: 'typescript',
+      workDir: '/sandbox',
+      withTiming: true,
+      env: baseEnv(),
+      timeoutMs: 300_000,
+    });
+
+    expect(result.budgetMs).toBe(300_000);
+    expect(result.fitsBudget).toBeUndefined();
+    expect(result.recommendation).toContain('60000ms estimation cap');
+    expect(result.recommendation).not.toContain('cannot fit this budget');
+  });
+
   it('falls back to "timing unavailable" for a baseline timeout when no budget was given', async () => {
     // budgetMs === undefined means there is nothing to grade against: the
     // TIMEOUT branch must fall through to the pre-existing note rather than

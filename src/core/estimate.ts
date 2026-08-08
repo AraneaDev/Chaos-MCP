@@ -25,6 +25,12 @@ export interface EstimateResult {
   concurrency?: number;
   timingConfidence?: 'low' | 'medium';
   budgetMs?: number;
+  /**
+   * Whether the audit is expected to fit `budgetMs`. Absent means NOT GRADED —
+   * either no budget was configured, or the baseline could not be timed (it
+   * outran the 60 s estimation cap while the budget is larger, so the evidence
+   * says nothing about the budget). `recommendation` still explains the case.
+   */
   fitsBudget?: boolean;
   recommendation?: string;
   note: string;
@@ -287,16 +293,35 @@ async function applyTiming(result: EstimateResult, opts: EstimateOptions): Promi
     // branch unreachable for the timing phase, so a client that cancelled
     // mid-baseline got a SUCCESSFUL estimate back for work it had cancelled.
     if (isCancel(err)) throw err;
-    // A baseline killed by its own cap IS a result: one unmutated run of the
-    // suite already costs more than the cap, so the audit — which runs it once
-    // per mutant — cannot fit any budget at or below it.
+    // A baseline killed by its own cap IS a result, but only a VERDICT when the
+    // cap is at least the budget: then one unmutated run of the suite already
+    // costs more than the whole budget, so the audit — which runs the suite once
+    // per mutant — cannot fit it, and `fitsBudget: false` is a fact.
+    //
+    // On the DEFAULT path the two differ: `timeoutMs` resolves to 300_000 while
+    // the cap stays at ESTIMATE_TIMEOUT_MS (60_000), so a 90-second suite blows
+    // the cap and still fits the budget comfortably. Claiming `fitsBudget:
+    // false` there asserts a verdict from evidence that has nothing to do with
+    // the budget — the same defect class the rest of this pass exists to remove.
+    // `fitsBudget` is left UNSET in that case (the tool's own "not measured"
+    // signal, the same shape a missing baseline command produces) and the
+    // recommendation says only what actually happened.
     if (err instanceof ExecFailureError && err.code === 'TIMEOUT' && budgetMs !== undefined) {
       result.budgetMs = budgetMs;
-      result.fitsBudget = false;
+      if (baselineCapMs >= budgetMs) {
+        result.fitsBudget = false;
+        result.recommendation =
+          `The baseline test run alone exceeded ${baselineCapMs}ms, so a mutation audit — which runs ` +
+          `the suite once per mutant — cannot fit this budget. Speed up or scope down the test suite ` +
+          `(cosmicray.testSelection, a smaller lineScope/diffBase), or raise timeoutMs.`;
+        return;
+      }
       result.recommendation =
-        `The baseline test run alone exceeded ${baselineCapMs}ms, so a mutation audit — which runs ` +
-        `the suite once per mutant — cannot fit this budget. Speed up or scope down the test suite ` +
-        `(cosmicray.testSelection, a smaller lineScope/diffBase), or raise timeoutMs.`;
+        `The baseline test run alone exceeded the ${baselineCapMs}ms estimation cap, so its duration ` +
+        `could not be measured and no timing estimate was produced. A suite that slow makes a mutation ` +
+        `audit — which runs it once per mutant — expensive against the ${budgetMs}ms budget; speed up ` +
+        `or scope down the test suite (cosmicray.testSelection, a smaller lineScope/diffBase) before ` +
+        `committing to a full run.`;
       return;
     }
     result.note += ' (timing unavailable)';
