@@ -519,6 +519,29 @@ describe('TypeScriptEngine', () => {
     expect(mockRunShell.mock.calls[0]?.[1] as string[]).toContain('src/large.ts');
   });
 
+  it('runs unbatched, covering every hunk in one --mutate argument, when there are more ranges than the budget can start', async () => {
+    // 25 diff-hunk-sized ranges (5 lines each) at the DEFAULT 300s budget: only
+    // 20 startups are affordable, so planLineBatches now returns [] instead of
+    // planning 25 batches destined to time out before a single one completes.
+    // A call-count assertion alone would not prove the hunks survived the
+    // fallback — the JSON report is what the caller actually gets scored on,
+    // so this asserts every range reached Stryker's --mutate argument.
+    const ranges = Array.from({ length: 25 }, (_, i) => ({ start: i * 10 + 1, end: i * 10 + 5 }));
+    mockReadFileSync.mockReturnValue(makeJsonReport([]));
+    mockRunShell.mockResolvedValue(makeExecResult());
+
+    await engine.run('src/large.ts', {
+      workDir: '/sb',
+      testRunner: 'command',
+      lineRanges: ranges,
+    });
+
+    expect(mockRunShell).toHaveBeenCalledTimes(1);
+    expect(mutateValueOf(mockRunShell.mock.calls[0]?.[1] as string[])).toBe(
+      ranges.map((r) => `src/large.ts:${r.start}-${r.end}`).join(','),
+    );
+  });
+
   it('does not batch large files for native runners or command-runner dry runs', async () => {
     mockReadFileSync.mockImplementation((p: PathOrFileDescriptor) =>
       p === '/sb/src/large.ts'
@@ -1989,6 +2012,29 @@ describe('planLineBatches: budget awareness', () => {
 
   it('keeps the line-count plan when no budget is supplied', () => {
     expect(planLineBatches(2000).length).toBe(25);
+  });
+
+  it('falls back to unbatched when there are more ranges than the budget can start (one per diff hunk)', () => {
+    // 25 five-line hunks: `spanned`-based sizing would still try to fund
+    // ceil(125/80) = 2 "batches" worth of step, but each of the 25 ranges
+    // emits its OWN batch regardless of step, so the true floor is 25 — and a
+    // 300s budget only affords floor(300000 / 15000) = 20 startups. This is
+    // exactly the "0 of N planned batches completed" regression: without the
+    // range-count check, this used to plan 25 unfundable batches instead of
+    // falling back to one invocation that covers every hunk.
+    const ranges = Array.from({ length: 25 }, (_, i) => ({ start: i * 10 + 1, end: i * 10 + 5 }));
+    expect(planLineBatches(0, ranges, 300_000)).toEqual([]);
+  });
+
+  it('still batches multiple ranges normally when the budget can start one per range', () => {
+    // 3 ranges, each well under COMMAND_BATCH_LINES so each yields exactly one
+    // batch: a budget that can start 3 (45s / 15s) should batch, not fall back.
+    const ranges = [
+      { start: 1, end: 30 },
+      { start: 100, end: 129 },
+      { start: 200, end: 229 },
+    ];
+    expect(planLineBatches(0, ranges, 45_000)).toEqual(ranges);
   });
 });
 

@@ -38,11 +38,25 @@ export const MIN_BATCH_BUDGET_MS = COMMAND_RUNNER_STARTUP_MS + 5_000;
 /**
  * Split requested physical line ranges into bounded command-runner batches.
  *
- * `budgetMs` caps the batch COUNT at what the wall-clock can actually fund, and
- * widens each batch to compensate so the requested span is still covered end to
- * end. Fewer, larger batches strictly dominate here: the per-batch cost is fixed
- * (one Stryker startup) and the per-line cost is not. Omitting `budgetMs` keeps
- * the pure line-count plan, which is what the unit tests of the geometry use.
+ * `budgetMs` caps the batch count at what the wall-clock can actually fund.
+ * For a single requested range (or the whole-file span, which is always one
+ * range), that means widening the batch to compensate so the requested span
+ * is still covered end to end with fewer, larger batches — the per-batch cost
+ * is fixed (one Stryker startup) and the per-line cost is not, so fewer,
+ * larger batches strictly dominate.
+ *
+ * For MULTIPLE requested ranges (one per diff hunk, typically) the same trick
+ * does not work: ranges are never merged into a shared batch, so the emitting
+ * loop below produces at least one batch per range regardless of `step`. The
+ * true minimum batch count is therefore `requested.length`, not something
+ * `spanned`-based sizing can shrink below. When the budget cannot afford one
+ * startup per range, this returns `[]` rather than planning a count it cannot
+ * honour — the caller reads that as "run unbatched," and a single invocation
+ * whose `--mutate` argument comma-joins every range covers all of them in the
+ * one startup the budget can actually afford.
+ *
+ * Omitting `budgetMs` keeps the pure line-count plan, which is what the unit
+ * tests of the geometry use.
  */
 export function planLineBatches(
   totalLines: number,
@@ -69,6 +83,15 @@ export function planLineBatches(
   const affordable = budgetMs === undefined ? Infinity : Math.floor(budgetMs / MIN_BATCH_BUDGET_MS);
   // One affordable batch is not a batched run — the caller runs unbatched.
   if (affordable < 2) return [];
+  // Every requested range emits at least one batch of its own (below), so the
+  // batch count can never go under `requested.length` no matter how `step` is
+  // chosen. If the budget can't afford one startup per range, don't plan a
+  // count `spanned`-sizing would silently violate — fall back to unbatched,
+  // same as the `affordable < 2` case above. For the single-range / whole-file
+  // callers this is always false here, since `affordable >= 2` was just
+  // checked and `requested.length` is 1 in both those cases — so this cannot
+  // change the single-range plan.
+  if (requested.length > affordable) return [];
   const byLines = Math.ceil(spanned / COMMAND_BATCH_LINES);
   const count = Math.min(byLines, affordable);
   const step = Math.max(COMMAND_BATCH_LINES, Math.ceil(spanned / count));
