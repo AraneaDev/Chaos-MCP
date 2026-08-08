@@ -59,7 +59,7 @@ import type { PathLike } from 'fs';
 import { cp, readdir } from 'fs/promises';
 import { tmpdir } from 'os';
 import { resolve, join, sep } from 'path';
-import { createSandbox, SandboxContext } from '../utils/sandbox.js';
+import { createSandbox, SandboxContext, _resetWorkspaceSizeCache } from '../utils/sandbox.js';
 import { safeSymlink } from '../utils/sandbox/dependency-link.js';
 import { buildCopyPolicy, SYMLINK_DIRS } from '../utils/sandbox/copy-policy.js';
 import { ENGINE_REGISTRY, dependencyDirectories } from '../engines/registry.js';
@@ -104,6 +104,12 @@ describe('createSandbox', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // Most tests in this file provision the same TEST_PROJECT root, and
+    // SIZE_CACHE is module-level state that outlives any one test — without
+    // this, the first test in file order to walk TEST_PROJECT would poison
+    // every later test that provisions it within the 60s TTL (they'd get its
+    // memoised size/warn outcome instead of exercising their own mocks).
+    _resetWorkspaceSizeCache();
     Reflect.deleteProperty(process.env, ALLOWED_ROOTS_ENV);
     mockTmpdir.mockReturnValue('/tmp');
     mockMkdtempSync.mockReturnValue(SANDBOX_DIR);
@@ -883,6 +889,29 @@ describe('createSandbox', () => {
     expect(warnCalls).toHaveLength(0);
   });
 
+  it('walks the workspace once for repeated provisions of the same root', async () => {
+    // Brief's snippet used a bare '/ws' root; the C2 cwd-boundary guard (added
+    // by a later task) rejects any root outside process.cwd(), so this uses
+    // TEST_PROJECT — the same in-cwd root every other test in this file uses —
+    // and stubs existsSync the way sibling tests do so createSandbox succeeds
+    // for both the target-under-math.ts and the target-under-b.ts provisions.
+    _resetWorkspaceSizeCache();
+    vi.mocked(readdir).mockResolvedValue([] as never);
+    mockExistsSync.mockImplementation((path: PathLike) => {
+      return (
+        path === `${SANDBOX_DIR}/src/a.ts` ||
+        path === `${SANDBOX_DIR}/src/b.ts` ||
+        path === TEST_PROJECT_NODE_MODULES
+      );
+    });
+
+    await createSandbox('src/a.ts', TEST_PROJECT);
+    const afterFirst = vi.mocked(readdir).mock.calls.length;
+    await createSandbox('src/b.ts', TEST_PROJECT);
+
+    expect(vi.mocked(readdir).mock.calls.length).toBe(afterFirst);
+  });
+
   // ─── Exit handler signals ───────────────────────────────────────────────
 
   it('registers handlers for SIGTERM, SIGINT, SIGHUP, and SIGQUIT', async () => {
@@ -1254,6 +1283,10 @@ describe('createSandbox', () => {
     expect(mockedWarn.mock.calls.filter((c) => String(c[0]).includes('MB'))).toHaveLength(0);
 
     // 300MB → warns, quoting the fixed threshold rather than the measured size.
+    // Reset the memo: both provisions target the same TEST_PROJECT root, and
+    // without this the second call would reuse the first's cached (200MB,
+    // not-truncated) answer instead of re-walking with the mocks below.
+    _resetWorkspaceSizeCache();
     mockedWarn.mockClear();
     mockReaddir.mockResolvedValueOnce([
       { name: 'big.bin', isDirectory: () => false, isFile: () => true },
@@ -1304,6 +1337,34 @@ describe('createSandbox', () => {
     // The abort escaped the size estimate's best-effort catch rather than being
     // swallowed and reported as "size 0".
     expect(mockMkdtempSync).not.toHaveBeenCalled();
+  });
+
+  it('does not cache a size for a walk that was aborted', async () => {
+    // A throw must not reach SIZE_CACHE.set — otherwise a cancelled walk would
+    // poison the memo with a bogus entry (e.g. `{ bytes: 0, truncated: false }`)
+    // that a LATER, uncancelled provision of the same root would then trust
+    // instead of re-walking.
+    const controller = new AbortController();
+    mockMkdtempSync.mockClear();
+    mockExistsSync.mockImplementation(
+      (path: PathLike) => path === `${SANDBOX_DIR}/src/utils/math.ts` || path === TEST_PROJECT,
+    );
+    mockReaddir.mockImplementationOnce((() => {
+      controller.abort();
+      return Promise.resolve([{ name: 'a', isDirectory: () => true, isFile: () => false }]);
+    }) as never);
+
+    await expect(
+      createSandbox('src/utils/math.ts', TEST_PROJECT, undefined, { signal: controller.signal }),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+    const callsAfterAbort = mockReaddir.mock.calls.length;
+
+    // A fresh, non-aborted provision of the SAME root must walk again rather
+    // than reusing whatever the aborted call would have cached — if the abort
+    // had populated SIZE_CACHE, readdir would NOT be called again here.
+    mockReaddir.mockResolvedValue([] as never);
+    await expect(createSandbox('src/utils/math.ts', TEST_PROJECT)).resolves.toBeDefined();
+    expect(mockReaddir.mock.calls.length).toBeGreaterThan(callsAfterAbort);
   });
 
   it('observes an abort flipped by an interleaved task mid-walk (Med#17)', async () => {

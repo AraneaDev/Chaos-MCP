@@ -146,6 +146,31 @@ function fileSize(path: string): number {
 }
 
 /**
+ * Recent workspace-size answers, keyed by absolute workspace root.
+ *
+ * The walk `statSync`s every file in the tree, and each of those is a blocking
+ * syscall on the MCP server's event loop. It runs once per PROVISION, so a
+ * 25-file `triage_test_coverage` sweep performed 25 full walks of the same tree
+ * before doing any mutation work — degrading exactly the two things the server
+ * promises to keep responsive during a sweep, progress notifications and
+ * cancellation.
+ *
+ * The result drives one advisory `warn()`, so a short TTL is ample: a workspace
+ * does not cross the 200MB threshold mid-sweep in a way anyone needs told twice.
+ *
+ * Keyed by root only, NOT by `ignorePatterns` — a caller who changes
+ * `ignorePatterns` within the TTL gets the previous answer. That is acceptable
+ * for an advisory warning.
+ */
+const SIZE_CACHE = new Map<string, { at: number; bytes: number; truncated: boolean }>();
+const SIZE_CACHE_TTL_MS = 60_000;
+
+/** Reset the workspace-size memo. @internal Exported for testing only. */
+export function _resetWorkspaceSizeCache(): void {
+  SIZE_CACHE.clear();
+}
+
+/**
  * Estimate the size of a directory tree by summing file sizes.
  * Used as a pre-copy guard to warn on very large workspaces.
  *
@@ -449,17 +474,25 @@ export async function createSandbox(
   // must not match segments of the workspace root's own path). Its
   // `skippedHeavyDirs` is deliberately discarded — only the copy's set drives
   // the symlink step.
-  const size = await estimateWorkspaceSize(
-    absoluteWorkspace,
-    buildCopyPolicy({
-      absoluteTarget,
-      symlinkDirs,
-      userExcludes: ignorePatterns,
-      forceIncludeTarget: false,
-      matchAncestorSegments: false,
-    }),
-    options?.signal,
-  );
+  const cached = SIZE_CACHE.get(absoluteWorkspace);
+  const size =
+    cached !== undefined && Date.now() - cached.at < SIZE_CACHE_TTL_MS
+      ? cached
+      : {
+          at: Date.now(),
+          ...(await estimateWorkspaceSize(
+            absoluteWorkspace,
+            buildCopyPolicy({
+              absoluteTarget,
+              symlinkDirs,
+              userExcludes: ignorePatterns,
+              forceIncludeTarget: false,
+              matchAncestorSegments: false,
+            }),
+            options?.signal,
+          )),
+        };
+  SIZE_CACHE.set(absoluteWorkspace, size);
   if (size.truncated || size.bytes > MAX_WORKSPACE_SIZE_BYTES) {
     warn(
       `Workspace exceeds ${MAX_WORKSPACE_SIZE_BYTES / 1024 / 1024}MB — sandbox copy may be slow. ` +
