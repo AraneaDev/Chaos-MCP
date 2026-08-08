@@ -370,6 +370,25 @@ describe('validateConfig', () => {
     expect(warnings[0]).toContain('not found');
   });
 
+  it('warns that a stryker.mutatorAllowlist will be ignored', () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue(JSON.stringify({ stryker: { mutatorAllowlist: ['X'] } }));
+
+    const { warnings } = validateConfig('/tmp/config.json');
+
+    expect(warnings.some((w) => w.includes('stryker.mutatorAllowlist'))).toBe(true);
+    expect(warnings.some((w) => w.includes('NOT SUPPORTED'))).toBe(true);
+  });
+
+  it('warns that a global mutatorAllowlist will be ignored', () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue(JSON.stringify({ mutatorAllowlist: ['X'] }));
+
+    const { warnings } = validateConfig('/tmp/config.json');
+
+    expect(warnings.some((w) => w.includes('NOT SUPPORTED'))).toBe(true);
+  });
+
   it('warns about unknown top-level keys', () => {
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue(JSON.stringify({ bogusKey: 'value', anotherBogus: 42 }));
@@ -499,7 +518,7 @@ describe('validateConfig', () => {
     );
   });
 
-  it('warns about non-array mutatorAllowlist in stryker section', () => {
+  it('warns about a non-array mutatorAllowlist in stryker section (unconditionally NOT SUPPORTED)', () => {
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue(
       JSON.stringify({ stryker: { mutatorAllowlist: 'StringLiteral' } }),
@@ -507,7 +526,7 @@ describe('validateConfig', () => {
 
     const { warnings } = validateConfig('/tmp/config.json');
     expect(
-      warnings.some((w) => w.includes('mutatorAllowlist') && w.includes('must be an array')),
+      warnings.some((w) => w.includes('stryker.mutatorAllowlist') && w.includes('NOT SUPPORTED')),
     ).toBe(true);
   });
 
@@ -1747,52 +1766,92 @@ describe('silently-dropped global fields now warn', () => {
     expect(loadConfig('/tmp/config.json').defaultMaxFiles).toBeUndefined();
   });
 
-  it.each(['mutatorAllowlist', 'mutatorDenylist'] as const)('warns about a non-array %s', (key) => {
-    setConfig({ [key]: 'ConditionalExpression' });
+  it('warns about a non-array mutatorDenylist', () => {
+    setConfig({ mutatorDenylist: 'ConditionalExpression' });
     expect(validateConfig('/tmp/config.json').warnings).toEqual([
-      `${key} must be an array of strings, got string.`,
+      'mutatorDenylist must be an array of strings, got string.',
     ]);
-    expect(loadConfig('/tmp/config.json')[key]).toBeUndefined();
+    expect(loadConfig('/tmp/config.json').mutatorDenylist).toBeUndefined();
   });
 
-  it.each(['mutatorAllowlist', 'mutatorDenylist'] as const)(
-    'warns about non-string entries in %s while still keeping the strings',
-    (key) => {
-      setConfig({ [key]: ['ConditionalExpression', 42, null] });
-      expect(validateConfig('/tmp/config.json').warnings).toEqual([
-        `${key} must be an array of strings, got array with invalid entries.`,
-      ]);
-      // The parser is unchanged: the valid entries survive the filter as before.
-      expect(loadConfig('/tmp/config.json')[key]).toEqual(['ConditionalExpression']);
-    },
-  );
+  it('warns about non-string entries in mutatorDenylist while still keeping the strings', () => {
+    setConfig({ mutatorDenylist: ['ConditionalExpression', 42, null] });
+    expect(validateConfig('/tmp/config.json').warnings).toEqual([
+      'mutatorDenylist must be an array of strings, got array with invalid entries.',
+    ]);
+    // The parser is unchanged: the valid entries survive the filter as before.
+    expect(loadConfig('/tmp/config.json').mutatorDenylist).toEqual(['ConditionalExpression']);
+  });
 
-  // ── The parser's accept set is untouched: valid values still parse, silently. ──
+  // ── mutatorAllowlist is unconditional: unlike every other rule in this
+  //    describe, it warns even for well-formed input, because the value is
+  //    parsed, stored, and then never read (Task 14 / M1). ──
 
-  it('parses valid defaultMaxFiles and mutator lists without any warning', () => {
+  it('warns that a non-array mutatorAllowlist is NOT SUPPORTED (same phrase as any other shape)', () => {
+    setConfig({ mutatorAllowlist: 'ConditionalExpression' });
+    expect(validateConfig('/tmp/config.json').warnings).toEqual([
+      'mutatorAllowlist is NOT SUPPORTED (StrykerJS v9 has no allowlist) and is ignored — use mutatorDenylist instead.',
+    ]);
+    expect(loadConfig('/tmp/config.json').mutatorAllowlist).toBeUndefined();
+  });
+
+  it('warns about mutatorAllowlist with non-string entries, and still keeps the strings', () => {
+    setConfig({ mutatorAllowlist: ['ConditionalExpression', 42, null] });
+    expect(validateConfig('/tmp/config.json').warnings).toEqual([
+      'mutatorAllowlist is NOT SUPPORTED (StrykerJS v9 has no allowlist) and is ignored — use mutatorDenylist instead.',
+    ]);
+    // The parser is unchanged: the valid entries still survive the filter.
+    expect(loadConfig('/tmp/config.json').mutatorAllowlist).toEqual(['ConditionalExpression']);
+  });
+
+  // ── The parser's accept set is untouched: valid values still parse, silently
+  //    (except mutatorAllowlist, which now always warns — see above). ──
+
+  it('parses valid defaultMaxFiles and mutatorDenylist without any warning', () => {
     setConfig({
       defaultMaxFiles: 25,
-      mutatorAllowlist: ['ConditionalExpression', 'ArithmeticOperator'],
       mutatorDenylist: ['StringLiteral'],
     });
     const { config, warnings } = validateConfig('/tmp/config.json');
     expect(warnings).toEqual([]);
     expect(config.defaultMaxFiles).toBe(25);
+    expect(config.mutatorDenylist).toEqual(['StringLiteral']);
+  });
+
+  it('warns about mutatorAllowlist even when it is well-formed, alongside a silent mutatorDenylist', () => {
+    setConfig({
+      mutatorAllowlist: ['ConditionalExpression', 'ArithmeticOperator'],
+      mutatorDenylist: ['StringLiteral'],
+    });
+    const { config, warnings } = validateConfig('/tmp/config.json');
+    expect(warnings).toEqual([
+      'mutatorAllowlist is NOT SUPPORTED (StrykerJS v9 has no allowlist) and is ignored — use mutatorDenylist instead.',
+    ]);
     expect(config.mutatorAllowlist).toEqual(['ConditionalExpression', 'ArithmeticOperator']);
     expect(config.mutatorDenylist).toEqual(['StringLiteral']);
   });
 
-  it('stays silent for defaultMaxFiles at its lower boundary and for empty lists', () => {
-    setConfig({ defaultMaxFiles: 1, mutatorAllowlist: [], mutatorDenylist: [] });
+  it('stays silent for defaultMaxFiles at its lower boundary and for an empty mutatorDenylist', () => {
+    setConfig({ defaultMaxFiles: 1, mutatorDenylist: [] });
     const { config, warnings } = validateConfig('/tmp/config.json');
     expect(warnings).toEqual([]);
     expect(config.defaultMaxFiles).toBe(1);
-    expect(config.mutatorAllowlist).toEqual([]);
     expect(config.mutatorDenylist).toEqual([]);
   });
 
-  // ── The nine gaps that stay open must STAY open (a new warning here is a
-  //    `--validate-config --strict` exit 2 for an existing user). ──
+  it('warns about an empty mutatorAllowlist too — a well-formed empty array still does nothing', () => {
+    setConfig({ mutatorAllowlist: [] });
+    const { config, warnings } = validateConfig('/tmp/config.json');
+    expect(warnings).toEqual([
+      'mutatorAllowlist is NOT SUPPORTED (StrykerJS v9 has no allowlist) and is ignored — use mutatorDenylist instead.',
+    ]);
+    expect(config.mutatorAllowlist).toEqual([]);
+  });
+
+  // ── The eight gaps that stay open must STAY open (a new warning here is a
+  //    `--validate-config --strict` exit 2 for an existing user). mutatorAllowlist
+  //    used to be the ninth; Task 14 closed it, so it is asserted separately above
+  //    instead of living in this "stays silent" list. ──
 
   it.each([
     [{ defaultTimeoutMs: -1 }],
@@ -1802,7 +1861,6 @@ describe('silently-dropped global fields now warn', () => {
     [{ infection: { timeoutMs: 1000, testFrameworkOptions: '' } }],
     [{ cosmicray: { timeoutMs: 1000, testSelection: [] } }],
     [{ cosmicray: { timeoutMs: 1000, excludeOperators: [] } }],
-    [{ stryker: { timeoutMs: 1000, mutatorAllowlist: [] } }],
     [{ stryker: { timeoutMs: 1000, mutatorDenylist: [] } }],
   ])('leaves the historical gap %j silent', (raw) => {
     setConfig(raw);

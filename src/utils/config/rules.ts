@@ -92,6 +92,17 @@ const describeStringList = (value: unknown): string | undefined =>
     ? undefined
     : `must be an array of strings, got ${Array.isArray(value) ? 'array with invalid entries' : typeof value}`;
 
+/**
+ * `mutatorAllowlist` is accepted by the parser and then deliberately never read
+ * (`buildRunOptions` in audit/run-options.ts: "sourcing it here (from args OR
+ * config) would make every TS run throw"). That combination is invisible to
+ * `--validate-config`, whose whole job is to report what the parser dropped —
+ * this is a value the parser KEEPS and the consumer ignores. Wording matches
+ * the tool-argument rejection and the `chaos://config-schema` resource.
+ */
+const ALLOWLIST_UNSUPPORTED_PHRASE =
+  'is NOT SUPPORTED (StrykerJS v9 has no allowlist) and is ignored — use mutatorDenylist instead';
+
 /** Phrase shared by every over-the-cap timeout warning. */
 const overCapPhrase = (value: unknown): string =>
   `must be <= ${MAX_TIMEOUT_MS} (the largest delay a timer accepts; larger values are clamped to 1ms and abort the run immediately), got ${numberOrType(value)}`;
@@ -199,10 +210,11 @@ export const GLOBAL_FIELD_RULES: readonly FieldRule[] = [
     key: 'mutatorAllowlist',
     check: Array.isArray,
     coerce: (v) => (v as unknown[]).filter((entry) => typeof entry === 'string'),
-    // GAP CLOSED (was: a non-array was dropped, and an array of non-strings was
-    // filtered, without a word either way). `check` is untouched — every array
-    // the parser took before is still taken, and an all-string array is silent.
-    describe: describeStringList,
+    // `check` is untouched — every array the parser took before is still taken.
+    // Unlike its siblings, `describe` is unconditional: even a well-formed
+    // array of strings is exactly the case that silently does nothing, because
+    // the value is never read (see ALLOWLIST_UNSUPPORTED_PHRASE above).
+    describe: () => ALLOWLIST_UNSUPPORTED_PHRASE,
   },
   {
     key: 'mutatorDenylist',
@@ -290,11 +302,11 @@ export const SECTION_FIELD_RULES: Readonly<Record<string, FieldRule>> = {
     check: Array.isArray,
     coerce: (v) => (v as unknown[]).filter((entry) => typeof entry === 'string'),
     // An all-invalid (or empty) list is stored but does not keep the section alive.
+    // `counts` is untouched by the describe change below.
     counts: (v) => (v as string[]).length > 0,
-    // HISTORICAL GAP: an empty/all-filtered list counts as a "valid field" here,
-    // so a section holding only that one is dropped without the usual
-    // "has no valid fields" warning. Preserved.
-    describe: (v) => (Array.isArray(v) ? undefined : `must be an array, got ${typeof v}`),
+    // Unconditional, like the global rule above: a well-formed array is exactly
+    // the case that silently does nothing, so it warns too.
+    describe: () => ALLOWLIST_UNSUPPORTED_PHRASE,
   },
   mutatorDenylist: {
     key: 'mutatorDenylist',
