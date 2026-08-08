@@ -181,7 +181,22 @@ export async function applyAndCountSuppressions(
     // Only meaningful for a run that enumerated the whole file: a lineScope- or
     // diffBase-scoped audit legitimately generates no mutant for a suppressed
     // line outside its range, and calling that an orphan would cry wolf.
-    counts.orphaned = result.scopeKind === 'whole-file' ? filtered.orphanedKeys.length : 0;
+    //
+    // TRANSITIONAL, twin of `hasNoMutableLogic`'s conjunct 2 in
+    // `core/score-semantics.ts` (see the note there): only the TypeScript
+    // engine emits `scopeKind` today, so gating on `=== 'whole-file'` alone
+    // would hard-wire this counter to 0 for every Rust, Python and PHP run —
+    // exactly the Rust-upgrade case this whole feature exists for. The
+    // fallback (`scopeKind` unset AND no `scopeNote`) is safe rather than an
+    // approximation: Python, Rust and PHP set `supportsLineScope: false` in
+    // `engines/registry.ts`, so a run of theirs is ALWAYS whole-file and there
+    // is no scoped case for the fallback to misjudge. TypeScript, the one
+    // engine that can be scoped, always sets `scopeKind` explicitly and so
+    // never reaches it. Delete this fallback alongside that one once every
+    // engine sets `scopeKind`.
+    const isWholeFileRun =
+      result.scopeKind === 'whole-file' || (result.scopeKind === undefined && !result.scopeNote);
+    counts.orphaned = isWholeFileRun ? filtered.orphanedKeys.length : 0;
   }
   return { ok: true, result, counts };
 }

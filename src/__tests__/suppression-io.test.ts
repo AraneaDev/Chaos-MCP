@@ -216,4 +216,89 @@ describe('applyAndCountSuppressions', () => {
     // that line retires the suppression instead of re-pointing it at whatever replaces it.
     expect(written.entries[REL][0].fingerprint).toBe(LINE_1_FINGERPRINT);
   });
+
+  describe('orphaned count', () => {
+    // Every case below stores one entry that verifies fine (fingerprint matches
+    // line 1, so it lands in `verdict.applied`) but names a mutator
+    // ('EqualityOperator') the result's only vulnerability does not carry (it is
+    // 'ConditionalExpression'). That makes the applied key match nothing —
+    // exactly the orphan case — regardless of scope, so these four tests isolate
+    // the gate in `applyAndCountSuppressions` that decides whether to report it.
+    function writeOrphanEntry(): void {
+      writeSuppressions([
+        { line: 1, mutator: 'EqualityOperator', reason: 'gone', fingerprint: LINE_1_FINGERPRINT },
+      ]);
+    }
+
+    it('reports the orphan count for a whole-file (TypeScript-shaped) run', async () => {
+      writeOrphanEntry();
+
+      const outcome = await applyAndCountSuppressions(
+        {},
+        { ...result(), scopeKind: 'whole-file' },
+        undefined,
+        ws,
+        REL,
+        undefined,
+      );
+
+      expect(outcome.ok).toBe(true);
+      if (!outcome.ok) return;
+      expect(outcome.counts.orphaned).toBe(1);
+    });
+
+    it('suppresses the orphan count for a scoped run', async () => {
+      writeOrphanEntry();
+
+      const outcome = await applyAndCountSuppressions(
+        {},
+        { ...result(), scopeKind: 'scoped' },
+        undefined,
+        ws,
+        REL,
+        undefined,
+      );
+
+      expect(outcome.ok).toBe(true);
+      if (!outcome.ok) return;
+      expect(outcome.counts.orphaned).toBe(0);
+    });
+
+    it('falls back to whole-file for a result that never sets scopeKind', async () => {
+      // Rust, Python and PHP never set `scopeKind` at all — only TypeScript
+      // does — and since none of them supports line-scoping
+      // (`supportsLineScope: false` in engines/registry.ts) every run of
+      // theirs IS whole-file. Without the TRANSITIONAL fallback this case
+      // silently hard-wires `orphaned` to 0 for three of the four engines,
+      // including the Rust one the whole feature exists for.
+      writeOrphanEntry();
+
+      const outcome = await applyAndCountSuppressions({}, result(), undefined, ws, REL, undefined);
+
+      expect(outcome.ok).toBe(true);
+      if (!outcome.ok) return;
+      expect(outcome.counts.orphaned).toBe(1);
+    });
+
+    it('does not report orphans for a scopeNote-carrying result with no scopeKind', async () => {
+      // The other side of the fallback: a scopeKind-less zero that DOES carry a
+      // scopeNote is the one non-enumerating shape the fallback must still
+      // exclude (the twin of hasNoMutableLogic's same exclusion for StrykerJS
+      // dryRun).
+      writeOrphanEntry();
+
+      const outcome = await applyAndCountSuppressions(
+        {},
+        { ...result(), scopeNote: 'Partial audit: 1 of 3.' },
+        undefined,
+        ws,
+        REL,
+        undefined,
+      );
+
+      expect(outcome.ok).toBe(true);
+      if (!outcome.ok) return;
+      expect(outcome.counts.orphaned).toBe(0);
+    });
+  });
 });
