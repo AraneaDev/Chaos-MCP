@@ -962,6 +962,50 @@ describe('createSandbox', () => {
     expect(filter(`${TEST_PROJECT}/src/dist-utils.js`)).toBe(true);
   });
 
+  it('warns when an ignorePattern suppresses a dependency directory that exists on the host', async () => {
+    // Before entry-level linking, listing `node_modules` in ignorePatterns only
+    // excluded it from the COPY — linkHeavyDirs symlinked it back in regardless,
+    // so the entry was a harmless no-op that still yielded a working sandbox. It
+    // now suppresses the link too, and createSandbox still resolves normally: the
+    // first thing the user sees is the engine's "cannot find module", reported as
+    // a finding about the audited code. `linkDependencyEntries` warns loudly for
+    // the identical outcome one call frame away; this path must not be silent.
+    const { warn } = await import('../utils/logger.js');
+    const mockedWarn = vi.mocked(warn);
+    mockedWarn.mockClear();
+
+    await createSandbox('src/utils/math.ts', TEST_PROJECT, ['node_modules']);
+
+    // Nothing was linked: linkDependencyEntries reads the host dir first, and it
+    // is the only caller of readdirSync on this path.
+    expect(mockReaddirSync).not.toHaveBeenCalled();
+    expect(mockedWarn).toHaveBeenCalledWith(
+      expect.stringContaining(`excludes the dependency directory "${TEST_PROJECT_NODE_MODULES}"`),
+    );
+    expect(mockedWarn).toHaveBeenCalledWith(
+      expect.stringContaining('not a bug in the audited code'),
+    );
+  });
+
+  it('stays quiet when an ignorePattern names a dependency directory the host does not have', async () => {
+    // A Python project excluding "vendor" has nothing to lose and must not be
+    // told it broke its own sandbox.
+    const { warn } = await import('../utils/logger.js');
+    const mockedWarn = vi.mocked(warn);
+    mockedWarn.mockClear();
+    mockExistsSync.mockImplementation((path: PathLike) => {
+      return path === `${SANDBOX_DIR}/src/utils/math.ts`;
+    });
+
+    await createSandbox('src/utils/math.ts', TEST_PROJECT, ['vendor']);
+
+    expect(
+      mockedWarn.mock.calls.filter((c) =>
+        String(c[0]).includes('excludes the dependency directory'),
+      ),
+    ).toHaveLength(0);
+  });
+
   // ─── estimateWorkspaceSize error-catch paths ─────────────────────────────
 
   it('estimateWorkspaceSize handles readdir errors gracefully', async () => {

@@ -323,6 +323,35 @@ async function copyWorkspaceTree(
  * again by the nested-occurrence loop below; a nested dir is skipped when any
  * path segment relative to the workspace root matches an exclusion.
  */
+/**
+ * Report an `ignorePatterns` entry that has suppressed a dependency directory.
+ *
+ * Silent is the wrong default here. Before entry-level linking, listing
+ * `node_modules` in `ignorePatterns` only excluded it from the COPY —
+ * `linkHeavyDirs` symlinked it back in regardless, so the entry was a harmless
+ * no-op and a working sandbox came out the other end. It now suppresses the
+ * link too, and `createSandbox` still resolves normally: the first thing the
+ * user sees is the engine's own "cannot find module", reported as a finding
+ * about the audited code. That is the same diagnosis-corrupting failure
+ * `linkDependencyEntries` (sandbox/dependency-link.ts) added its two `warn()`
+ * calls to prevent — one call frame away, and it must not be loud there and
+ * silent here.
+ *
+ * Only fires for a directory that actually EXISTS on the host, so a workspace
+ * that simply has no `vendor/` produces no noise.
+ */
+function warnDependencyExcluded(hostDir: string, pattern: string): void {
+  if (!existsSync(hostDir)) return;
+  warn(
+    `ignorePatterns entry "${pattern}" excludes the dependency directory "${hostDir}", so it is ` +
+      `neither copied into the sandbox nor linked and the sandbox has no dependencies there. ` +
+      `Excluding a dependency directory used to skip only the copy while the directory was linked ` +
+      `back in anyway; it now suppresses both. Drop the pattern (or use sandbox.dependencies to ` +
+      `choose how dependencies are provisioned) — a failure the engine reports next is a ` +
+      `provisioning problem, not a bug in the audited code.`,
+  );
+}
+
 function linkHeavyDirs(
   absoluteWorkspace: string,
   sandboxDir: string,
@@ -336,7 +365,10 @@ function linkHeavyDirs(
     const src = join(absoluteWorkspace, dirName);
     const dst = join(sandboxDir, dirName);
     skippedHeavyDirs.delete(src); // handled above; do not link it twice
-    if (excludes.has(dirName)) continue;
+    if (excludes.has(dirName)) {
+      warnDependencyExcluded(src, dirName);
+      continue;
+    }
     if (existsSync(src) && !(mode === 'share' && existsSync(dst))) materialise(src, dst);
   }
   // Nested occurrences (e.g. workers/typescript/node_modules). Their parent
@@ -344,7 +376,11 @@ function linkHeavyDirs(
   for (const src of skippedHeavyDirs) {
     if (!src.startsWith(absoluteWorkspace + sep)) continue;
     const rel = src.slice(absoluteWorkspace.length + 1);
-    if (rel.split(sep).some((segment) => excludes.has(segment))) continue;
+    const excluded = rel.split(sep).find((segment) => excludes.has(segment));
+    if (excluded !== undefined) {
+      warnDependencyExcluded(src, excluded);
+      continue;
+    }
     if (!existsSync(src)) continue;
     const dst = join(sandboxDir, rel);
     if (mode === 'share' && existsSync(dst)) continue;

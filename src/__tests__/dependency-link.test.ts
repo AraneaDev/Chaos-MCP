@@ -117,6 +117,66 @@ describe('linkDependencyEntries', () => {
     expect(calls).toContainEqual([join(host, 'plain-file.txt'), 'file']);
   });
 
+  it('types a symlinked package entry by what it points AT, not by the link itself', () => {
+    // `Dirent.isDirectory()` is lstat-based, so a `node_modules` entry that is
+    // ITSELF a symlink to a package directory reports `false`. Under pnpm every
+    // entry has that shape and under npm workspaces the first-party packages
+    // do, so all of them were linked `type: 'file'`. POSIX ignores the
+    // argument — which is why CI never saw it — but on Windows with Developer
+    // Mode enabled (no EPERM, so safeSymlink's junction fallback never fires)
+    // a file-symlink pointing at a directory does not resolve as a directory
+    // and module resolution through it fails. That is a regression against the
+    // pre-branch whole-directory link, on a platform the README advertises.
+    const realPkg = join(root, 'packages', 'web');
+    mkdirSync(realPkg, { recursive: true });
+    writeFileSync(join(realPkg, 'index.js'), 'workspace\n');
+    // The npm-workspaces / pnpm shape: node_modules/web -> ../packages/web.
+    realSymlinkSync(realPkg, join(host, 'web'), 'dir');
+    // ...and a symlinked FILE, which must still be typed 'file'.
+    const realFile = join(root, 'real-file.txt');
+    writeFileSync(realFile, 'x\n');
+    realSymlinkSync(realFile, join(host, 'linked-file.txt'), 'file');
+
+    linkDependencyEntries(host, sandbox);
+
+    const calls = mockedSymlinkSync.mock.calls.map((c) => [String(c[0]), c[2]]);
+    expect(calls).toContainEqual([join(host, 'web'), 'dir']);
+    expect(calls).toContainEqual([join(host, 'linked-file.txt'), 'file']);
+    // And the link is functional on this platform either way.
+    expect(readFileSync(join(sandbox, 'web', 'index.js'), 'utf8')).toBe('workspace\n');
+  });
+
+  it('recurses into a symlinked scope directory rather than linking it whole', () => {
+    // Same lstat blind spot one level down: a symlinked `@scope` entry used to
+    // read as a non-directory, so it was linked whole and a NEW scoped install
+    // inside the sandbox would have landed in the host tree through it — the
+    // exact leak `isScopeDir` exists to close.
+    const realScope = join(root, 'store', '@acme');
+    mkdirSync(join(realScope, 'pkg'), { recursive: true });
+    writeFileSync(join(realScope, 'pkg', 'index.js'), 'acme\n');
+    realSymlinkSync(realScope, join(host, '@acme'), 'dir');
+
+    linkDependencyEntries(host, sandbox);
+
+    expect(lstatSync(join(sandbox, '@acme')).isSymbolicLink()).toBe(false);
+    expect(lstatSync(join(sandbox, '@acme', 'pkg')).isSymbolicLink()).toBe(true);
+    expect(readFileSync(join(sandbox, '@acme', 'pkg', 'index.js'), 'utf8')).toBe('acme\n');
+  });
+
+  it('falls back to the entry type for a dangling symlink instead of dropping it', () => {
+    // pnpm leaves dangling entry symlinks behind after a partial install.
+    // `statSync` throws on those, and the fallback must keep the entry linked
+    // (a dangling link relinked with the lstat-derived type is no worse than
+    // the dangling link itself) rather than let the throw escape.
+    realSymlinkSync(join(root, 'gone'), join(host, 'dangling'), 'dir');
+
+    expect(() => linkDependencyEntries(host, sandbox)).not.toThrow();
+
+    const calls = mockedSymlinkSync.mock.calls.map((c) => [String(c[0]), c[2]]);
+    expect(calls).toContainEqual([join(host, 'dangling'), 'file']);
+    expect(lstatSync(join(sandbox, 'dangling')).isSymbolicLink()).toBe(true);
+  });
+
   describe('failure reporting (finding 1: best-effort must not mean silent)', () => {
     afterEach(() => {
       // Restore the real implementations so no later test in this file (or in

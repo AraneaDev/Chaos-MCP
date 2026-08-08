@@ -20,7 +20,7 @@
  * A write THROUGH an existing entry still reaches the host. That residue is why
  * `SandboxConfig.dependencies` offers a `copy` mode; see utils/sandbox.ts.
  */
-import { existsSync, lstatSync, mkdirSync, readdirSync, symlinkSync } from 'fs';
+import { existsSync, lstatSync, mkdirSync, readdirSync, statSync, symlinkSync } from 'fs';
 import { join, sep } from 'path';
 import { warn } from '../logger.js';
 
@@ -82,6 +82,34 @@ function isScopeDir(name: string): boolean {
 }
 
 /**
+ * Whether `src` behaves as a directory — resolving THROUGH a symlink, unlike
+ * `Dirent.isDirectory()`.
+ *
+ * `readdirSync(..., { withFileTypes: true })` fills each `Dirent` from an
+ * `lstat`, so a `node_modules` entry that is itself a symlink to a package
+ * directory reports `isDirectory() === false`. Under pnpm EVERY entry has that
+ * shape, and under npm workspaces the first-party packages do — so the link
+ * type handed to {@link safeSymlink} was `'file'` for all of them. POSIX
+ * ignores the argument, which is why CI never saw it; on Windows with
+ * Developer Mode enabled (no `EPERM`, so the junction fallback never fires)
+ * `symlinkSync(dir, dst, 'file')` produces a file-symlink pointing at a
+ * directory, which does not resolve as one and breaks module resolution
+ * through it.
+ *
+ * A `statSync` failure (a dangling entry symlink — pnpm leaves these behind
+ * after a partial install) falls back to the `Dirent`'s own answer rather than
+ * dropping the entry: linking a dangling link with the wrong type is no worse
+ * than the dangling link itself.
+ */
+function resolvesToDirectory(src: string, entry: { isDirectory(): boolean }): boolean {
+  try {
+    return statSync(src).isDirectory();
+  } catch {
+    return entry.isDirectory();
+  }
+}
+
+/**
  * Make `sandboxDir` a real directory holding one symlink per entry of
  * `hostDir`. A destination that already exists is left alone — the copy filter
  * force-includes the audited file's ancestors, so a target living inside a
@@ -118,12 +146,13 @@ export function linkDependencyEntries(hostDir: string, sandboxDir: string): void
     const src = join(hostDir, entry.name);
     const dst = join(sandboxDir, entry.name);
     if (existsSync(dst)) continue;
-    if (entry.isDirectory() && isScopeDir(entry.name)) {
+    const isDir = resolvesToDirectory(src, entry);
+    if (isDir && isScopeDir(entry.name)) {
       linkDependencyEntries(src, dst);
       continue;
     }
     try {
-      safeSymlink(src, dst, entry.isDirectory() ? 'dir' : 'file');
+      safeSymlink(src, dst, isDir ? 'dir' : 'file');
       linked++;
     } catch {
       // One unlinkable entry must not fail the whole provision — counted and
