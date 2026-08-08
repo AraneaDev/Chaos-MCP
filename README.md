@@ -16,10 +16,10 @@ Chaos-MCP is an [MCP (Model Context Protocol)](https://modelcontextprotocol.io/)
 ## Features
 
 - **4 Languages Supported** — TypeScript/JavaScript (StrykerJS), Python (cosmic-ray), Rust (cargo-mutants), PHP (Infection)
-- **Sandbox Isolation** — all mutation runs execute in temporary directories; your real workspace is never touched. The target's real path is verified to live inside the sandbox before any engine runs, so a symlinked source file (or one under a symlinked directory) is refused rather than mutated in place through the link
+- **Sandbox Isolation** — all mutation runs execute in temporary directories. The target's real path is verified to live inside the sandbox before any engine runs, so a symlinked source file (or one under a symlinked directory) is refused rather than mutated in place through the link. Dependency directories (`node_modules`, `.venv`, `venv`, `vendor`) are linked entry-by-entry by default: installed packages resolve without a multi-gigabyte copy, and a write to a new path under one of them stays in the sandbox — but a write through an existing package entry still reaches the host. Set `"sandbox": { "dependencies": "copy" }` for full write isolation of your dependencies, or `"share"` to restore the old whole-directory symlink
 - **Pinned Container Runners** — release-matched OCI images provide all four mutation engines without installing them on the host
 - **Auto-Detection** — automatically detects project type, test runner, and workspace root
-- **Async Subprocesses** — all mutation-tool execution uses async `execFile`/`exec` (subprocess runs never block the event loop; the one-time sandbox copy is synchronous)
+- **Async Subprocesses** — all mutation-tool execution uses async `execFile`/`exec`, and the sandbox's workspace copy uses async `fs.cp`, so neither blocks the event loop for the length of a run or a copy (the directory creation and symlinking around the copy remain synchronous, but are bounded to a handful of fast fs calls)
 - **Rich Tool Schema** — supports line scoping, mutator denylists, concurrency control, dry-run mode, incremental runs, and output format selection
 - **Pre-flight Estimation** — `estimate_audit` gives a fast mutant count (exact for Rust, approximate for others) and optional timing estimate before you commit to a full run
 - **Gate Mode** — pass `minScore` to `audit_code_resilience` or `triage_test_coverage` to get a machine-readable pass/fail field for CI pipelines
