@@ -115,7 +115,7 @@ describe('buildResultPayload — change strings', () => {
 });
 
 describe('buildResultPayload', () => {
-  it('returns the same shape formatResultAsJson serializes (clean run)', () => {
+  it('returns the same shape the JSON output serializes (clean run)', () => {
     const payload = buildResultPayload(
       result({ survived: 0, killed: 10, mutationScore: '100.00%' }),
     );

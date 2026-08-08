@@ -87,11 +87,6 @@ export function parseBaseline(b: BaselineInput): MutantKey[] {
   return sortKeys(out);
 }
 
-/** Unique sorted baseline line numbers (for scope derivation). */
-export function baselineLines(keys: MutantKey[]): number[] {
-  return [...new Set(keys.map((k) => k.line))].sort((a, b) => a - b);
-}
-
 /**
  * Compare baseline keys against a fresh run's vulnerabilities (Survived ∪ NoCoverage).
  *

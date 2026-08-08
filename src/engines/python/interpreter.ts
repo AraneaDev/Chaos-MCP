@@ -240,10 +240,3 @@ export function resolveTestCommand(interpreter: string, options?: RunOptions): s
   }
   return base;
 }
-
-/** Reset the cached interpreter probe. Exported for tests only. */
-export function _resetInterpreterCache(): void {
-  // No-op kept for source-level compatibility with existing tests; the cache
-  // now lives on the engine instance (see PythonEngine.constructor) and is
-  // reset by constructing a fresh engine. (Audit A5.)
-}

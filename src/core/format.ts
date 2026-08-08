@@ -711,11 +711,3 @@ export function buildResultPayload(
   }
   return payload;
 }
-
-/**
- * Format a MutationResult as a compact JSON payload (single-line, deduplicated).
- * Used for the default `outputFormat: 'json'`.
- */
-export function formatResultAsJson(result: MutationResult, enrich?: EnrichContext): string {
-  return JSON.stringify(buildResultPayload(result, { enrich }));
-}

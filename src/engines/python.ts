@@ -39,7 +39,6 @@ export {
   PythonInterpreterError,
   isRepoTestCommandAllowed,
   resolveTestCommand,
-  _resetInterpreterCache,
 } from './python/interpreter.js';
 
 /**

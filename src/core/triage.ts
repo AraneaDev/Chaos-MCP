@@ -1,11 +1,5 @@
-import type { MutationResult } from '../engines/base.js';
 import type { Severity } from './enrich.js';
-import {
-  displayMutationScore,
-  hasNoMutableLogic,
-  suppressionDriftNotes,
-  type LineGroup,
-} from './score-semantics.js';
+import { suppressionDriftNotes, type LineGroup } from './score-semantics.js';
 import { evaluateGate } from './gate.js';
 
 export interface TriageRow {
@@ -74,28 +68,6 @@ export function compareTriageRows(a: TriageRow, b: TriageRow): number {
     b.survived - a.survived ||
     a.file.localeCompare(b.file)
   );
-}
-
-/** Rank audited results weakest-first: score asc, survived desc, file asc. */
-export function rankResults(results: { file: string; result: MutationResult }[]): TriageRow[] {
-  const rows: TriageRow[] = results.map(({ file, result }) => {
-    const row: TriageRow = {
-      file,
-      mutationScore: displayMutationScore(result),
-      total: result.totalMutants,
-      killed: result.killed,
-      survived: result.survived,
-      noCoverage: Math.max(0, result.vulnerabilities.length - result.survived),
-    };
-    if (hasNoMutableLogic(result)) row.noMutableLogic = true;
-    if (result.complete === false) {
-      row.complete = false;
-      if (result.batchesCompleted !== undefined) row.batchesCompleted = result.batchesCompleted;
-      if (result.batchesPlanned !== undefined) row.batchesPlanned = result.batchesPlanned;
-    }
-    return row;
-  });
-  return rows.sort(compareTriageRows);
 }
 
 function note(rows: TriageRow[], discovered: number, skipped: number, diffMode?: boolean): string {
@@ -236,17 +208,6 @@ export function buildTriagePayload(
     }
   }
   return payload;
-}
-
-/** Render the triage result as compact JSON. */
-export function formatTriageAsJson(
-  rows: TriageRow[],
-  errors: TriageError[],
-  discovered: number,
-  skipped: number,
-  scopeNote?: string,
-): string {
-  return JSON.stringify(buildTriagePayload(rows, errors, discovered, skipped, scopeNote));
 }
 
 /**

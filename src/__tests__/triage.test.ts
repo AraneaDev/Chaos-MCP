@@ -2,16 +2,13 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import type { MutationResult } from '../engines/base.js';
 import {
   isSupportedSourceFile,
   discoverFiles,
   discoverChangedFiles,
 } from '../triage/discover-files.js';
 import {
-  rankResults,
   compareTriageRows,
-  formatTriageAsJson,
   formatTriageAsText,
   buildTriagePayload,
   type TriageRow,
@@ -19,13 +16,13 @@ import {
 } from '../core/triage.js';
 import { supportedSourceExtensions, detectProjectType } from '../utils/project-detector.js';
 
-const mr = (over: Partial<MutationResult>): MutationResult => ({
-  target: 'f',
-  totalMutants: 10,
+/** A minimal TriageRow for tests that only need row data, not row-building logic. */
+const triageRow = (over: Partial<TriageRow> & { file: string }): TriageRow => ({
+  mutationScore: '80.00%',
+  total: 10,
   killed: 8,
   survived: 2,
-  mutationScore: '80.00%',
-  vulnerabilities: [],
+  noCoverage: 0,
   ...over,
 });
 
@@ -143,148 +140,9 @@ describe('isSupportedSourceFile', () => {
   });
 });
 
-describe('rankResults — partial-audit fields', () => {
-  it('carries the partial flag and batch counts onto the row', () => {
-    // A row scored from only some of its batches describes a fraction of the
-    // file. `complete: false` is what makes it fail a gate and what the text
-    // report prints as "(partial: x/y batches)"; without the counts the caller
-    // cannot tell a nearly-finished audit from one that barely started.
-    const [row] = rankResults([
-      {
-        file: 'a.ts',
-        result: mr({ complete: false, batchesCompleted: 2, batchesPlanned: 5 }),
-      },
-    ]);
-    expect(row.complete).toBe(false);
-    expect(row.batchesCompleted).toBe(2);
-    expect(row.batchesPlanned).toBe(5);
-  });
-
-  it('leaves the partial fields off a complete result entirely', () => {
-    // Not `complete: undefined`: the gate reads `r.complete !== false`, and the
-    // row is serialised into the response, so an invented key changes the shape
-    // every consumer sees.
-    const [row] = rankResults([{ file: 'a.ts', result: mr({}) }]);
-    expect(Object.keys(row)).not.toContain('complete');
-    expect(Object.keys(row)).not.toContain('batchesCompleted');
-    expect(Object.keys(row)).not.toContain('batchesPlanned');
-  });
-
-  it('records the partial flag even when the engine reported no batch counts', () => {
-    // Non-StrykerJS engines mark a run partial without batching it, so the
-    // counts are genuinely absent — and must stay absent rather than becoming
-    // `undefined` keys next to a real `complete: false`.
-    const [row] = rankResults([{ file: 'a.ts', result: mr({ complete: false }) }]);
-    expect(row.complete).toBe(false);
-    expect(Object.keys(row)).not.toContain('batchesCompleted');
-    expect(Object.keys(row)).not.toContain('batchesPlanned');
-  });
-});
-
-describe('rankResults', () => {
-  it('ranks weakest-first: score asc, then survived desc, then file asc', () => {
-    const rows = rankResults([
-      { file: 'b.ts', result: mr({ mutationScore: '80.00%', survived: 2 }) },
-      { file: 'a.ts', result: mr({ mutationScore: '50.00%', survived: 5 }) },
-      { file: 'c.ts', result: mr({ mutationScore: '80.00%', survived: 9 }) },
-    ]);
-    expect(rows.map((r) => r.file)).toEqual(['a.ts', 'c.ts', 'b.ts']);
-  });
-
-  it('substitutes "n/a" and flags noMutableLogic for a zero-mutant file (audit M3)', () => {
-    const [row] = rankResults([
-      {
-        file: 'a.ts',
-        // No mutable logic: zero mutants, no scope note. A raw "100.00%" would
-        // rank it as "safest" indistinguishably from a genuine perfect score.
-        result: mr({ totalMutants: 0, killed: 0, survived: 0, mutationScore: '100.00%' }),
-      },
-    ]);
-    expect(row.mutationScore).toBe('n/a');
-    expect(row.noMutableLogic).toBe(true);
-  });
-
-  // REWRITTEN (Finding 7): the assertion used to be `toBe('100.00%')`, on the
-  // reasoning that "a scoped zero is a real run, left as-is". The run is real;
-  // the SCORE is not. `formatMutationScore(0, 0)` renders the empty denominator
-  // as "100.00%", so a diff with no changed lines was ranked as the safest file
-  // in the sweep on the strength of a percentage nothing was measured for.
-  // `displayMutationScore` now reports "n/a" for every zero-mutant result. What
-  // this test legitimately pinned — that a scoped zero is NOT the same thing as
-  // "this file has no mutable logic" — is unchanged and still asserted below:
-  // `hasNoMutableLogic` keeps its narrower meaning and the row stays unflagged.
-  it('substitutes "n/a" for a zero-mutant result with a scopeNote, without flagging noMutableLogic', () => {
-    const [row] = rankResults([
-      {
-        file: 'a.ts',
-        result: mr({ totalMutants: 0, mutationScore: '100.00%', scopeNote: 'no changed lines' }),
-      },
-    ]);
-    expect(row.mutationScore).toBe('n/a');
-    expect(row.noMutableLogic).toBeUndefined();
-  });
-
-  it('derives noCoverage = vulnerabilities.length - survived (clamped >= 0)', () => {
-    const [row] = rankResults([
-      {
-        file: 'a.ts',
-        result: mr({
-          survived: 1,
-          vulnerabilities: [
-            { line: 1, mutator: 'M', description: 'no test reached' },
-            { line: 2, mutator: 'M', description: 'survived' },
-            { line: 3, mutator: 'M', description: 'survived' },
-          ],
-        }),
-      },
-    ]);
-    expect(row.noCoverage).toBe(2);
-  });
-});
-
-describe('formatTriageAsJson', () => {
-  it('emits the triage shape with summary, ranking, errors', () => {
-    const rows = rankResults([{ file: 'a.ts', result: mr({}) }]);
-    const json = JSON.parse(formatTriageAsJson(rows, [{ file: 'b.ts', error: 'boom' }], 3, 1));
-    expect(json.mode).toBe('triage');
-    expect(json.summary).toEqual({
-      filesDiscovered: 3,
-      filesAudited: 1,
-      filesSkipped: 1,
-      filesErrored: 1,
-    });
-    expect(json.ranking[0].file).toBe('a.ts');
-    expect(json.errors).toEqual([{ file: 'b.ts', error: 'boom' }]);
-    expect(json.note).toContain('weakest-first');
-    expect(json.note).toContain('skipped');
-  });
-
-  it('emits an empty-discovery note when nothing was found', () => {
-    const json = JSON.parse(formatTriageAsJson([], [], 0, 0));
-    expect(json.ranking).toEqual([]);
-    expect(json.note).toContain('No supported source files');
-  });
-});
-
-describe('formatTriageAsJson note branch', () => {
-  it('omits the maxFiles truncation note when skipped=0', () => {
-    // Kills: ConditionalExpression on `skipped > 0` ternary (line 122) and the
-    // drill-down StringLiteral (line 125) by pinning the exact note text — the
-    // empty truncation branch must contribute nothing.
-    const rows = rankResults([{ file: 'a.ts', result: mr({}) }]);
-    const json = JSON.parse(formatTriageAsJson(rows, [], 2, 0));
-    expect(json.note).toBe(
-      'Ranked weakest-first by mutation score. ' +
-        'Drill into a file with audit_code_resilience for survivor detail.',
-    );
-  });
-});
-
 describe('formatTriageAsText', () => {
   it('includes a ranked line and an errors section', () => {
-    const rows = rankResults([
-      { file: 'a.ts', result: mr({ mutationScore: '50.00%', survived: 5 }) },
-    ]);
+    const rows = [triageRow({ file: 'a.ts', mutationScore: '50.00%', survived: 5 })];
     const text = textOf(rows, [{ file: 'b.ts', error: 'boom' }], 2, 0);
     expect(text).toContain('Chaos-MCP Triage');
     expect(text).toContain('a.ts');
@@ -298,7 +156,7 @@ describe('formatTriageAsText', () => {
 
   it('appends a skipped count when skipped > 0', () => {
     // Kills: ConditionalExpression/EqualityOperator on `skipped > 0` (line 160).
-    const rows = rankResults([{ file: 'a.ts', result: mr({}) }]);
+    const rows = [triageRow({ file: 'a.ts' })];
     const text = textOf(rows, [], 3, 2);
     expect(text).toContain('(2 skipped)');
   });
@@ -306,7 +164,7 @@ describe('formatTriageAsText', () => {
   it('omits the skipped count when skipped = 0', () => {
     // Companion assertion for the skipped > 0 branch. Pin the exact header line
     // so the empty ternary branch (line 160) can't smuggle in extra text.
-    const rows = rankResults([{ file: 'a.ts', result: mr({}) }]);
+    const rows = [triageRow({ file: 'a.ts' })];
     const text = textOf(rows, [], 1, 0);
     expect(text).not.toContain('skipped');
     expect(text.split('\n')[0]).toBe('Chaos-MCP Triage: 1 of 1 files audited');
@@ -330,7 +188,7 @@ describe('formatTriageAsText', () => {
   it('prints the scope note as its own line, and prints nothing when there is none', () => {
     // The truthiness guard is all that stops `lines.push(undefined)` — which
     // `join('\n')` renders as a literal "undefined" line in the report.
-    const rows = rankResults([{ file: 'a.ts', result: mr({}) }]);
+    const rows = [triageRow({ file: 'a.ts' })];
     const scoped = textOf(rows, [], 1, 0, 'Scoped to files changed vs main.');
     expect(scoped.split('\n')[1]).toBe('Scoped to files changed vs main.');
 
@@ -387,7 +245,7 @@ describe('formatTriageAsText', () => {
   });
 
   it('omits the unaudited section when nothing was left unaudited', () => {
-    const rows = rankResults([{ file: 'a.ts', result: mr({}) }]);
+    const rows = [triageRow({ file: 'a.ts' })];
     expect(textOf(rows, [], 1, 0)).not.toContain('Not audited');
   });
 

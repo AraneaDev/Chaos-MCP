@@ -1,6 +1,6 @@
 // src/__tests__/format-enrich.test.ts
 import { describe, it, expect } from 'vitest';
-import { formatResultAsJson, formatResultAsText } from '../core/format.js';
+import { buildResultPayload, formatResultAsText, type EnrichedGroup } from '../core/format.js';
 import type { MutationResult } from '../engines/base.js';
 
 const RESULT: MutationResult = {
@@ -45,25 +45,26 @@ const SRC = [
   ...Array.from({ length: 70 }, (_, i) => `L${i + 21}`),
 ]; // 90 lines
 
-describe('formatResultAsJson with enrich', () => {
+describe('buildResultPayload with enrich', () => {
   it('is byte-identical to non-enriched when enrich is omitted', () => {
-    const plain1 = formatResultAsJson(RESULT);
-    const plain2 = formatResultAsJson(RESULT, undefined);
+    const plain1 = JSON.stringify(buildResultPayload(RESULT));
+    const plain2 = JSON.stringify(buildResultPayload(RESULT, { enrich: undefined }));
     expect(plain2).toBe(plain1);
     expect(JSON.parse(plain1).survivors[0]).not.toHaveProperty('severity');
   });
 
   it('attaches severity/why/hint/context and ranks severity-first', () => {
-    const out = JSON.parse(
-      formatResultAsJson(RESULT, { projectType: 'typescript', sourceLines: SRC }),
-    );
+    const out = buildResultPayload(RESULT, {
+      enrich: { projectType: 'typescript', sourceLines: SRC },
+    });
+    const survivors = out.survivors as EnrichedGroup[];
     // EqualityOperator (line 42, high) ranks before StringLiteral (line 88, low)
-    expect(out.survivors[0].line).toBe(42);
-    expect(out.survivors[0].severity).toBe('high');
-    expect(out.survivors[0].why.length).toBeGreaterThan(0);
-    expect(out.survivors[0].hint.length).toBeGreaterThan(0);
-    expect(out.survivors[0].context).toContain('42: L42');
-    expect(out.survivors[1].severity).toBe('low');
+    expect(survivors[0].line).toBe(42);
+    expect(survivors[0].severity).toBe('high');
+    expect(survivors[0].why.length).toBeGreaterThan(0);
+    expect(survivors[0].hint.length).toBeGreaterThan(0);
+    expect(survivors[0].context).toContain('42: L42');
+    expect(survivors[1].severity).toBe('low');
     expect(out.summary.worstSeverity).toBe('high');
   });
 
@@ -72,10 +73,10 @@ describe('formatResultAsJson with enrich', () => {
       ...RESULT,
       vulnerabilities: [{ line: 5, mutator: 'Rust Mutation Operator', description: 'survived' }],
     };
-    const out = JSON.parse(
-      formatResultAsJson(coarseResult, { projectType: 'rust', sourceLines: SRC }),
-    );
-    expect(out.survivors[0].severity).toBe('unknown');
+    const out = buildResultPayload(coarseResult, {
+      enrich: { projectType: 'rust', sourceLines: SRC },
+    });
+    expect((out.survivors as EnrichedGroup[])[0].severity).toBe('unknown');
     expect(out.enrichNote).toBeDefined();
   });
 
@@ -83,10 +84,10 @@ describe('formatResultAsJson with enrich', () => {
     // The negative of the case above: a fully-classified TypeScript result must
     // NOT carry an enrichNote. Guards the `hasUnknown` accumulation against
     // being forced always-true.
-    const out = JSON.parse(
-      formatResultAsJson(RESULT, { projectType: 'typescript', sourceLines: SRC }),
-    );
-    expect(out.survivors.every((s: { severity: string }) => s.severity !== 'unknown')).toBe(true);
+    const out = buildResultPayload(RESULT, {
+      enrich: { projectType: 'typescript', sourceLines: SRC },
+    });
+    expect((out.survivors as EnrichedGroup[]).every((s) => s.severity !== 'unknown')).toBe(true);
     expect(out.enrichNote).toBeUndefined();
   });
 
@@ -106,12 +107,13 @@ describe('formatResultAsJson with enrich', () => {
         },
       ],
     };
-    const out = JSON.parse(
-      formatResultAsJson(result, { projectType: 'typescript', sourceLines: SRC }),
-    );
-    expect(out.survivors[0].line).toBe(50);
-    expect(out.survivors[0].severity).toBe('high');
-    expect(out.survivors[1].line).toBe(10);
+    const out = buildResultPayload(result, {
+      enrich: { projectType: 'typescript', sourceLines: SRC },
+    });
+    const survivors = out.survivors as EnrichedGroup[];
+    expect(survivors[0].line).toBe(50);
+    expect(survivors[0].severity).toBe('high');
+    expect(survivors[1].line).toBe(10);
   });
 
   it('breaks a severity tie by line number, ascending', () => {
@@ -146,9 +148,9 @@ describe('formatResultAsJson with enrich', () => {
         },
       ],
     };
-    const out = JSON.parse(
-      formatResultAsJson(result, { projectType: 'typescript', sourceLines: SRC }),
-    );
+    const out = buildResultPayload(result, {
+      enrich: { projectType: 'typescript', sourceLines: SRC },
+    });
     expect(out.survivors.map((g: { line: number }) => g.line)).toEqual([10, 30, 50]);
   });
 
@@ -167,9 +169,9 @@ describe('formatResultAsJson with enrich', () => {
         },
       ],
     };
-    const out = JSON.parse(
-      formatResultAsJson(result, { projectType: 'typescript', sourceLines: SRC }),
-    );
+    const out = buildResultPayload(result, {
+      enrich: { projectType: 'typescript', sourceLines: SRC },
+    });
     expect(out.survivors).toHaveLength(0);
     expect(out.noCoverage).toHaveLength(1);
     expect(out.summary.worstSeverity).toBe('high');
