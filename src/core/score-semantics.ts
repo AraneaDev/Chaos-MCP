@@ -130,7 +130,11 @@ export interface LineGroup {
  * DO about it: an un-applied suppression is only useful feedback if the reader
  * knows re-confirming it (re-issuing `suppress`) restores it.
  */
-export function suppressionDriftNotes(drifted?: number, unverified?: number): string[] {
+export function suppressionDriftNotes(
+  drifted?: number,
+  unverified?: number,
+  orphaned?: number,
+): string[] {
   const notes: string[] = [];
   if (drifted !== undefined && drifted > 0) {
     notes.push(
@@ -140,6 +144,11 @@ export function suppressionDriftNotes(drifted?: number, unverified?: number): st
   if (unverified !== undefined && unverified > 0) {
     notes.push(
       `${unverified} suppression(s) predate content fingerprinting and were NOT applied — re-confirm them with \`suppress\` to restore them.`,
+    );
+  }
+  if (orphaned !== undefined && orphaned > 0) {
+    notes.push(
+      `${orphaned} suppression(s) matched no mutant in this run and had no effect — the mutator name or line they target no longer exists (a mutation-tool upgrade can rename operators). Re-audit and re-issue \`suppress\` against the current mutant, or drop the entry with \`unsuppress\`.`,
     );
   }
   return notes;

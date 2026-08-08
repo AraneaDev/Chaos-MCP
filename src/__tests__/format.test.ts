@@ -5,7 +5,11 @@ import {
   buildResultPayload,
   type ResultPayload,
 } from '../core/format.js';
-import { hasNoMutableLogic, displayMutationScore } from '../core/score-semantics.js';
+import {
+  hasNoMutableLogic,
+  displayMutationScore,
+  suppressionDriftNotes,
+} from '../core/score-semantics.js';
 import { evaluateGate } from '../core/gate.js';
 import type { MutationResult } from '../engines/base.js';
 
@@ -1059,5 +1063,11 @@ describe('formatResultAsText — un-applied suppressions', () => {
       unverifiedSuppressions: 1,
     });
     expect(text.split('\n').filter((l) => l.includes('suppression(s)'))).toHaveLength(2);
+  });
+
+  it('explains suppressions that no longer match any mutant', () => {
+    const notes = suppressionDriftNotes(0, 0, 2);
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toContain('2 suppression(s) matched no mutant');
   });
 });

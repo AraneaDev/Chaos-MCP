@@ -70,7 +70,7 @@ const result = (over: Partial<MutationResult> = {}): MutationResult => ({
   ...over,
 });
 
-const NO_SUPPRESSION: SuppressionCounts = { applied: 0, drifted: 0, unverified: 0 };
+const NO_SUPPRESSION: SuppressionCounts = { applied: 0, drifted: 0, unverified: 0, orphaned: 0 };
 
 function run(opts: {
   auditResults?: MutationResult;
@@ -266,7 +266,7 @@ describe('formatAuditOutput — text output', () => {
     const text = (
       run({
         args: { outputFormat: 'text' },
-        suppression: { applied: 0, drifted: 2, unverified: 1 },
+        suppression: { applied: 0, drifted: 2, unverified: 1, orphaned: 0 },
       }).content[0] as { text: string }
     ).text;
 

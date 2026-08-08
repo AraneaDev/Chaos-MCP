@@ -21,18 +21,35 @@ import { isNoCoverage } from '../utils/no-coverage.js';
 const keyOf = (line: number, mutator: string): string => `${line} ${mutator}`;
 
 /**
- * Drop suppressed (equivalent) mutants from a result. Equivalent mutants are
- * unkillable, so they leave the denominator: total shrinks, score is recomputed,
- * survived is clamped down. Returns a new result; the input is not mutated.
+ * Drop suppressed (equivalent) mutants from a result, and report the applied
+ * keys that matched nothing.
+ *
+ * A suppression whose `(line, mutator)` no longer names a generated mutant
+ * passes fingerprint verification, lands in `applied`, filters nothing, and
+ * used to move no counter at all — `suppressedCount` counts mutants REMOVED,
+ * not entries honoured, so the entry was silently inert with the score quietly
+ * lower and the mutant back in the report. The likeliest trigger is not an edit:
+ * for Rust the mutant identity IS cargo-mutants' free-text change description
+ * (engines/rust/report.ts), so a tool upgrade that rewords descriptions
+ * invalidates every Rust suppression at once.
+ *
+ * Equivalent mutants are unkillable, so they leave the denominator: total
+ * shrinks, score is recomputed, survived is clamped down. Returns a new
+ * result; the input is not mutated.
  */
 export function applySuppressions(
   result: MutationResult,
   suppressed: Set<string> | undefined,
-): { result: MutationResult; suppressedCount: number } {
-  if (!suppressed || suppressed.size === 0) return { result, suppressedCount: 0 };
+): { result: MutationResult; suppressedCount: number; orphanedKeys: string[] } {
+  if (!suppressed || suppressed.size === 0) {
+    return { result, suppressedCount: 0, orphanedKeys: [] };
+  }
+  const present = new Set(result.vulnerabilities.map((v) => keyOf(v.line, v.mutator)));
+  const orphanedKeys = [...suppressed].filter((k) => !present.has(k)).sort();
+
   const kept = result.vulnerabilities.filter((v) => !suppressed.has(keyOf(v.line, v.mutator)));
   const suppressedCount = result.vulnerabilities.length - kept.length;
-  if (suppressedCount === 0) return { result, suppressedCount: 0 };
+  if (suppressedCount === 0) return { result, suppressedCount: 0, orphanedKeys };
   // Only true survivors (not NoCoverage) count against result.survived.
   const suppressedSurvivors = result.vulnerabilities.filter(
     (v) => suppressed.has(keyOf(v.line, v.mutator)) && !isNoCoverage(v),
@@ -62,5 +79,6 @@ export function applySuppressions(
       ...(scopeNote === undefined ? {} : { scopeNote }),
     },
     suppressedCount,
+    orphanedKeys,
   };
 }

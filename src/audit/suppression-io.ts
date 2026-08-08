@@ -38,6 +38,11 @@ export interface SuppressionCounts {
   drifted: number;
   /** Entries with no fingerprint at all (v1 data), never applied. */
   unverified: number;
+  /**
+   * Applied entries whose (line, mutator) matched no mutant this run — inert,
+   * and previously reported by nothing.
+   */
+  orphaned: number;
 }
 import {
   loadSuppressions,
@@ -165,7 +170,7 @@ export async function applyAndCountSuppressions(
   // unverified entries are counted and reported instead — including the
   // entries just written above whose source line could not be read, which
   // land in `unverified` in this very response.
-  const counts: SuppressionCounts = { applied: 0, drifted: 0, unverified: 0 };
+  const counts: SuppressionCounts = { applied: 0, drifted: 0, unverified: 0, orphaned: 0 };
   if (!baselineKeys) {
     const verdict = loadVerifiedSuppressions(wsRoot, relFromRoot, supPath);
     const filtered = applySuppressions(result, verdict.applied);
@@ -173,6 +178,10 @@ export async function applyAndCountSuppressions(
     counts.applied = filtered.suppressedCount;
     counts.drifted = verdict.drifted;
     counts.unverified = verdict.unverified;
+    // Only meaningful for a run that enumerated the whole file: a lineScope- or
+    // diffBase-scoped audit legitimately generates no mutant for a suppressed
+    // line outside its range, and calling that an orphan would cry wolf.
+    counts.orphaned = result.scopeKind === 'whole-file' ? filtered.orphanedKeys.length : 0;
   }
   return { ok: true, result, counts };
 }
