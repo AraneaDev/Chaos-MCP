@@ -1374,6 +1374,30 @@ describe('handleTriageCall', () => {
     expect(row.unverifiedSuppressions).toBe(1);
     expect(parsed.note).toContain('predate content fingerprinting');
   });
+
+  it('reports an applied suppression whose (line, mutator) matched no mutant as orphaned', async () => {
+    // The stored entry's fingerprint matches the current source line (so it is
+    // NOT drifted), but the audited result carries no mutant at that
+    // line/mutator at all — the whole-file run enumerated the file and simply
+    // found nothing there for the suppression to filter.
+    mockDiscover.mockReturnValue({ files: [REAL_FILE], discovered: 1, skipped: 0 });
+    mockAuditFile.mockResolvedValue({
+      target: REAL_FILE,
+      totalMutants: 4,
+      killed: 4,
+      survived: 0,
+      mutationScore: '100.00%',
+      vulnerabilities: [],
+    });
+    stubStored(fingerprintSourceLine(tsEnv.workspaceRoot, REAL_FILE, REAL_LINE));
+
+    const res = await handleTriageCall(req({ paths: [REAL_FILE] }));
+    const parsed = JSON.parse((res.content[0] as { text: string }).text);
+    const row = parsed.ranking[0];
+
+    expect(row.orphanedSuppressions).toBe(1);
+    expect(parsed.note).toContain('matched no mutant in this run');
+  });
 });
 
 describe('handleTriageCall minScore gate', () => {

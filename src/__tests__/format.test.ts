@@ -1070,4 +1070,9 @@ describe('formatResultAsText — un-applied suppressions', () => {
     expect(notes).toHaveLength(1);
     expect(notes[0]).toContain('2 suppression(s) matched no mutant');
   });
+
+  it('reports orphaned suppressions with the action to take', () => {
+    const text = formatResultAsText(result(), undefined, { orphanedSuppressions: 2 });
+    expect(text).toContain('Note: 2 suppression(s) matched no mutant in this run');
+  });
 });

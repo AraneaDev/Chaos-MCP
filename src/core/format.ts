@@ -408,6 +408,8 @@ export function formatResultAsText(
     driftedSuppressions?: number;
     /** Suppressions rejected because they carry no fingerprint (v1 data). */
     unverifiedSuppressions?: number;
+    /** Applied suppressions whose (line, mutator) matched no mutant this run. */
+    orphanedSuppressions?: number;
     /**
      * The gate verdict for this run, when the caller passed `minScore`. Must be
      * the same {@link GateResult} the payload carries — pass `evaluateGate`'s
@@ -460,7 +462,11 @@ export function formatResultAsText(
   // branch: a file can come back clean and still be carrying stale suppressions,
   // and that is exactly when the reader most needs to know the score was not
   // helped by them.
-  for (const n of suppressionDriftNotes(opts.driftedSuppressions, opts.unverifiedSuppressions)) {
+  for (const n of suppressionDriftNotes(
+    opts.driftedSuppressions,
+    opts.unverifiedSuppressions,
+    opts.orphanedSuppressions,
+  )) {
     lines.push(`Note: ${n}`);
   }
 
@@ -554,6 +560,12 @@ export interface ResultPayload {
    * at all — v1 entries, awaiting re-confirmation.
    */
   unverifiedSuppressions?: number;
+  /**
+   * Applied suppressions whose (line, mutator) matched no mutant this run —
+   * inert: the score dropped and the mutant did not reappear because there was
+   * no matching mutant to keep out.
+   */
+  orphanedSuppressions?: number;
   gate?: GateResult;
   /** Mutants excluded from the score because the mutated code never scored (audit I3). */
   incompetent?: number;
@@ -573,6 +585,7 @@ export interface ResultPayloadOpts {
   suppressedCount?: number;
   driftedSuppressions?: number;
   unverifiedSuppressions?: number;
+  orphanedSuppressions?: number;
   gate?: GateResult;
 }
 
@@ -678,7 +691,14 @@ export function buildResultPayload(
   if (opts.unverifiedSuppressions && opts.unverifiedSuppressions > 0) {
     payload.unverifiedSuppressions = opts.unverifiedSuppressions;
   }
-  for (const n of suppressionDriftNotes(opts.driftedSuppressions, opts.unverifiedSuppressions)) {
+  if (opts.orphanedSuppressions && opts.orphanedSuppressions > 0) {
+    payload.orphanedSuppressions = opts.orphanedSuppressions;
+  }
+  for (const n of suppressionDriftNotes(
+    opts.driftedSuppressions,
+    opts.unverifiedSuppressions,
+    opts.orphanedSuppressions,
+  )) {
     payload.note += ` ${n}`;
   }
   if (opts.gate) payload.gate = opts.gate;

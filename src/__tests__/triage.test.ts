@@ -804,6 +804,26 @@ describe('buildTriagePayload', () => {
     expect(Object.keys(p)).not.toContain('stoppedReason');
     expect(Object.keys(p.summary)).not.toContain('filesUnaudited');
   });
+
+  it('aggregates orphaned suppressions into the sweep note', () => {
+    const payload = buildTriagePayload(
+      [
+        {
+          file: 'a.ts',
+          mutationScore: '90.00%',
+          total: 10,
+          killed: 9,
+          survived: 1,
+          noCoverage: 0,
+          orphanedSuppressions: 2,
+        },
+      ],
+      [],
+      1,
+      0,
+    );
+    expect(payload.note).toContain('matched no mutant');
+  });
 });
 
 describe('buildTriagePayload gate computation', () => {

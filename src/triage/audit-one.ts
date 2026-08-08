@@ -21,6 +21,7 @@ import { computeChangedRanges } from '../utils/git-diff.js';
 import { resolveAuditTargetIn } from '../audit/target.js';
 import { loadSuppressions, verifySuppressions, type StoredEntry } from '../utils/suppression.js';
 import { applySuppressions } from '../audit/apply-suppressions.js';
+import { isWholeFileRun } from '../audit/suppression-io.js';
 import { mintRunId } from '../utils/run-cache.js';
 import { buildResultPayload } from '../core/format.js';
 import { displayMutationScore, hasNoMutableLogic } from '../core/score-semantics.js';
@@ -190,6 +191,11 @@ interface RowInput {
   driftedSuppressions: number;
   /** Stored suppressions rejected because they carry no fingerprint (v1 data). */
   unverifiedSuppressions: number;
+  /**
+   * Applied suppressions whose (line, mutator) matched no mutant this run,
+   * gated on {@link isWholeFileRun} the same way the audit tool gates it.
+   */
+  orphanedSuppressions: number;
 }
 
 /**
@@ -223,6 +229,7 @@ function buildTriageRow(input: RowInput, deps: TriageFileDeps): TriageRow {
   // sweep-level note in buildTriagePayload aggregates them.
   if (input.driftedSuppressions > 0) row.driftedSuppressions = input.driftedSuppressions;
   if (input.unverifiedSuppressions > 0) row.unverifiedSuppressions = input.unverifiedSuppressions;
+  if (input.orphanedSuppressions > 0) row.orphanedSuppressions = input.orphanedSuppressions;
 
   // Mint a per-row runId so the caller can verify survivors from a triage result
   // without re-auditing. A cache failure is non-fatal (mintRunId swallows it):
@@ -469,6 +476,10 @@ export async function auditTriageFile(
           suppressedCount: sup.suppressedCount,
           driftedSuppressions: verdict.drifted,
           unverifiedSuppressions: verdict.unverified,
+          // Gated on the pre-suppression result: filtering never touches
+          // `scopeKind`/`scopeNote`, so this matches `applyAndCountSuppressions`'s
+          // gate exactly (see `isWholeFileRun`).
+          orphanedSuppressions: isWholeFileRun(result) ? sup.orphanedKeys.length : 0,
         },
         deps,
       ),

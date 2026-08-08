@@ -33,6 +33,12 @@ export interface TriageRow {
    * (v1 entries), awaiting re-confirmation.
    */
   unverifiedSuppressions?: number;
+  /**
+   * Applied suppressions whose (line, mutator) matched no mutant this run —
+   * inert, and only counted for a whole-file audit (see `isWholeFileRun` in
+   * `audit/suppression-io.ts`).
+   */
+  orphanedSuppressions?: number;
   /** Whether this file met the minScore gate threshold (only present when minScore is set). */
   passed?: boolean;
   /** True when the file has no mutable logic (zero mutants, no scope note); score is "n/a" (audit M3). */
@@ -187,6 +193,7 @@ export function buildTriagePayload(
   for (const note of suppressionDriftNotes(
     sumOf((r) => r.driftedSuppressions),
     sumOf((r) => r.unverifiedSuppressions),
+    sumOf((r) => r.orphanedSuppressions),
   )) {
     payload.note += ` ${note}`;
   }
@@ -340,6 +347,7 @@ export function formatTriageAsText(payload: TriagePayload): string {
   for (const note of suppressionDriftNotes(
     rows.reduce((sum, r) => sum + (r.driftedSuppressions ?? 0), 0),
     rows.reduce((sum, r) => sum + (r.unverifiedSuppressions ?? 0), 0),
+    rows.reduce((sum, r) => sum + (r.orphanedSuppressions ?? 0), 0),
   )) {
     lines.push(`Note: ${note}`);
   }
