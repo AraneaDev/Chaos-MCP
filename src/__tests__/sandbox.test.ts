@@ -13,6 +13,7 @@ vi.mock('fs', () => ({
   existsSync: vi.fn(),
   statSync: vi.fn(),
   readdirSync: vi.fn(),
+  mkdirSync: vi.fn(),
   realpathSync: vi.fn((p: unknown) => String(p)),
 }));
 
@@ -53,12 +54,13 @@ vi.mock('../utils/logger.js', () => ({
   warn: vi.fn(),
 }));
 
-import { mkdtempSync, symlinkSync, rmSync, existsSync, statSync } from 'fs';
+import { mkdtempSync, symlinkSync, rmSync, existsSync, statSync, readdirSync, mkdirSync } from 'fs';
 import type { PathLike } from 'fs';
 import { cp, readdir } from 'fs/promises';
 import { tmpdir } from 'os';
 import { resolve, join, sep } from 'path';
 import { createSandbox, SandboxContext } from '../utils/sandbox.js';
+import { safeSymlink } from '../utils/sandbox/dependency-link.js';
 import { buildCopyPolicy, SYMLINK_DIRS } from '../utils/sandbox/copy-policy.js';
 import { ENGINE_REGISTRY, dependencyDirectories } from '../engines/registry.js';
 import { killProcessesUnder, killAllTrackedProcesses } from '../utils/process-reaper.js';
@@ -80,6 +82,8 @@ const mockReaddir = vi.mocked(readdir);
 const mockSymlinkSync = vi.mocked(symlinkSync);
 const mockRmSync = vi.mocked(rmSync);
 const mockExistsSync = vi.mocked(existsSync);
+const mockReaddirSync = vi.mocked(readdirSync);
+const mockMkdirSync = vi.mocked(mkdirSync);
 const mockTmpdir = vi.mocked(tmpdir);
 
 const SANDBOX_DIR = '/tmp/chaos-mcp-00000000-0000-0000-0000-000000000000';
@@ -105,6 +109,11 @@ describe('createSandbox', () => {
     mockMkdtempSync.mockReturnValue(SANDBOX_DIR);
     // Default: cp resolves to undefined (mimics successful copy).
     mockCp.mockResolvedValue(undefined as never);
+    // Default: no dependency entries to link. linkDependencyEntries calls
+    // readdirSync unconditionally whenever a symlink dir's source exists (see
+    // the default existsSync below, which makes node_modules "exist"), so
+    // without this every such test would iterate `undefined` and throw.
+    mockReaddirSync.mockReturnValue([]);
 
     // Default: target file exists, node_modules exists
     mockExistsSync.mockImplementation((path: PathLike) => {
@@ -154,12 +163,16 @@ describe('createSandbox', () => {
       if (path === TEST_PROJECT_NODE_MODULES) return true;
       return false;
     });
+    mockReaddirSync.mockReturnValue([{ name: 'somepkg', isDirectory: () => true }] as never);
 
     sandbox = await createSandbox('src/utils/math.ts', TEST_PROJECT);
 
+    expect(mockMkdirSync).toHaveBeenCalledWith(`${SANDBOX_DIR}/node_modules`, {
+      recursive: true,
+    });
     expect(mockSymlinkSync).toHaveBeenCalledWith(
-      TEST_PROJECT_NODE_MODULES,
-      `${SANDBOX_DIR}/node_modules`,
+      join(TEST_PROJECT_NODE_MODULES, 'somepkg'),
+      join(`${SANDBOX_DIR}/node_modules`, 'somepkg'),
       'dir',
     );
   });
@@ -170,10 +183,15 @@ describe('createSandbox', () => {
       if (path === TEST_PROJECT_VENV) return true;
       return false;
     });
+    mockReaddirSync.mockReturnValue([{ name: 'somepkg', isDirectory: () => true }] as never);
 
     sandbox = await createSandbox('src/main.py', TEST_PROJECT);
 
-    expect(mockSymlinkSync).toHaveBeenCalledWith(TEST_PROJECT_VENV, `${SANDBOX_DIR}/.venv`, 'dir');
+    expect(mockSymlinkSync).toHaveBeenCalledWith(
+      join(TEST_PROJECT_VENV, 'somepkg'),
+      join(`${SANDBOX_DIR}/.venv`, 'somepkg'),
+      'dir',
+    );
   });
 
   it('symlinks vendor into sandbox when present', async () => {
@@ -182,12 +200,13 @@ describe('createSandbox', () => {
       if (path === TEST_PROJECT_VENDOR) return true;
       return false;
     });
+    mockReaddirSync.mockReturnValue([{ name: 'somepkg', isDirectory: () => true }] as never);
 
     sandbox = await createSandbox('src/Calculator.php', TEST_PROJECT);
 
     expect(mockSymlinkSync).toHaveBeenCalledWith(
-      TEST_PROJECT_VENDOR,
-      `${SANDBOX_DIR}/vendor`,
+      join(TEST_PROJECT_VENDOR, 'somepkg'),
+      join(`${SANDBOX_DIR}/vendor`, 'somepkg'),
       'dir',
     );
   });
@@ -250,12 +269,13 @@ describe('createSandbox', () => {
       if (path === TEST_PROJECT_VENDOR) return true;
       return false;
     });
+    mockReaddirSync.mockReturnValue([{ name: 'somepkg', isDirectory: () => true }] as never);
 
     await createSandbox('src/Calculator.php', TEST_PROJECT);
 
     expect(mockSymlinkSync).toHaveBeenCalledWith(
-      TEST_PROJECT_VENDOR,
-      `${SANDBOX_DIR}/vendor`,
+      join(TEST_PROJECT_VENDOR, 'somepkg'),
+      join(`${SANDBOX_DIR}/vendor`, 'somepkg'),
       'dir',
     );
     const filter = mockCp.mock.calls[0][2]?.filter as (src: string) => boolean;
@@ -644,18 +664,43 @@ describe('createSandbox', () => {
 
   // ─── safeSymlink and Windows junction fallback ──────────────────────────
 
-  it('retries with junction on Windows EPERM, surfaces error on Linux', async () => {
+  it('safeSymlink rethrows a Linux EPERM without a Windows junction retry', () => {
+    // `safeSymlink` moved into dependency-link.ts (Task 2) but its Windows
+    // fallback contract is unchanged: on this (non-Windows) platform an EPERM
+    // must propagate directly, with no 'junction' retry attempt appended.
+    // Testing it directly — rather than through createSandbox — is now
+    // required: linkDependencyEntries (below) swallows a per-entry symlink
+    // failure, so createSandbox itself no longer surfaces this error.
+    mockSymlinkSync.mockImplementationOnce(() => {
+      throw Object.assign(new Error('EPERM'), { code: 'EPERM' });
+    });
+
+    expect(() => safeSymlink('/host/node_modules', '/sandbox/node_modules')).toThrow('EPERM');
+    expect(mockSymlinkSync).toHaveBeenCalledTimes(1);
+    expect(mockSymlinkSync).toHaveBeenCalledWith(
+      '/host/node_modules',
+      '/sandbox/node_modules',
+      'dir',
+    );
+  });
+
+  it('does not fail the whole provision when one dependency entry cannot be linked', async () => {
+    // Behaviour change from Task 2: linkDependencyEntries links per entry and
+    // treats a failure as best-effort (see its docblock), so a single
+    // unlinkable package — e.g. a Linux EPERM from an unusual host
+    // filesystem — no longer aborts provisioning the way the old
+    // whole-directory safeSymlink call did.
     mockExistsSync.mockImplementation((path: PathLike) => {
       if (path === `${SANDBOX_DIR}/src/utils/math.ts`) return true;
       if (path === TEST_PROJECT_NODE_MODULES) return true;
       return false;
     });
-
+    mockReaddirSync.mockReturnValue([{ name: 'badpkg', isDirectory: () => true }] as never);
     mockSymlinkSync.mockImplementationOnce(() => {
       throw Object.assign(new Error('EPERM'), { code: 'EPERM' });
     });
 
-    await expect(createSandbox('src/utils/math.ts', TEST_PROJECT)).rejects.toThrow('EPERM');
+    await expect(createSandbox('src/utils/math.ts', TEST_PROJECT)).resolves.toBeDefined();
   });
 
   it('ensureExitHandler does not double-register on subsequent sandbox creations', async () => {
@@ -1070,13 +1115,14 @@ describe('createSandbox', () => {
         path === `${TEST_PROJECT}/venv`
       );
     });
+    mockReaddirSync.mockReturnValue([{ name: 'pkg', isDirectory: () => true }] as never);
 
     await createSandbox('src/utils/math.ts', TEST_PROJECT);
 
     const linked = mockSymlinkSync.mock.calls.map((c) => String(c[0]));
-    expect(linked).toContain(TEST_PROJECT_NODE_MODULES);
-    expect(linked).toContain(TEST_PROJECT_VENV);
-    expect(linked).toContain(`${TEST_PROJECT}/venv`);
+    expect(linked).toContain(join(TEST_PROJECT_NODE_MODULES, 'pkg'));
+    expect(linked).toContain(join(TEST_PROJECT_VENV, 'pkg'));
+    expect(linked).toContain(join(`${TEST_PROJECT}/venv`, 'pkg'));
   });
 
   it('symlinks a nested node_modules the copy filter skipped, not just the root one', async () => {
@@ -1092,6 +1138,7 @@ describe('createSandbox', () => {
       if (path === `${SANDBOX_DIR}/src/utils/math.ts`) return true;
       return path === TEST_PROJECT_NODE_MODULES || path === nested;
     });
+    mockReaddirSync.mockReturnValue([{ name: 'pkg', isDirectory: () => true }] as never);
     // Real `cp` consults the filter per entry as it walks; the mock must too,
     // or the nested dir is never observed as skipped.
     let skippedNested: boolean | undefined;
@@ -1107,8 +1154,8 @@ describe('createSandbox', () => {
 
     expect(skippedNested).toBe(false); // skipped by the copy…
     const linked = mockSymlinkSync.mock.calls.map((c) => String(c[0]));
-    expect(linked).toContain(TEST_PROJECT_NODE_MODULES);
-    expect(linked).toContain(nested);
+    expect(linked).toContain(join(TEST_PROJECT_NODE_MODULES, 'pkg'));
+    expect(linked).toContain(join(nested, 'pkg'));
   });
 
   it('does not exclude everything when an ignorePattern is only a separator', async () => {

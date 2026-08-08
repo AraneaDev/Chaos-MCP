@@ -1,5 +1,5 @@
 import { cp, readdir } from 'fs/promises';
-import { mkdtempSync, symlinkSync, rmSync, existsSync, statSync, realpathSync } from 'fs';
+import { mkdtempSync, rmSync, existsSync, statSync, realpathSync } from 'fs';
 import { join, resolve, sep } from 'path';
 import { tmpdir } from 'os';
 import { randomUUID } from 'crypto';
@@ -16,6 +16,7 @@ import {
   SYMLINK_DIRS,
   type CopyPolicy,
 } from './sandbox/copy-policy.js';
+import { linkDependencyEntries } from './sandbox/dependency-link.js';
 // Exactly ONE specifier for the registry, here and in src/index.ts: its
 // ACTIVE_SANDBOXES Set is module-level state, and a second resolvable path
 // would give the signal handlers a different Set than the one sandboxes
@@ -110,40 +111,6 @@ export function assertTargetInsideSandbox(
  * 200 MB — beyond this, an async copy can still take seconds (audit C1).
  */
 const MAX_WORKSPACE_SIZE_BYTES = 200 * 1024 * 1024;
-
-/**
- * Check whether the current platform is Windows.
- */
-function isWindows(): boolean {
-  return sep === '\\';
-}
-
-/**
- * Create a symlink (or junction on Windows) from `target` to `path`.
- *
- * On Windows, regular symlinks require Administrator privileges. Junctions
- * do not, and work for directories. We try 'dir' first, then fall back to
- * 'junction' on Windows if symlinkSync throws EPERM.
- */
-function safeSymlink(target: string, path: string): void {
-  try {
-    symlinkSync(target, path, 'dir');
-  } catch (error: unknown) {
-    // On Windows: EPERM means regular symlinks need Administrator privileges.
-    // Retry with junction (directory hard-link) which doesn't require admin.
-    // On non-Windows: EPERM is a genuine filesystem error (e.g. NFS root_squash)
-    // — rethrow it directly; junction fallback does not exist on Linux/macOS.
-    if (isWindows()) {
-      try {
-        symlinkSync(target, path, 'junction');
-        return;
-      } catch {
-        // Junction also failed — rethrow original error
-      }
-    }
-    throw error;
-  }
-}
 
 /**
  * How many directories {@link estimateWorkspaceSize} may visit between forced
@@ -293,21 +260,23 @@ async function copyWorkspaceTree(
 }
 
 /**
- * Step 2: symlink heavyweight directories into the sandbox.
+ * Step 2: materialise heavyweight directories in the sandbox.
  *
- * (`symlinkDirs` excludes vendor for Composer PHP audits — that dir was
- * copied in Step 1 instead, so it is intentionally not symlinked here.)
+ * The sandbox owns the directory and each host entry is symlinked INSIDE it
+ * (see `./sandbox/dependency-link.ts`), so a tool that writes a new path under
+ * `node_modules/` writes into the sandbox rather than into the user's tree.
  *
- * A destination that ALREADY EXISTS was materialised by Step 1 and must be
- * left alone. That happens when the audited file lives inside one of these
- * dirs (e.g. `vendor/my-lib/index.ts` in a repo that vendors first-party
- * code): the filter's force-include of the target's ancestors wins over the
- * symlink-dir check, so `cp` copies the whole tree and the dir is never
- * recorded in `skippedHeavyDirs`. Symlinking over it threw a raw EEXIST
- * (`safeSymlink` only retries on Windows), failing provisioning outright.
- * Skipping is correct AND required: the real copy already makes the sandbox
- * complete, and a symlink here would point the target back at the live
- * workspace — which Step 4's containment assertion rejects anyway.
+ * (`symlinkDirs` excludes vendor for Composer PHP audits — that dir was copied
+ * in Step 1 instead, so it is intentionally not linked here.)
+ *
+ * A destination that ALREADY EXISTS was materialised by Step 1 and must be left
+ * alone. That happens when the audited file lives inside one of these dirs (e.g.
+ * `vendor/my-lib/index.ts` in a repo that vendors first-party code): the
+ * filter's force-include of the target's ancestors wins over the symlink-dir
+ * check, so `cp` copies the whole tree and the dir is never recorded in
+ * `skippedHeavyDirs`. `linkDependencyEntries` skips an existing destination per
+ * entry, so a partially-materialised directory is completed rather than
+ * clobbered.
  */
 function linkHeavyDirs(
   absoluteWorkspace: string,
@@ -318,8 +287,8 @@ function linkHeavyDirs(
   for (const dirName of symlinkDirs) {
     const src = join(absoluteWorkspace, dirName);
     const dst = join(sandboxDir, dirName);
-    if (existsSync(src) && !existsSync(dst)) {
-      safeSymlink(src, dst);
+    if (existsSync(src)) {
+      linkDependencyEntries(src, dst);
     }
     skippedHeavyDirs.delete(src); // handled above; do not link it twice
   }
@@ -329,8 +298,7 @@ function linkHeavyDirs(
     if (!src.startsWith(absoluteWorkspace + sep)) continue;
     if (!existsSync(src)) continue;
     const dst = join(sandboxDir, src.slice(absoluteWorkspace.length + 1));
-    if (existsSync(dst)) continue; // already materialised by the copy — see above
-    safeSymlink(src, dst);
+    linkDependencyEntries(src, dst);
   }
 }
 
