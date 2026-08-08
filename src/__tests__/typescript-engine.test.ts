@@ -271,7 +271,9 @@ describe('TypeScriptEngine', () => {
     const result = await engine.run('src/large.ts', {
       workDir: '/sb',
       testRunner: 'command',
-      timeoutMs: 30_000,
+      // 45s affords floor(45000 / 15000) = 3 startups, which is what this test
+      // needs to keep its 3-batch, 80-line-wide plan under the new floor.
+      timeoutMs: 45_000,
     });
 
     expect(mockRunShell).toHaveBeenCalledTimes(3);
@@ -287,7 +289,7 @@ describe('TypeScriptEngine', () => {
       'src/large.ts:161-200',
     ]);
     expect(calls.map((call) => (call[2] as { timeoutMs: number }).timeoutMs)).toEqual([
-      10_000, 15_000, 30_000,
+      15_000, 22_500, 45_000,
     ]);
     now.mockRestore();
   });
@@ -451,8 +453,9 @@ describe('TypeScriptEngine', () => {
   // killed 0, and `formatMutationScore(0, 0)` === '100.00%' — a flawless score for
   // a run in which Stryker was never invoked. Reachable with no timeout at all,
   // because the handler admits any remaining budget >= 1000ms while a run needs
-  // MIN_BATCH_BUDGET_MS (3000) per batch, so the first batchBudget can be below
-  // the floor and the loop breaks with `firstTimeout` still undefined.
+  // MIN_BATCH_BUDGET_MS (15000, one Stryker startup plus 5s) per batch, so the
+  // first batchBudget can be below the floor and the loop breaks with
+  // `firstTimeout` still undefined.
   it('throws when the time budget is exhausted before any batch runs', async () => {
     const now = vi.spyOn(Date, 'now').mockReturnValueOnce(1_000).mockReturnValue(29_001);
     mockReadFileSync.mockImplementation((p: PathOrFileDescriptor) =>
@@ -488,13 +491,32 @@ describe('TypeScriptEngine', () => {
     const result = await engine.run('src/large.ts', {
       workDir: '/sb',
       testRunner: 'command',
-      timeoutMs: 6_000,
+      timeoutMs: 30_000,
     });
 
     expect(mockRunShell).toHaveBeenCalledTimes(2);
-    expect((mockRunShell.mock.calls[0]?.[2] as { timeoutMs: number }).timeoutMs).toBe(3_000);
+    expect((mockRunShell.mock.calls[0]?.[2] as { timeoutMs: number }).timeoutMs).toBe(15_000);
     expect(result.complete).toBe(true);
     now.mockRestore();
+  });
+
+  it('runs unbatched when the budget cannot fund two Stryker startups', async () => {
+    mockReadFileSync.mockImplementation((p: PathOrFileDescriptor) =>
+      p === '/sb/src/large.ts'
+        ? Array.from({ length: 500 }, () => 'const x = 1;').join('\n')
+        : makeJsonReport([]),
+    );
+    mockRunShell.mockResolvedValue(makeExecResult());
+
+    await engine.run('src/large.ts', {
+      workDir: '/sb',
+      testRunner: 'command',
+      timeoutMs: 20_000,
+    });
+
+    // One invocation over the whole file beats seven that each die in startup.
+    expect(mockRunShell).toHaveBeenCalledTimes(1);
+    expect(mockRunShell.mock.calls[0]?.[1] as string[]).toContain('src/large.ts');
   });
 
   it('does not batch large files for native runners or command-runner dry runs', async () => {
@@ -1943,6 +1965,33 @@ describe('TypeScriptEngine', () => {
   });
 });
 
+describe('planLineBatches: budget awareness', () => {
+  it('never plans more batches than the budget can start', () => {
+    // 2000 lines / 80 = 25 batches by line count, but a 300s budget can only
+    // fund floor(300000 / 15000) = 20 startups.
+    const batches = planLineBatches(2000, undefined, 300_000);
+    expect(batches.length).toBeLessThanOrEqual(20);
+  });
+
+  it('still covers the whole requested span when it widens the batches', () => {
+    const batches = planLineBatches(2000, undefined, 300_000);
+    expect(batches[0].start).toBe(1);
+    expect(batches[batches.length - 1].end).toBe(2000);
+    for (let i = 1; i < batches.length; i++) {
+      expect(batches[i].start).toBe(batches[i - 1].end + 1);
+    }
+  });
+
+  it('falls back to a single batch when the budget funds only one startup', () => {
+    const batches = planLineBatches(2000, undefined, 20_000);
+    expect(batches).toEqual([]);
+  });
+
+  it('keeps the line-count plan when no budget is supplied', () => {
+    expect(planLineBatches(2000).length).toBe(25);
+  });
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // buildStrykerArgs — the argv builder extracted out of runOnce. It is pure (no
 // filesystem, no environment), so the whole flag matrix is assertable as plain
@@ -2518,7 +2567,9 @@ describe('report handling', () => {
     const result = await engine.run('src/large.ts', {
       workDir: '/sb',
       testRunner: 'command',
-      timeoutMs: 30_000,
+      // 45s affords floor(45000 / 15000) = 3 startups, needed for the 200-line
+      // requested range to still plan 3 batches under the new floor.
+      timeoutMs: 45_000,
       lineRanges: [{ start: 1, end: 200 }],
     });
 

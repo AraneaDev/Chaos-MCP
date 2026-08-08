@@ -63,7 +63,15 @@ export class TypeScriptEngine extends BaseEngine {
       }
       const requestedRanges =
         options?.lineRanges ?? (options?.lineScope ? [options.lineScope] : undefined);
-      const batches = planLineBatches(totalLines, requestedRanges);
+      // The SAME fallback `runBatched` applies below. Passing a bare
+      // `options?.timeoutMs` would let the planner size batches against
+      // `undefined` (unbounded) while the loop spends DEFAULT_TIMEOUT_MS, so
+      // the two would disagree about the budget on every call that omits it.
+      const batches = planLineBatches(
+        totalLines,
+        requestedRanges,
+        options?.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+      );
       // Stryker disable next-line EqualityOperator: the planner invariant returns either zero or at least two batches.
       if (batches.length > 1) return this.runBatched(filePath, batches, options ?? {});
     }
