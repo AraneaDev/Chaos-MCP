@@ -28,12 +28,19 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { saveRun, loadRun, mintRunId, workspaceFingerprint } from '../utils/run-cache.js';
+import {
+  saveRun,
+  loadRun,
+  mintRunId,
+  workspaceFingerprint,
+  _resetRunCacheIndex,
+} from '../utils/run-cache.js';
 import { buildResultPayload } from '../core/format.js';
 
 let dir: string;
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'rc-test-'));
+  _resetRunCacheIndex();
 });
 
 describe('run-cache', () => {
@@ -390,6 +397,30 @@ describe('run-cache', () => {
 
     const leftoverTmp = readdirSync(dir).filter((f) => f.endsWith('.tmp'));
     expect(leftoverTmp).toHaveLength(0);
+  });
+
+  it('scans the cache directory once, not once per mint', () => {
+    _resetRunCacheIndex();
+    const entry = { file: 'a', projectType: 't', survivors: [], noCoverage: [] };
+    saveRun(entry, { dir, max: 10, now: 1 });
+    const scans = vi.mocked(readdirSync).mock.calls.length;
+
+    saveRun(entry, { dir, max: 10, now: 2 });
+    saveRun(entry, { dir, max: 10, now: 3 });
+
+    expect(vi.mocked(readdirSync).mock.calls.length).toBe(scans);
+  });
+
+  it('still evicts correctly from the in-memory index', () => {
+    _resetRunCacheIndex();
+    const entry = (file: string) => ({ file, projectType: 't', survivors: [], noCoverage: [] });
+    const id1 = saveRun(entry('f1'), { dir, max: 2, now: 1 });
+    const id2 = saveRun(entry('f2'), { dir, max: 2, now: 2 });
+    const id3 = saveRun(entry('f3'), { dir, max: 2, now: 3 });
+
+    expect(loadRun(id1, { dir, now: 3 })).toBeUndefined();
+    expect(loadRun(id2, { dir, now: 3 })?.file).toBe('f2');
+    expect(loadRun(id3, { dir, now: 3 })?.file).toBe('f3');
   });
 });
 

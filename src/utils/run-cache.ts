@@ -102,19 +102,46 @@ function cacheDir(opts?: RunCacheOptions): string {
   return opts?.dir ?? join(tmpdir(), 'chaos-mcp-runs', workspaceFingerprint(process.cwd()));
 }
 
-/** Read every cache file with its createdAt; unreadable/corrupt files are skipped. */
-function listEntries(dir: string): { id: string; createdAt: number }[] {
+/**
+ * What this process knows is in each cache directory: id → `createdAt`.
+ *
+ * `evict` runs on every `saveRun`, and it used to rebuild this by opening and
+ * `JSON.parse`-ing every file in the directory — up to `max` (default 200)
+ * synchronous reads per mint. Every audit and every triage row mints, so a
+ * 25-file sweep paid up to 5,000 of them on the MCP server's event loop, purely
+ * to read one number out of each file.
+ *
+ * The directory is scanned ONCE per process per directory; after that this
+ * process's own writes and removals keep the index current. `createdAt` still
+ * comes from the entry (and therefore from `RunCacheOptions.now`), so the
+ * deterministic eviction tests keep working.
+ *
+ * Staleness is bounded and harmless: another process's entries are invisible
+ * to this index until the next restart, so eviction may retain slightly more
+ * than `max`. The cap is a soft resource bound, not a correctness invariant,
+ * and `loadRun` still grades every hit against the TTL from the file itself.
+ */
+const CACHE_INDEX = new Map<string, Map<string, number>>();
+
+/** Reset the per-directory scan memo. @internal Exported for testing only. */
+export function _resetRunCacheIndex(): void {
+  CACHE_INDEX.clear();
+}
+
+/** One full scan of `dir`, parsing each entry for its `createdAt`. */
+function scanEntries(dir: string): Map<string, number> {
+  const index = new Map<string, number>();
   let names: string[];
   try {
     names = readdirSync(dir).filter((n) => n.endsWith('.json'));
   } catch {
-    return [];
+    return index;
   }
-  const out: { id: string; createdAt: number }[] = [];
   for (const n of names) {
+    const id = n.slice(0, -'.json'.length);
     try {
       const parsed = JSON.parse(readFileSync(join(dir, n), 'utf8')) as RunCacheEntry;
-      out.push({ id: n.slice(0, -'.json'.length), createdAt: parsed.createdAt ?? 0 });
+      index.set(id, parsed.createdAt ?? 0);
     } catch {
       // Corrupt file: drop it so it cannot accumulate.
       try {
@@ -124,7 +151,17 @@ function listEntries(dir: string): { id: string; createdAt: number }[] {
       }
     }
   }
-  return out;
+  return index;
+}
+
+/** Read every cache file with its createdAt; unreadable/corrupt files are skipped. */
+function listEntries(dir: string): { id: string; createdAt: number }[] {
+  let index = CACHE_INDEX.get(dir);
+  if (index === undefined) {
+    index = scanEntries(dir);
+    CACHE_INDEX.set(dir, index);
+  }
+  return [...index].map(([id, createdAt]) => ({ id, createdAt }));
 }
 
 /** Best-effort eviction: drop TTL-expired entries, then trim oldest beyond `max`. */
@@ -137,6 +174,7 @@ function evict(dir: string, ttlMs: number, max: number, now: number): void {
       } catch {
         /* best-effort */
       }
+      CACHE_INDEX.get(dir)?.delete(e.id);
     }
   }
   // Oldest first, with the id breaking a same-millisecond tie. Without the
@@ -152,6 +190,7 @@ function evict(dir: string, ttlMs: number, max: number, now: number): void {
     } catch {
       /* best-effort */
     }
+    CACHE_INDEX.get(dir)?.delete(live[i].id);
   }
 }
 
@@ -186,6 +225,10 @@ export function saveRun(
     }
     throw e;
   }
+  // `evict` ran before this write and guarantees the index for `dir` exists
+  // (scanned or, on an unreadable directory, cached empty), so this keeps it
+  // current without a rescan.
+  CACHE_INDEX.get(dir)?.set(runId, now);
   return runId;
 }
 
