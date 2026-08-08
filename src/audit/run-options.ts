@@ -90,13 +90,19 @@ export function resolveGatedPrebuild(
 /**
  * StrykerJS-only tool options that the other engines silently ignore.
  *
- * `concurrency` is the exception: it lives here because cosmic-ray (Python)
- * discards it, but cargo-mutants and Infection DO honour it — so it is filtered
- * per-engine in {@link ignoredOptionsFor} rather than reported unconditionally.
+ * `mutatorAllowlist` is deliberately ABSENT: `validateMutatorAllowlistArg`
+ * (core/tool-args-validation.ts) rejects that argument unconditionally — every
+ * form of it, `[]` included — before an engine is resolved, so it could never
+ * reach this list and listing it read as "supported but ignored", the opposite
+ * of the truth.
+ *
+ * `concurrency` is the other exception: it lives here because cosmic-ray
+ * (Python) discards it, but cargo-mutants and Infection DO honour it — so it is
+ * filtered per-engine in {@link ignoredOptionsFor} rather than reported
+ * unconditionally.
  */
 export const STRYKER_ONLY_OPTIONS = [
   'lineScope',
-  'mutatorAllowlist',
   'mutatorDenylist',
   'concurrency',
   'dryRun',
