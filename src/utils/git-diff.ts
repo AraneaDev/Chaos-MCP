@@ -31,7 +31,15 @@ export interface GitFailure {
   message: string;
 }
 
-/** Classification of a target file's change status against a diff base. */
+/**
+ * Classification of a target file's change status against a diff base.
+ *
+ * `git-failed` is reachable from ALL FOUR git calls in `computeChangedRanges`
+ * (the work-tree probe, `ls-files`, `merge-base`, and `diff`), each routed
+ * through {@link classifyGitFailure} — not just the first. A consumer that
+ * switches on `DiffResult.kind` must handle it regardless of which call it
+ * originated from; there is no call site where it can safely be assumed away.
+ */
 export type DiffResult =
   | { kind: 'ranges'; ranges: LineRange[] } // tracked file with ≥1 changed hunk
   | { kind: 'no-changes' } // tracked file, identical to base
@@ -147,14 +155,19 @@ export async function computeChangedRanges(
 
   // 2. Untracked / unknown file → the whole file is "new".
   //
-  // NOTE: these paths deliberately keep their existing result kinds for every
-  // non-cancel failure — a cancelled `ls-files` must not be reported as
-  // "untracked, mutate the whole file", which is the most expensive possible
-  // answer to a request the caller already abandoned.
+  // A NON-ZERO EXIT is what proves the file is untracked: `ls-files
+  // --error-unmatch` exits 1 for a path git does not know. A timeout, a missing
+  // binary or an unclassifiable rejection proves nothing about the file, and
+  // reporting those as `untracked` escalated a deliberately-scoped request into
+  // a WHOLE-FILE mutation run — the most expensive answer available — under a
+  // note that made a false claim about the caller's repository. The clamp in
+  // `gitRunner` ties each call to what remains of the audit budget, so a
+  // timeout here is an ordinary tail-of-a-long-sweep event, not an exotic one.
   try {
     await git(['ls-files', '--error-unmatch', '--', relFilePath]);
   } catch (err: unknown) {
-    if (isCancel(err)) throw err;
+    const failure = classifyGitFailure(err);
+    if (failure.kind !== 'exit') return failure;
     return { kind: 'untracked' };
   }
 
@@ -175,7 +188,9 @@ export async function computeChangedRanges(
       const mb = await git(['merge-base', diffBase, 'HEAD']);
       base = mb.stdout.trim();
     } catch (err: unknown) {
-      if (isCancel(err)) throw err;
+      // Same rule: only a non-zero exit is evidence that the REF is bad.
+      const failure = classifyGitFailure(err);
+      if (failure.kind !== 'exit') return failure;
       return { kind: 'bad-ref', ref: diffBase };
     }
     diffArgs = ['diff', '-U0', base, '--', relFilePath];
@@ -185,9 +200,10 @@ export async function computeChangedRanges(
   try {
     diffOut = (await git(diffArgs)).stdout;
   } catch (err: unknown) {
-    if (isCancel(err)) throw err;
-    // Repo confirmed and file tracked, so a diff failure is unexpected; the
-    // most likely cause is an unusable base — surface it as a bad ref.
+    const failure = classifyGitFailure(err);
+    if (failure.kind !== 'exit') return failure;
+    // Repo confirmed and file tracked, so a non-zero exit here is unexpected;
+    // the most likely cause is an unusable base — surface it as a bad ref.
     return { kind: 'bad-ref', ref: diffBase };
   }
 

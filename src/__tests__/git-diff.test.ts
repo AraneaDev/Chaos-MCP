@@ -334,6 +334,59 @@ describe('computeChangedRanges', () => {
       ref: 'HEAD',
     });
   });
+
+  it('reports a timed-out ls-files as git-failed, not as an untracked file', async () => {
+    mockRunShell
+      .mockResolvedValueOnce(ok('true\n')) // rev-parse
+      .mockRejectedValueOnce(failWith('TIMEOUT', 'Command timed out after 15000ms: git'));
+
+    const result = await computeChangedRanges('src/a.ts', '/ws', 'HEAD');
+
+    expect(result).toMatchObject({ kind: 'git-failed', reason: 'timeout' });
+  });
+
+  it('reports a timed-out merge-base as git-failed, not as a bad ref', async () => {
+    mockRunShell
+      .mockResolvedValueOnce(ok('true\n')) // rev-parse
+      .mockResolvedValueOnce(ok('a.ts\n')) // ls-files
+      .mockRejectedValueOnce(failWith('TIMEOUT', 'Command timed out after 15000ms: git'));
+
+    const result = await computeChangedRanges('src/a.ts', '/ws', 'main');
+
+    expect(result).toMatchObject({ kind: 'git-failed', reason: 'timeout' });
+  });
+
+  it('reports a missing git binary during diff as git-failed, not as a bad ref', async () => {
+    mockRunShell
+      .mockResolvedValueOnce(ok('true\n')) // rev-parse
+      .mockResolvedValueOnce(ok('a.ts\n')) // ls-files
+      .mockResolvedValueOnce(ok('abc123\n')) // merge-base
+      .mockRejectedValueOnce(failWith('ENOENT', 'Command not found: git'));
+
+    const result = await computeChangedRanges('src/a.ts', '/ws', 'main');
+
+    expect(result).toMatchObject({ kind: 'git-failed', reason: 'not-installed' });
+  });
+
+  it('still reports a genuinely unresolvable ref as a bad ref', async () => {
+    mockRunShell
+      .mockResolvedValueOnce(ok('true\n'))
+      .mockResolvedValueOnce(ok('a.ts\n'))
+      .mockRejectedValueOnce(fail('fatal: Not a valid object name nope'));
+
+    expect(await computeChangedRanges('src/a.ts', '/ws', 'nope')).toEqual({
+      kind: 'bad-ref',
+      ref: 'nope',
+    });
+  });
+
+  it('still reports a genuinely untracked file as untracked', async () => {
+    mockRunShell
+      .mockResolvedValueOnce(ok('true\n'))
+      .mockRejectedValueOnce(fail('did not match any file(s) known to git'));
+
+    expect(await computeChangedRanges('src/a.ts', '/ws', 'HEAD')).toEqual({ kind: 'untracked' });
+  });
 });
 
 describe('listChangedFiles', () => {
