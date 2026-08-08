@@ -45,15 +45,18 @@ export const MIN_BATCH_BUDGET_MS = COMMAND_RUNNER_STARTUP_MS + 5_000;
  * is fixed (one Stryker startup) and the per-line cost is not, so fewer,
  * larger batches strictly dominate.
  *
- * For MULTIPLE requested ranges (one per diff hunk, typically) the same trick
- * does not work: ranges are never merged into a shared batch, so the emitting
- * loop below produces at least one batch per range regardless of `step`. The
- * true minimum batch count is therefore `requested.length`, not something
- * `spanned`-based sizing can shrink below. When the budget cannot afford one
- * startup per range, this returns `[]` rather than planning a count it cannot
- * honour — the caller reads that as "run unbatched," and a single invocation
- * whose `--mutate` argument comma-joins every range covers all of them in the
- * one startup the budget can actually afford.
+ * For MULTIPLE requested ranges (one per diff hunk, typically) `spanned`-based
+ * sizing of `count`/`step` is not enough on its own: ranges are never merged
+ * into a shared batch, so the emitting loop below can produce MORE batches
+ * than `count` when an individual range is itself wide enough to split into
+ * several — e.g. one 2000-line range plus one 11-line range still emits 3
+ * batches even when `count` was sized to 2. Rather than deriving the true
+ * batch count arithmetically (a range-count proxy for it undercounted this
+ * exact case), the function builds the batches and then checks the emitted
+ * array directly: whatever does not fit the budget is abandoned in favour of
+ * `[]`, which the caller reads as "run unbatched" — a single invocation whose
+ * `--mutate` argument comma-joins every range still covers all of them in the
+ * one startup a tight budget can actually afford.
  *
  * Omitting `budgetMs` keeps the pure line-count plan, which is what the unit
  * tests of the geometry use.
@@ -82,16 +85,10 @@ export function planLineBatches(
   const spanned = requested.reduce((sum, r) => sum + Math.max(0, r.end - r.start + 1), 0);
   const affordable = budgetMs === undefined ? Infinity : Math.floor(budgetMs / MIN_BATCH_BUDGET_MS);
   // One affordable batch is not a batched run — the caller runs unbatched.
+  // Different condition from the emitted-count check below: this one short-
+  // circuits before the emission loop even runs, for a budget that cannot
+  // fund two start-ups at all regardless of what would be planned.
   if (affordable < 2) return [];
-  // Every requested range emits at least one batch of its own (below), so the
-  // batch count can never go under `requested.length` no matter how `step` is
-  // chosen. If the budget can't afford one startup per range, don't plan a
-  // count `spanned`-sizing would silently violate — fall back to unbatched,
-  // same as the `affordable < 2` case above. For the single-range / whole-file
-  // callers this is always false here, since `affordable >= 2` was just
-  // checked and `requested.length` is 1 in both those cases — so this cannot
-  // change the single-range plan.
-  if (requested.length > affordable) return [];
   const byLines = Math.ceil(spanned / COMMAND_BATCH_LINES);
   const count = Math.min(byLines, affordable);
   const step = Math.max(COMMAND_BATCH_LINES, Math.ceil(spanned / count));
@@ -102,6 +99,16 @@ export function planLineBatches(
       batches.push({ start, end: Math.min(range.end, start + step - 1) });
     }
   }
+  // One start-up per batch is the real cost, so the plan is only viable when
+  // the budget can fund every batch the loop actually emitted. Deriving that
+  // count arithmetically is what let `[1-2000],[3000-3010]` slip through: the
+  // overflow there comes from one oversized range splitting internally, not
+  // from the range count. Counting the emitted array is exact by construction.
+  //
+  // No-op for the single-range / whole-file paths: there `count = min(byLines,
+  // affordable)` and `step = ceil(spanned / count)`, so that single range
+  // splits into exactly `count <= affordable` batches and this never fires.
+  if (batches.length > affordable) return [];
   return batches;
 }
 

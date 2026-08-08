@@ -2017,13 +2017,31 @@ describe('planLineBatches: budget awareness', () => {
   it('falls back to unbatched when there are more ranges than the budget can start (one per diff hunk)', () => {
     // 25 five-line hunks: `spanned`-based sizing would still try to fund
     // ceil(125/80) = 2 "batches" worth of step, but each of the 25 ranges
-    // emits its OWN batch regardless of step, so the true floor is 25 — and a
-    // 300s budget only affords floor(300000 / 15000) = 20 startups. This is
+    // emits its OWN batch regardless of step, so the emitted count is 25 — and
+    // a 300s budget only affords floor(300000 / 15000) = 20 startups. This is
     // exactly the "0 of N planned batches completed" regression: without the
-    // range-count check, this used to plan 25 unfundable batches instead of
+    // emitted-count check, this used to plan 25 unfundable batches instead of
     // falling back to one invocation that covers every hunk.
     const ranges = Array.from({ length: 25 }, (_, i) => ({ start: i * 10 + 1, end: i * 10 + 5 }));
     expect(planLineBatches(0, ranges, 300_000)).toEqual([]);
+  });
+
+  it('falls back to unbatched when ONE oversized range among several inflates the emitted count past what a range-count check alone would catch', () => {
+    // Two ranges — a 2000-line one and an 11-line one — at a 30s budget
+    // (affordable=2). A range-COUNT proxy (requested.length=2) would wrongly
+    // let this through, because 2 is not greater than 2. But the 2000-line
+    // range alone splits into 2 batches under the shared step, so the loop
+    // actually emits 3 batches against only 2 affordable start-ups. Counting
+    // the emitted array (not the range count) is what catches this.
+    const batches = planLineBatches(
+      4000,
+      [
+        { start: 1, end: 2000 },
+        { start: 3000, end: 3010 },
+      ],
+      30_000,
+    );
+    expect(batches).toEqual([]);
   });
 
   it('still batches multiple ranges normally when the budget can start one per range', () => {
