@@ -22,6 +22,7 @@
  */
 import { existsSync, lstatSync, mkdirSync, readdirSync, symlinkSync } from 'fs';
 import { join, sep } from 'path';
+import { warn } from '../logger.js';
 
 /** Check whether the current platform is Windows. */
 function isWindows(): boolean {
@@ -31,16 +32,26 @@ function isWindows(): boolean {
 /**
  * Create a symlink (or junction on Windows) from `target` to `path`.
  *
+ * `type` must match what `target` actually is: entry-level linking (see
+ * {@link linkDependencyEntries}) reaches plain FILES — `.venv/pyvenv.cfg`,
+ * `node_modules/.package-lock.json` — not just directories. On Linux/macOS the
+ * argument is ignored, but on Windows a `'dir'` symlink to a file does not
+ * resolve as a file, and the junction fallback below cannot target a file at
+ * all (junctions are directories-only), so a mismatched type either produces a
+ * broken link or — after the rethrow — a silently dropped entry. Defaults to
+ * `'dir'` so the whole-directory caller (Task 3's `share` mode) keeps working
+ * unchanged.
+ *
  * On Windows, regular symlinks require Administrator privileges. Junctions do
- * not, and work for directories. We try 'dir' first, then fall back to
+ * not, and work for directories. We try `type` first, then fall back to
  * 'junction' on Windows if symlinkSync throws EPERM.
  *
  * Moved here from `utils/sandbox.ts` so the whole-directory and entry-level
  * link paths cannot drift on the fallback.
  */
-export function safeSymlink(target: string, path: string): void {
+export function safeSymlink(target: string, path: string, type: 'dir' | 'file' = 'dir'): void {
   try {
-    symlinkSync(target, path, 'dir');
+    symlinkSync(target, path, type);
   } catch (error: unknown) {
     // On Windows: EPERM means regular symlinks need Administrator privileges.
     // Retry with junction (directory hard-link) which doesn't require admin.
@@ -48,6 +59,9 @@ export function safeSymlink(target: string, path: string): void {
     // — rethrow it directly; junction fallback does not exist on Linux/macOS.
     if (isWindows()) {
       try {
+        // Junctions are directories-only: a file `target` always fails here
+        // and falls through to the rethrow below, which is correct — there is
+        // no junction equivalent for a file.
         symlinkSync(target, path, 'junction');
         return;
       } catch {
@@ -74,17 +88,32 @@ function isScopeDir(name: string): boolean {
  * dependency directory is materialised for real and must not be relinked.
  *
  * Best-effort per entry: an unreadable host directory, or an entry that cannot
- * be linked, leaves that one package absent rather than failing provisioning.
- * The engine surfaces a missing dependency through its normal error path.
+ * be linked, leaves that one package absent rather than failing provisioning
+ * outright — a single broken package must not sink the whole audit. But
+ * best-effort must not mean silent: a directory that fails to read, or where
+ * every entry fails to link (an NFS `root_squash` workspace, a permission-
+ * denied `node_modules`), leaves the sandbox copy empty while `createSandbox`
+ * still resolves normally. Without a warning, the engine's own "module not
+ * found" failure then gets reported as a bug in the audited code, when it is
+ * really a sandbox provisioning failure — so both cases `warn()` loudly enough
+ * to correct that diagnosis before it happens.
  */
 export function linkDependencyEntries(hostDir: string, sandboxDir: string): void {
   let entries;
   try {
     entries = readdirSync(hostDir, { withFileTypes: true });
-  } catch {
+  } catch (error: unknown) {
+    warn(
+      `Could not read dependency directory "${hostDir}" while provisioning the sandbox ` +
+        `(${error instanceof Error ? error.message : String(error)}). It will be missing from ` +
+        `the sandbox — a failure the engine reports next is a provisioning problem, not a bug ` +
+        `in the audited code.`,
+    );
     return;
   }
   mkdirSync(sandboxDir, { recursive: true });
+  let linked = 0;
+  let failed = 0;
   for (const entry of entries) {
     const src = join(hostDir, entry.name);
     const dst = join(sandboxDir, entry.name);
@@ -94,10 +123,23 @@ export function linkDependencyEntries(hostDir: string, sandboxDir: string): void
       continue;
     }
     try {
-      safeSymlink(src, dst);
+      safeSymlink(src, dst, entry.isDirectory() ? 'dir' : 'file');
+      linked++;
     } catch {
-      // One unlinkable entry must not fail the whole provision.
+      // One unlinkable entry must not fail the whole provision — counted and
+      // reported below instead.
+      failed++;
     }
+  }
+  if (failed > 0) {
+    warn(
+      `Linked ${linked} of ${linked + failed} ${linked + failed === 1 ? 'entry' : 'entries'} from ` +
+        `"${hostDir}" into the sandbox (${failed} failed).` +
+        (linked === 0
+          ? ` The sandbox copy of "${hostDir}" is empty — a failure the engine reports next is a ` +
+            `provisioning problem, not a bug in the audited code.`
+          : ''),
+    );
   }
 }
 

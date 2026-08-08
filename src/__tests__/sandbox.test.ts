@@ -282,46 +282,49 @@ describe('createSandbox', () => {
     expect(filter(`${TEST_PROJECT}/vendor`)).toBe(false);
   });
 
-  // ─── Target INSIDE a symlinked heavyweight dir (EEXIST regression) ────────
+  // ─── Target INSIDE a symlinked heavyweight dir ─────────────────────────────
   //
   // The copy filter force-includes the target and every ancestor BEFORE it
   // checks the symlink-dir list, so a target under vendor/ (or node_modules/,
-  // .venv/, venv/) makes `cp` materialise that whole directory. Step 2 then
-  // symlinked onto the existing copy and `safeSymlink` rethrew a raw EEXIST on
-  // non-Windows — provisioning died with "Ensure the file exists and the
-  // workspace is accessible" for a file that plainly existed. The already-copied
-  // directory makes the sandbox complete, so Step 2 must skip it.
+  // .venv/, venv/) makes `cp` materialise that whole directory. `linkHeavyDirs`
+  // still calls `linkDependencyEntries` on it — a bare-directory EEXIST is no
+  // longer even possible (nothing symlinks the directory itself any more), and
+  // the interesting behaviour is now per entry: linkDependencyEntries's own
+  // `existsSync(dst)` guard leaves an already-copied entry alone, and links in
+  // any entry the copy DIDN'T produce (e.g. one an ignorePattern excluded),
+  // completing a partially-materialised directory instead of leaving it with a
+  // silent gap.
 
-  it('provisions a target that lives INSIDE vendor/ without an EEXIST collision', async () => {
+  it('completes a force-copied vendor/: leaves copied entries alone, links entries the copy skipped', async () => {
     // A JS/TS repo that vendors first-party code: vendor/ is in SYMLINK_DIRS
     // (no Composer marker here, so it is NOT the isComposerPhpAudit path), yet
     // the target's ancestors force it into the copy.
     const target = 'vendor/my-lib/index.ts';
+    const copiedEntryDst = `${SANDBOX_DIR}/vendor/my-lib`;
+    const skippedEntryDst = `${SANDBOX_DIR}/vendor/sibling-pkg`;
     mockExistsSync.mockImplementation((path: PathLike) => {
       if (path === `${SANDBOX_DIR}/${target}`) return true;
       if (path === TEST_PROJECT_VENDOR) return true;
-      // Step 1 already materialised vendor/ inside the sandbox.
+      // Step 1 already materialised vendor/ AND my-lib/ inside the sandbox...
       if (path === `${SANDBOX_DIR}/vendor`) return true;
+      if (path === copiedEntryDst) return true;
+      // ...but not sibling-pkg/ — say, excluded by an ignorePattern, or any
+      // other reason the copy didn't produce this one entry.
       return false;
     });
-    // Reproduce the real failure: symlinking onto an existing dir throws EEXIST,
-    // and safeSymlink's junction retry is Windows-only so it is rethrown.
-    mockSymlinkSync.mockImplementation((_target: unknown, path: unknown) => {
-      if (String(path) === `${SANDBOX_DIR}/vendor`) {
-        throw Object.assign(
-          new Error(
-            `EEXIST: file already exists, symlink '${TEST_PROJECT_VENDOR}' -> '${SANDBOX_DIR}/vendor'`,
-          ),
-          { code: 'EEXIST' },
-        );
-      }
-    });
+    mockReaddirSync.mockReturnValue([
+      { name: 'my-lib', isDirectory: () => true },
+      { name: 'sibling-pkg', isDirectory: () => true },
+    ] as never);
 
     await expect(createSandbox(target, TEST_PROJECT)).resolves.toBeDefined();
 
-    // vendor/ was copied (force-included), so it must not be symlinked over.
     const symlinkedDsts = mockSymlinkSync.mock.calls.map((c) => String(c[1]));
-    expect(symlinkedDsts).not.toContain(`${SANDBOX_DIR}/vendor`);
+    // Already-copied entry: left alone, not relinked.
+    expect(symlinkedDsts).not.toContain(copiedEntryDst);
+    // Entry the copy skipped: completed via a host symlink rather than left
+    // silently missing from the sandbox.
+    expect(symlinkedDsts).toContain(skippedEntryDst);
   });
 
   it('force-includes vendor/ in the copy when the target lives under it', async () => {
@@ -346,35 +349,41 @@ describe('createSandbox', () => {
     expect(filter(`${TEST_PROJECT}/vendor/other-lib/lib.ts`)).toBe(true);
   });
 
-  it('provisions a target that lives INSIDE node_modules/ without an EEXIST collision', async () => {
+  it('leaves an already-copied entry alone when the target lives inside node_modules/', async () => {
     const target = 'node_modules/@acme/widget/src/index.ts';
+    // The target's own ancestor chain — including the @acme scope dir — was
+    // materialised by the copy (force-include), so this entry must be left
+    // exactly as the copy produced it.
+    const copiedEntryDst = `${SANDBOX_DIR}/node_modules/@acme`;
     mockExistsSync.mockImplementation((path: PathLike) => {
       if (path === `${SANDBOX_DIR}/${target}`) return true;
       if (path === TEST_PROJECT_NODE_MODULES) return true;
       if (path === `${SANDBOX_DIR}/node_modules`) return true;
+      if (path === copiedEntryDst) return true;
       return false;
     });
-    mockSymlinkSync.mockImplementation((_target: unknown, path: unknown) => {
-      if (String(path) === `${SANDBOX_DIR}/node_modules`) {
-        throw Object.assign(new Error('EEXIST: file already exists, symlink'), { code: 'EEXIST' });
-      }
-    });
+    mockReaddirSync.mockReturnValue([{ name: '@acme', isDirectory: () => true }] as never);
 
     await expect(createSandbox(target, TEST_PROJECT)).resolves.toBeDefined();
 
     const symlinkedDsts = mockSymlinkSync.mock.calls.map((c) => String(c[1]));
-    expect(symlinkedDsts).not.toContain(`${SANDBOX_DIR}/node_modules`);
+    expect(symlinkedDsts).not.toContain(copiedEntryDst);
   });
 
-  it('does not symlink a NESTED heavyweight dir whose destination already exists', async () => {
-    // Defensive counterpart of the root-level guard: whatever put the directory
-    // in the sandbox, linking over it can only produce EEXIST.
+  it('leaves an already-copied entry alone inside a NESTED heavyweight dir', async () => {
+    // Defensive counterpart of the root-level test above: the SECOND loop in
+    // linkHeavyDirs (nested occurrences recorded in skippedHeavyDirs, e.g.
+    // workers/typescript/node_modules) must honour the same per-entry
+    // existsSync(dst) guard as the top-level SYMLINK_DIRS loop, not just link
+    // blindly because it takes a different code path to get there.
     const nested = `${TEST_PROJECT}/workers/typescript/node_modules`;
     const nestedDst = `${SANDBOX_DIR}/workers/typescript/node_modules`;
+    const copiedEntryDst = `${nestedDst}/somepkg`;
     mockExistsSync.mockImplementation((path: PathLike) => {
       if (path === `${SANDBOX_DIR}/src/utils/math.ts`) return true;
       if (path === nested) return true;
       if (path === nestedDst) return true;
+      if (path === copiedEntryDst) return true; // already materialised by the copy
       return false;
     });
     mockCp.mockImplementation((async (
@@ -384,16 +393,12 @@ describe('createSandbox', () => {
     ) => {
       opts.filter(nested); // records it in skippedHeavyDirs
     }) as never);
-    mockSymlinkSync.mockImplementation((_target: unknown, path: unknown) => {
-      if (String(path) === nestedDst) {
-        throw Object.assign(new Error('EEXIST: file already exists, symlink'), { code: 'EEXIST' });
-      }
-    });
+    mockReaddirSync.mockReturnValue([{ name: 'somepkg', isDirectory: () => true }] as never);
 
     await expect(createSandbox('src/utils/math.ts', TEST_PROJECT)).resolves.toBeDefined();
 
     const symlinkedDsts = mockSymlinkSync.mock.calls.map((c) => String(c[1]));
-    expect(symlinkedDsts).not.toContain(nestedDst);
+    expect(symlinkedDsts).not.toContain(copiedEntryDst);
   });
 
   it('refuses to sandbox when workspace resolves outside process cwd (C2)', async () => {

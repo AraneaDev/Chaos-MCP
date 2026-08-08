@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createSandbox } from '../utils/sandbox.js';
+import { isSymlink } from '../utils/sandbox/dependency-link.js';
 
 /**
  * The guarantee this file exists to defend (README: "your real workspace is
@@ -35,6 +36,12 @@ describe('sandbox isolation: dependency directories', () => {
   it('keeps a new path created under node_modules inside the sandbox', async () => {
     const sandbox = await createSandbox('src/a.ts', workspace);
     try {
+      // This is WHY the write below stays contained: the sandbox's
+      // node_modules is a real directory, not a symlink back to the host's —
+      // a new path created under it is therefore a new path in the sandbox,
+      // not in the workspace.
+      expect(isSymlink(join(sandbox.workDir, 'node_modules'))).toBe(false);
+
       // What Vite does on every config load (see utils/container/args.ts).
       mkdirSync(join(sandbox.workDir, 'node_modules', '.vite-temp'), { recursive: true });
       writeFileSync(join(sandbox.workDir, 'node_modules', '.vite-temp', 'x.mjs'), 'scratch');
@@ -48,6 +55,12 @@ describe('sandbox isolation: dependency directories', () => {
   it('still resolves an installed package from inside the sandbox', async () => {
     const sandbox = await createSandbox('src/a.ts', workspace);
     try {
+      // This is WHY resolution still works: the package ENTRY itself is a
+      // symlink back to the host's copy (only the containing node_modules/ is
+      // real — see the test above), so reading through it reaches the
+      // original content without the whole directory being shared.
+      expect(isSymlink(join(sandbox.workDir, 'node_modules', 'somepkg'))).toBe(true);
+
       const pkg = join(sandbox.workDir, 'node_modules', 'somepkg', 'index.js');
       expect(readFileSync(pkg, 'utf8')).toBe('original\n');
     } finally {
