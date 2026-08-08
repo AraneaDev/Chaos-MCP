@@ -52,7 +52,6 @@
     "format:check": "prettier --check src/",
     "check": "npm run build && npm run lint && npm run format:check && npm run test",
     "mutation": "npm run build && node scripts/mutate.mjs",
-    "suppressions:restamp": "npm run build && node scripts/restamp-suppressions.mjs",
     "postinstall": "node scripts/postinstall.js"
   },
   "dependencies": {
