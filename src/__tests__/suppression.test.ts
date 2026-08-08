@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   loadSuppressions,
   addSuppressions,
@@ -1052,5 +1053,24 @@ describe('suppression key separators', () => {
     );
     const entries = loadSuppressions(root).get(SRC);
     expect(entries?.map((e) => `${e.line} ${e.mutator}`)).toEqual(['2 A', '7 B']);
+  });
+});
+
+describe('committed suppressions corpus', () => {
+  // Guards against the exact failure mode this file was in before the
+  // restamp migration (scripts/restamp-suppressions.mjs): `writeFile` stamps
+  // `"version": 2` unconditionally, so a v2 write over v1-shaped entries
+  // promotes the header without stamping the entries themselves — every
+  // recorded equivalence argument goes dormant and `unverifiedSuppressions`
+  // becomes background noise nobody reads. This reads the REAL repo-root
+  // `.chaos-mcp/suppressions.json` (not a tmp fixture) so a future write path
+  // that regresses the same way fails CI instead of decaying silently again.
+  it('has no unverified entries in the committed suppressions file', () => {
+    const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+    let unverified = 0;
+    for (const [relFile, entries] of loadSuppressions(repoRoot)) {
+      unverified += verifySuppressions(repoRoot, relFile, entries).unverified;
+    }
+    expect(unverified).toBe(0);
   });
 });
