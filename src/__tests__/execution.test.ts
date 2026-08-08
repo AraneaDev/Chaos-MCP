@@ -59,9 +59,12 @@ const ok = (stdout = '') => ({ stdout, stderr: '', exit: 0, signal: null }) as c
  * "mounts every supported symlinked dependency tree read-only" and its
  * neighbours) or does not touch dependency mounts at all, so `'share'`
  * reproduces this file's pre-existing behaviour byte-for-byte; `workspaceRoot`
- * is unused by that mode and is any placeholder. Tests that specifically cover
- * `'link-entries'`/`'copy'` threading call `createExecutionSession` directly
- * with their own values instead of this helper.
+ * is unused by that mode and is any placeholder. `'link-entries'` threading —
+ * the mode that actually READS `workspaceRoot` — is covered by "mounts the HOST
+ * workspace's dependency tree under 'link-entries', not the sandbox's own",
+ * which calls `createExecutionSession` directly with its own values instead of
+ * this helper. Do not fold that test back into this helper: `'share'` would
+ * make it pass with `workDir` substituted for `workspaceRoot`.
  */
 const UNUSED_WORKSPACE_ROOT = '/tmp/chaos-execution-test-unused-workspace-root';
 
@@ -1191,6 +1194,52 @@ describe('execution sessions', () => {
 
     const createArgs = vi.mocked(runShell).mock.calls[1]?.[1] ?? [];
     expect(createArgs.filter((arg) => arg === '--mount')).toHaveLength(1);
+  });
+
+  it("mounts the HOST workspace's dependency tree under 'link-entries', not the sandbox's own", async () => {
+    // The single line that carries the `workspaceRoot` design decision into
+    // production is `ContainerExecutionSession.createArgs()` passing
+    // `this.workspaceRoot` (not `this.workDir`) to `buildCreateArgs`. The two
+    // are both `string`, so the substitution type-checks, and every other
+    // fixture in this file uses `'share'` mode — where `workspaceRoot` is
+    // unused — so nothing here noticed. It matters: under `'link-entries'` the
+    // sandbox's `node_modules` is a REAL directory of symlinks into the host
+    // tree, so mounting THAT is mounting a directory of links to paths the
+    // container cannot see; every dependency dangles inside it. Mounting
+    // `join(workspaceRoot, dir)` is what makes those links resolve.
+    const root = mkdtempSync(join(tmpdir(), 'chaos-execution-linkentries-'));
+    tempDirs.push(root);
+    const hostWorkspace = join(root, 'workspace');
+    const workDir = join(root, 'sandbox');
+    const hostDeps = join(hostWorkspace, 'node_modules');
+    mkdirSync(join(hostDeps, 'left-pad'), { recursive: true });
+    // The sandbox shape `linkDependencyEntries` produces: a real directory
+    // whose entries are symlinks back into the host tree.
+    mkdirSync(join(workDir, 'node_modules'), { recursive: true });
+    symlinkSync(join(hostDeps, 'left-pad'), join(workDir, 'node_modules', 'left-pad'), 'dir');
+    vi.mocked(runShell)
+      .mockResolvedValueOnce(ok('27.0.0'))
+      .mockResolvedValueOnce(ok('cid'))
+      .mockResolvedValueOnce(ok())
+      .mockResolvedValueOnce(ok())
+      .mockResolvedValueOnce(ok());
+
+    const session = await createExecutionSession(
+      'typescript',
+      workDir,
+      hostWorkspace,
+      'link-entries',
+      { mode: 'container' },
+    );
+    await session.run('stryker', []);
+    await session.dispose();
+
+    const createArgs = vi.mocked(runShell).mock.calls[1]?.[1] ?? [];
+    expect(createArgs).toContain(`type=bind,src=${hostDeps},dst=${hostDeps},readonly`);
+    // Not the sandbox's own copy, under any mount flavour.
+    expect(createArgs.some((arg) => arg.includes(`${workDir}/node_modules`))).toBe(false);
+    // The Vite scratch overlays the HOST path too, for the same reason.
+    expect(createArgs).toContain(`${hostDeps}/.vite-temp:rw,nosuid,nodev,size=16m`);
   });
 
   it('exposes a symlinked Python virtualenv without replacing the pinned interpreter', async () => {

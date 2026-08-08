@@ -462,6 +462,37 @@ describe('run-cache', () => {
     );
     expect(existsSync(join(dir, `${idA}.json`))).toBe(false);
   });
+
+  it('keeps a failed-to-delete entry in the index when the MAX trim is what failed', () => {
+    // Twin of the test above, for the other eviction loop. Both loops carry the
+    // same `CACHE_INDEX.delete` -after- `rmSync` ordering for the same reason,
+    // but only the TTL one was exercised — so a "simplification" that hoisted
+    // the delete out of the try in the max-trim loop would have gone unnoticed,
+    // and the undeleted file would be permanently invisible to eviction for the
+    // rest of the process: never retried, and no longer counting against `max`.
+    _resetRunCacheIndex();
+    const put = (file: string, now: number) =>
+      saveRun(
+        { file, projectType: 't', survivors: [], noCoverage: [] },
+        { dir, max: 2, ttlMs: 1_000_000, now },
+      );
+    const idA = put('a', 1000);
+    put('b', 2000);
+
+    // The third save trims down to `max`: the oldest live entry (idA) is the
+    // one the max loop deletes. Force that single deletion to fail. Nothing is
+    // TTL-expired here, so this is unambiguously the max-trim loop's rmSync.
+    vi.mocked(rmSync).mockImplementationOnce(() => {
+      throw new Error('simulated EACCES on rmSync');
+    });
+    put('c', 3000);
+    expect(existsSync(join(dir, `${idA}.json`))).toBe(true);
+
+    // Still tracked, so the next trim retries it (and, with three live entries
+    // against max 2, trims two of them).
+    put('d', 4000);
+    expect(existsSync(join(dir, `${idA}.json`))).toBe(false);
+  });
 });
 
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
