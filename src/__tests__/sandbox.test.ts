@@ -1163,6 +1163,40 @@ describe('createSandbox', () => {
     expect(linked).toContain(join(nested, 'pkg'));
   });
 
+  it('skips a nested dependency dir in "share" mode when its destination already exists', async () => {
+    // Symmetry with the root-level check a few lines above in `linkHeavyDirs`:
+    // `safeSymlink` cannot target a path that already exists (EEXIST), so
+    // `'share'` mode must check `existsSync(dst)` for a NESTED skipped dir too,
+    // not just the workspace-root one, even though a real `fs.cp` never
+    // actually materialises a dir this loop is about to visit (it was excluded
+    // from the copy precisely because it landed in `skippedHeavyDirs`). The
+    // guard is defensive, so this test manufactures the state directly.
+    const nested = `${TEST_PROJECT}/workers/typescript/node_modules`;
+    const nestedDst = `${SANDBOX_DIR}/workers/typescript/node_modules`;
+    mockExistsSync.mockImplementation((path: PathLike) => {
+      if (path === `${SANDBOX_DIR}/src/utils/math.ts`) return true;
+      if (path === TEST_PROJECT_NODE_MODULES) return true;
+      if (path === nested) return true;
+      if (path === nestedDst) return true; // manufactured: "already there"
+      return false;
+    });
+    let skippedNested: boolean | undefined;
+    mockCp.mockImplementation((async (
+      _s: string,
+      _d: string,
+      opts: { filter: (src: string) => boolean },
+    ) => {
+      skippedNested = opts.filter(nested);
+    }) as never);
+
+    await createSandbox('src/utils/math.ts', TEST_PROJECT, undefined, { dependencies: 'share' });
+
+    expect(skippedNested).toBe(false); // skipped by the copy…
+    // …and NOT re-symlinked on top of the destination that "already exists".
+    const linkedDsts = mockSymlinkSync.mock.calls.map((c) => String(c[1]));
+    expect(linkedDsts).not.toContain(nestedDst);
+  });
+
   it('does not exclude everything when an ignorePattern is only a separator', async () => {
     mockExistsSync.mockImplementation((path: PathLike) => {
       return path === `${SANDBOX_DIR}/src/utils/math.ts`;

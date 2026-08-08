@@ -101,6 +101,12 @@ function configSchemaJson(): string {
       '("docker"|"podman"), network, cpus, memoryMb, pidsLimit, startupTimeoutMs, ' +
       'tmpfsSizeMb (writable /tmp size; the container root is read-only, so this holds every ' +
       'toolchain cache — default 2048), and per-language images.',
+    sandbox:
+      'object — sandbox provisioning: dependencies ("link-entries" (default) | "copy" | "share") ' +
+      'chooses how node_modules/.venv/venv/vendor are materialised. "link-entries" keeps sharing ' +
+      'cheap while keeping new writes inside the sandbox; "copy" is the only mode under which a ' +
+      'write through an existing package also stays in the sandbox; "share" is the pre-1.8 ' +
+      'whole-directory symlink and lets the run write into your real workspace.',
   };
   return JSON.stringify(keys, null, 2);
 }

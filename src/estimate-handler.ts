@@ -121,6 +121,7 @@ export async function handleEstimateCall(
       try {
         sandbox = await createSandbox(relFile, env.workspaceRoot, undefined, {
           signal: ctx?.signal,
+          dependencies: cfg.sandbox?.dependencies,
         });
       } catch (error: unknown) {
         return mapCreateSandboxError(error, rawFilePath, ctx);

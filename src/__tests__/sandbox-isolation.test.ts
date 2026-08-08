@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, lstatSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createSandbox } from '../utils/sandbox.js';
@@ -63,6 +63,31 @@ describe('sandbox isolation: dependency directories', () => {
 
       const pkg = join(sandbox.workDir, 'node_modules', 'somepkg', 'index.js');
       expect(readFileSync(pkg, 'utf8')).toBe('original\n');
+    } finally {
+      sandbox.cleanup();
+    }
+  });
+
+  it('copies the dependency tree when dependencies: "copy"', async () => {
+    const sandbox = await createSandbox('src/a.ts', workspace, undefined, {
+      dependencies: 'copy',
+    });
+    try {
+      writeFileSync(join(sandbox.workDir, 'node_modules', 'somepkg', 'index.js'), 'mutated\n');
+    } finally {
+      sandbox.cleanup();
+    }
+    expect(readFileSync(join(workspace, 'node_modules', 'somepkg', 'index.js'), 'utf8')).toBe(
+      'original\n',
+    );
+  });
+
+  it('restores whole-directory sharing when dependencies: "share"', async () => {
+    const sandbox = await createSandbox('src/a.ts', workspace, undefined, {
+      dependencies: 'share',
+    });
+    try {
+      expect(lstatSync(join(sandbox.workDir, 'node_modules')).isSymbolicLink()).toBe(true);
     } finally {
       sandbox.cleanup();
     }

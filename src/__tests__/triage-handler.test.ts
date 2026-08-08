@@ -303,6 +303,18 @@ describe('handleTriageCall', () => {
     expect(mockDiscover).toHaveBeenCalledWith(['src'], expect.any(String), 25);
   });
 
+  it('forwards config.sandbox.dependencies into createSandbox options for each file', async () => {
+    mockDiscover.mockReturnValue({ files: ['a.ts'], discovered: 1, skipped: 0 });
+    mockAuditFile.mockResolvedValue(mrOf({}));
+    await handleTriageCall(req({ paths: ['src'] }), { sandbox: { dependencies: 'copy' } });
+    expect(mockCreateSandbox).toHaveBeenCalledWith(
+      'a.ts',
+      expect.any(String),
+      undefined,
+      expect.objectContaining({ dependencies: 'copy' }),
+    );
+  });
+
   it('passes timeoutMs/mutatorDenylist through to auditFile and forwards the full audit context', async () => {
     // Kills the perFileArgs ObjectLiteral (line 98) and the auditFile call ObjectLiteral (line 106).
     mockDiscover.mockReturnValue({ files: ['a.ts'], discovered: 1, skipped: 0 });

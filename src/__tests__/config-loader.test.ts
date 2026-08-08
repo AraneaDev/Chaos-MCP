@@ -14,6 +14,7 @@ import {
   KNOWN_INFECTION_KEYS,
   KNOWN_RUST_KEYS,
   KNOWN_STRYKER_KEYS,
+  KNOWN_TOP_LEVEL_KEYS,
 } from '../utils/config/rules.js';
 import { MAX_TIMEOUT_MS } from '../utils/constants.js';
 
@@ -1847,5 +1848,41 @@ describe('ENGINE_CONFIG_SECTIONS', () => {
       .warnings.filter((w) => w.includes('.timeoutMs'))
       .map((w) => w.slice(1, w.indexOf('.')));
     expect(sections).toEqual(['stryker', 'cosmicray', 'rust', 'infection']);
+  });
+});
+
+describe('sandbox section', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockExistsSync.mockReturnValue(true);
+  });
+
+  function buildConfig(raw: Record<string, unknown>) {
+    mockReadFileSync.mockReturnValue(JSON.stringify(raw));
+    return loadConfig('/tmp/config.json');
+  }
+
+  it('accepts a valid dependencies mode', () => {
+    const cfg = buildConfig({ sandbox: { dependencies: 'copy' } });
+    expect(cfg.sandbox).toEqual({ dependencies: 'copy' });
+
+    const { warnings } = validateConfig('/tmp/config.json');
+    expect(warnings.some((w) => w.includes('sandbox.dependencies'))).toBe(false);
+  });
+
+  it('drops an unrecognised mode and warns about it', () => {
+    const cfg = buildConfig({ sandbox: { dependencies: 'symlink' } });
+    expect(cfg.sandbox).toBeUndefined();
+
+    mockReadFileSync.mockReturnValue(JSON.stringify({ sandbox: { dependencies: 'symlink' } }));
+    const { warnings } = validateConfig('/tmp/config.json');
+    expect(warnings).toContain(
+      '"sandbox.dependencies" must be one of "link-entries", "copy", or "share", got "symlink" ' +
+        '— will be ignored.',
+    );
+  });
+
+  it('does not report the sandbox section as an unknown top-level key', () => {
+    expect(KNOWN_TOP_LEVEL_KEYS.has('sandbox')).toBe(true);
   });
 });

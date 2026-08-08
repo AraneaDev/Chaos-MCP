@@ -16,7 +16,8 @@ import {
   SYMLINK_DIRS,
   type CopyPolicy,
 } from './sandbox/copy-policy.js';
-import { linkDependencyEntries } from './sandbox/dependency-link.js';
+import { linkDependencyEntries, safeSymlink } from './sandbox/dependency-link.js';
+import type { DependencyMode } from './config/types.js';
 // Exactly ONE specifier for the registry, here and in src/index.ts: its
 // ACTIVE_SANDBOXES Set is module-level state, and a second resolvable path
 // would give the signal handlers a different Set than the one sandboxes
@@ -58,6 +59,11 @@ export interface SandboxContext {
  */
 export interface CreateSandboxOptions {
   signal?: AbortSignal;
+  /**
+   * Dependency-directory strategy; defaults to `'link-entries'`. See
+   * `SandboxConfig.dependencies` in utils/config/types.ts for the trade-offs.
+   */
+  dependencies?: DependencyMode;
 }
 
 /** Standard-shaped rejection for an aborted createSandbox. */
@@ -262,9 +268,16 @@ async function copyWorkspaceTree(
 /**
  * Step 2: materialise heavyweight directories in the sandbox.
  *
- * The sandbox owns the directory and each host entry is symlinked INSIDE it
- * (see `./sandbox/dependency-link.ts`), so a tool that writes a new path under
- * `node_modules/` writes into the sandbox rather than into the user's tree.
+ * `mode` selects the materialiser:
+ * - `'link-entries'` (default) and `'copy'` (nothing left to link — see the
+ *   `symlinkDirs` derivation in {@link createSandbox}) use
+ *   `linkDependencyEntries`: the sandbox owns the directory and each host entry
+ *   is symlinked INSIDE it (see `./sandbox/dependency-link.ts`), so a tool that
+ *   writes a new path under `node_modules/` writes into the sandbox rather than
+ *   into the user's tree.
+ * - `'share'` uses `safeSymlink` — the pre-1.8 whole-directory symlink — for
+ *   anyone who depends on that behaviour and accepts that a write under it
+ *   reaches the real workspace.
  *
  * (`symlinkDirs` excludes vendor for Composer PHP audits — that dir was copied
  * in Step 1 instead, so it is intentionally not linked here.)
@@ -275,21 +288,22 @@ async function copyWorkspaceTree(
  * filter's force-include of the target's ancestors wins over the symlink-dir
  * check, so `cp` copies the whole tree and the dir is never recorded in
  * `skippedHeavyDirs`. `linkDependencyEntries` skips an existing destination per
- * entry, so a partially-materialised directory is completed rather than
- * clobbered.
+ * entry (so a partially-materialised directory is completed rather than
+ * clobbered); `safeSymlink` cannot target an existing path at all, so `'share'`
+ * checks `existsSync(dst)` itself before calling it.
  */
 function linkHeavyDirs(
   absoluteWorkspace: string,
   sandboxDir: string,
   symlinkDirs: readonly string[],
   skippedHeavyDirs: Set<string>,
+  mode: DependencyMode,
 ): void {
+  const materialise = mode === 'share' ? safeSymlink : linkDependencyEntries;
   for (const dirName of symlinkDirs) {
     const src = join(absoluteWorkspace, dirName);
     const dst = join(sandboxDir, dirName);
-    if (existsSync(src)) {
-      linkDependencyEntries(src, dst);
-    }
+    if (existsSync(src) && !(mode === 'share' && existsSync(dst))) materialise(src, dst);
     skippedHeavyDirs.delete(src); // handled above; do not link it twice
   }
   // Nested occurrences (e.g. workers/typescript/node_modules). Their parent
@@ -298,7 +312,8 @@ function linkHeavyDirs(
     if (!src.startsWith(absoluteWorkspace + sep)) continue;
     if (!existsSync(src)) continue;
     const dst = join(sandboxDir, src.slice(absoluteWorkspace.length + 1));
-    linkDependencyEntries(src, dst);
+    if (mode === 'share' && existsSync(dst)) continue;
+    materialise(src, dst);
   }
 }
 
@@ -385,9 +400,14 @@ export async function createSandbox(
   // cheap symlink. The invariant "excluded-from-copy ⇔ symlinked" is preserved
   // by deriving both the copy-filter exclusions and the symlink loop from this
   // single per-call list.
-  const symlinkDirs = isComposerPhpAudit(targetFile, absoluteWorkspace)
+  const mode: DependencyMode = options?.dependencies ?? 'link-entries';
+  const baseSymlinkDirs = isComposerPhpAudit(targetFile, absoluteWorkspace)
     ? SYMLINK_DIRS.filter((d) => d !== 'vendor')
     : SYMLINK_DIRS;
+  // 'copy' takes every dependency dir out of the symlink set, which is also the
+  // copy filter's exclusion set — so they are copied with the rest of the tree
+  // and Step 2 has nothing to link.
+  const symlinkDirs = mode === 'copy' ? [] : baseSymlinkDirs;
 
   // Absolute path of the audited file inside the workspace. The target and
   // every directory on the path to it must NEVER be excluded from the copy
@@ -470,7 +490,7 @@ export async function createSandbox(
     );
 
     // ── Step 2: Symlink heavyweight directories ──
-    linkHeavyDirs(absoluteWorkspace, sandboxDir, symlinkDirs, skippedHeavyDirs);
+    linkHeavyDirs(absoluteWorkspace, sandboxDir, symlinkDirs, skippedHeavyDirs, mode);
 
     if (options?.signal?.aborted) throw abortError();
 

@@ -105,6 +105,7 @@ describe('resources', () => {
         'rust',
         'runCacheMax',
         'runCacheTtlMs',
+        'sandbox',
         'stryker',
         'suppressionsPath',
         'testRunner',

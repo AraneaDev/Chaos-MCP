@@ -224,6 +224,7 @@ export async function handleToolCall(
     try {
       sandbox = await createSandbox(targetFile, env.workspaceRoot, earlyIgnorePatterns, {
         signal: ctx?.signal,
+        dependencies: cfg.sandbox?.dependencies,
       });
     } catch (error: unknown) {
       return mapCreateSandboxError(error, filePath, ctx);

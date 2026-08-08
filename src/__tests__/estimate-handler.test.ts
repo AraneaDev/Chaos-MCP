@@ -453,6 +453,22 @@ describe('handleEstimateCall', () => {
     );
   });
 
+  it('forwards config.sandbox.dependencies into createSandbox options', async () => {
+    mockEstimateNeedsSandbox.mockReturnValue(true);
+    mockEstimateAudit.mockResolvedValue(approxResult);
+
+    await handleEstimateCall(req({ filePath: 'src/math.ts' }), {
+      sandbox: { dependencies: 'copy' },
+    });
+
+    expect(mockCreateSandbox).toHaveBeenCalledWith(
+      'src/math.ts',
+      '/workspace',
+      undefined,
+      expect.objectContaining({ dependencies: 'copy' }),
+    );
+  });
+
   it('does not throw when ctx is supplied without a signal', async () => {
     // `ctx?.signal?.aborted` must stay null-safe when signal is absent (kills the
     // mutant that drops the optional chain after `.signal`).

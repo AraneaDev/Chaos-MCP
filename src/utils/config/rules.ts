@@ -226,12 +226,33 @@ const describeStringArray = (value: unknown): string | undefined =>
     : `must be an array of non-empty strings, got ${Array.isArray(value) ? 'array with invalid entries' : typeof value}`;
 
 /**
+ * The `sandbox.dependencies` rule, shared verbatim by {@link SANDBOX_FIELD_RULES}
+ * (the parser, via `parseSandboxConfig`) and {@link SECTION_FIELD_RULES} (the
+ * validator, via `sectionRule`/`validateEngineSection`) — one object literal so
+ * the two cannot drift on what counts as a valid mode.
+ */
+const dependenciesRule: FieldRule = {
+  key: 'dependencies',
+  check: (v) => v === 'link-entries' || v === 'copy' || v === 'share',
+  describe: (v) =>
+    v === 'link-entries' || v === 'copy' || v === 'share'
+      ? undefined
+      : `must be one of "link-entries", "copy", or "share", got ${JSON.stringify(v)}`,
+};
+
+/**
  * Field rules shared by every engine section, keyed by field name. A section
  * declares which of these it accepts through its `knownKeys` set, so the same
  * `timeoutMs` rule serves Stryker, cosmic-ray, cargo-mutants and Infection —
  * the block that used to be copy-pasted into all four parsers.
+ *
+ * `dependencies` also lives here (rather than only in {@link SANDBOX_FIELD_RULES})
+ * so `validateEngineSection`, which looks up per-key rules through
+ * {@link sectionRule} against this table, has something to find for the sandbox
+ * section too.
  */
 export const SECTION_FIELD_RULES: Readonly<Record<string, FieldRule>> = {
+  dependencies: dependenciesRule,
   timeoutMs: {
     key: 'timeoutMs',
     check: timeoutValue,
@@ -439,6 +460,17 @@ export const CONTAINER_FIELD_RULES: readonly FieldRule[] = [
   },
 ];
 
+// ─── Sandbox section fields ──────────────────────────────────────────────────
+
+/** Valid keys within a SandboxConfig section. */
+export const KNOWN_SANDBOX_KEYS = new Set(['dependencies']);
+
+/**
+ * The sandbox section. Its warnings read `"sandbox.${key}" ${phrase} — will be
+ * ignored.`, i.e. the engine-section house style, so it reuses that renderer.
+ */
+export const SANDBOX_FIELD_RULES: readonly FieldRule[] = [dependenciesRule];
+
 // ─── Rule engine ─────────────────────────────────────────────────────────────
 
 /**
@@ -558,4 +590,5 @@ export const KNOWN_TOP_LEVEL_KEYS = new Set<string>([
   ...GLOBAL_FIELD_RULES.map((rule) => rule.key),
   ...ENGINE_CONFIG_SECTIONS.map((section) => section.key),
   'container',
+  'sandbox',
 ]);

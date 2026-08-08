@@ -396,6 +396,7 @@ export async function auditTriageFile(
     try {
       sandbox = await createSandbox(targetFile, env.workspaceRoot, undefined, {
         signal: ctx?.signal,
+        dependencies: deps.cfg.sandbox?.dependencies,
       });
     } catch (error: unknown) {
       // Cancellation (mid-CP reject or pre-aborted signal) must surface as a
