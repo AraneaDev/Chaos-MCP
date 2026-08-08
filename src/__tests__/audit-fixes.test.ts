@@ -233,12 +233,13 @@ describe('projectTimingRange invariants', () => {
 
 // ── repo-declared Python test command ────────────────────────────────────────
 /**
- * cosmic-ray executes `test-command` through a shell once per mutant, and one
- * source of that string is the AUDITED project's own
- * `pyproject.toml [tool.mutmut] runner` key. Running the project's test suite
- * is in scope for mutation testing; running an arbitrary shell line the repo
- * supplies is the same hazard `prebuildCommand` is gated behind `allowPrebuild`
- * for.
+ * cosmic-ray word-splits `test-command` with `shlex.split` and runs it as argv
+ * — no shell — once per mutant, and one source of that string is the AUDITED
+ * project's own `pyproject.toml [tool.mutmut] runner` key. Running the
+ * project's test suite is in scope for mutation testing; letting repo content
+ * choose an arbitrary first token to execute, with arbitrary further words as
+ * its arguments, is the same hazard `prebuildCommand` is gated behind
+ * `allowPrebuild` for.
  */
 describe('repo-declared Python test command', () => {
   const originalFlag = process.env.CHAOS_MCP_ALLOW_REPO_TEST_COMMAND;
@@ -286,8 +287,8 @@ describe('repo-declared Python test command', () => {
 
   it('spells out WHY the command was refused and what is accepted', () => {
     // The refusal is a security decision the operator has to be able to act on:
-    // where the command came from, that it is run through a shell per mutant,
-    // and that only a bare executable name is taken from project files.
+    // where the command came from, that cosmic-ray executes it once per
+    // mutant, and that only a bare executable name is taken from project files.
     const message = (() => {
       try {
         resolveTestCommand('python3', { testRunner: 'sh -c "x"' });
@@ -298,7 +299,7 @@ describe('repo-declared Python test command', () => {
     })();
 
     expect(message).toContain('pyproject.toml [tool.mutmut] runner');
-    expect(message).toContain('executes it through a shell once per mutant');
+    expect(message).toContain('cosmic-ray executes it once per mutant');
     expect(message).toContain('only a bare executable name is accepted from project files');
     expect(message).toContain('commands in this workspace.');
   });

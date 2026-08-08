@@ -60,9 +60,9 @@ Environment:
   CHAOS_MCP_ALLOW_PREBUILD=1      Permit a caller-supplied prebuildCommand
   CHAOS_MCP_ALLOW_REPO_TEST_COMMAND=1
                                   Permit a Python test command declared by the AUDITED
-                                  project (pyproject.toml [tool.mutmut] runner) to run
-                                  as a shell command. Bare executable names are always
-                                  allowed; this opens it to full command lines.
+                                  project (pyproject.toml [tool.mutmut] runner) to be
+                                  executed by cosmic-ray. Bare executable names are
+                                  always allowed; this opens it to full command lines.
 
 Description:
   Chaos-MCP is a Model Context Protocol (MCP) server that exposes a single tool,
