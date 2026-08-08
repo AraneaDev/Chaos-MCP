@@ -148,7 +148,7 @@ export function suppressionDriftNotes(
   }
   if (orphaned !== undefined && orphaned > 0) {
     notes.push(
-      `${orphaned} suppression(s) matched no surviving mutant this run and had no effect — the mutant may now be killed, or the line/mutator it targets may no longer exist (a mutation-tool upgrade can rename operators). Re-audit to tell which, then re-issue \`suppress\` against the current mutant or drop the entry with \`unsuppress\`.`,
+      `${orphaned} suppression(s) matched no surviving mutant this run and had no effect — the mutant may now be killed, its line/mutator may no longer exist (a mutation-tool upgrade can rename operators), or a \`mutatorDenylist\` entry may have stopped it being generated. Chaos-MCP cannot tell which; the entry is inert either way, so drop it with \`unsuppress\` unless you know the mutant still exists.`,
     );
   }
   return notes;

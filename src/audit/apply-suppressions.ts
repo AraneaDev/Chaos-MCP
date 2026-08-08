@@ -34,13 +34,14 @@ const keyOf = (line: number, mutator: string): string => `${line} ${mutator}`;
  * `orphanedKeys` is derived from `result.vulnerabilities` (survivors ∪
  * no-coverage) because that is the only mutant IDENTITY a `MutationResult`
  * carries — killed mutants are a count, not a list. An orphan therefore means
- * one of two things, and this code cannot tell them apart: the mutant is now
- * KILLED (a wrong equivalence claim disproved by a new test), or its identity
- * no longer exists. The second is not always an edit — for Rust the mutant
+ * one of three things, and this code cannot tell them apart: the mutant is now
+ * KILLED (a wrong equivalence claim disproved by a new test), its identity no
+ * longer exists, or it was never generated because a `mutatorDenylist` entry
+ * excluded its mutator. The second is not always an edit — for Rust the mutant
  * identity IS cargo-mutants' free-text change description
  * (engines/rust/report.ts), so a tool upgrade that rewords descriptions
  * invalidates every Rust suppression at once. Every message rendered from this
- * count must state BOTH causes rather than asserting either; see
+ * count must state ALL THREE causes rather than asserting any one; see
  * `suppressionDriftNotes` in core/score-semantics.ts.
  *
  * Equivalent mutants are unkillable, so they leave the denominator: total

@@ -563,9 +563,10 @@ export interface ResultPayload {
   /**
    * Applied suppressions whose (line, mutator) matched no SURVIVING mutant this
    * run — inert: nothing was filtered, so the score is exactly what it would
-   * have been without the entry. Either the mutant is now killed or its
-   * identity is gone; the result carries no killed-mutant identities, so the
-   * two cannot be distinguished (see `audit/apply-suppressions.ts`). Only
+   * have been without the entry. The mutant is now killed, its identity is
+   * gone, or a `mutatorDenylist` entry stopped it being generated; the result
+   * carries no killed-mutant identities, so the three cannot be distinguished
+   * (see `audit/apply-suppressions.ts`). Only
    * counted for a whole-file, complete run (`isWholeFileRun` in
    * `audit/suppression-io.ts`).
    */

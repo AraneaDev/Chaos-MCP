@@ -125,7 +125,7 @@ function capabilitiesMarkdown(): string {
     '2. `audit_code_resilience` the weakest file; write tests for the reported survivors.',
     '3. Re-run `audit_code_resilience` with the returned `runId` to verify those mutants are now killed.',
     '4. Use `minScore` to gate; suppress only genuinely-equivalent mutants.',
-    '5. Suppressions are fingerprinted against their source line. If a report shows `driftedSuppressions` or `unverifiedSuppressions`, those entries were NOT applied — re-check the equivalence argument and re-issue `suppress` to restore them. `orphanedSuppressions` means an entry WAS applied but matched no surviving mutant this run (inert) — the mutant may now be killed, or its line/mutator may be gone; re-audit to tell which, then re-issue `suppress` against the current mutant or drop it with `unsuppress`.',
+    '5. Suppressions are fingerprinted against their source line. If a report shows `driftedSuppressions` or `unverifiedSuppressions`, those entries were NOT applied — re-check the equivalence argument and re-issue `suppress` to restore them. `orphanedSuppressions` means an entry WAS applied but matched no surviving mutant this run (inert) — the mutant may now be killed, its line/mutator may be gone, or a `mutatorDenylist` entry may have stopped it being generated. Chaos-MCP cannot tell which; the entry is inert either way, so drop it with `unsuppress` unless you know the mutant still exists.',
     '',
   ].join('\n');
 }
