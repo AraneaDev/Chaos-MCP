@@ -192,8 +192,8 @@ interface RowInput {
   /** Stored suppressions rejected because they carry no fingerprint (v1 data). */
   unverifiedSuppressions: number;
   /**
-   * Applied suppressions whose (line, mutator) matched no mutant this run,
-   * gated on {@link isWholeFileRun} the same way the audit tool gates it.
+   * Applied suppressions whose (line, mutator) matched no SURVIVING mutant this
+   * run, gated on {@link isWholeFileRun} the same way the audit tool gates it.
    */
   orphanedSuppressions: number;
 }
@@ -476,9 +476,16 @@ export async function auditTriageFile(
           suppressedCount: sup.suppressedCount,
           driftedSuppressions: verdict.drifted,
           unverifiedSuppressions: verdict.unverified,
-          // Gated on the pre-suppression result: filtering never touches
-          // `scopeKind`/`scopeNote`, so this matches `applyAndCountSuppressions`'s
-          // gate exactly (see `isWholeFileRun`).
+          // Gated on the PRE-suppression `result`, not `sup.result`.
+          // `applySuppressions` returns a new object and never reassigns this
+          // one, so `result` is still the engine's own snapshot — which
+          // matters because filtering CAN synthesise a `scopeNote`
+          // (`apply-suppressions.ts`, when suppression drives `totalMutants`
+          // to 0) and `isWholeFileRun`'s fallback branch reads `scopeNote`.
+          // Gating on the filtered result would flip the scope answer and mask
+          // a real orphan in exactly the case this counter exists for.
+          // `applyAndCountSuppressions` evaluates it on the same pre-filter
+          // snapshot for the same reason, so the two tools cannot disagree.
           orphanedSuppressions: isWholeFileRun(result) ? sup.orphanedKeys.length : 0,
         },
         deps,

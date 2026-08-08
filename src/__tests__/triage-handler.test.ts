@@ -1396,7 +1396,35 @@ describe('handleTriageCall', () => {
     const row = parsed.ranking[0];
 
     expect(row.orphanedSuppressions).toBe(1);
-    expect(parsed.note).toContain('matched no mutant in this run');
+    expect(parsed.note).toContain('matched no surviving mutant this run');
+  });
+
+  it('does NOT report an orphan when the batched run stopped before it finished', async () => {
+    // Same fixture as above, except the run is a PARTIAL batched one:
+    // `mergeBatchResults` stamps `scopeKind: 'whole-file'` (the REQUESTED
+    // scope) alongside `complete: false`, so the file was only enumerated for
+    // the batches that ran. A suppression targeting a line in an un-run batch
+    // matched nothing for a reason that says nothing about the suppression.
+    mockDiscover.mockReturnValue({ files: [REAL_FILE], discovered: 1, skipped: 0 });
+    mockAuditFile.mockResolvedValue({
+      target: REAL_FILE,
+      totalMutants: 4,
+      killed: 4,
+      survived: 0,
+      mutationScore: '100.00%',
+      vulnerabilities: [],
+      scopeKind: 'whole-file',
+      complete: false,
+      batchesCompleted: 1,
+      batchesPlanned: 7,
+    });
+    stubStored(fingerprintSourceLine(tsEnv.workspaceRoot, REAL_FILE, REAL_LINE));
+
+    const res = await handleTriageCall(req({ paths: [REAL_FILE] }));
+    const parsed = JSON.parse((res.content[0] as { text: string }).text);
+
+    expect(parsed.ranking[0].orphanedSuppressions).toBeUndefined();
+    expect(parsed.note).not.toContain('matched no surviving mutant this run');
   });
 });
 

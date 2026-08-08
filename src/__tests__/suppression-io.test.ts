@@ -247,6 +247,55 @@ describe('applyAndCountSuppressions', () => {
       expect(outcome.counts.orphaned).toBe(1);
     });
 
+    it('suppresses the orphan count for a whole-file run that stopped early', async () => {
+      // `scopeKind` records the REQUESTED scope, so `mergeBatchResults`
+      // (engines/typescript/batches.ts) stamps 'whole-file' even when the time
+      // budget stopped the run after 3 of 7 batches. Every suppression whose
+      // (line, mutator) lives in a batch that never ran matched nothing for a
+      // reason that says nothing about the suppression — reporting those as
+      // orphaned is the cry-wolf failure this gate exists to prevent, on the
+      // one engine that batches by default.
+      writeOrphanEntry();
+
+      const outcome = await applyAndCountSuppressions(
+        {},
+        {
+          ...result(),
+          scopeKind: 'whole-file',
+          complete: false,
+          batchesCompleted: 3,
+          batchesPlanned: 7,
+        },
+        undefined,
+        ws,
+        REL,
+        undefined,
+      );
+
+      expect(outcome.ok).toBe(true);
+      if (!outcome.ok) return;
+      expect(outcome.counts.orphaned).toBe(0);
+    });
+
+    it('still reports the orphan count when a batched run completed', async () => {
+      // The other side of the `complete` conjunct: `complete: true` is the
+      // normal batched outcome and must not be read as "partial".
+      writeOrphanEntry();
+
+      const outcome = await applyAndCountSuppressions(
+        {},
+        { ...result(), scopeKind: 'whole-file', complete: true },
+        undefined,
+        ws,
+        REL,
+        undefined,
+      );
+
+      expect(outcome.ok).toBe(true);
+      if (!outcome.ok) return;
+      expect(outcome.counts.orphaned).toBe(1);
+    });
+
     it('suppresses the orphan count for a scoped run', async () => {
       writeOrphanEntry();
 

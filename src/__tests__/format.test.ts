@@ -1039,11 +1039,25 @@ describe('formatResultAsText — un-applied suppressions', () => {
   it('explains suppressions that no longer match any mutant', () => {
     const notes = suppressionDriftNotes(0, 0, 2);
     expect(notes).toHaveLength(1);
-    expect(notes[0]).toContain('2 suppression(s) matched no mutant');
+    expect(notes[0]).toContain('2 suppression(s) matched no surviving mutant');
+  });
+
+  it('offers both causes for an orphan instead of asserting one', () => {
+    // The orphan set is computed against `vulnerabilities` (survivors ∪
+    // no-coverage), the only mutant IDENTITIES a MutationResult carries — so a
+    // suppressed mutant this run KILLED lands in it too. The note used to say
+    // flatly that "the mutator name or line they target no longer exists",
+    // which is a claim about the audited repository that the code has no
+    // evidence for, and is wrong for the commoner trigger (a wrong equivalence
+    // claim disproved by a new test). It must offer both and assert neither.
+    const [note] = suppressionDriftNotes(0, 0, 1);
+    expect(note).toContain('may now be killed');
+    expect(note).toContain('may no longer exist');
+    expect(note).not.toContain('no longer exists');
   });
 
   it('reports orphaned suppressions with the action to take', () => {
     const text = formatResultAsText(result(), undefined, { orphanedSuppressions: 2 });
-    expect(text).toContain('Note: 2 suppression(s) matched no mutant in this run');
+    expect(text).toContain('Note: 2 suppression(s) matched no surviving mutant this run');
   });
 });

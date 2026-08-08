@@ -680,7 +680,7 @@ describe('buildTriagePayload', () => {
       1,
       0,
     );
-    expect(payload.note).toContain('matched no mutant');
+    expect(payload.note).toContain('matched no surviving mutant');
   });
 });
 

@@ -148,7 +148,7 @@ export function suppressionDriftNotes(
   }
   if (orphaned !== undefined && orphaned > 0) {
     notes.push(
-      `${orphaned} suppression(s) matched no mutant in this run and had no effect — the mutator name or line they target no longer exists (a mutation-tool upgrade can rename operators). Re-audit and re-issue \`suppress\` against the current mutant, or drop the entry with \`unsuppress\`.`,
+      `${orphaned} suppression(s) matched no surviving mutant this run and had no effect — the mutant may now be killed, or the line/mutator it targets may no longer exist (a mutation-tool upgrade can rename operators). Re-audit to tell which, then re-issue \`suppress\` against the current mutant or drop the entry with \`unsuppress\`.`,
     );
   }
   return notes;

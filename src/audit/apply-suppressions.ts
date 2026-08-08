@@ -24,14 +24,24 @@ const keyOf = (line: number, mutator: string): string => `${line} ${mutator}`;
  * Drop suppressed (equivalent) mutants from a result, and report the applied
  * keys that matched nothing.
  *
- * A suppression whose `(line, mutator)` no longer names a generated mutant
- * passes fingerprint verification, lands in `applied`, filters nothing, and
- * used to move no counter at all — `suppressedCount` counts mutants REMOVED,
- * not entries honoured, so the entry was silently inert with the score quietly
- * lower and the mutant back in the report. The likeliest trigger is not an edit:
- * for Rust the mutant identity IS cargo-mutants' free-text change description
+ * A suppression whose `(line, mutator)` names no SURVIVING mutant passes
+ * fingerprint verification, lands in `applied`, filters nothing, and used to
+ * move no counter at all — `suppressedCount` counts mutants REMOVED, not
+ * entries honoured, so the entry was silently inert: it changed neither the
+ * score nor the report, and nothing told the reader it had stopped doing
+ * anything.
+ *
+ * `orphanedKeys` is derived from `result.vulnerabilities` (survivors ∪
+ * no-coverage) because that is the only mutant IDENTITY a `MutationResult`
+ * carries — killed mutants are a count, not a list. An orphan therefore means
+ * one of two things, and this code cannot tell them apart: the mutant is now
+ * KILLED (a wrong equivalence claim disproved by a new test), or its identity
+ * no longer exists. The second is not always an edit — for Rust the mutant
+ * identity IS cargo-mutants' free-text change description
  * (engines/rust/report.ts), so a tool upgrade that rewords descriptions
- * invalidates every Rust suppression at once.
+ * invalidates every Rust suppression at once. Every message rendered from this
+ * count must state BOTH causes rather than asserting either; see
+ * `suppressionDriftNotes` in core/score-semantics.ts.
  *
  * Equivalent mutants are unkillable, so they leave the denominator: total
  * shrinks, score is recomputed, survived is clamped down. Returns a new

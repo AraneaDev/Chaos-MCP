@@ -408,7 +408,7 @@ export function formatResultAsText(
     driftedSuppressions?: number;
     /** Suppressions rejected because they carry no fingerprint (v1 data). */
     unverifiedSuppressions?: number;
-    /** Applied suppressions whose (line, mutator) matched no mutant this run. */
+    /** Applied suppressions whose (line, mutator) matched no SURVIVING mutant this run. */
     orphanedSuppressions?: number;
     /**
      * The gate verdict for this run, when the caller passed `minScore`. Must be
@@ -561,9 +561,13 @@ export interface ResultPayload {
    */
   unverifiedSuppressions?: number;
   /**
-   * Applied suppressions whose (line, mutator) matched no mutant this run —
-   * inert: the score dropped and the mutant did not reappear because there was
-   * no matching mutant to keep out.
+   * Applied suppressions whose (line, mutator) matched no SURVIVING mutant this
+   * run — inert: nothing was filtered, so the score is exactly what it would
+   * have been without the entry. Either the mutant is now killed or its
+   * identity is gone; the result carries no killed-mutant identities, so the
+   * two cannot be distinguished (see `audit/apply-suppressions.ts`). Only
+   * counted for a whole-file, complete run (`isWholeFileRun` in
+   * `audit/suppression-io.ts`).
    */
   orphanedSuppressions?: number;
   gate?: GateResult;

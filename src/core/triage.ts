@@ -28,8 +28,9 @@ export interface TriageRow {
    */
   unverifiedSuppressions?: number;
   /**
-   * Applied suppressions whose (line, mutator) matched no mutant this run —
-   * inert, and only counted for a whole-file audit (see `isWholeFileRun` in
+   * Applied suppressions whose (line, mutator) matched no SURVIVING mutant this
+   * run — inert (the mutant may now be killed, or its identity may be gone),
+   * and only counted for a whole-file, complete audit (see `isWholeFileRun` in
    * `audit/suppression-io.ts`).
    */
   orphanedSuppressions?: number;

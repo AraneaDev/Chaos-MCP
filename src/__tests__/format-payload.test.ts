@@ -548,7 +548,7 @@ describe('buildResultPayload orphaned suppressions', () => {
   it('carries orphanedSuppressions onto the payload and the note', () => {
     const payload = buildResultPayload(result(), { orphanedSuppressions: 3 });
     expect(payload.orphanedSuppressions).toBe(3);
-    expect(payload.note).toContain('matched no mutant');
+    expect(payload.note).toContain('matched no surviving mutant');
   });
 
   it('omits orphanedSuppressions entirely when there are none', () => {

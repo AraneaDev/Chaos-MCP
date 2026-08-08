@@ -39,8 +39,10 @@ export interface SuppressionCounts {
   /** Entries with no fingerprint at all (v1 data), never applied. */
   unverified: number;
   /**
-   * Applied entries whose (line, mutator) matched no mutant this run — inert,
-   * and previously reported by nothing.
+   * Applied entries whose (line, mutator) matched no SURVIVING mutant this run
+   * — inert, and previously reported by nothing. Either the mutant is now
+   * killed or its identity is gone; a `MutationResult` carries no killed-mutant
+   * identities, so the two cannot be told apart here (see `applySuppressions`).
    */
   orphaned: number;
 }
@@ -65,6 +67,14 @@ import {
  * suppressed line outside its range, and calling that an orphan would cry
  * wolf.
  *
+ * `complete === false` disqualifies a run regardless of `scopeKind`.
+ * `scopeKind` records the REQUESTED scope (see its docblock in
+ * `engines/base.ts`), and `mergeBatchResults` (`engines/typescript/batches.ts`)
+ * stamps `'whole-file'` even when a time budget stopped the run after 3 of 7
+ * batches. Every suppression whose `(line, mutator)` lives in a batch that
+ * never ran would then be reported as orphaned — the exact cry-wolf failure
+ * this gate exists to prevent, on the one engine that batches by default.
+ *
  * TRANSITIONAL, twin of `hasNoMutableLogic`'s conjunct 2 in
  * `core/score-semantics.ts` (see the note there): only the TypeScript engine
  * emits `scopeKind` today, so gating on `=== 'whole-file'` alone would
@@ -78,6 +88,7 @@ import {
  * alongside that one once every engine sets `scopeKind`.
  */
 export function isWholeFileRun(result: MutationResult): boolean {
+  if (result.complete === false) return false;
   return result.scopeKind === 'whole-file' || (result.scopeKind === undefined && !result.scopeNote);
 }
 
