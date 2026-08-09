@@ -450,6 +450,113 @@
         "reason": "`incompetent >= 0` differs from `> 0` only at 0 and below; 0 is short-circuited by the preceding `&&` and a negative fails both — covered by the negative-counter test.",
         "fingerprint": "77391e051022"
       }
+    ],
+    "src/utils/run-cache.ts": [
+      {
+        "line": 387,
+        "mutator": "BlockStatement",
+        "addedAt": 1786295525040,
+        "reason": "Emptying the catch drops `return undefined`, but control then falls out of the try/catch to the end of the function, which returns undefined implicitly. Identical result for every input.",
+        "fingerprint": "95bc545467a5"
+      },
+      {
+        "line": 190,
+        "mutator": "OptionalChaining",
+        "addedAt": 1786295525040,
+        "reason": "`CACHE_INDEX.get(dir)` cannot be undefined here: `evict` begins with `listEntries(dir)`, which sets the index (scanned, or cached empty on an unreadable directory) before either loop runs. The `?.` is defensive against a state this call order makes unreachable.",
+        "fingerprint": "2e36324e2232"
+      },
+      {
+        "line": 208,
+        "mutator": "OptionalChaining",
+        "addedAt": 1786295525040,
+        "reason": "Same as line 190 — `listEntries` at the top of `evict` has already populated the index for this directory.",
+        "fingerprint": "8e8d40ba5d70"
+      },
+      {
+        "line": 249,
+        "mutator": "OptionalChaining",
+        "addedAt": 1786295525040,
+        "reason": "`saveRun` calls `evict` before this line, and `evict` populates the index via `listEntries`; the comment two lines above states exactly that guarantee. Unreachable defensively.",
+        "fingerprint": "ada296a0beb1"
+      },
+      {
+        "line": 159,
+        "mutator": "ObjectLiteral",
+        "addedAt": 1786295525040,
+        "reason": "`force: true` only suppresses ENOENT, and this path deletes a file we just read (so it exists). If it did vanish in between, the enclosing try/catch swallows the throw and nothing else happens either way.",
+        "fingerprint": "e3bf5c6acc79"
+      },
+      {
+        "line": 159,
+        "mutator": "BooleanLiteral",
+        "addedAt": 1786295525040,
+        "reason": "Same as the ObjectLiteral on this line: force only matters for a missing file, and a throw here is swallowed by the surrounding best-effort catch.",
+        "fingerprint": "e3bf5c6acc79"
+      },
+      {
+        "line": 240,
+        "mutator": "ObjectLiteral",
+        "addedAt": 1786295525040,
+        "reason": "This rmSync cleans the temp file inside the write-failure catch, wrapped in its own try/catch marked best-effort. Whether force suppresses ENOENT or the catch swallows it, the outcome is identical: the original error is rethrown.",
+        "fingerprint": "1dca0f73b3bf"
+      },
+      {
+        "line": 240,
+        "mutator": "BooleanLiteral",
+        "addedAt": 1786295525040,
+        "reason": "Same as the ObjectLiteral on this line — the surrounding best-effort catch makes the force flag unobservable.",
+        "fingerprint": "1dca0f73b3bf"
+      },
+      {
+        "line": 200,
+        "mutator": "MethodExpression",
+        "addedAt": 1786295525040,
+        "reason": "Dropping the TTL filter lets expired entries into `live`. Expiry is `now - createdAt > ttlMs` against a single `now`, so every expired entry is strictly OLDER than every live one and sorts ahead of them. They therefore occupy the leading slots of the deletion window, which grows by exactly the number added — so the same set of live files is deleted either way.",
+        "fingerprint": "4d73bb327810"
+      },
+      {
+        "line": 201,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786295525040,
+        "reason": "Same as the MethodExpression on line 200: forcing the predicate true admits only expired entries, which sort strictly ahead of every live entry and absorb the extra deletion slots their presence creates. The set of live files removed is unchanged.",
+        "fingerprint": "bb5ce0c2fff2"
+      },
+      {
+        "line": 329,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786295525040,
+        "reason": "Forcing `!Array.isArray(value)` false sends a non-array to `value.every`, which does not exist on a string or plain object — the TypeError is caught by loadRun's own try/catch and returns undefined, the same miss the guard produces.",
+        "fingerprint": "3e367224ee85"
+      },
+      {
+        "line": 331,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786295525040,
+        "reason": "Redundant guard: a group that is a scalar has no `line` property, so `typeof group.line !== 'number'` on the next line rejects it; a null group throws on the same property read and loadRun's catch turns that into the same miss.",
+        "fingerprint": "26f4196cd6de"
+      },
+      {
+        "line": 331,
+        "mutator": "LogicalOperator",
+        "addedAt": 1786295525040,
+        "reason": "Swapping the disjunction only defers to the `group.line` check below, which rejects every scalar, and to loadRun's catch for null. The verdict is unchanged for every input.",
+        "fingerprint": "26f4196cd6de"
+      },
+      {
+        "line": 357,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786295525040,
+        "reason": "Redundant guard, exactly as in tool-args-validation.ts: a scalar `value` has no `runId`, so `typeof e.runId !== 'string'` two lines down rejects it; `null` throws on that same read and loadRun's catch returns the same miss.",
+        "fingerprint": "077797c04b9e"
+      },
+      {
+        "line": 357,
+        "mutator": "LogicalOperator",
+        "addedAt": 1786295525040,
+        "reason": "Swapping the disjunction defers to the `e.runId` check for scalars and to loadRun's catch for null — both produce the same miss the guard would have.",
+        "fingerprint": "077797c04b9e"
+      }
     ]
   }
 }

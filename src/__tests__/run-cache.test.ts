@@ -733,8 +733,91 @@ describe('loadRun — entry shape validation', () => {
     ['a non-string workspaceHash', { ...valid, workspaceHash: 7 }],
     ['a JSON array instead of an object', [valid]],
     ['a JSON null', null],
+    // Each of the three below is a field whose own type check was the ONLY
+    // thing rejecting it: the checks that follow all pass for these entries, so
+    // dropping the guard hands the verify path a baseline with a field of the
+    // wrong type rather than reporting a miss.
+    ['a non-string runId', { ...valid, runId: 7 }],
+    ['a non-number createdAt', { ...valid, createdAt: 'yesterday' }],
+    [
+      'a survivor group whose mutators is a scalar',
+      { ...valid, survivors: [{ line: 1, mutators: 7 }] },
+    ],
   ])('treats %s as a miss', (_label, entry) => {
     put('aaaaaaaa', entry);
     expect(loadRun('aaaaaaaa', { dir, now: 1000 })).toBeUndefined();
+  });
+
+  it('mints an entry whose no-coverage groups keep line AND mutators', () => {
+    // `mintRunId` copies each group field by field rather than storing the
+    // enriched payload group. Both halves of that copy are load-bearing: a
+    // group missing `line` or `mutators` fails `isGroupArray` on the way back
+    // in, so the runId the caller was handed resolves to nothing — a baseline
+    // that silently cannot be verified. The survivors side is covered above;
+    // this pins the no-coverage side, which is a separate `.map`.
+    const id = mintRunId(
+      {
+        survivors: [{ line: 4, mutators: { Cond: 1 } }],
+        noCoverage: [{ line: 9, mutators: { Equality: 2 } }],
+      } as never,
+      'src/a.ts',
+      'typescript',
+      { dir },
+    );
+
+    expect(id).toBeDefined();
+    expect(loadRun(id as string, { dir })?.noCoverage).toEqual([
+      { line: 9, mutators: { Equality: 2 } },
+    ]);
+  });
+
+  it('does not let a non-number createdAt slip past the TTL comparison', () => {
+    // The freshness test is `now - createdAt > ttlMs`. With a non-number that
+    // is NaN, and NaN > ttlMs is false — so an entry that fails the type check
+    // would be served as FRESH forever if the check were dropped. Pinned
+    // separately from the table above because it is the consequence, not the
+    // rejection.
+    put('aaaaaaaa', { ...valid, createdAt: 'yesterday' });
+
+    expect(loadRun('aaaaaaaa', { dir, now: 9_999_999, ttlMs: 1 })).toBeUndefined();
+  });
+});
+
+/**
+ * The per-directory scan memo exists so `evict` does not re-read every cache
+ * file on each save. `_resetRunCacheIndex` is the only way to drop it, and it
+ * is what keeps one test's memo from deciding another test's eviction — so a
+ * no-op reset would make this suite's isolation quietly dependent on file
+ * order.
+ */
+describe('_resetRunCacheIndex', () => {
+  it('forces the next save to rescan the directory', () => {
+    const a = saveRun(
+      { file: 'a', projectType: 't', survivors: [], noCoverage: [] },
+      { dir, now: 1000, max: 10 },
+    );
+    // A file the in-process index has never seen, written behind its back.
+    writeFileSync(
+      join(dir, 'bbbbbbbb.json'),
+      JSON.stringify({
+        runId: 'bbbbbbbb',
+        file: 'b',
+        projectType: 't',
+        createdAt: 2000,
+        survivors: [],
+        noCoverage: [],
+      }),
+    );
+
+    _resetRunCacheIndex();
+    // max 1, so a rescan sees TWO older entries and trims both. Without the
+    // reset the memo still holds only `a`, and `b` survives untouched.
+    saveRun(
+      { file: 'c', projectType: 't', survivors: [], noCoverage: [] },
+      { dir, now: 3000, max: 1 },
+    );
+
+    expect(existsSync(join(dir, 'bbbbbbbb.json'))).toBe(false);
+    expect(existsSync(join(dir, `${a}.json`))).toBe(false);
   });
 });
