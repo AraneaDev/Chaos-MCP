@@ -45,6 +45,16 @@ export interface SuppressionCounts {
    * identities, so the two cannot be told apart here (see `applySuppressions`).
    */
   orphaned: number;
+  /**
+   * Entries this call's `suppress` argument asked for and the write REFUSED,
+   * because the target line is blank or comment-only and no engine reports a
+   * mutant there (see `isNonMutableLine` in utils/suppression.ts).
+   *
+   * Reported because the caller's intent did not land: the entry is not stored,
+   * so nothing later will ever mention it again. Silence here is how 40 stored
+   * suppressions came to point at comments in this repository's own corpus.
+   */
+  rejected: number;
 }
 import {
   loadSuppressions,
@@ -186,13 +196,14 @@ export async function applyAndCountSuppressions(
   | { ok: false; result: CallToolResult }
 > {
   let result = auditResults;
+  let added: AddSuppressionsResult = { stamped: 0, unstamped: 0, rejected: [] };
   try {
     // CodeRabbit finding: if the request aborts after auditFile resolves
     // but before these writes, a cancelled call could still mutate the
     // suppressions file. Guard the write block so cancellation stays
     // side-effect free.
     if (ctx?.signal?.aborted) return { ok: false, result: toolError('Operation cancelled.') };
-    await applySuppressionArgs(args, wsRoot, relFromRoot, supPath);
+    added = await applySuppressionArgs(args, wsRoot, relFromRoot, supPath);
   } catch (error: unknown) {
     // A write failure surfaces a specific error rather than the generic
     // "Chaos Engine Halted" (Fix 4). Sandbox cleanup still runs via finally.
@@ -208,7 +219,13 @@ export async function applyAndCountSuppressions(
   // unverified entries are counted and reported instead — including the
   // entries just written above whose source line could not be read, which
   // land in `unverified` in this very response.
-  const counts: SuppressionCounts = { applied: 0, drifted: 0, unverified: 0, orphaned: 0 };
+  const counts: SuppressionCounts = {
+    applied: 0,
+    drifted: 0,
+    unverified: 0,
+    orphaned: 0,
+    rejected: added.rejected.length,
+  };
   if (!baselineKeys) {
     // Evaluated on the PRE-suppression result, before `result` is reassigned
     // to `filtered.result` below. "Was this run whole-file?" is a property of

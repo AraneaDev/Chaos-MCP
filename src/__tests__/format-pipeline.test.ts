@@ -354,3 +354,27 @@ describe('the incomplete-list count sums every hiding mechanism', () => {
     expect(payload.note).toContain('INCOMPLETE LIST: 2 line group(s)');
   });
 });
+
+describe('refused suppressions are said out loud', () => {
+  // A refused entry is never stored, so no later run mentions it again. The
+  // caller asked for a suppression and did not get one; silence there is how 40
+  // stored suppressions in this repository came to point at comment lines.
+  it('names the count and what to check when entries were refused', () => {
+    const payload = buildResultPayload(result({ vulnerabilities: [vuln()] }), {
+      rejectedSuppressions: 2,
+    });
+
+    expect(payload.rejectedSuppressions).toBe(2);
+    expect(payload.note).toContain('2 suppression(s) were NOT stored');
+    expect(payload.note).toContain('blank or comment-only');
+  });
+
+  it('says nothing when every requested suppression was stored', () => {
+    const payload = buildResultPayload(result({ vulnerabilities: [vuln()] }), {
+      rejectedSuppressions: 0,
+    });
+
+    expect(Object.keys(payload)).not.toContain('rejectedSuppressions');
+    expect(payload.note).not.toContain('NOT stored');
+  });
+});

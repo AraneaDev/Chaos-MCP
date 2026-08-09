@@ -220,6 +220,7 @@ function formatStandardOutput({
     driftedSuppressions: suppression.drifted,
     unverifiedSuppressions: suppression.unverified,
     orphanedSuppressions: suppression.orphaned,
+    rejectedSuppressions: suppression.rejected,
     gate,
   });
 

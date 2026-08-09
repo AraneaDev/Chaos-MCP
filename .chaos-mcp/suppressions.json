@@ -199,6 +199,69 @@
         "addedAt": 1786288614641,
         "reason": "Dropping `.trim()` cannot change the result: `trimmed` is already `text.trim()`, so no trailing whitespace survives, and the slice after `*/` is therefore either empty or contains a non-space character. Both spellings agree on every input.",
         "fingerprint": "53a2fb47a384"
+      },
+      {
+        "line": 100,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786299813924,
+        "reason": "This loop is only reached when `Object.hasOwn(entries, portable)` was FALSE, so no key in `entries` can equal `portable` — `key !== portable` is already true for every iteration. Forcing it true changes nothing.",
+        "fingerprint": "74415619fcf2"
+      },
+      {
+        "line": 242,
+        "mutator": "BlockStatement",
+        "addedAt": 1786299813924,
+        "reason": "Emptying the catch drops `return undefined`, but control then falls out of the try/catch to the end of the function, which returns undefined implicitly. Identical for every input.",
+        "fingerprint": "95bc545467a5"
+      },
+      {
+        "line": 337,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786299813924,
+        "reason": "A fast path only: with an empty `entries` array the loop below runs zero times and the same `emptyVerdict()` is returned. The mutant costs one extra source read and produces the identical verdict.",
+        "fingerprint": "6c47ac607938"
+      },
+      {
+        "line": 545,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786299813924,
+        "reason": "When the two keys are equal, forcing the branch open removes the key and the line below re-adds it as `data.entries[portableKey] = list` — the same document either way.",
+        "fingerprint": "5e51d86e3262"
+      },
+      {
+        "line": 548,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786299813924,
+        "reason": "`e && typeof e === 'object'` guards the index build. Forcing the typeof half true admits a truthy non-object, which keys as `keyOf(undefined, undefined)` — a key no real entry can collide with, so the index behaves identically and the written list is unchanged.",
+        "fingerprint": "863ecbba77fb"
+      },
+      {
+        "line": 573,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786299813924,
+        "reason": "`at === undefined ? undefined : list[at]` — forcing the condition false evaluates `list[undefined]`, which is itself `undefined`. Both arms yield the same value.",
+        "fingerprint": "fde71cbc045c"
+      },
+      {
+        "line": 580,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786299813924,
+        "reason": "Assigning `merged.reason = undefined` instead of omitting the key is unobservable: `merged` is only serialised by `JSON.stringify` in writeFile, which drops undefined-valued keys, and nothing reads the in-memory object.",
+        "fingerprint": "f365a61c3cb0"
+      },
+      {
+        "line": 581,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786299813924,
+        "reason": "Same as line 580 for `fingerprint`: the object's only consumer is `JSON.stringify`, which omits an undefined value, so the stored document is byte-identical.",
+        "fingerprint": "dfe66bfafa26"
+      },
+      {
+        "line": 627,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786299813924,
+        "reason": "When the keys are equal, forcing the branch open removes the key and the block below either re-adds it (`kept.length > 0`) or removes it again in the else — the same document in both cases.",
+        "fingerprint": "5e51d86e3262"
       }
     ],
     "src/core/estimate.ts": [

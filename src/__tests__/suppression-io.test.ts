@@ -446,3 +446,51 @@ describe('applyAndCountSuppressions', () => {
     });
   });
 });
+
+/**
+ * A `suppress` argument the write REFUSED.
+ *
+ * `addSuppressions` turns away an entry whose target line is blank or
+ * comment-only, because no engine reports a mutant at a position inside a
+ * comment. The refusal has to reach the caller: the entry is not stored, so no
+ * later run will ever mention it, and the caller would otherwise believe their
+ * suppression landed. Auditing this repo found 40 stored entries in exactly
+ * that state — pointing at comments, applying to nothing, and reported by
+ * nothing.
+ */
+describe('applyAndCountSuppressions — refused entries', () => {
+  it('counts a suppression aimed at a comment line', async () => {
+    writeFileSync(join(ws, REL), `${LINE_1}\n// a comment, not a mutant site\n`);
+
+    const outcome = await applyAndCountSuppressions(
+      { suppress: [{ line: 2, mutator: 'ConditionalExpression', reason: 'looked equivalent' }] },
+      result(),
+      undefined,
+      ws,
+      REL,
+      undefined,
+    );
+
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.counts.rejected).toBe(1);
+    // And nothing was written for it, which is the point of the count.
+    expect(loadVerifiedSuppressions(ws, REL, undefined).applied.size).toBe(0);
+  });
+
+  it('reports zero refusals when the target is real code', async () => {
+    const outcome = await applyAndCountSuppressions(
+      { suppress: [{ line: 1, mutator: 'ConditionalExpression', reason: 'equivalent' }] },
+      result(),
+      undefined,
+      ws,
+      REL,
+      undefined,
+    );
+
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.counts.rejected).toBe(0);
+    expect(loadVerifiedSuppressions(ws, REL, undefined).applied.size).toBe(1);
+  });
+});

@@ -571,6 +571,8 @@ export interface ResultPayload {
    * `audit/suppression-io.ts`).
    */
   orphanedSuppressions?: number;
+  /** Entries a `suppress` argument asked for that the write refused to store. */
+  rejectedSuppressions?: number;
   gate?: GateResult;
   /** Mutants excluded from the score because the mutated code never scored (audit I3). */
   incompetent?: number;
@@ -591,6 +593,8 @@ export interface ResultPayloadOpts {
   driftedSuppressions?: number;
   unverifiedSuppressions?: number;
   orphanedSuppressions?: number;
+  /** Entries a `suppress` argument asked for that the write refused to store. */
+  rejectedSuppressions?: number;
   gate?: GateResult;
 }
 
@@ -698,6 +702,15 @@ export function buildResultPayload(
   }
   if (opts.orphanedSuppressions && opts.orphanedSuppressions > 0) {
     payload.orphanedSuppressions = opts.orphanedSuppressions;
+  }
+  // Said out loud rather than left to the field: a refused entry was never
+  // stored, so no later run mentions it and the caller would otherwise believe
+  // their suppression landed.
+  if (opts.rejectedSuppressions && opts.rejectedSuppressions > 0) {
+    payload.rejectedSuppressions = opts.rejectedSuppressions;
+    payload.note +=
+      ` ${opts.rejectedSuppressions} suppression(s) were NOT stored: their target line is blank or comment-only,` +
+      ' where no engine reports a mutant. Check the line number against the survivor you meant to suppress.';
   }
   for (const n of suppressionDriftNotes(
     opts.driftedSuppressions,
