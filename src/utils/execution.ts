@@ -29,7 +29,7 @@ export interface ExecutionSession {
   dispose(): Promise<void>;
 }
 
-export const CONTAINER_IMAGE_VERSION = '1.8.1'; // x-release-please-version
+export const CONTAINER_IMAGE_VERSION = '2.0.0'; // x-release-please-version
 
 /** @internal Exported for utils/container/doctor.ts and tests. */
 export const DEFAULT_IMAGES: Record<SupportedProjectType, string> = {
