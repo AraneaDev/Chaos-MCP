@@ -151,11 +151,11 @@
     ],
     "src/utils/file-path.ts": [
       {
-        "line": 82,
+        "line": 105,
         "mutator": "ConditionalExpression",
-        "addedAt": 1785439701057,
-        "reason": "Both arms produce the same string when `extra` is empty: [rootCwd, ...[]].join(' or ') === rootCwd. The early-return arm is a readability shortcut, not a behavioural branch.",
-        "fingerprint": "e999555ae194"
+        "addedAt": 1786293447526,
+        "reason": "Both arms produce the same string when `extra` is empty: `[rootCwd, ...[]].join(' or ')` === `rootCwd`. The early-return arm is a readability shortcut, not a behavioural branch, so forcing the condition either way leaves the output identical for every input.",
+        "fingerprint": "113f339afe24"
       }
     ],
     "src/utils/incremental-cache.ts": [
@@ -208,24 +208,6 @@
         "addedAt": 1786292980666,
         "reason": "`source` is declared `let source = ''` four lines above, so a readFileSync failure leaves it holding that initialiser already — the catch's `source = ''` is a defensive re-assignment that cannot change any state. Emptying the block is equivalent. Same shape as the catch blocks at triage/audit-one.ts:273 and :287.",
         "fingerprint": "95bc545467a5"
-      }
-    ],
-    "src/core/triage.ts": [
-      {
-        "line": 93,
-        "mutator": "BlockStatement",
-        "addedAt": 1786267580111,
-        "reason": "Emptying the catch lets execution fall off the end and return undefined; the sole caller uses the result as an `if` condition, where undefined and false are indistinguishable.",
-        "fingerprint": "2d92c34aa5a4"
-      }
-    ],
-    "src/utils/execution.ts": [
-      {
-        "line": 237,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1786267580115,
-        "reason": "Redundant fast path: whenever containerId is set, startPromise is set too, so the very next line returns the same already-resolved promise without recreating anything.",
-        "fingerprint": "8c468a57ba68"
       }
     ],
     "src/audit/scope.ts": [
