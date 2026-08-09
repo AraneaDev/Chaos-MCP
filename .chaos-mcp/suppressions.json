@@ -35,81 +35,39 @@
     ],
     "src/core/test-file.ts": [
       {
-        "line": 14,
-        "mutator": "Regex",
-        "addedAt": 1785458749164,
-        "reason": "Only the FIRST element of the joined path can be '.', because the other elements are literal directory names or a computed basename — so a './' can only appear at position 0 and the anchor is redundant.",
-        "fingerprint": "d4c946f606de"
+        "line": 249,
+        "mutator": "MethodExpression",
+        "addedAt": 1786289756216,
+        "reason": "Admitting empty/'.' segments to the CANDIDATE set cannot raise the overlap: line 250 still filters those same segments out of the source side before querying the set, so they are never looked up. Only mutating both lines at once would be observable, and mutants are applied one at a time.",
+        "fingerprint": "41356563e666"
       },
       {
-        "line": 23,
-        "mutator": "StringLiteral",
-        "addedAt": 1785458059079,
-        "reason": "Blanking the fixed `tests/` candidate only defers to the recursive hunt, which searches `tests` as a root and returns the same path with the same exists flag.",
-        "fingerprint": "36564eeef8e7"
-      },
-      {
-        "line": 27,
-        "mutator": "StringLiteral",
-        "addedAt": 1785458059079,
-        "reason": "Blanking the fixed python `tests/` candidate only defers to the recursive hunt, which searches `tests` as a root and returns the same path.",
-        "fingerprint": "89d77d3ffc79"
-      },
-      {
-        "line": 37,
-        "mutator": "StringLiteral",
-        "addedAt": 1785458059079,
-        "reason": "Blanking the PHP `tests/` candidate only defers to the recursive hunt, which searches `tests` as a root and finds the same capitalised file.",
-        "fingerprint": "0fc43b35a953"
-      },
-      {
-        "line": 38,
-        "mutator": "StringLiteral",
-        "addedAt": 1785458749164,
-        "reason": "The 'tests' prefix on the third PHP candidate duplicates the second candidate's directory; blanking it only defers to the recursive hunt, which searches tests/ and returns the same path.",
-        "fingerprint": "980b911fd343"
-      },
-      {
-        "line": 122,
+        "line": 249,
         "mutator": "ConditionalExpression",
-        "addedAt": 1785457299377,
-        "reason": "Dropping the existsSync guard just hands a missing path to collectByName, whose own readdir catch returns immediately — the found list is unchanged either way.",
-        "fingerprint": "03d9aba63511"
+        "addedAt": 1786289756216,
+        "reason": "Same as the MethodExpression on this line: whichever half of `s && s !== '.'` is forced, the extra segments land only in the candidate set, and line 250's filter stops the source side ever asking for them.",
+        "fingerprint": "41356563e666"
       },
       {
-        "line": 129,
-        "mutator": "StringLiteral",
-        "addedAt": 1785458749164,
-        "reason": "Redundant with the hidden-directory rule on the same line (`entry.name.startsWith('.')`), which already skips .git regardless of the ignore set.",
-        "fingerprint": "73e6bcc1ce1c"
+        "line": 249,
+        "mutator": "LogicalOperator",
+        "addedAt": 1786289756216,
+        "reason": "Swapping && for || only widens the candidate set with empty/'.' segments, which line 250's own filter guarantees are never queried.",
+        "fingerprint": "41356563e666"
       },
       {
-        "line": 135,
-        "mutator": "StringLiteral",
-        "addedAt": 1785458749164,
-        "reason": "Redundant with the hidden-directory rule, which already skips .tox regardless of the ignore set.",
-        "fingerprint": "4ce78cc68b7d"
-      },
-      {
-        "line": 214,
-        "mutator": "ArrayDeclaration",
-        "addedAt": 1785458059079,
-        "reason": "A seeded root names no real directory, so collectByName's readdir throws ENOTDIR/ENOENT and is caught — the found list is unchanged.",
-        "fingerprint": "3d578ef78ec3"
-      },
-      {
-        "line": 216,
+        "line": 250,
         "mutator": "ConditionalExpression",
-        "addedAt": 1785457299377,
-        "reason": "The only path this skips is the target file itself as a search root; without the skip it is handed to collectByName, where readdir on a file throws ENOTDIR and is caught, leaving the found list unchanged.",
-        "fingerprint": "10e0fa08a73f"
+        "addedAt": 1786289756216,
+        "reason": "Forcing either half of `s && s !== '.'` lets empty/'.' segments reach `candidateSegments.has(s)`, but line 249 has already stripped those from the candidate set, so the lookup misses and the count is unchanged.",
+        "fingerprint": "535d67604ba7"
       },
       {
-        "line": 218,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1785458059079,
-        "reason": "Pushing a non-existent root just hands a missing path to collectByName, whose readdir catch returns immediately; the found list is identical either way.",
-        "fingerprint": "d10b36aa74a5"
+        "line": 250,
+        "mutator": "LogicalOperator",
+        "addedAt": 1786289756216,
+        "reason": "Swapping && for || admits empty/'.' segments to the lookup, which line 249's filter guarantees are absent from the candidate set — the count cannot change.",
+        "fingerprint": "535d67604ba7"
       }
     ],
     "src/core/tool-args-validation.ts": [
