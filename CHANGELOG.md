@@ -2,6 +2,50 @@
 
 All notable changes to Chaos-MCP are documented in this file.
 
+## [1.8.0](https://github.com/AraneaDev/Chaos-MCP/compare/v1.7.0...v1.8.0) (2026-08-09)
+
+
+### Features
+
+* **sandbox:** add a dependencies mode for copy or whole-directory sharing ([e6a9c29](https://github.com/AraneaDev/Chaos-MCP/commit/e6a9c298388faf91077cb7a90aff9bd4104acd4f))
+* **suppressions:** report entries that matched no mutant ([d050882](https://github.com/AraneaDev/Chaos-MCP/commit/d0508820f8e099a79dd61917456fceb8f6b0872e))
+* **suppressions:** surface orphanedSuppressions in every output shape ([c6bc13f](https://github.com/AraneaDev/Chaos-MCP/commit/c6bc13f5091cbc3948f26b8116973e599d3c1739))
+
+
+### Bug Fixes
+
+* **config:** warn that mutatorAllowlist is accepted and then ignored ([1b812fb](https://github.com/AraneaDev/Chaos-MCP/commit/1b812fb3d13f668001985835c653816223cfd43c))
+* **container:** bind-mount the dependency tree under link-entries and copy modes ([90be1ba](https://github.com/AraneaDev/Chaos-MCP/commit/90be1ba0de41b38b4c8aef3597461fa80e5d5fda))
+* **container:** pass workspaceRoot and dependencyMode instead of inferring the host root ([88f7250](https://github.com/AraneaDev/Chaos-MCP/commit/88f72506d39666976bde9da8d8e8d6c6a3820b80))
+* **detectors:** anchor the pytest table probes to a line of their own ([832f93d](https://github.com/AraneaDev/Chaos-MCP/commit/832f93d1977cffbd5a946b8f91ad338b600b1f72))
+* **engines:** declare whole-file scopeKind on the three engines that never scope ([03d54e7](https://github.com/AraneaDev/Chaos-MCP/commit/03d54e7af2013d97dc42650570d694a3062f4629))
+* **estimate:** grade a baseline that outran its cap instead of dropping it ([61315f2](https://github.com/AraneaDev/Chaos-MCP/commit/61315f2c27a82891ebe7c738a4bafc71afc1ba3b))
+* **estimate:** only declare a budget missed when the baseline cap covers it ([e2d0986](https://github.com/AraneaDev/Chaos-MCP/commit/e2d098677e303ffa0a016c969692547c5e6f2d67))
+* **git-diff:** stop reporting our own failures as facts about the repo ([570a607](https://github.com/AraneaDev/Chaos-MCP/commit/570a607c8944a30f769b097ea1d41f6c0c3a09b1))
+* **git-diff:** treat only exit 1 from ls-files as untracked ([48db1d5](https://github.com/AraneaDev/Chaos-MCP/commit/48db1d5f78b49a34bd710e4fbfc8740cc2602424))
+* **python:** quote test-selection paths so shlex cannot split them ([c959541](https://github.com/AraneaDev/Chaos-MCP/commit/c9595419e65950fc5d0d1ef5735763398aaa58fb))
+* **python:** quote the interpreter path so shlex cannot eat its separators ([4cbddcc](https://github.com/AraneaDev/Chaos-MCP/commit/4cbddcc35b3a031070dd6f412ec9564de436a3ef))
+* remediate the v1.7.0 comprehensive logic audit ([f16d6b1](https://github.com/AraneaDev/Chaos-MCP/commit/f16d6b1e12d95de43ca475e19826b8ab9a1e845a))
+* **run-cache:** don't drop an eviction index entry when its rmSync fails ([dd92b4d](https://github.com/AraneaDev/Chaos-MCP/commit/dd92b4d52da77c54c89960095f91a0173f972ff5))
+* **sandbox:** let ignorePatterns exclude a dependency directory ([ef72e78](https://github.com/AraneaDev/Chaos-MCP/commit/ef72e78259e2d65635e24a7a9624fdacca8a9ef9))
+* **sandbox:** link dependency entries so sandbox writes stay in the sandbox ([d67f8d2](https://github.com/AraneaDev/Chaos-MCP/commit/d67f8d202bf17b4f69bcb1f3ffc917c69b08d3ea))
+* **sandbox:** report the size threshold instead of a truncated total ([76a2e9f](https://github.com/AraneaDev/Chaos-MCP/commit/76a2e9f2451dac9fe52db3be7480a54e42cfd0e6))
+* **sandbox:** warn about an excluded dependency directory under copy mode too ([c0626da](https://github.com/AraneaDev/Chaos-MCP/commit/c0626da21a91695b178a036f4ce8c46e0a04dfe0))
+* **sandbox:** warn on an excluded dependency directory, and type entry links by their target ([bcfc773](https://github.com/AraneaDev/Chaos-MCP/commit/bcfc7733a110ce342ef41b6584cdf53793351b91))
+* **sandbox:** warn on dependency-link failures, fix symlink type, retest gaps ([c4e5a65](https://github.com/AraneaDev/Chaos-MCP/commit/c4e5a65c7b71c7409d88c5f65808c747042f74b1))
+* **suppressions:** fall back to whole-file when an engine never sets scopeKind ([2e31f73](https://github.com/AraneaDev/Chaos-MCP/commit/2e31f7374477383619ea7598569ca3609dc01640))
+* **suppressions:** gate the audit-side orphan count on the pre-suppression result ([97cd5e7](https://github.com/AraneaDev/Chaos-MCP/commit/97cd5e7d169d46198a804847116f509fee6014c5))
+* **suppressions:** gate the orphan count on a completed run, and stop asserting its cause ([e96ff42](https://github.com/AraneaDev/Chaos-MCP/commit/e96ff42c60912497379621a41b85ecd5654abaa3))
+* **typescript:** bound batch count by requested ranges too, not just spanned lines ([167b4ce](https://github.com/AraneaDev/Chaos-MCP/commit/167b4ceb2e39e31523618801828a941693888670))
+* **typescript:** bound batches by the emitted count, not a range-count proxy ([ec4a1c0](https://github.com/AraneaDev/Chaos-MCP/commit/ec4a1c0b4e0caeb12f41ce47f93fedafeaf85eb1))
+* **typescript:** size mutation batches against the time budget ([3e99b50](https://github.com/AraneaDev/Chaos-MCP/commit/3e99b5094bd1ef1c8f833151b920a2a085814ded))
+
+
+### Performance Improvements
+
+* **run-cache:** evict from an in-memory index instead of parsing every entry ([9b46d49](https://github.com/AraneaDev/Chaos-MCP/commit/9b46d4962f8cd11762165f5a4d1cfef99a32d6bf))
+* **sandbox:** memoise the pre-copy workspace size probe ([b4dbc5a](https://github.com/AraneaDev/Chaos-MCP/commit/b4dbc5ad4beaf415649ec692f1f5d4401040eef6))
+
 ## [1.7.0](https://github.com/AraneaDev/Chaos-MCP/compare/v1.6.0...v1.7.0) (2026-08-02)
 
 
