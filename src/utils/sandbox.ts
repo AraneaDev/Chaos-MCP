@@ -359,16 +359,24 @@ function linkHeavyDirs(
   skippedHeavyDirs: Set<string>,
   mode: DependencyMode,
   excludes: ReadonlySet<string>,
+  dependencyDirs: readonly string[] = symlinkDirs,
 ): void {
   const materialise = mode === 'share' ? safeSymlink : linkDependencyEntries;
+  // Warn from the FULL dependency list, not from the link set. Under
+  // `dependencies: 'copy'` the caller passes `symlinkDirs: []` — the dirs are
+  // meant to be copied with the rest of the tree — so neither loop below would
+  // ever see `node_modules`, yet an `ignorePatterns` entry naming it still
+  // strips it from the copy and leaves the sandbox with no dependencies. That
+  // is the identical outcome the warning exists to report, and reporting it
+  // under two modes but not the third would be the same silence in a new place.
+  for (const dirName of dependencyDirs) {
+    if (excludes.has(dirName)) warnDependencyExcluded(join(absoluteWorkspace, dirName), dirName);
+  }
   for (const dirName of symlinkDirs) {
     const src = join(absoluteWorkspace, dirName);
     const dst = join(sandboxDir, dirName);
     skippedHeavyDirs.delete(src); // handled above; do not link it twice
-    if (excludes.has(dirName)) {
-      warnDependencyExcluded(src, dirName);
-      continue;
-    }
+    if (excludes.has(dirName)) continue; // already warned above
     if (existsSync(src) && !(mode === 'share' && existsSync(dst))) materialise(src, dst);
   }
   // Nested occurrences (e.g. workers/typescript/node_modules). Their parent
@@ -576,6 +584,7 @@ export async function createSandbox(
       skippedHeavyDirs,
       mode,
       copyPolicy.normalisedExcludes,
+      baseSymlinkDirs,
     );
 
     if (options?.signal?.aborted) throw abortError();

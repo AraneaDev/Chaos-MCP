@@ -987,6 +987,47 @@ describe('createSandbox', () => {
     );
   });
 
+  it('warns under dependencies: "copy" too, where nothing is linked to warn about', async () => {
+    // The gap the mode split opened. Under 'copy' the caller passes
+    // `symlinkDirs: []` — the dirs are meant to ride along with the tree copy —
+    // so neither loop in linkHeavyDirs ever sees `node_modules`, yet an
+    // ignorePatterns entry naming it still strips it from that copy and leaves
+    // the sandbox with no dependencies. Identical outcome, identical
+    // consequence (the engine's "cannot find module" read as a finding about
+    // the audited code); warning in two modes and not the third would be the
+    // same silence relocated.
+    const { warn } = await import('../utils/logger.js');
+    const mockedWarn = vi.mocked(warn);
+    mockedWarn.mockClear();
+
+    await createSandbox('src/utils/math.ts', TEST_PROJECT, ['node_modules'], {
+      dependencies: 'copy',
+    });
+
+    expect(mockedWarn).toHaveBeenCalledWith(
+      expect.stringContaining(`excludes the dependency directory "${TEST_PROJECT_NODE_MODULES}"`),
+    );
+  });
+
+  it('warns exactly once per excluded dependency directory', async () => {
+    // The warning list and the link list overlap under the default mode. If the
+    // pre-pass warned and the link loop warned again, every affected user would
+    // get the same paragraph twice — and a reader deduplicating it by eye would
+    // stop reading the second copy, which is where a DIFFERENT directory's
+    // warning appears.
+    const { warn } = await import('../utils/logger.js');
+    const mockedWarn = vi.mocked(warn);
+    mockedWarn.mockClear();
+
+    await createSandbox('src/utils/math.ts', TEST_PROJECT, ['node_modules']);
+
+    expect(
+      mockedWarn.mock.calls.filter((c) =>
+        String(c[0]).includes(`excludes the dependency directory "${TEST_PROJECT_NODE_MODULES}"`),
+      ),
+    ).toHaveLength(1);
+  });
+
   it('stays quiet when an ignorePattern names a dependency directory the host does not have', async () => {
     // A Python project excluding "vendor" has nothing to lose and must not be
     // told it broke its own sandbox.
