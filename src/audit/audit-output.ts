@@ -231,6 +231,7 @@ function formatStandardOutput({
           driftedSuppressions: suppression.drifted,
           unverifiedSuppressions: suppression.unverified,
           orphanedSuppressions: suppression.orphaned,
+          rejectedSuppressions: suppression.rejected,
           // The SAME GateResult the payload carries, not a second evaluation:
           // text output previously rendered no verdict at all, so a caller
           // reading only the text block saw a clean report for a failing gate.

@@ -100,6 +100,11 @@ describe('createSandbox', () => {
   afterEach(() => {
     if (originalAllowedRoots === undefined) Reflect.deleteProperty(process.env, ALLOWED_ROOTS_ENV);
     else process.env[ALLOWED_ROOTS_ENV] = originalAllowedRoots;
+    // Unfreeze the clock HERE rather than at the end of the test that froze it:
+    // a restore on the last line only runs when every assertion above it passed,
+    // so one failure would leave `Date.now` pinned for every later test in this
+    // file and turn a single red into a cascade that hides its own cause.
+    if (vi.isMockFunction(Date.now)) vi.mocked(Date.now).mockRestore();
   });
 
   beforeEach(() => {
@@ -2127,7 +2132,6 @@ describe('createSandbox', () => {
 
     expect(mockReaddir.mock.calls.length).toBeGreaterThan(afterFirst);
     expect(mockedWarn).toHaveBeenCalledWith(expect.stringContaining('exceeds 200MB'));
-    vi.mocked(Date.now).mockRestore();
   });
 });
 

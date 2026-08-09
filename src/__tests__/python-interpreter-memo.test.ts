@@ -16,7 +16,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../utils/exec.js', () => ({ runShell: vi.fn() }));
 vi.mock('../utils/logger.js', () => ({ log: vi.fn(), isVerbose: vi.fn(() => false) }));
-vi.mock('node:fs', () => ({ writeFileSync: vi.fn() }));
+// Partial: only `writeFileSync` is stubbed, so anything else in this import
+// graph that touches fs keeps working rather than hitting an undefined export.
+vi.mock('node:fs', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('node:fs')>()),
+  writeFileSync: vi.fn(),
+}));
 
 const probe = vi.hoisted(() => vi.fn(() => '/usr/bin/python3'));
 vi.mock('../engines/python/interpreter.js', async (importOriginal) => ({

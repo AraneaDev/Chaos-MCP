@@ -373,6 +373,19 @@ describe('refused suppressions are said out loud', () => {
     expect(payload.note).toContain('blank or comment-only');
   });
 
+  it('renders the same refusal in TEXT output', () => {
+    // Text and JSON are two projections of one payload in this codebase, and a
+    // text-only caller is exactly the one who would otherwise never learn their
+    // suppression did not land. Both now read the wording from
+    // `suppressionDriftNotes`, so they cannot drift apart.
+    const text = formatResultAsText(result({ vulnerabilities: [vuln()] }), undefined, {
+      rejectedSuppressions: 2,
+    });
+
+    expect(text).toContain('Note: 2 suppression(s) were NOT stored');
+    expect(text).toContain('blank or comment-only');
+  });
+
   it('says nothing when every requested suppression was stored', () => {
     const payload = buildResultPayload(result({ vulnerabilities: [vuln()] }), {
       rejectedSuppressions: 0,

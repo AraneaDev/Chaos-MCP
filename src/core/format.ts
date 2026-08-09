@@ -410,6 +410,8 @@ export function formatResultAsText(
     unverifiedSuppressions?: number;
     /** Applied suppressions whose (line, mutator) matched no SURVIVING mutant this run. */
     orphanedSuppressions?: number;
+    /** Entries a `suppress` argument asked for that the write refused to store. */
+    rejectedSuppressions?: number;
     /**
      * The gate verdict for this run, when the caller passed `minScore`. Must be
      * the same {@link GateResult} the payload carries — pass `evaluateGate`'s
@@ -466,6 +468,7 @@ export function formatResultAsText(
     opts.driftedSuppressions,
     opts.unverifiedSuppressions,
     opts.orphanedSuppressions,
+    opts.rejectedSuppressions,
   )) {
     lines.push(`Note: ${n}`);
   }
@@ -703,19 +706,16 @@ export function buildResultPayload(
   if (opts.orphanedSuppressions && opts.orphanedSuppressions > 0) {
     payload.orphanedSuppressions = opts.orphanedSuppressions;
   }
-  // Said out loud rather than left to the field: a refused entry was never
-  // stored, so no later run mentions it and the caller would otherwise believe
-  // their suppression landed.
+  // The field only. The NOTE comes from `suppressionDriftNotes` below, so the
+  // text and JSON projections render one wording from one place.
   if (opts.rejectedSuppressions && opts.rejectedSuppressions > 0) {
     payload.rejectedSuppressions = opts.rejectedSuppressions;
-    payload.note +=
-      ` ${opts.rejectedSuppressions} suppression(s) were NOT stored: their target line is blank or comment-only,` +
-      ' where no engine reports a mutant. Check the line number against the survivor you meant to suppress.';
   }
   for (const n of suppressionDriftNotes(
     opts.driftedSuppressions,
     opts.unverifiedSuppressions,
     opts.orphanedSuppressions,
+    opts.rejectedSuppressions,
   )) {
     payload.note += ` ${n}`;
   }
