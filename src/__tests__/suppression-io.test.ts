@@ -494,3 +494,68 @@ describe('applyAndCountSuppressions — refused entries', () => {
     expect(loadVerifiedSuppressions(ws, REL, undefined).applied.size).toBe(1);
   });
 });
+
+/**
+ * The write half of `applyAndCountSuppressions`, which had no direct coverage:
+ * the unsuppress branch, the write-failure return, and the counts a call that
+ * asked for nothing reports.
+ */
+describe('applyAndCountSuppressions — the write path', () => {
+  it('honours an unsuppress request', async () => {
+    // Nothing exercised the removal branch, so it could be skipped entirely and
+    // the caller's explicit "drop this entry" would silently do nothing — while
+    // the entry kept excluding its mutant from every later score.
+    writeSuppressions([
+      { line: 1, mutator: 'ConditionalExpression', reason: 'ok', fingerprint: LINE_1_FINGERPRINT },
+    ]);
+
+    const outcome = await applyAndCountSuppressions(
+      { unsuppress: [{ line: 1, mutator: 'ConditionalExpression' }] },
+      result(),
+      undefined,
+      ws,
+      REL,
+      undefined,
+    );
+
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(loadVerifiedSuppressions(ws, REL, undefined).applied.size).toBe(0);
+    // The mutant it used to hide is scored again.
+    expect(outcome.counts.applied).toBe(0);
+    expect(outcome.result.totalMutants).toBe(4);
+  });
+
+  it('surfaces a write failure as its own error rather than continuing', async () => {
+    // A directory where the suppressions file belongs makes the read throw
+    // EISDIR, which the write layer wraps and rethrows. The caller must get
+    // "Failed to update suppression list" — swallowing it would report a
+    // successful audit whose suppression edit never landed.
+    mkdirSync(join(ws, '.chaos-mcp', 'suppressions.json'), { recursive: true });
+
+    const outcome = await applyAndCountSuppressions(
+      { suppress: [{ line: 1, mutator: 'ConditionalExpression', reason: 'equivalent' }] },
+      result(),
+      undefined,
+      ws,
+      REL,
+      undefined,
+    );
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect((outcome.result.content[0] as { text: string }).text).toContain(
+      'Failed to update suppression list',
+    );
+  });
+
+  it('reports no refusals when the call asked for no suppressions at all', async () => {
+    // `rejected` is read off the initialiser on this path, so a seeded value
+    // there would tell every ordinary audit that it had entries refused.
+    const outcome = await applyAndCountSuppressions({}, result(), undefined, ws, REL, undefined);
+
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.counts.rejected).toBe(0);
+  });
+});

@@ -685,6 +685,36 @@
         "reason": "Rethrowing a MutationToolStartupError as `new Error(error.message)` duplicates what the base class already does: `BaseEngine.onExecFailure` (engines/base.ts:412) rethrows the same class verbatim, and every downstream consumer on the audit path reads only `.message` (`failureText` / `mapHandlerFailure`). The one place that branches on the CLASS is core/estimate.ts, which calls invokeMutationTool directly rather than through this engine. Forcing the check false therefore yields the identical message from the identical path.",
         "fingerprint": "d15c1e181746"
       }
+    ],
+    "src/audit/suppression-io.ts": [
+      {
+        "line": 126,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786307249165,
+        "reason": "A fast path only. `Array.isArray` still guards the dereference, so the mutant differs solely for an EMPTY `suppress` array — and `addSuppressions` returns `{ stamped: 0, unstamped: 0, rejected: [] }` immediately for one (its own `entries.length === 0` early return). Identical `added` either way.",
+        "fingerprint": "82ad11f4950d"
+      },
+      {
+        "line": 126,
+        "mutator": "EqualityOperator",
+        "addedAt": 1786307249165,
+        "reason": "`length >= 0` is always true, making it the same as the forced-true form above: an empty array reaches `addSuppressions`, which early-returns the identical result.",
+        "fingerprint": "82ad11f4950d"
+      },
+      {
+        "line": 199,
+        "mutator": "ObjectLiteral",
+        "addedAt": 1786307249165,
+        "reason": "This initialiser is dead on every path that reads `added`: the try either reassigns it from `applySuppressionArgs` or throws, and the catch returns before `added` is used. Emptying it cannot be observed.",
+        "fingerprint": "f1dd3ee255d7"
+      },
+      {
+        "line": 199,
+        "mutator": "ArrayDeclaration",
+        "addedAt": 1786307249165,
+        "reason": "Same as the ObjectLiteral on this line — `added` is reassigned before any read, so a seeded `rejected` array never reaches `counts.rejected`. (The initialiser at line 125 IS read, and is covered by a test.)",
+        "fingerprint": "f1dd3ee255d7"
+      }
     ]
   }
 }
