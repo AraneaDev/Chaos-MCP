@@ -7,12 +7,19 @@ import { inspectContainerRuntime } from './utils/container/doctor.js';
 /**
  * Minimum Node.js version required by Chaos-MCP.
  *
- * MUST stay in lockstep with package.json's `engines.node` — version-sync.test.ts
- * asserts it. It had drifted to 18.0.0 while the package required >= 22, so a
- * Node 18 user passed this check and then hit an obscure runtime failure
- * instead of the clear upgrade message this function exists to print.
+ * MUST stay in lockstep with package.json's `engines.node` — the
+ * `MIN_NODE_VERSION` suite in audit-fixes.test.ts asserts it. It had drifted to
+ * 18.0.0 while the package required >= 22, so a Node 18 user passed this check
+ * and then hit an obscure runtime failure instead of the clear upgrade message
+ * this function exists to print.
+ *
+ * 22.11.0 is the first 22.x LTS ("Jod") release. The floor deliberately carries
+ * a NON-ZERO minor: with `22.0.0` the minor half of the comparison below was
+ * unreachable — `currentMinor < 0` can never hold — so half of the check was
+ * dead code that no test could reach, and a 22.10 runtime was accepted by a
+ * package that claims to require LTS.
  */
-export const MIN_NODE_VERSION = '22.0.0';
+export const MIN_NODE_VERSION = '22.11.0';
 
 /**
  * Check that the current Node.js runtime meets the minimum version requirement.
