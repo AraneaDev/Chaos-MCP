@@ -2,6 +2,35 @@
 
 All notable changes to Chaos-MCP are documented in this file.
 
+## [2.0.0](https://github.com/AraneaDev/Chaos-MCP/compare/v1.8.1...v2.0.0) (2026-08-09)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cli:** ` if the floor bump should be treated as breaking.
+
+### `feat
+
+* **cli:** ` if the floor bump should be treated as breaking. ([aaf7530](https://github.com/AraneaDev/Chaos-MCP/commit/aaf7530eab3df3b97df657196c5026c8c77e8353))
+
+
+### Features
+
+* **suppression:** report suppressions the write refused to store ([638757a](https://github.com/AraneaDev/Chaos-MCP/commit/638757a1eaf11a11d51f9e5aa1bd426ac7647262))
+
+
+### Bug Fixes
+
+* **cli:** raise the Node floor to 22.11.0 and revive the minor check ([aaf7530](https://github.com/AraneaDev/Chaos-MCP/commit/aaf7530eab3df3b97df657196c5026c8c77e8353))
+* declare rejectedSuppressions in the output schema, align the installer ([35d25bd](https://github.com/AraneaDev/Chaos-MCP/commit/35d25bd3ca49b5649802145ab9cbbbfdab7fea9d))
+* **suppression:** finish re-deriving the corpus (119 -&gt; 60 entries) ([232f673](https://github.com/AraneaDev/Chaos-MCP/commit/232f6733254e2160e2bf86488d9c37f6d3b49e23))
+* **suppression:** re-derive five more corpora, cover an estimate guard ([52d25d0](https://github.com/AraneaDev/Chaos-MCP/commit/52d25d0bac4d218e6b1c39d8038c5801056c0c7d))
+* **suppression:** re-derive suppression.ts's own corpus, cover the new guard ([17906f0](https://github.com/AraneaDev/Chaos-MCP/commit/17906f00ddb4d6d38d68cd3f1b9531d37309624b))
+* **suppression:** re-derive test-file.ts's corpus ([a27f6b1](https://github.com/AraneaDev/Chaos-MCP/commit/a27f6b13e816ae622b638473d02bb4843ce79f29))
+* **suppression:** re-derive tool-args-validation.ts's corpus ([d5e5280](https://github.com/AraneaDev/Chaos-MCP/commit/d5e528062e713e8cd4918982d5badb367cfe6357))
+* **suppression:** refuse a suppression no mutant can occupy ([e3e9f43](https://github.com/AraneaDev/Chaos-MCP/commit/e3e9f43c6369ca550ba6f772e5076575279635f4))
+* **tests:** make suppression.ts auditable again, cover its boundaries ([3eccb2e](https://github.com/AraneaDev/Chaos-MCP/commit/3eccb2e5d31a127d4682bd95940b802f328b933b))
+
 ## [1.8.1](https://github.com/AraneaDev/Chaos-MCP/compare/v1.8.0...v1.8.1) (2026-08-09)
 
 
