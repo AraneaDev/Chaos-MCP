@@ -39,6 +39,11 @@ const BARE_EXECUTABLE_RE = /^[A-Za-z0-9._+-]+$/;
  * and `C:\Python312\python.exe` pass; `/usr/bin/python; rm -rf /` does not — the
  * embedded space alone splits it into extra argv tokens once cosmic-ray runs
  * `shlex.split` on it.
+ *
+ * "One argv token" is not the same as "one INTACT argv token": `shlex.split`
+ * is POSIX, so it eats the backslashes out of the Windows form. That is why
+ * `resolveTestCommand` passes the accepted value through `quoteCommandArg`
+ * rather than interpolating it bare.
  */
 const ABSOLUTE_INTERPRETER_RE = /^(?:[A-Za-z]:)?[\\/](?:[A-Za-z0-9._+-]+[\\/])*[A-Za-z0-9._+-]+$/;
 
@@ -197,11 +202,23 @@ export function isRepoTestCommandAllowed(runner: string): boolean {
  */
 export function resolveTestCommand(interpreter: string, options?: RunOptions): string {
   const runner = options?.testRunner;
+  // Quote the interpreter for the same reason the selection entries below are
+  // quoted, but against a different `shlex` behaviour. `shlex.split` runs in
+  // POSIX mode, where an unquoted backslash is the ESCAPE character and is
+  // consumed: `C:\Python312\python.exe` — a value
+  // {@link ABSOLUTE_INTERPRETER_RE} deliberately accepts — arrives at
+  // `subprocess.run` as `C:Python312python.exe`, which does not exist, so the
+  // command cannot start and every mutant is recorded incompetent. The regex
+  // guarantees ONE argv token, which is what stops an injected second token;
+  // it says nothing about the token surviving intact. `quoteCommandArg`
+  // returns a POSIX path verbatim (its safe class covers `/`, letters, digits,
+  // `._-`), so this only changes the string for the Windows form.
+  const exe = quoteCommandArg(interpreter);
   let base: string;
   if (runner === 'unittest') {
-    base = `${interpreter} -m unittest`;
+    base = `${exe} -m unittest`;
   } else if (!runner || runner === 'pytest') {
-    base = `${interpreter} -m pytest -x -q`;
+    base = `${exe} -m pytest -x -q`;
   } else {
     // A custom runner string is used verbatim as the command — after the gate.
     // `testRunnerTrusted` marks a runner that came from the operator's own

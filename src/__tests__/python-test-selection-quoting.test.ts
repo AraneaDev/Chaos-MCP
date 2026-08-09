@@ -39,3 +39,51 @@ describe('resolveTestCommand: selection quoting', () => {
     expect(cmd).toBe("python3 -m pytest -x -q -m 'not slow and not flaky'");
   });
 });
+
+/**
+ * The interpreter is the FIRST token of the same string, and it needs the same
+ * treatment for a different `shlex` reason. `shlex.split` is POSIX, so an
+ * unquoted backslash is the escape character and is consumed:
+ *
+ *   >>> shlex.split(r'C:\Python312\python.exe -m pytest')
+ *   ['C:Python312python.exe', '-m', 'pytest']
+ *
+ * ABSOLUTE_INTERPRETER_RE deliberately accepts that Windows form (its docblock
+ * names it), so the value reaching cosmic-ray was a path that does not exist —
+ * the interpreter cannot start and every mutant is recorded incompetent.
+ * "One argv token" was the property the regex guaranteed; "one INTACT argv
+ * token" was not.
+ */
+describe('resolveTestCommand: interpreter quoting', () => {
+  it('quotes a Windows interpreter path so shlex cannot eat its separators', () => {
+    const cmd = resolveTestCommand('C:\\Python312\\python.exe');
+    expect(cmd).toBe("'C:\\Python312\\python.exe' -m pytest -x -q");
+  });
+
+  it('quotes it on the unittest base command too', () => {
+    // Both bases interpolate the interpreter; quoting one and not the other
+    // would leave the defect reachable through `testRunner: 'unittest'`.
+    const cmd = resolveTestCommand('C:\\Python312\\python.exe', { testRunner: 'unittest' });
+    expect(cmd).toBe("'C:\\Python312\\python.exe' -m unittest");
+  });
+
+  it('leaves a POSIX interpreter path and a bare name untouched', () => {
+    // quoteCommandArg's safe class covers `/`, letters, digits and `._-`, so
+    // the overwhelmingly common forms are byte-for-byte what they were.
+    expect(resolveTestCommand('/opt/venv/bin/python3.12')).toBe(
+      '/opt/venv/bin/python3.12 -m pytest -x -q',
+    );
+    expect(resolveTestCommand('python3')).toBe('python3 -m pytest -x -q');
+  });
+
+  it('does not quote a custom runner string, which is a whole command', () => {
+    // The custom-runner branch replaces the base outright; the interpreter is
+    // not part of it, so quoting must not leak into it and break the argv.
+    expect(
+      resolveTestCommand('C:\\Python312\\python.exe', {
+        testRunner: 'python -m pytest --no-cov',
+        testRunnerTrusted: true,
+      }),
+    ).toBe('python -m pytest --no-cov');
+  });
+});
