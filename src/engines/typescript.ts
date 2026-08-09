@@ -90,8 +90,21 @@ export class TypeScriptEngine extends BaseEngine {
     for (let index = 0; index < batches.length; index++) {
       const remaining = deadline - Date.now();
       const batchesLeft = batches.length - index;
-      const batchBudget = Math.floor(remaining / batchesLeft);
-      if (batchBudget < MIN_BATCH_BUDGET_MS) break;
+      // Viability is per-batch, not per-average: this batch only has to fund
+      // its OWN start-up. Testing the average share against the floor instead
+      // made a certified plan abort itself, because `planLineBatches` caps the
+      // count at `floor(budget / MIN_BATCH_BUDGET_MS)` measured against the
+      // FULL budget while this loop measures what is LEFT. The two agree only
+      // at zero elapsed time, so a plan that used the whole budget lost its
+      // first batch to a single millisecond ("0 of 3 planned batches") and
+      // every later batch to whatever the previous one overran by — a 20-batch
+      // default-timeout run reported "1 of 20" as a partial audit.
+      //
+      // Flooring the slice at one whole start-up cannot overrun the deadline:
+      // the guard below only admits a batch while `remaining` still covers
+      // MIN_BATCH_BUDGET_MS, and the floored slice never exceeds `remaining`.
+      if (remaining < MIN_BATCH_BUDGET_MS) break;
+      const batchBudget = Math.max(MIN_BATCH_BUDGET_MS, Math.floor(remaining / batchesLeft));
       try {
         completed.push(
           await this.runOnce(filePath, {

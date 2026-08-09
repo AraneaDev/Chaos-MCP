@@ -294,6 +294,43 @@ describe('TypeScriptEngine', () => {
     now.mockRestore();
   });
 
+  it('runs every planned batch when the clock ticks between the deadline and the first read', async () => {
+    // `planLineBatches` certifies `floor(45000 / 15000) = 3` batches against the
+    // FULL budget, while the loop used to fund batch 0 with the AVERAGE share of
+    // what remains. Those agree only at zero elapsed time, so a single
+    // millisecond dropped the share to 14999, broke the loop on batch 0 and
+    // ended a fully funded run in "Time budget exhausted ... 0 of 3".
+    let stamped = false;
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => {
+      if (stamped) return 1;
+      stamped = true;
+      return 0;
+    });
+    mockReadFileSync.mockImplementation((p: PathOrFileDescriptor) =>
+      p === '/sb/src/large.ts'
+        ? Array.from({ length: 200 }, () => 'const x = 1;').join('\n')
+        : makeJsonReport([]),
+    );
+    mockExistsSync.mockReturnValue(true);
+    mockRunShell.mockResolvedValue(makeExecResult());
+
+    const result = await engine.run('src/large.ts', {
+      workDir: '/sb',
+      testRunner: 'command',
+      timeoutMs: 45_000,
+    });
+
+    expect(mockRunShell).toHaveBeenCalledTimes(3);
+    expect(result.complete).toBe(true);
+    expect(result.batchesCompleted).toBe(3);
+    expect(result.batchesPlanned).toBe(3);
+    // Batch 0 is floored at one whole start-up rather than the 14999 average.
+    expect(
+      mockRunShell.mock.calls.map((call) => (call[2] as { timeoutMs: number }).timeoutMs),
+    ).toEqual([15_000, 22_499, 44_999]);
+    now.mockRestore();
+  });
+
   it('marks a fully completed batch run complete and aggregates its reports', async () => {
     mockReadFileSync.mockImplementation((p: PathOrFileDescriptor) =>
       p === '/sb/src/large.ts'
