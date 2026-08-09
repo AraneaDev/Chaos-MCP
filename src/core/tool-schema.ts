@@ -14,8 +14,18 @@ import { ENGINE_REGISTRY, type SupportedProjectType } from '../engines/registry.
  * `['a', 'b', 'c']` → `'a, b, <conj> c'` (Oxford comma, conjunction before the
  * last item). Two items get `'a <conj> b'` with no comma; one or zero items are
  * returned as-is.
+ *
+ * Every call site today passes three or more items — four engines, three
+ * line-scope-less languages, a dozen extensions — so the shorter branches are
+ * unreachable through the schema strings alone. They are not dead: the lists are
+ * derived from `ENGINE_REGISTRY`, so a language gaining line scoping (or the
+ * registry shrinking) walks straight into them, and the wrong branch would put
+ * "Python, and Rust" or "PythonRust" into prose the model reads.
+ *
+ * @internal Exported for testing only — the branches cannot be reached by
+ * varying any input the schema builders accept.
  */
-function conjoin(items: readonly string[], conj: string): string {
+export function conjoin(items: readonly string[], conj: string): string {
   if (items.length < 2) return items.join('');
   if (items.length === 2) return `${items[0]} ${conj} ${items[1]}`;
   return `${items.slice(0, -1).join(', ')}, ${conj} ${items[items.length - 1]}`;

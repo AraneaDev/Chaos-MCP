@@ -514,53 +514,18 @@
         "fingerprint": "a64a26c2b420"
       },
       {
-        "line": 450,
-        "mutator": "EqualityOperator",
-        "addedAt": 1786284640926,
-        "reason": "`incompetent >= 0` differs from `> 0` only at 0 and below. Zero is already short-circuited by the `result.incompetent &&` conjunct, and a negative value fails both comparisons — covered by the negative-counter test.",
-        "fingerprint": "77391e051022"
-      },
-      {
-        "line": 487,
-        "mutator": "LogicalOperator",
-        "addedAt": 1786284640926,
-        "reason": "The operands cannot disagree: `e.severity` is only present when the groups were enriched, which happens only when `enrich` is set. Both are true together or false together, so `&&` and `||` return the same result.",
-        "fingerprint": "883b35eed9eb"
-      },
-      {
-        "line": 689,
-        "mutator": "EqualityOperator",
-        "addedAt": 1786305227827,
-        "reason": "`suppressedCount >= 0` differs from `> 0` only at 0 and below; 0 is short-circuited by the preceding `&&` and a negative fails both — covered by the negative-counter test. Re-filed from line 685 after the rejectedSuppressions block shifted this code down.",
-        "fingerprint": "f02424d0f034"
-      },
-      {
-        "line": 697,
-        "mutator": "EqualityOperator",
-        "addedAt": 1786305227827,
-        "reason": "`driftedSuppressions >= 0` differs from `> 0` only at 0 and below; 0 is short-circuited by the preceding `&&` and a negative fails both. Re-filed from line 693.",
-        "fingerprint": "cedb40914d3d"
-      },
-      {
         "line": 700,
         "mutator": "EqualityOperator",
         "addedAt": 1786305227827,
-        "reason": "`unverifiedSuppressions >= 0` differs from `> 0` only at 0 and below; 0 is short-circuited by the preceding `&&` and a negative fails both. Re-filed from line 696.",
-        "fingerprint": "12408c6ea073"
+        "reason": "`driftedSuppressions >= 0` differs from `> 0` only at 0 and below; 0 is short-circuited by the preceding `&&` and a negative fails both.",
+        "fingerprint": "cedb40914d3d"
       },
       {
         "line": 703,
         "mutator": "EqualityOperator",
         "addedAt": 1786305227827,
-        "reason": "`orphanedSuppressions >= 0` differs from `> 0` only at 0 and below; 0 is short-circuited by the preceding `&&` and a negative fails both. Re-filed from line 699.",
-        "fingerprint": "2f7a5719e855"
-      },
-      {
-        "line": 709,
-        "mutator": "EqualityOperator",
-        "addedAt": 1786305227827,
-        "reason": "`rejectedSuppressions >= 0` differs from `> 0` only at 0 and below; 0 is short-circuited by the preceding `&&` and a negative fails both — covered by the negative-counter test. The `&&`-to-`||` swap and the forced-true form on this line ARE killable and are left unsuppressed.",
-        "fingerprint": "7f1f2c16587c"
+        "reason": "`unverifiedSuppressions >= 0` differs from `> 0` only at 0 and below; 0 is short-circuited by the preceding `&&` and a negative fails both.",
+        "fingerprint": "12408c6ea073"
       },
       {
         "line": 726,
@@ -568,6 +533,41 @@
         "addedAt": 1786305227827,
         "reason": "`incompetent >= 0` differs from `> 0` only at 0 and below; 0 is short-circuited by the preceding `&&` and a negative fails both — covered by the negative-counter test. Re-filed from line 713.",
         "fingerprint": "77391e051022"
+      },
+      {
+        "line": 452,
+        "mutator": "EqualityOperator",
+        "addedAt": 1786316397839,
+        "reason": "`incompetent >= 0` differs from `> 0` only at 0 and below; 0 is short-circuited by the preceding `&&` and a negative fails both — covered by the negative-counter test. This is the TEXT projection; the payload one is filed separately at line 726, where the identical expression appears.",
+        "fingerprint": "77391e051022"
+      },
+      {
+        "line": 490,
+        "mutator": "LogicalOperator",
+        "addedAt": 1786316397839,
+        "reason": "The operands cannot disagree: `e.severity` is only present when the groups were enriched, which happens only when `enrich` is set. Both are true together or false together, so `&&` and `||` return the same result.",
+        "fingerprint": "883b35eed9eb"
+      },
+      {
+        "line": 692,
+        "mutator": "EqualityOperator",
+        "addedAt": 1786316397839,
+        "reason": "`suppressedCount >= 0` differs from `> 0` only at 0 and below; 0 is short-circuited by the preceding `&&` and a negative fails both — covered by the negative-counter test.",
+        "fingerprint": "f02424d0f034"
+      },
+      {
+        "line": 706,
+        "mutator": "EqualityOperator",
+        "addedAt": 1786316397839,
+        "reason": "`orphanedSuppressions >= 0` differs from `> 0` only at 0 and below; 0 is short-circuited by the preceding `&&` and a negative fails both.",
+        "fingerprint": "2f7a5719e855"
+      },
+      {
+        "line": 711,
+        "mutator": "EqualityOperator",
+        "addedAt": 1786316397839,
+        "reason": "`rejectedSuppressions >= 0` differs from `> 0` only at 0 and below; 0 is short-circuited by the preceding `&&` and a negative fails both — covered by the negative-counter test. The `&&`-to-`||` swap and the forced-true form on this line are killable and stay unsuppressed.",
+        "fingerprint": "7f1f2c16587c"
       }
     ],
     "src/utils/run-cache.ts": [
@@ -723,6 +723,36 @@
         "addedAt": 1786307635854,
         "reason": "`sourceLines` is declared `let sourceLines: string[] | undefined` and assigned by the single `readFileSync(...).split(...)` statement inside the try. A throw there leaves it undefined already, so the catch's `sourceLines = undefined` is a defensive re-assignment that cannot change any state. Fifth instance of this shape (triage/audit-one.ts:273/:287, core/estimate.ts:110, core/test-file.ts:124).",
         "fingerprint": "95bc545467a5"
+      }
+    ],
+    "src/core/score-semantics.ts": [
+      {
+        "line": 140,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786316827829,
+        "reason": "`undefined > 0` is false, so the `!== undefined` half cannot change the outcome: forcing it true still fails the comparison and pushes no note. The guard states intent rather than doing work. Note this is the MIRROR of the `x && x > 0` pattern in core/format.ts — there `&&` alone admits a negative, so the comparison is load-bearing; here the comparison alone already rejects undefined.",
+        "fingerprint": "347b145661ae"
+      },
+      {
+        "line": 145,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786316827829,
+        "reason": "Same as line 140 for `unverified`: `undefined > 0` is false, so forcing the presence check true still produces no note.",
+        "fingerprint": "f3cbc728bd8c"
+      },
+      {
+        "line": 150,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786316827829,
+        "reason": "Same as line 140 for `orphaned`: `undefined > 0` is false, so forcing the presence check true still produces no note.",
+        "fingerprint": "d4cc9f8b0fa5"
+      },
+      {
+        "line": 159,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786316827829,
+        "reason": "Same as its three siblings for `rejected`: `undefined > 0` is false, so forcing the presence check true still produces no note. Kept in the same shape as the other three deliberately — this list is the single wording source for both the text and JSON projections.",
+        "fingerprint": "928ee569ded5"
       }
     ]
   }
