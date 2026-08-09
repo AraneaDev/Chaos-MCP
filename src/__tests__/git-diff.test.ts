@@ -387,6 +387,30 @@ describe('computeChangedRanges', () => {
 
     expect(await computeChangedRanges('src/a.ts', '/ws', 'HEAD')).toEqual({ kind: 'untracked' });
   });
+
+  it('reports a FATAL ls-files exit as git-failed, not as an untracked file', async () => {
+    // `ls-files --error-unmatch` documents exit 1 for "the path did not match".
+    // 128 is git's own fatal status — an unreadable or locked index, a pathspec
+    // that resolves outside the repository, a work tree that vanished since the
+    // probe above — and proves nothing about the file. Treating every non-zero
+    // exit as "untracked" turned those into a WHOLE-FILE mutation run, which is
+    // both the most expensive answer available and a false claim about the
+    // caller's repository: the same defect class this module was rewritten to
+    // remove, surviving in the one branch that reads the exit code loosely.
+    mockRunShell
+      .mockResolvedValueOnce(ok('true\n'))
+      .mockRejectedValueOnce(
+        new ExecFailureError(
+          { stdout: '', stderr: 'fatal: index file corrupt', exit: 128, signal: null },
+          'fatal: index file corrupt',
+        ),
+      );
+
+    const result = await computeChangedRanges('src/a.ts', '/ws', 'HEAD');
+
+    expect(result).toMatchObject({ kind: 'git-failed', reason: 'other' });
+    expect(result).not.toMatchObject({ kind: 'untracked' });
+  });
 });
 
 describe('listChangedFiles', () => {
