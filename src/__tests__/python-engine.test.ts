@@ -116,6 +116,11 @@ describe('PythonEngine (cosmic-ray)', () => {
     expect(result.survived).toBe(1);
     expect(result.totalMutants).toBe(2);
     expect(result.mutationScore).toBe('50.00%');
+    // cosmic-ray mutates whole modules; the report says so structurally rather
+    // than letting consumers read it off the absence of a scope note — which a
+    // diffBase run acquires (handler.ts) and which the transitional
+    // `scopeKind === undefined && !scopeNote` fallback then misreads as scoping.
+    expect(result.scopeKind).toBe('whole-file');
     expect(result.vulnerabilities[0]).toMatchObject({
       line: 73,
       mutator: 'core/ReplaceBinaryOperator_Add_Sub',

@@ -115,6 +115,15 @@ describe('RustEngine', () => {
     expect(result.survived).toBe(0);
     expect(result.mutationScore).toBe('100.00%');
     expect(result.vulnerabilities).toHaveLength(0);
+    // cargo-mutants has no line-scoping mode, so the report must SAY it
+    // enumerated the whole file rather than leaving consumers to infer it from
+    // the absence of a scope note. `handler.ts` appends "diffBase scoping is
+    // not supported for rust; mutated the whole file" to this very result
+    // before the suppression phase runs, and the transitional
+    // `scopeKind === undefined && !scopeNote` fallback reads that note as
+    // evidence of SCOPING — switching the orphan counter and the
+    // no-mutable-logic verdict off on every diffBase run.
+    expect(result.scopeKind).toBe('whole-file');
   });
 
   describe('authoritative "N mutants tested" summary line', () => {

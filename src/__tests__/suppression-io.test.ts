@@ -329,6 +329,37 @@ describe('applyAndCountSuppressions', () => {
       expect(outcome.counts.orphaned).toBe(1);
     });
 
+    it('still reports the orphan when a whole-file run carries a diffBase scope note', async () => {
+      // The reason the three non-TypeScript engines now SET `scopeKind`
+      // themselves rather than relying on the fallback below. A Rust, Python or
+      // PHP audit run with `diffBase` is still a whole-file run — none of them
+      // supports line scoping — but `handler.ts` appends "diffBase scoping is
+      // not supported for <lang>; mutated the whole file" to the result BEFORE
+      // the suppression phase. Under the fallback alone that note made
+      // `isWholeFileRun` false, so `orphaned` was hard-wired to 0 on every
+      // diffBase run of exactly the engines this counter was built for — and
+      // the triage side, which gates on the result before the note is attached,
+      // reported the same run's orphan. The explicit `scopeKind` settles both.
+      writeOrphanEntry();
+
+      const outcome = await applyAndCountSuppressions(
+        {},
+        {
+          ...result(),
+          scopeKind: 'whole-file',
+          scopeNote: 'diffBase scoping is not supported for rust; mutated the whole file.',
+        },
+        undefined,
+        ws,
+        REL,
+        undefined,
+      );
+
+      expect(outcome.ok).toBe(true);
+      if (!outcome.ok) return;
+      expect(outcome.counts.orphaned).toBe(1);
+    });
+
     it('does not report orphans for a scopeNote-carrying result with no scopeKind', async () => {
       // The other side of the fallback: a scopeKind-less zero that DOES carry a
       // scopeNote is the one non-enumerating shape the fallback must still

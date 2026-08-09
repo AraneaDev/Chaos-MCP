@@ -391,6 +391,11 @@ export function parseInfectionJsonLog(logText: string, filePath: string): Mutati
     survived,
     mutationScore: formatMutationScore(killed, totalMutants),
     vulnerabilities,
+    // Infection is driven per-file, not per-line — `supportsLineScope: false`
+    // in engines/registry.ts — so this report always enumerated the whole file.
+    // See the same field in engines/rust/report.ts for why the absence of a
+    // scope note is NOT a usable proxy for it.
+    scopeKind: 'whole-file',
     // Absent rather than 0 when nothing errored, matching the Rust engine — a
     // present-but-zero field reads as "the tool reported this" to consumers
     // that only check for the key.

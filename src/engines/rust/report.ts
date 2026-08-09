@@ -321,6 +321,17 @@ export function parseCargoMutantsText(
     survived: scored.survived,
     mutationScore: scored.mutationScore,
     vulnerabilities,
+    // cargo-mutants has no line-scoping mode — `supportsLineScope: false` in
+    // engines/registry.ts — so a report from it always enumerated the whole
+    // file. Say so structurally instead of leaving readers to infer it from
+    // the ABSENCE of a scope note: a whole-file run can still ACQUIRE one
+    // (handler.ts appends "diffBase scoping is not supported for rust; mutated
+    // the whole file" before the suppression phase), and the transitional
+    // `scopeKind === undefined && !scopeNote` fallback reads that note as
+    // evidence of scoping. Without this field the orphan counter and the
+    // no-mutable-logic verdict both switch themselves off on every `diffBase`
+    // run — the case they exist for.
+    scopeKind: 'whole-file',
     ...(scored.incompetent !== undefined ? { incompetent: scored.incompetent } : {}),
   };
 }
