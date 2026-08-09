@@ -216,7 +216,10 @@ export const TOOL_DEFINITION = {
           'Path segments for files/directories to exclude from the sandbox, applied in addition to ' +
           'built-in exclusions. A path is skipped when any of its segments equals the pattern exactly. ' +
           'This now also suppresses the dependency-directory link, so excluding "node_modules" leaves ' +
-          'the sandbox without it — which will usually break the run. Example: [".test.ts", "fixtures/"]',
+          'the sandbox without it — which will usually break the run. A pattern is never a suffix or ' +
+          'a substring: ".test.ts" excludes only a path segment named exactly that, not "billing.test.ts". ' +
+          'One trailing separator is stripped, so "fixtures/" and "fixtures" are the same pattern. ' +
+          'Example: ["fixtures/", "testdata"]',
       },
       prebuildCommand: {
         type: 'string',
