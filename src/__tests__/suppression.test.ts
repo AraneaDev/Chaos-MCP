@@ -1183,3 +1183,133 @@ describe("the repository's own suppressions file", () => {
     expect(unverified).toBe(0);
   });
 });
+
+/**
+ * Guards on the read and merge paths that nothing was exercising.
+ *
+ * These all decide what a STORED entry becomes when it is read back or
+ * re-confirmed. A wrong answer here is invisible at the call site: the entry
+ * still loads, it just carries a field it should not, or loses one it should
+ * have kept.
+ */
+describe('suppression storage — entry hygiene', () => {
+  const FILE = 'src/calc.ts';
+  const SRC = ['export const a = 1;', 'if (a > 0) doThing();', 'export const b = 2;'];
+
+  const writeSource = () => {
+    mkdirSync(join(root, 'src'), { recursive: true });
+    writeFileSync(join(root, FILE), SRC.join('\n'));
+  };
+
+  const rawEntries = (): Record<string, { line: number; mutator: string; reason?: string }[]> =>
+    (
+      JSON.parse(readFileSync(supFile(root), 'utf8')) as {
+        entries: Record<string, { line: number; mutator: string; reason?: string }[]>;
+      }
+    ).entries;
+
+  beforeEach(writeSource);
+
+  it('prefers the portable key when a legacy-spelled one also exists', () => {
+    // A file committed from Windows can leave `src\calc.ts` behind while the
+    // POSIX key is also present. The fast path must win: without it the loop
+    // finds the BACKSLASH key first and migrates that list onto the portable
+    // key, silently discarding whatever the portable key already held.
+    writeRawSuppressions(
+      root,
+      JSON.stringify({
+        version: 2,
+        entries: {
+          'src/calc.ts': [{ line: 2, mutator: 'Portable', addedAt: 1 }],
+          'src\\calc.ts': [{ line: 2, mutator: 'Legacy', addedAt: 1 }],
+        },
+      }),
+    );
+
+    return addSuppressions(root, FILE, [{ line: 2, mutator: 'Added' }]).then(() => {
+      const entries = rawEntries();
+      expect(entries['src/calc.ts'].map((e) => e.mutator).sort()).toEqual(['Added', 'Portable']);
+      // The legacy key is left exactly as it was — it was never this call's list.
+      expect(entries['src\\calc.ts']).toHaveLength(1);
+    });
+  });
+
+  it.each([
+    ['a line below the first', 0],
+    ['a fractional line', 1.5],
+  ])('stores %s without a fingerprint rather than stamping the wrong text', async (_l, line) => {
+    // `fingerprintAt` rejects a non-integer and anything below 1 before
+    // indexing. Dropping either guard indexes `lines[-1]` or `lines[0.5]`,
+    // which is undefined — and hashing that would stamp every such entry with
+    // one identical digest that matches no source line anywhere.
+    const res = await addSuppressions(root, FILE, [{ line, mutator: 'Cond' }]);
+
+    expect(res.unstamped).toBe(1);
+    expect(res.stamped).toBe(0);
+    expect(loadSuppressions(root).get(FILE)?.[0].fingerprint).toBeUndefined();
+  });
+
+  it('drops a non-string reason instead of loading it', async () => {
+    writeRawSuppressions(
+      root,
+      JSON.stringify({
+        version: 2,
+        entries: { [FILE]: [{ line: 2, mutator: 'Cond', addedAt: 1, reason: 7 }] },
+      }),
+    );
+
+    const entry = loadSuppressions(root).get(FILE)?.[0];
+
+    expect(entry).toBeDefined();
+    expect(Object.keys(entry as object)).not.toContain('reason');
+  });
+
+  it('keeps the previous reason when a re-confirmation supplies an empty one', async () => {
+    // `mergeReason` treats '' as "no new argument". A hand-written equivalence
+    // argument is real human work; an empty string must not erase it.
+    await addSuppressions(root, FILE, [{ line: 2, mutator: 'Cond', reason: 'unreachable guard' }]);
+    await addSuppressions(root, FILE, [{ line: 2, mutator: 'Cond', reason: '' }]);
+
+    expect(loadSuppressions(root).get(FILE)?.[0].reason).toBe('unreachable guard');
+  });
+
+  it('omits reason and fingerprint entirely when it has neither', async () => {
+    // Both are optional keys. Assigning them unconditionally writes
+    // `reason: undefined` into the JSON document, where it serialises away —
+    // but the in-memory entry a caller reads back would carry the key.
+    await addSuppressions(root, 'src/missing.ts', [{ line: 2, mutator: 'Cond' }]);
+
+    const entry = loadSuppressions(root).get('src/missing.ts')?.[0];
+
+    expect(Object.keys(entry as object).sort()).toEqual(['addedAt', 'line', 'mutator']);
+  });
+
+  it('survives a junk element in a stored list on both write paths', async () => {
+    // A truncated or hand-edited document can hold `[null]`. Indexing it must
+    // skip the junk rather than dereference it — the failure mode was an
+    // opaque "Failed to update suppression list".
+    writeRawSuppressions(
+      root,
+      JSON.stringify({
+        version: 2,
+        entries: { [FILE]: [null, { line: 2, mutator: 'Keep', addedAt: 1 }] },
+      }),
+    );
+
+    // The add path only has to SKIP the junk while indexing; it does not
+    // rewrite the list, so the null is still there afterwards. What matters is
+    // that it neither threw nor lost the real entry.
+    await addSuppressions(root, FILE, [{ line: 2, mutator: 'Added' }]);
+    expect(
+      rawEntries()
+        [FILE].filter(Boolean)
+        .map((e) => e.mutator)
+        .sort(),
+    ).toEqual(['Added', 'Keep']);
+
+    // The remove path rebuilds the list through a filter, which is where the
+    // junk is actually repaired away.
+    await removeSuppressions(root, FILE, [{ line: 2, mutator: 'Added' }]);
+    expect(rawEntries()[FILE]).toEqual([expect.objectContaining({ line: 2, mutator: 'Keep' })]);
+  });
+});
