@@ -70,134 +70,6 @@
         "fingerprint": "64eea521b7aa"
       }
     ],
-    "src/core/format.ts": [
-      {
-        "line": 165,
-        "mutator": "ArithmeticOperator",
-        "addedAt": 1785456082266,
-        "reason": "Dead tie-break: groupByLine already returns groups in ascending line order, and an always-positive comparator leaves an array in place, so the sorted output is identical for every reachable input.",
-        "fingerprint": "7ce553931e43"
-      },
-      {
-        "line": 190,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1785455022769,
-        "reason": "Every caller reads the result through `if (truncated > 0)`, and bypassing the guard yields either a negative count (length < max) or NaN (max undefined) — both fail that test, so the observable payload and text are identical.",
-        "fingerprint": "73f8efa9d516"
-      },
-      {
-        "line": 190,
-        "mutator": "EqualityOperator",
-        "addedAt": 1785455022769,
-        "reason": "At length === max the slice returns the same groups and a truncation count of 0, so `<=` and `<` are indistinguishable downstream.",
-        "fingerprint": "73f8efa9d516"
-      },
-      {
-        "line": 190,
-        "mutator": "LogicalOperator",
-        "addedAt": 1785455022769,
-        "reason": "Same as the guard itself: swapping || for && only reaches the slice path, whose negative/NaN truncation count is filtered out by every caller's `> 0` check.",
-        "fingerprint": "73f8efa9d516"
-      },
-      {
-        "line": 207,
-        "mutator": "StringLiteral",
-        "addedAt": 1785455022769,
-        "reason": "Blanking the fallback yields an undefined rank, and `undefined >= min` is false for every selectable floor (high/medium/low) — exactly what rank 0 for 'unknown' already produces.",
-        "fingerprint": "00227955777e"
-      },
-      {
-        "line": 243,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1785456082266,
-        "reason": "The && short-circuits on 0 and undefined before the comparison runs, so forcing `incompetent > 0` true changes nothing for any non-positive value.",
-        "fingerprint": "f87fdb22c64e"
-      },
-      {
-        "line": 243,
-        "mutator": "EqualityOperator",
-        "addedAt": 1785456082266,
-        "reason": "`>= 0` differs from `> 0` only at 0 and negatives, which the preceding && has already rejected as falsy.",
-        "fingerprint": "f87fdb22c64e"
-      },
-      {
-        "line": 283,
-        "mutator": "LogicalOperator",
-        "addedAt": 1785455022769,
-        "reason": "enrichGroup always supplies a severity, so `e.severity` is truthy exactly when `enrich` is set; the && and || forms agree on every reachable input.",
-        "fingerprint": "ac85e265b8f6"
-      },
-      {
-        "line": 374,
-        "mutator": "ArrayDeclaration",
-        "addedAt": 1785455022769,
-        "reason": "A seeded element has no SEVERITY_RANK entry, so `undefined >= rank(b)` is false and the reduce discards it on the first comparison, leaving the same winner.",
-        "fingerprint": "1b2c42c4f3e4"
-      },
-      {
-        "line": 375,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1785455022769,
-        "reason": "With no survivors, s.worst is 'unknown' (rank 0) — the lowest rank — so pushing it unconditionally can never change the reduce's winner.",
-        "fingerprint": "5fe5f0341f57"
-      },
-      {
-        "line": 375,
-        "mutator": "EqualityOperator",
-        "addedAt": 1785455022769,
-        "reason": "`length >= 0` is always true, making it identical to the always-true form, which cannot change the winner because the pushed value is the lowest-ranked severity.",
-        "fingerprint": "5fe5f0341f57"
-      },
-      {
-        "line": 376,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1785455022769,
-        "reason": "With no no-coverage groups, n.worst is 'unknown' (rank 0), so pushing it unconditionally can never change the reduce's winner.",
-        "fingerprint": "3dab576f9c1f"
-      },
-      {
-        "line": 376,
-        "mutator": "EqualityOperator",
-        "addedAt": 1785455022769,
-        "reason": "`length >= 0` is always true; the pushed 'unknown' is the lowest rank and cannot win the reduce.",
-        "fingerprint": "3dab576f9c1f"
-      },
-      {
-        "line": 377,
-        "mutator": "EqualityOperator",
-        "addedAt": 1785455022769,
-        "reason": "SEVERITY_RANK is injective, so equal ranks mean the same severity string and `>=` vs `>` pick between two identical values.",
-        "fingerprint": "8991fda30690"
-      },
-      {
-        "line": 446,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1786267580108,
-        "reason": "The && short-circuits on 0 and undefined, so forcing `suppressedCount > 0` true cannot change the outcome for any non-positive value.",
-        "fingerprint": "07f9e9733b18"
-      },
-      {
-        "line": 446,
-        "mutator": "EqualityOperator",
-        "addedAt": 1786267580108,
-        "reason": "`>= 0` differs from `> 0` only at 0 and negatives, both already rejected by the preceding &&.",
-        "fingerprint": "07f9e9733b18"
-      },
-      {
-        "line": 454,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1786267580108,
-        "reason": "The && short-circuits on 0 and undefined before the comparison runs, so forcing `incompetent > 0` true changes nothing for any non-positive value.",
-        "fingerprint": "d10b36aa74a5"
-      },
-      {
-        "line": 454,
-        "mutator": "EqualityOperator",
-        "addedAt": 1786267580108,
-        "reason": "`>= 0` differs from `> 0` only at 0 and negatives, both already rejected by the preceding &&.",
-        "fingerprint": "d10b36aa74a5"
-      }
-    ],
     "src/core/test-file.ts": [
       {
         "line": 14,
@@ -853,6 +725,155 @@
         "addedAt": 1786274958221,
         "reason": "Exhaustiveness guard: `diff` is narrowed to `never` in this default arm, so no runtime DiffResult reaches it. Emptying the returned object requires casting an invalid variant past the type system — the same equivalent guard suppressed at audit/scope.ts:259.",
         "fingerprint": "dde44124f1ee"
+      }
+    ],
+    "src/core/format.ts": [
+      {
+        "line": 47,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786284640926,
+        "reason": "Forcing `if (o) return o` true returns the empty string when both halves are empty. The sole caller is `if (change) acc.changes.add(change)` (line 119), which drops a falsy value — so no change is recorded either way.",
+        "fingerprint": "d8912fa1cbb4"
+      },
+      {
+        "line": 88,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786284640926,
+        "reason": "With an empty change set the mutant stores `uncapped.set(line, [])` instead of storing nothing. The only consumer is `uncapped.get(g.line) ?? g.changes` (line 154), where an empty list and an absent one both carry zero change evidence into enrichment.",
+        "fingerprint": "f3e970760c7e"
+      },
+      {
+        "line": 88,
+        "mutator": "EqualityOperator",
+        "addedAt": 1786284640926,
+        "reason": "`size >= 0` is always true, making it identical to the always-true form above: an empty list and an absent one are the same evidence at line 154.",
+        "fingerprint": "f3e970760c7e"
+      },
+      {
+        "line": 160,
+        "mutator": "ArithmeticOperator",
+        "addedAt": 1786284640926,
+        "reason": "`a.line + b.line` is always positive for 1-based lines, so every element compares as belonging after every other and binary insertion sort leaves the already-ascending array in place. Verified empirically: applying this mutant by hand leaves the ordering assertions in format-pipeline.test.ts passing.",
+        "fingerprint": "4d7d17546c6e"
+      },
+      {
+        "line": 164,
+        "mutator": "EqualityOperator",
+        "addedAt": 1786284640926,
+        "reason": "`>` → `>=` reassigns `worst` when the ranks are EQUAL, which stores the same severity value it already held. The running maximum is unchanged for every input.",
+        "fingerprint": "897bad63edf8"
+      },
+      {
+        "line": 185,
+        "mutator": "EqualityOperator",
+        "addedAt": 1786284640926,
+        "reason": "At the boundary `groups.length === max`, `slice(0, max)` returns a list with identical contents and `truncated` is `length - max` = 0 — the same value the early return produces. Only the array identity differs.",
+        "fingerprint": "79dc470287a8"
+      },
+      {
+        "line": 286,
+        "mutator": "ArrayDeclaration",
+        "addedAt": 1786284640926,
+        "reason": "Seeding `candidates` with a non-Severity string gives it `SEVERITY_RANK[...] === undefined`, and every comparison against undefined is false, so the reduce at line 289 always prefers the real candidate. The enclosing `if` guarantees at least one real candidate is pushed.",
+        "fingerprint": "e6e816ac3c90"
+      },
+      {
+        "line": 287,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786284640926,
+        "reason": "Pushing `s.worst` when there are no survivors pushes 'unknown', which is rank 0 — the lowest — so it can never win the reduce at line 289.",
+        "fingerprint": "7f7442927d04"
+      },
+      {
+        "line": 287,
+        "mutator": "EqualityOperator",
+        "addedAt": 1786284640926,
+        "reason": "`length >= 0` is always true, identical to the always-true form: the pushed value is the lowest-ranked severity and cannot change the maximum.",
+        "fingerprint": "7f7442927d04"
+      },
+      {
+        "line": 288,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786284640926,
+        "reason": "Same as line 287 for the no-coverage side: with no groups, `n.worst` is 'unknown' (rank 0) and cannot win the reduce.",
+        "fingerprint": "ee48eab51e1e"
+      },
+      {
+        "line": 288,
+        "mutator": "EqualityOperator",
+        "addedAt": 1786284640926,
+        "reason": "`length >= 0` is always true; the pushed 'unknown' is rank 0 and cannot change the maximum.",
+        "fingerprint": "ee48eab51e1e"
+      },
+      {
+        "line": 289,
+        "mutator": "EqualityOperator",
+        "addedAt": 1786284640926,
+        "reason": "On a tie `>=` keeps `a` and `>` takes `b`, but a tie means both operands hold the SAME severity value, so the reduce returns the same string either way.",
+        "fingerprint": "709df59f1c39"
+      },
+      {
+        "line": 317,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786284640926,
+        "reason": "Forcing this true assigns `prepared.worstSeverity = undefined`. Every consumer re-checks truthiness — `if (prepared.worstSeverity)` at line 622 — so the key's presence with an undefined value changes no output.",
+        "fingerprint": "85b035352f5d"
+      },
+      {
+        "line": 318,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786284640926,
+        "reason": "Same as line 317: `prepared.enrichNote = undefined` is re-checked by `if (prepared.enrichNote)` at lines 458 (text) and 674 (payload), so nothing downstream can observe it.",
+        "fingerprint": "a64a26c2b420"
+      },
+      {
+        "line": 450,
+        "mutator": "EqualityOperator",
+        "addedAt": 1786284640926,
+        "reason": "`incompetent >= 0` differs from `> 0` only at 0 and below. Zero is already short-circuited by the `result.incompetent &&` conjunct, and a negative value fails both comparisons — covered by the negative-counter test.",
+        "fingerprint": "77391e051022"
+      },
+      {
+        "line": 487,
+        "mutator": "LogicalOperator",
+        "addedAt": 1786284640926,
+        "reason": "The operands cannot disagree: `e.severity` is only present when the groups were enriched, which happens only when `enrich` is set. Both are true together or false together, so `&&` and `||` return the same result.",
+        "fingerprint": "883b35eed9eb"
+      },
+      {
+        "line": 685,
+        "mutator": "EqualityOperator",
+        "addedAt": 1786284640926,
+        "reason": "`suppressedCount >= 0` differs from `> 0` only at 0 and below; 0 is short-circuited by the preceding `&&` and a negative fails both — covered by the negative-counter test.",
+        "fingerprint": "f02424d0f034"
+      },
+      {
+        "line": 693,
+        "mutator": "EqualityOperator",
+        "addedAt": 1786284640926,
+        "reason": "`driftedSuppressions >= 0` differs from `> 0` only at 0 and below; 0 is short-circuited by the preceding `&&` and a negative fails both.",
+        "fingerprint": "cedb40914d3d"
+      },
+      {
+        "line": 696,
+        "mutator": "EqualityOperator",
+        "addedAt": 1786284640926,
+        "reason": "`unverifiedSuppressions >= 0` differs from `> 0` only at 0 and below; 0 is short-circuited by the preceding `&&` and a negative fails both.",
+        "fingerprint": "12408c6ea073"
+      },
+      {
+        "line": 699,
+        "mutator": "EqualityOperator",
+        "addedAt": 1786284640926,
+        "reason": "`orphanedSuppressions >= 0` differs from `> 0` only at 0 and below; 0 is short-circuited by the preceding `&&` and a negative fails both.",
+        "fingerprint": "2f7a5719e855"
+      },
+      {
+        "line": 713,
+        "mutator": "EqualityOperator",
+        "addedAt": 1786284640926,
+        "reason": "`incompetent >= 0` differs from `> 0` only at 0 and below; 0 is short-circuited by the preceding `&&` and a negative fails both — covered by the negative-counter test.",
+        "fingerprint": "77391e051022"
       }
     ]
   }
