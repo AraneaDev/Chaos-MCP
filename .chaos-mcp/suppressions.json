@@ -61,6 +61,48 @@
         "addedAt": 1786289756216,
         "reason": "Swapping && for || admits empty/'.' segments to the lookup, which line 249's filter guarantees are absent from the candidate set — the count cannot change.",
         "fingerprint": "535d67604ba7"
+      },
+      {
+        "line": 124,
+        "mutator": "BlockStatement",
+        "addedAt": 1786305754450,
+        "reason": "`base` is declared `let base: string` with no initialiser, so when `basename()` throws it is still undefined when the catch runs. Emptying the catch drops `return []`, but control falls through to `if (!base || base.startsWith('test_')) return []`, which returns the same empty list. Fourth instance of this dead-catch shape in the codebase (triage/audit-one.ts:273/:287, core/estimate.ts:110).",
+        "fingerprint": "95bc545467a5"
+      },
+      {
+        "line": 136,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786305754450,
+        "reason": "Forcing `existsSync(testsRoot)` true calls `collectByName` on a directory that does not exist; its first act is `readdirSync` inside a try/catch that returns on failure. The recursive hunt contributes nothing either way, so the returned selection is identical.",
+        "fingerprint": "fdfe605beb9b"
+      },
+      {
+        "line": 235,
+        "mutator": "ArrayDeclaration",
+        "addedAt": 1786305754450,
+        "reason": "Seeding `roots` with a non-path string only sends `collectByName` to `join(workspaceRoot, 'Stryker was here')`, where `readdirSync` throws ENOENT and its catch returns. A bogus root cannot contribute a match, so the suggestion is unchanged.",
+        "fingerprint": "fee3716cd6d7"
+      },
+      {
+        "line": 237,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786305754450,
+        "reason": "Forcing `rel === targetFile` false lets the target FILE itself be pushed as a search root. `collectByName` then calls `readdirSync` on a file, which throws ENOTDIR into the same catch — no match, and the same suggestion.",
+        "fingerprint": "fa52ae6eddd2"
+      },
+      {
+        "line": 239,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786305754450,
+        "reason": "Forcing `existsSync` true pushes every candidate root whether or not it exists; each missing one reaches `collectByName`, whose `readdirSync` throws ENOENT into its catch. The set of files found is unchanged.",
+        "fingerprint": "9b1d00cae6dc"
+      },
+      {
+        "line": 15,
+        "mutator": "Regex",
+        "addedAt": 1786305754450,
+        "reason": "Anchored and unanchored forms differ only when `./` appears MID-path, and the joined string is built from `dirname(targetFile)` plus literal suffixes. The only caller (`audit/audit-output.ts`) passes `relFromRoot` from `anchorToWorkspace`, which derives it via `path.relative()` — that never emits a `.` segment mid-path, so no reachable input distinguishes them.",
+        "fingerprint": "ae517a118d9b"
       }
     ],
     "src/core/tool-args-validation.ts": [
