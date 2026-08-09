@@ -72,74 +72,88 @@
     ],
     "src/core/tool-args-validation.ts": [
       {
-        "line": 51,
+        "line": 27,
         "mutator": "ConditionalExpression",
-        "addedAt": 1785449056603,
-        "reason": "Redundant typeof guard: Number.isInteger returns false for every non-number, so the next clause rejects the same inputs with the same message.",
-        "fingerprint": "6a0c2371fdc4"
+        "addedAt": 1786291331389,
+        "reason": "By this line `timeoutMs` is either undefined or a positive number — the check above returned an error for anything else. Forcing the typeof guard true leaves `undefined > MAX_TIMEOUT_MS`, which is false, so no input changes the outcome.",
+        "fingerprint": "ccd71318dd03"
       },
       {
-        "line": 67,
+        "line": 41,
         "mutator": "ConditionalExpression",
-        "addedAt": 1785449056603,
-        "reason": "Redundant typeof guard: a non-object lineScope has no numeric .start, so the later `typeof ls.start !== 'number'` clause rejects it with the same message.",
-        "fingerprint": "abfa59370983"
+        "addedAt": 1786291331389,
+        "reason": "Same shape as line 27 for perMutantTimeoutMs: the preceding check already rejected every non-positive-number, and `undefined > MAX_TIMEOUT_MS` is false.",
+        "fingerprint": "2c989e0721cd"
       },
       {
-        "line": 69,
+        "line": 63,
         "mutator": "ConditionalExpression",
-        "addedAt": 1785449056603,
-        "reason": "Redundant typeof guard: Number.isInteger(ls.start) is false for every non-number, so the later clause rejects the same inputs with the same message.",
-        "fingerprint": "d10b36aa74a5"
+        "addedAt": 1786291331389,
+        "reason": "Redundant typeof guard: `Number.isInteger` returns false for every non-number, so the next disjunct rejects exactly the same inputs with the same message.",
+        "fingerprint": "edd50187157e"
       },
       {
-        "line": 70,
+        "line": 79,
         "mutator": "ConditionalExpression",
-        "addedAt": 1785449056603,
-        "reason": "Redundant typeof guard: Number.isInteger(ls.end) is false for every non-number, so the later clause rejects the same inputs with the same message.",
-        "fingerprint": "4ad2292cb6c5"
+        "addedAt": 1786291331389,
+        "reason": "Forcing `typeof ls !== 'object'` false cannot admit a non-object: a string or number has no `start` property, so `typeof ls.start !== 'number'` two lines down rejects it with the same message.",
+        "fingerprint": "e06d10b91a2c"
       },
       {
-        "line": 90,
+        "line": 81,
         "mutator": "ConditionalExpression",
-        "addedAt": 1785449056603,
-        "reason": "Redundant typeof guard: Number.isInteger returns false for every non-number, so the next clause returns the same 'line must be an integer >= 1.' message.",
-        "fingerprint": "d10b36aa74a5"
+        "addedAt": 1786291331389,
+        "reason": "Redundant typeof guard: `!Number.isInteger(ls.start)` below rejects every non-number, including undefined.",
+        "fingerprint": "c35d2690ffdb"
       },
       {
-        "line": 138,
+        "line": 82,
         "mutator": "ConditionalExpression",
-        "addedAt": 1785449056603,
-        "reason": "Redundant typeof guard: a non-object entry has no object-valued .mutators, so the later `typeof entry.mutators !== 'object'` clause rejects it with the same message.",
-        "fingerprint": "99304e3e6d03"
+        "addedAt": 1786291331389,
+        "reason": "Redundant typeof guard: `!Number.isInteger(ls.end)` below rejects every non-number, including undefined.",
+        "fingerprint": "8913e0836851"
       },
       {
-        "line": 153,
+        "line": 110,
         "mutator": "ConditionalExpression",
-        "addedAt": 1785449056603,
-        "reason": "Redundant typeof guard: Number.isInteger(cnt) is false for every non-number, so the next clause returns the same count message.",
-        "fingerprint": "d10b36aa74a5"
+        "addedAt": 1786291331389,
+        "reason": "Redundant typeof guard: `!Number.isInteger(line)` rejects every non-number, so the same inputs produce the same 'line must be an integer >= 1' error.",
+        "fingerprint": "b70233ecdc3a"
       },
       {
-        "line": 157,
+        "line": 158,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786291331389,
+        "reason": "Forcing `typeof entry !== 'object'` false cannot admit a scalar: it has no `mutators` property, so `typeof entry.mutators !== 'object'` rejects it with the same message.",
+        "fingerprint": "ab6ccff2b217"
+      },
+      {
+        "line": 173,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786291331389,
+        "reason": "Redundant typeof guard: `!Number.isInteger(cnt)` rejects every non-number, so a non-numeric count still fails with the same message.",
+        "fingerprint": "4919d1e12ee3"
+      },
+      {
+        "line": 177,
         "mutator": "AssignmentOperator",
-        "addedAt": 1785449056603,
-        "reason": "Only `pairCount === 0` is ever read. Key counts are non-negative, so += yields >= 0 and -= yields <= 0, and both are zero for exactly the same inputs (every entry contributing no mutator keys).",
-        "fingerprint": "c0dfa9720a24"
+        "addedAt": 1786291331389,
+        "reason": "`pairCount` is only ever compared against 0, and every increment is `Object.keys(...).length` — never negative. So the sum is 0 under `+=` exactly when it is 0 under `-=`: when every entry contributed zero keys. No input distinguishes them.",
+        "fingerprint": "25862eeb1f3d"
       },
       {
-        "line": 195,
+        "line": 246,
         "mutator": "ConditionalExpression",
-        "addedAt": 1785449056603,
-        "reason": "Redundant typeof guard: Number.isInteger returns false for every non-number, so the next clause rejects the same inputs with the same message.",
-        "fingerprint": "d10b36aa74a5"
+        "addedAt": 1786291331389,
+        "reason": "Redundant typeof guard: `!Number.isInteger(args.maxSurvivors)` rejects every non-number with the same message.",
+        "fingerprint": "53c020007f93"
       },
       {
-        "line": 271,
+        "line": 322,
         "mutator": "ConditionalExpression",
-        "addedAt": 1785449056603,
-        "reason": "Redundant typeof guard: a non-object entry has no string-valued .mutator, so the later `typeof entry.mutator !== 'string'` clause rejects it with the same message.",
-        "fingerprint": "d564c7820bf1"
+        "addedAt": 1786291331389,
+        "reason": "Forcing `typeof entry !== 'object'` false cannot admit a scalar: it has no `mutator` property, so `typeof entry.mutator !== 'string'` rejects it with the same message.",
+        "fingerprint": "ab6ccff2b217"
       }
     ],
     "src/engines/rust.ts": [
