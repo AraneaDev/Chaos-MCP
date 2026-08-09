@@ -687,6 +687,25 @@ describe('suppression fingerprints (schema v2)', () => {
         expect(loadSuppressions(root).get(FILE)).toHaveLength(1);
       });
 
+      it('accepts a line that OPENS with a comment and then runs code', async () => {
+        // The case above starts with code, so it never reaches the block-comment
+        // branch at all. This one does: the line begins `/*`, and what decides
+        // it is whether anything survives the terminator. Treating every line
+        // that starts with a comment as unmutable would refuse a real target.
+        mkdirSync(join(root, 'src'), { recursive: true });
+        writeFileSync(
+          join(root, FILE),
+          ['export const f = () => {', '  /* fast path */ return a > b;', '};'].join('\n'),
+        );
+
+        const res = await addSuppressions(root, FILE, [
+          { line: 2, mutator: 'ConditionalExpression' },
+        ]);
+
+        expect(res.rejected).toEqual([]);
+        expect(res.stamped).toBe(1);
+      });
+
       it('writes the good entries in a batch that also carries a bad one', async () => {
         // A rejected entry must not cost the caller the rest of their batch.
         const res = await addSuppressions(root, FILE, [

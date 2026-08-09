@@ -254,25 +254,18 @@
     ],
     "src/utils/suppression.ts": [
       {
-        "line": 97,
+        "line": 385,
         "mutator": "ConditionalExpression",
-        "addedAt": 1785445526500,
-        "reason": "Redundant guard: with `!raw` skipped, a null parse throws on `raw.entries` and a scalar fails the later `typeof raw.entries !== 'object'` check, both landing on the same default file.",
-        "fingerprint": "aa79e507a46e"
+        "addedAt": 1786288614641,
+        "reason": "Forcing `typeof raw !== 'object'` false only defers to the next conjunct: a scalar `raw` has no `entries` property, so `typeof raw.entries !== 'object'` is true and the same empty document is returned; `null` is already short-circuited by `!raw`. This is the argument three entries at lines 97-98 carried while pointing at `storedKeyFor` — re-filed against the line it actually describes.",
+        "fingerprint": "d346c321fe1b"
       },
       {
-        "line": 97,
-        "mutator": "LogicalOperator",
-        "addedAt": 1785445526500,
-        "reason": "Swapping || for && only defers to the later `typeof raw.entries` check (or the enclosing try/catch for null), which returns the same default file for every malformed input.",
-        "fingerprint": "aa79e507a46e"
-      },
-      {
-        "line": 98,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1785445526500,
-        "reason": "Redundant guard: a non-object raw has no usable `entries`, so the later `typeof raw.entries !== 'object'` check returns the same default file.",
-        "fingerprint": "447f8885611e"
+        "line": 284,
+        "mutator": "MethodExpression",
+        "addedAt": 1786288614641,
+        "reason": "Dropping `.trim()` cannot change the result: `trimmed` is already `text.trim()`, so no trailing whitespace survives, and the slice after `*/` is therefore either empty or contains a non-space character. Both spellings agree on every input.",
+        "fingerprint": "53a2fb47a384"
       }
     ],
     "src/core/estimate.ts": [
