@@ -303,6 +303,18 @@ describe('handleTriageCall', () => {
     expect(mockDiscover).toHaveBeenCalledWith(['src'], expect.any(String), 25);
   });
 
+  it('forwards config.sandbox.dependencies into createSandbox options for each file', async () => {
+    mockDiscover.mockReturnValue({ files: ['a.ts'], discovered: 1, skipped: 0 });
+    mockAuditFile.mockResolvedValue(mrOf({}));
+    await handleTriageCall(req({ paths: ['src'] }), { sandbox: { dependencies: 'copy' } });
+    expect(mockCreateSandbox).toHaveBeenCalledWith(
+      'a.ts',
+      expect.any(String),
+      undefined,
+      expect.objectContaining({ dependencies: 'copy' }),
+    );
+  });
+
   it('passes timeoutMs/mutatorDenylist through to auditFile and forwards the full audit context', async () => {
     // Kills the perFileArgs ObjectLiteral (line 98) and the auditFile call ObjectLiteral (line 106).
     mockDiscover.mockReturnValue({ files: ['a.ts'], discovered: 1, skipped: 0 });
@@ -1361,6 +1373,58 @@ describe('handleTriageCall', () => {
     expect(row.suppressedCount).toBeUndefined();
     expect(row.unverifiedSuppressions).toBe(1);
     expect(parsed.note).toContain('predate content fingerprinting');
+  });
+
+  it('reports an applied suppression whose (line, mutator) matched no mutant as orphaned', async () => {
+    // The stored entry's fingerprint matches the current source line (so it is
+    // NOT drifted), but the audited result carries no mutant at that
+    // line/mutator at all — the whole-file run enumerated the file and simply
+    // found nothing there for the suppression to filter.
+    mockDiscover.mockReturnValue({ files: [REAL_FILE], discovered: 1, skipped: 0 });
+    mockAuditFile.mockResolvedValue({
+      target: REAL_FILE,
+      totalMutants: 4,
+      killed: 4,
+      survived: 0,
+      mutationScore: '100.00%',
+      vulnerabilities: [],
+    });
+    stubStored(fingerprintSourceLine(tsEnv.workspaceRoot, REAL_FILE, REAL_LINE));
+
+    const res = await handleTriageCall(req({ paths: [REAL_FILE] }));
+    const parsed = JSON.parse((res.content[0] as { text: string }).text);
+    const row = parsed.ranking[0];
+
+    expect(row.orphanedSuppressions).toBe(1);
+    expect(parsed.note).toContain('matched no surviving mutant this run');
+  });
+
+  it('does NOT report an orphan when the batched run stopped before it finished', async () => {
+    // Same fixture as above, except the run is a PARTIAL batched one:
+    // `mergeBatchResults` stamps `scopeKind: 'whole-file'` (the REQUESTED
+    // scope) alongside `complete: false`, so the file was only enumerated for
+    // the batches that ran. A suppression targeting a line in an un-run batch
+    // matched nothing for a reason that says nothing about the suppression.
+    mockDiscover.mockReturnValue({ files: [REAL_FILE], discovered: 1, skipped: 0 });
+    mockAuditFile.mockResolvedValue({
+      target: REAL_FILE,
+      totalMutants: 4,
+      killed: 4,
+      survived: 0,
+      mutationScore: '100.00%',
+      vulnerabilities: [],
+      scopeKind: 'whole-file',
+      complete: false,
+      batchesCompleted: 1,
+      batchesPlanned: 7,
+    });
+    stubStored(fingerprintSourceLine(tsEnv.workspaceRoot, REAL_FILE, REAL_LINE));
+
+    const res = await handleTriageCall(req({ paths: [REAL_FILE] }));
+    const parsed = JSON.parse((res.content[0] as { text: string }).text);
+
+    expect(parsed.ranking[0].orphanedSuppressions).toBeUndefined();
+    expect(parsed.note).not.toContain('matched no surviving mutant this run');
   });
 });
 

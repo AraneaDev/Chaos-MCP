@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { sep } from 'node:path';
 import type { SupportedProjectType } from './project-detector.js';
-import type { ContainerConfig } from './config-loader.js';
+import type { ContainerConfig, DependencyMode } from './config-loader.js';
 import { ExecFailureError, type ExecResult } from './exec-error.js';
 import { runShell, runShellCommand } from './exec.js';
 import { warn } from './logger.js';
@@ -97,6 +97,18 @@ class ContainerExecutionSession implements ExecutionSession {
 
   constructor(
     readonly workDir: string,
+    /**
+     * The audited workspace root the sandbox at `workDir` was provisioned
+     * from — NOT the same path as `workDir` itself. `dependencyMountArgs`
+     * (utils/container/args.ts) needs it under `'link-entries'` mode: every
+     * sandbox dependency-directory entry is symlinked to
+     * `join(workspaceRoot, dir)` by construction, so mounting THAT directory
+     * (not anything resolved from a sandbox entry) is what makes those
+     * symlinks resolve inside the container.
+     */
+    private readonly workspaceRoot: string,
+    /** The `sandbox.dependencies` mode that provisioned `workDir` — same value the caller passed to `createSandbox`. */
+    private readonly dependencyMode: DependencyMode,
     private readonly language: SupportedProjectType,
     private readonly config: ContainerConfig,
     private readonly signal?: AbortSignal,
@@ -111,7 +123,15 @@ class ContainerExecutionSession implements ExecutionSession {
   }
 
   private createArgs(): string[] {
-    return buildCreateArgs(this.name, this.workDir, this.language, this.config, this.image);
+    return buildCreateArgs(
+      this.name,
+      this.workDir,
+      this.workspaceRoot,
+      this.dependencyMode,
+      this.language,
+      this.config,
+      this.image,
+    );
   }
 
   private async ensureStarted(): Promise<void> {
@@ -330,6 +350,10 @@ export function _resetExecutionCaches(): void {
 export async function createExecutionSession(
   language: SupportedProjectType,
   workDir: string,
+  /** The audited workspace root the sandbox at `workDir` was provisioned from. See `ContainerExecutionSession`'s constructor doc for why the container backend needs it. */
+  workspaceRoot: string,
+  /** The `sandbox.dependencies` mode used to provision `workDir` — the same value the caller passed to `createSandbox`. */
+  dependencyMode: DependencyMode,
   config: ContainerConfig | undefined,
   signal?: AbortSignal,
 ): Promise<ExecutionSession> {
@@ -347,7 +371,14 @@ export async function createExecutionSession(
       `Container execution requested, but runtime "${config?.runtime ?? 'docker'}" is unavailable.`,
     );
   }
-  return new ContainerExecutionSession(workDir, language, config ?? {}, signal);
+  return new ContainerExecutionSession(
+    workDir,
+    workspaceRoot,
+    dependencyMode,
+    language,
+    config ?? {},
+    signal,
+  );
 }
 
 export function defaultContainerImage(language: SupportedProjectType): string {

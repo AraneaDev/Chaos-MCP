@@ -21,6 +21,7 @@ import { computeChangedRanges } from '../utils/git-diff.js';
 import { resolveAuditTargetIn } from '../audit/target.js';
 import { loadSuppressions, verifySuppressions, type StoredEntry } from '../utils/suppression.js';
 import { applySuppressions } from '../audit/apply-suppressions.js';
+import { isWholeFileRun } from '../audit/suppression-io.js';
 import { mintRunId } from '../utils/run-cache.js';
 import { buildResultPayload } from '../core/format.js';
 import { displayMutationScore, hasNoMutableLogic } from '../core/score-semantics.js';
@@ -190,6 +191,11 @@ interface RowInput {
   driftedSuppressions: number;
   /** Stored suppressions rejected because they carry no fingerprint (v1 data). */
   unverifiedSuppressions: number;
+  /**
+   * Applied suppressions whose (line, mutator) matched no SURVIVING mutant this
+   * run, gated on {@link isWholeFileRun} the same way the audit tool gates it.
+   */
+  orphanedSuppressions: number;
 }
 
 /**
@@ -223,6 +229,7 @@ function buildTriageRow(input: RowInput, deps: TriageFileDeps): TriageRow {
   // sweep-level note in buildTriagePayload aggregates them.
   if (input.driftedSuppressions > 0) row.driftedSuppressions = input.driftedSuppressions;
   if (input.unverifiedSuppressions > 0) row.unverifiedSuppressions = input.unverifiedSuppressions;
+  if (input.orphanedSuppressions > 0) row.orphanedSuppressions = input.orphanedSuppressions;
 
   // Mint a per-row runId so the caller can verify survivors from a triage result
   // without re-auditing. A cache failure is non-fatal (mintRunId swallows it):
@@ -396,6 +403,7 @@ export async function auditTriageFile(
     try {
       sandbox = await createSandbox(targetFile, env.workspaceRoot, undefined, {
         signal: ctx?.signal,
+        dependencies: deps.cfg.sandbox?.dependencies,
       });
     } catch (error: unknown) {
       // Cancellation (mid-CP reject or pre-aborted signal) must surface as a
@@ -468,6 +476,17 @@ export async function auditTriageFile(
           suppressedCount: sup.suppressedCount,
           driftedSuppressions: verdict.drifted,
           unverifiedSuppressions: verdict.unverified,
+          // Gated on the PRE-suppression `result`, not `sup.result`.
+          // `applySuppressions` returns a new object and never reassigns this
+          // one, so `result` is still the engine's own snapshot — which
+          // matters because filtering CAN synthesise a `scopeNote`
+          // (`apply-suppressions.ts`, when suppression drives `totalMutants`
+          // to 0) and `isWholeFileRun`'s fallback branch reads `scopeNote`.
+          // Gating on the filtered result would flip the scope answer and mask
+          // a real orphan in exactly the case this counter exists for.
+          // `applyAndCountSuppressions` evaluates it on the same pre-filter
+          // snapshot for the same reason, so the two tools cannot disagree.
+          orphanedSuppressions: isWholeFileRun(result) ? sup.orphanedKeys.length : 0,
         },
         deps,
       ),

@@ -115,7 +115,7 @@ describe('buildResultPayload — change strings', () => {
 });
 
 describe('buildResultPayload', () => {
-  it('returns the same shape formatResultAsJson serializes (clean run)', () => {
+  it('returns the same shape the JSON output serializes (clean run)', () => {
     const payload = buildResultPayload(
       result({ survived: 0, killed: 10, mutationScore: '100.00%' }),
     );
@@ -192,6 +192,7 @@ describe('buildResultPayload — optional field assembly', () => {
     'suppressedCount',
     'driftedSuppressions',
     'unverifiedSuppressions',
+    'orphanedSuppressions',
     'gate',
     'incompetent',
   ];
@@ -540,6 +541,19 @@ describe('buildResultPayload drifted / unverified suppressions', () => {
     expect(payload.note).toContain('1 equivalent mutant(s) suppressed');
     expect(payload.note).toContain('2 suppression(s) no longer match');
     expect(payload.note).toContain('4 suppression(s) predate content fingerprinting');
+  });
+});
+
+describe('buildResultPayload orphaned suppressions', () => {
+  it('carries orphanedSuppressions onto the payload and the note', () => {
+    const payload = buildResultPayload(result(), { orphanedSuppressions: 3 });
+    expect(payload.orphanedSuppressions).toBe(3);
+    expect(payload.note).toContain('matched no surviving mutant');
+  });
+
+  it('omits orphanedSuppressions entirely when there are none', () => {
+    const payload = buildResultPayload(result(), { orphanedSuppressions: 0 });
+    expect(payload).not.toHaveProperty('orphanedSuppressions');
   });
 });
 

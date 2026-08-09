@@ -2,7 +2,11 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { isPrebuildAllowed, resolveGatedPrebuild } from '../audit/run-options.js';
+import {
+  isPrebuildAllowed,
+  resolveGatedPrebuild,
+  STRYKER_ONLY_OPTIONS,
+} from '../audit/run-options.js';
 import type { EnvironmentInfo } from '../utils/project-detector.js';
 import type { ToolArgs } from '../core/tool-args-validation.js';
 
@@ -120,5 +124,13 @@ describe('resolveGatedPrebuild', () => {
     const decision = gate({ prebuildCommand: '   ' });
 
     expect(decision.ok).toBe(true);
+  });
+});
+
+describe('STRYKER_ONLY_OPTIONS', () => {
+  it('does not list mutatorAllowlist as an ignorable option', () => {
+    // validateMutatorAllowlistArg rejects the argument unconditionally, before
+    // any engine is chosen, so it can never reach ignoredOptionsFor.
+    expect(STRYKER_ONLY_OPTIONS).not.toContain('mutatorAllowlist');
   });
 });

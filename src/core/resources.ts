@@ -101,6 +101,12 @@ function configSchemaJson(): string {
       '("docker"|"podman"), network, cpus, memoryMb, pidsLimit, startupTimeoutMs, ' +
       'tmpfsSizeMb (writable /tmp size; the container root is read-only, so this holds every ' +
       'toolchain cache — default 2048), and per-language images.',
+    sandbox:
+      'object — sandbox provisioning: dependencies ("link-entries" (default) | "copy" | "share") ' +
+      'chooses how node_modules/.venv/venv/vendor are materialised. "link-entries" keeps sharing ' +
+      'cheap while keeping new writes inside the sandbox; "copy" is the only mode under which a ' +
+      'write through an existing package also stays in the sandbox; "share" is the pre-1.8 ' +
+      'whole-directory symlink and lets the run write into your real workspace.',
   };
   return JSON.stringify(keys, null, 2);
 }
@@ -119,7 +125,7 @@ function capabilitiesMarkdown(): string {
     '2. `audit_code_resilience` the weakest file; write tests for the reported survivors.',
     '3. Re-run `audit_code_resilience` with the returned `runId` to verify those mutants are now killed.',
     '4. Use `minScore` to gate; suppress only genuinely-equivalent mutants.',
-    '5. Suppressions are fingerprinted against their source line. If a report shows `driftedSuppressions` or `unverifiedSuppressions`, those entries were NOT applied — re-check the equivalence argument and re-issue `suppress` to restore them.',
+    '5. Suppressions are fingerprinted against their source line. If a report shows `driftedSuppressions` or `unverifiedSuppressions`, those entries were NOT applied — re-check the equivalence argument and re-issue `suppress` to restore them. `orphanedSuppressions` means an entry WAS applied but matched no surviving mutant this run (inert) — the mutant may now be killed, its line/mutator may be gone, or a `mutatorDenylist` entry may have stopped it being generated. Chaos-MCP cannot tell which; the entry is inert either way, so drop it with `unsuppress` unless you know the mutant still exists.',
     '',
   ].join('\n');
 }

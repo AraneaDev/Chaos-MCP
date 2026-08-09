@@ -453,6 +453,22 @@ describe('handleEstimateCall', () => {
     );
   });
 
+  it('forwards config.sandbox.dependencies into createSandbox options', async () => {
+    mockEstimateNeedsSandbox.mockReturnValue(true);
+    mockEstimateAudit.mockResolvedValue(approxResult);
+
+    await handleEstimateCall(req({ filePath: 'src/math.ts' }), {
+      sandbox: { dependencies: 'copy' },
+    });
+
+    expect(mockCreateSandbox).toHaveBeenCalledWith(
+      'src/math.ts',
+      '/workspace',
+      undefined,
+      expect.objectContaining({ dependencies: 'copy' }),
+    );
+  });
+
   it('does not throw when ctx is supplied without a signal', async () => {
     // `ctx?.signal?.aborted` must stay null-safe when signal is absent (kills the
     // mutant that drops the optional chain after `.signal`).
@@ -657,6 +673,8 @@ describe('handleEstimateCall', () => {
     expect(mockCreateExecutionSession).toHaveBeenCalledWith(
       'typescript',
       '/tmp/chaos-estimate-sandbox',
+      '/workspace',
+      'link-entries',
       { mode: 'container' },
       undefined,
     );
@@ -665,6 +683,33 @@ describe('handleEstimateCall', () => {
     expect(cleanupSpy).toHaveBeenCalledOnce();
     expect(executor.dispose.mock.invocationCallOrder[0]).toBeLessThan(
       cleanupSpy.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('forwards config.sandbox.dependencies into createExecutionSession, not just createSandbox', async () => {
+    mockEstimateNeedsSandbox.mockReturnValue(true);
+    const executor = {
+      kind: 'container' as const,
+      workDir: '/tmp/chaos-estimate-sandbox',
+      run: vi.fn(),
+      runCommand: vi.fn(),
+      dispose: vi.fn().mockResolvedValue(undefined),
+    };
+    mockCreateExecutionSession.mockResolvedValue(executor);
+    mockEstimateAudit.mockResolvedValue(approxResult);
+
+    await handleEstimateCall(req({ filePath: 'src/math.ts', withTiming: true }), {
+      container: { mode: 'container' },
+      sandbox: { dependencies: 'copy' },
+    });
+
+    expect(mockCreateExecutionSession).toHaveBeenCalledWith(
+      'typescript',
+      '/tmp/chaos-estimate-sandbox',
+      '/workspace',
+      'copy',
+      { mode: 'container' },
+      undefined,
     );
   });
 

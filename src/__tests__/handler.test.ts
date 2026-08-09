@@ -713,6 +713,36 @@ describe('handleToolCall', () => {
     );
   });
 
+  it('forwards config.sandbox.dependencies into createSandbox options', async () => {
+    const mockRun = vi.fn().mockResolvedValue({
+      target: 'src/math.ts',
+      totalMutants: 0,
+      killed: 0,
+      survived: 0,
+      mutationScore: '100.00%',
+      vulnerabilities: [],
+    });
+    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    mockDetectEnv.mockReturnValue({
+      projectType: 'typescript',
+      testRunner: 'vitest',
+      detectedRunner: 'vitest',
+      packageManager: '',
+      workspaceRoot: '/workspace',
+    });
+
+    const config = { sandbox: { dependencies: 'copy' as const } };
+    const request = makeRequest('audit_code_resilience', { filePath: 'src/math.ts' });
+    await handleToolCall(request, config);
+
+    expect(mockCreateSandbox).toHaveBeenCalledWith(
+      'src/math.ts',
+      '/workspace',
+      undefined,
+      expect.objectContaining({ dependencies: 'copy' }),
+    );
+  });
+
   it('passes config concurrency when args do not provide one', async () => {
     const mockRun = vi.fn().mockResolvedValue({
       target: 'src/app.ts',

@@ -327,10 +327,14 @@ export function resolvePrebuildCommand(
 ): string | null {
   if (explicit !== undefined) return explicit;
   // Python dependency installers (`uv sync` / `poetry install`) are intentionally
-  // NOT auto-run: `.venv` is symlinked into the sandbox from the host, so an
-  // install would mutate the user's real virtual environment (High#2). The
-  // symlinked environment is already populated; callers who genuinely need a
-  // rebuild can pass an explicit prebuildCommand. Rust (`cargo check`) declares
+  // NOT auto-run. Under the default `sandbox.dependencies: 'link-entries'` (and
+  // under `'share'`) the sandbox's `.venv` is made of links into the host's, so
+  // an install writing THROUGH one of them would mutate the user's real virtual
+  // environment (High#2). Under `'copy'` the venv is a real copy and an install
+  // would be contained — but it would also be a silent, unrequested reinstall on
+  // every audit, so the rule stays mode-independent. The environment the sandbox
+  // gets is already populated either way; callers who genuinely need a rebuild
+  // can pass an explicit prebuildCommand. Rust (`cargo check`) declares
   // its auto-prebuild in the engine registry. (PHP has none — Infection needs no build.)
   const prebuild = ENGINE_REGISTRY[projectType as SupportedProjectType]?.prebuild;
   if (prebuild && existsSync(join(env.workspaceRoot, prebuild.marker))) {

@@ -113,6 +113,26 @@ export interface ContainerConfig {
 }
 
 /**
+ * How the sandbox materialises the audited project's dependency directories.
+ *
+ * - `'link-entries'` (default) — the sandbox owns a real directory and each host
+ *   package is symlinked inside it. Cheap, and a write to a NEW path under it
+ *   stays in the sandbox.
+ * - `'copy'` — copy the tree. The only mode under which a write THROUGH an
+ *   existing package also stays in the sandbox; pay for it when the audited
+ *   suite is known to mutate its own dependencies.
+ * - `'share'` — symlink the whole directory (the pre-1.8 behaviour). Anything
+ *   the run writes under it lands in the real workspace. Opt in knowingly.
+ */
+export type DependencyMode = 'link-entries' | 'copy' | 'share';
+
+/** Sandbox provisioning overrides. */
+export interface SandboxConfig {
+  /** Dependency-directory strategy; defaults to `'link-entries'`. */
+  dependencies?: DependencyMode;
+}
+
+/**
  * User-configurable defaults for mutation testing runs.
  * Loaded from a JSON config file at startup and merged with per-call arguments.
  * Tool call arguments always take precedence over config defaults.
@@ -184,6 +204,9 @@ export interface ChaosConfig {
 
   /** Optional OCI-container execution backend shared by every language engine. */
   container?: ContainerConfig;
+
+  /** Sandbox provisioning overrides (dependency-directory strategy). */
+  sandbox?: SandboxConfig;
 }
 
 /**

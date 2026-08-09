@@ -213,8 +213,13 @@ export const TOOL_DEFINITION = {
         type: 'array',
         items: { type: 'string' },
         description:
-          'Substring patterns for files/directories to exclude from the sandbox copy, applied in addition to built-in exclusions. ' +
-          'Any path containing the pattern string is skipped. Example: [".test.ts", "fixtures/", "snapshots/"]',
+          'Path segments for files/directories to exclude from the sandbox, applied in addition to ' +
+          'built-in exclusions. A path is skipped when any of its segments equals the pattern exactly. ' +
+          'This now also suppresses the dependency-directory link, so excluding "node_modules" leaves ' +
+          'the sandbox without it — which will usually break the run. A pattern is never a suffix or ' +
+          'a substring: ".test.ts" excludes only a path segment named exactly that, not "billing.test.ts". ' +
+          'One trailing separator is stripped, so "fixtures/" and "fixtures" are the same pattern. ' +
+          'Example: ["fixtures/", "testdata"]',
       },
       prebuildCommand: {
         type: 'string',
@@ -379,6 +384,7 @@ export const TOOL_DEFINITION = {
       suppressedCount: { type: 'integer' },
       driftedSuppressions: { type: 'integer' },
       unverifiedSuppressions: { type: 'integer' },
+      orphanedSuppressions: { type: 'integer' },
       gate: {
         type: 'object',
         properties: {
@@ -558,6 +564,7 @@ export const TRIAGE_TOOL_DEFINITION = {
             suppressedCount: { type: 'integer' },
             driftedSuppressions: { type: 'integer' },
             unverifiedSuppressions: { type: 'integer' },
+            orphanedSuppressions: { type: 'integer' },
             passed: { type: 'boolean' },
             // Present (false) only when the file's audit was truncated by the
             // time budget; its score then covers only the completed batches.

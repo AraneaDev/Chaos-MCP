@@ -1,11 +1,5 @@
-import type { MutationResult } from '../engines/base.js';
 import type { Severity } from './enrich.js';
-import {
-  displayMutationScore,
-  hasNoMutableLogic,
-  suppressionDriftNotes,
-  type LineGroup,
-} from './score-semantics.js';
+import { suppressionDriftNotes, type LineGroup } from './score-semantics.js';
 import { evaluateGate } from './gate.js';
 
 export interface TriageRow {
@@ -33,6 +27,14 @@ export interface TriageRow {
    * (v1 entries), awaiting re-confirmation.
    */
   unverifiedSuppressions?: number;
+  /**
+   * Applied suppressions whose (line, mutator) matched no SURVIVING mutant this
+   * run — inert (the mutant may now be killed, its identity may be gone, or a
+   * `mutatorDenylist` entry may have stopped it being generated),
+   * and only counted for a whole-file, complete audit (see `isWholeFileRun` in
+   * `audit/suppression-io.ts`).
+   */
+  orphanedSuppressions?: number;
   /** Whether this file met the minScore gate threshold (only present when minScore is set). */
   passed?: boolean;
   /** True when the file has no mutable logic (zero mutants, no scope note); score is "n/a" (audit M3). */
@@ -68,28 +70,6 @@ export function compareTriageRows(a: TriageRow, b: TriageRow): number {
     b.survived - a.survived ||
     a.file.localeCompare(b.file)
   );
-}
-
-/** Rank audited results weakest-first: score asc, survived desc, file asc. */
-export function rankResults(results: { file: string; result: MutationResult }[]): TriageRow[] {
-  const rows: TriageRow[] = results.map(({ file, result }) => {
-    const row: TriageRow = {
-      file,
-      mutationScore: displayMutationScore(result),
-      total: result.totalMutants,
-      killed: result.killed,
-      survived: result.survived,
-      noCoverage: Math.max(0, result.vulnerabilities.length - result.survived),
-    };
-    if (hasNoMutableLogic(result)) row.noMutableLogic = true;
-    if (result.complete === false) {
-      row.complete = false;
-      if (result.batchesCompleted !== undefined) row.batchesCompleted = result.batchesCompleted;
-      if (result.batchesPlanned !== undefined) row.batchesPlanned = result.batchesPlanned;
-    }
-    return row;
-  });
-  return rows.sort(compareTriageRows);
 }
 
 function note(rows: TriageRow[], discovered: number, skipped: number, diffMode?: boolean): string {
@@ -187,6 +167,7 @@ export function buildTriagePayload(
   for (const note of suppressionDriftNotes(
     sumOf((r) => r.driftedSuppressions),
     sumOf((r) => r.unverifiedSuppressions),
+    sumOf((r) => r.orphanedSuppressions),
   )) {
     payload.note += ` ${note}`;
   }
@@ -229,17 +210,6 @@ export function buildTriagePayload(
     }
   }
   return payload;
-}
-
-/** Render the triage result as compact JSON. */
-export function formatTriageAsJson(
-  rows: TriageRow[],
-  errors: TriageError[],
-  discovered: number,
-  skipped: number,
-  scopeNote?: string,
-): string {
-  return JSON.stringify(buildTriagePayload(rows, errors, discovered, skipped, scopeNote));
 }
 
 /**
@@ -340,6 +310,7 @@ export function formatTriageAsText(payload: TriagePayload): string {
   for (const note of suppressionDriftNotes(
     rows.reduce((sum, r) => sum + (r.driftedSuppressions ?? 0), 0),
     rows.reduce((sum, r) => sum + (r.unverifiedSuppressions ?? 0), 0),
+    rows.reduce((sum, r) => sum + (r.orphanedSuppressions ?? 0), 0),
   )) {
     lines.push(`Note: ${note}`);
   }

@@ -602,6 +602,29 @@ describe('detectPythonTestRunner', () => {
 
       expect(detectPythonTestRunner('/workspace')).toBe('pytest');
     });
+
+    it('does not treat a [tool.pytest] mention inside a comment as a pytest project', () => {
+      mockExistsSync.mockImplementation((p) => String(p).endsWith('pyproject.toml'));
+      mockReadFileSync.mockReturnValue(
+        '# migrate the [tool.pytest.ini_options] block from setup.cfg one day\n' +
+          '[tool.mutmut]\nrunner = "ward"\n',
+      );
+      expect(detectPythonTestRunner('/ws')).toBe('ward');
+    });
+
+    it('does not treat a [tool.pytest] mention inside a string value as a pytest project', () => {
+      mockExistsSync.mockImplementation((p) => String(p).endsWith('pyproject.toml'));
+      mockReadFileSync.mockReturnValue(
+        '[project]\ndescription = "reads [tool.pytest] for you"\n[tool.mutmut]\nrunner = "green"\n',
+      );
+      expect(detectPythonTestRunner('/ws')).toBe('green');
+    });
+
+    it('still detects a real [tool.pytest.ini_options] table', () => {
+      mockExistsSync.mockImplementation((p) => String(p).endsWith('pyproject.toml'));
+      mockReadFileSync.mockReturnValue('[tool.pytest.ini_options]\naddopts = "-q"\n');
+      expect(detectPythonTestRunner('/ws')).toBe('pytest');
+    });
   });
 
   describe('standalone pytest markers (Priority 2)', () => {

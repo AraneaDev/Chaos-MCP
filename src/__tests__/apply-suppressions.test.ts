@@ -134,4 +134,33 @@ describe('applySuppressions', () => {
     expect(out.totalMutants).toBe(0);
     expect(out.survived).toBe(0);
   });
+
+  it('reports an applied key that matched no mutant', () => {
+    const out = applySuppressions(
+      result({
+        totalMutants: 2,
+        killed: 1,
+        survived: 1,
+        vulnerabilities: [survivor(10)],
+      }),
+      new Set(['10 ConditionalExpression', '42 EqualityOperator']),
+    );
+
+    expect(out.suppressedCount).toBe(1);
+    expect(out.orphanedKeys).toEqual(['42 EqualityOperator']);
+  });
+
+  it('reports no orphans when every applied key matched', () => {
+    const out = applySuppressions(
+      result({ totalMutants: 1, killed: 0, survived: 1, vulnerabilities: [survivor(10)] }),
+      new Set(['10 ConditionalExpression']),
+    );
+
+    expect(out.orphanedKeys).toEqual([]);
+  });
+
+  it('reports no orphans when nothing is suppressed', () => {
+    expect(applySuppressions(result(), undefined).orphanedKeys).toEqual([]);
+    expect(applySuppressions(result(), new Set()).orphanedKeys).toEqual([]);
+  });
 });

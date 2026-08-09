@@ -38,6 +38,13 @@ export interface SuppressionCounts {
   drifted: number;
   /** Entries with no fingerprint at all (v1 data), never applied. */
   unverified: number;
+  /**
+   * Applied entries whose (line, mutator) matched no SURVIVING mutant this run
+   * — inert, and previously reported by nothing. Either the mutant is now
+   * killed or its identity is gone; a `MutationResult` carries no killed-mutant
+   * identities, so the two cannot be told apart here (see `applySuppressions`).
+   */
+  orphaned: number;
 }
 import {
   loadSuppressions,
@@ -48,6 +55,42 @@ import {
   type AddSuppressionsResult,
   type SuppressionVerdict,
 } from '../utils/suppression.js';
+
+/**
+ * Whether a `MutationResult` enumerated the WHOLE file — the only condition
+ * under which an applied-but-unmatched suppression is worth reporting as
+ * orphaned rather than as a scope artifact.
+ *
+ * Shared by {@link applyAndCountSuppressions} (the audit path) and the triage
+ * sweep (`triage/audit-one.ts`), which both gate their orphan count on it: a
+ * lineScope- or diffBase-scoped audit legitimately generates no mutant for a
+ * suppressed line outside its range, and calling that an orphan would cry
+ * wolf.
+ *
+ * `complete === false` disqualifies a run regardless of `scopeKind`.
+ * `scopeKind` records the REQUESTED scope (see its docblock in
+ * `engines/base.ts`), and `mergeBatchResults` (`engines/typescript/batches.ts`)
+ * stamps `'whole-file'` even when a time budget stopped the run after 3 of 7
+ * batches. Every suppression whose `(line, mutator)` lives in a batch that
+ * never ran would then be reported as orphaned — the exact cry-wolf failure
+ * this gate exists to prevent, on the one engine that batches by default.
+ *
+ * TRANSITIONAL, twin of `hasNoMutableLogic`'s conjunct 2 in
+ * `core/score-semantics.ts` (see the note there): only the TypeScript engine
+ * emits `scopeKind` today, so gating on `=== 'whole-file'` alone would
+ * hard-wire this to `false` for every Rust, Python and PHP run — exactly the
+ * Rust-upgrade case this whole feature exists for. The fallback (`scopeKind`
+ * unset AND no `scopeNote`) is safe rather than an approximation: Python,
+ * Rust and PHP set `supportsLineScope: false` in `engines/registry.ts`, so a
+ * run of theirs is ALWAYS whole-file and there is no scoped case for the
+ * fallback to misjudge. TypeScript, the one engine that can be scoped, always
+ * sets `scopeKind` explicitly and so never reaches it. Delete this fallback
+ * alongside that one once every engine sets `scopeKind`.
+ */
+export function isWholeFileRun(result: MutationResult): boolean {
+  if (result.complete === false) return false;
+  return result.scopeKind === 'whole-file' || (result.scopeKind === undefined && !result.scopeNote);
+}
 
 /**
  * Apply the caller's explicit suppression edits to the suppressions file.
@@ -165,14 +208,31 @@ export async function applyAndCountSuppressions(
   // unverified entries are counted and reported instead — including the
   // entries just written above whose source line could not be read, which
   // land in `unverified` in this very response.
-  const counts: SuppressionCounts = { applied: 0, drifted: 0, unverified: 0 };
+  const counts: SuppressionCounts = { applied: 0, drifted: 0, unverified: 0, orphaned: 0 };
   if (!baselineKeys) {
+    // Evaluated on the PRE-suppression result, before `result` is reassigned
+    // to `filtered.result` below. "Was this run whole-file?" is a property of
+    // what the engine enumerated, not of what is left after suppression
+    // filtering — but `applySuppressions` can SYNTHESISE a scopeNote when
+    // suppression drives `totalMutants` to exactly 0 (every mutant suppressed
+    // as equivalent), and `isWholeFileRun`'s fallback branch reads `scopeNote`.
+    // Gating on the post-suppression result let that synthesised note flip a
+    // scope answer and mask a real orphan in exactly the case this counter
+    // exists for: every mutant in the file declared equivalent, one of those
+    // declarations gone stale. `triage/audit-one.ts` already evaluates this on
+    // the pre-suppression result; this must match it so the two tools cannot
+    // disagree about the same underlying fact.
+    const wholeFileRun = isWholeFileRun(result);
     const verdict = loadVerifiedSuppressions(wsRoot, relFromRoot, supPath);
     const filtered = applySuppressions(result, verdict.applied);
     result = filtered.result;
     counts.applied = filtered.suppressedCount;
     counts.drifted = verdict.drifted;
     counts.unverified = verdict.unverified;
+    // See `isWholeFileRun` above for why the count is gated on it (a scoped
+    // audit legitimately generates no mutant for a suppressed line outside its
+    // range, and calling that an orphan would cry wolf).
+    counts.orphaned = wholeFileRun ? filtered.orphanedKeys.length : 0;
   }
   return { ok: true, result, counts };
 }

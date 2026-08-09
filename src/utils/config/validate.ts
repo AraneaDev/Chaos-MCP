@@ -8,6 +8,7 @@ import {
   GLOBAL_FIELD_RULES,
   KNOWN_CONTAINER_IMAGE_KEYS,
   KNOWN_CONTAINER_KEYS,
+  KNOWN_SANDBOX_KEYS,
   KNOWN_TOP_LEVEL_KEYS,
 } from './rules.js';
 
@@ -72,6 +73,7 @@ export function validateConfig(configPath?: string): ConfigValidation {
     validateEngineSection(images, 'container.images', KNOWN_CONTAINER_IMAGE_KEYS, warnings);
   }
   validateContainerConfig(raw.container, warnings);
+  validateEngineSection(raw.sandbox, 'sandbox', KNOWN_SANDBOX_KEYS, warnings);
 
   // ── Validate global fields ──
   warnRules(raw, GLOBAL_FIELD_RULES, warnings, (key, phrase) => `${key} ${phrase}.`);

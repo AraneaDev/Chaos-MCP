@@ -92,6 +92,17 @@ const describeStringList = (value: unknown): string | undefined =>
     ? undefined
     : `must be an array of strings, got ${Array.isArray(value) ? 'array with invalid entries' : typeof value}`;
 
+/**
+ * `mutatorAllowlist` is accepted by the parser and then deliberately never read
+ * (`buildRunOptions` in audit/run-options.ts: "sourcing it here (from args OR
+ * config) would make every TS run throw"). That combination is invisible to
+ * `--validate-config`, whose whole job is to report what the parser dropped —
+ * this is a value the parser KEEPS and the consumer ignores. Wording matches
+ * the tool-argument rejection and the `chaos://config-schema` resource.
+ */
+const ALLOWLIST_UNSUPPORTED_PHRASE =
+  'is NOT SUPPORTED (StrykerJS v9 has no allowlist) and is ignored — use mutatorDenylist instead';
+
 /** Phrase shared by every over-the-cap timeout warning. */
 const overCapPhrase = (value: unknown): string =>
   `must be <= ${MAX_TIMEOUT_MS} (the largest delay a timer accepts; larger values are clamped to 1ms and abort the run immediately), got ${numberOrType(value)}`;
@@ -199,10 +210,11 @@ export const GLOBAL_FIELD_RULES: readonly FieldRule[] = [
     key: 'mutatorAllowlist',
     check: Array.isArray,
     coerce: (v) => (v as unknown[]).filter((entry) => typeof entry === 'string'),
-    // GAP CLOSED (was: a non-array was dropped, and an array of non-strings was
-    // filtered, without a word either way). `check` is untouched — every array
-    // the parser took before is still taken, and an all-string array is silent.
-    describe: describeStringList,
+    // `check` is untouched — every array the parser took before is still taken.
+    // Unlike its siblings, `describe` is unconditional: even a well-formed
+    // array of strings is exactly the case that silently does nothing, because
+    // the value is never read (see ALLOWLIST_UNSUPPORTED_PHRASE above).
+    describe: () => ALLOWLIST_UNSUPPORTED_PHRASE,
   },
   {
     key: 'mutatorDenylist',
@@ -226,12 +238,33 @@ const describeStringArray = (value: unknown): string | undefined =>
     : `must be an array of non-empty strings, got ${Array.isArray(value) ? 'array with invalid entries' : typeof value}`;
 
 /**
+ * The `sandbox.dependencies` rule, shared verbatim by {@link SANDBOX_FIELD_RULES}
+ * (the parser, via `parseSandboxConfig`) and {@link SECTION_FIELD_RULES} (the
+ * validator, via `sectionRule`/`validateEngineSection`) — one object literal so
+ * the two cannot drift on what counts as a valid mode.
+ */
+const dependenciesRule: FieldRule = {
+  key: 'dependencies',
+  check: (v) => v === 'link-entries' || v === 'copy' || v === 'share',
+  describe: (v) =>
+    v === 'link-entries' || v === 'copy' || v === 'share'
+      ? undefined
+      : `must be one of "link-entries", "copy", or "share", got ${JSON.stringify(v)}`,
+};
+
+/**
  * Field rules shared by every engine section, keyed by field name. A section
  * declares which of these it accepts through its `knownKeys` set, so the same
  * `timeoutMs` rule serves Stryker, cosmic-ray, cargo-mutants and Infection —
  * the block that used to be copy-pasted into all four parsers.
+ *
+ * `dependencies` also lives here (rather than only in {@link SANDBOX_FIELD_RULES})
+ * so `validateEngineSection`, which looks up per-key rules through
+ * {@link sectionRule} against this table, has something to find for the sandbox
+ * section too.
  */
 export const SECTION_FIELD_RULES: Readonly<Record<string, FieldRule>> = {
+  dependencies: dependenciesRule,
   timeoutMs: {
     key: 'timeoutMs',
     check: timeoutValue,
@@ -269,11 +302,11 @@ export const SECTION_FIELD_RULES: Readonly<Record<string, FieldRule>> = {
     check: Array.isArray,
     coerce: (v) => (v as unknown[]).filter((entry) => typeof entry === 'string'),
     // An all-invalid (or empty) list is stored but does not keep the section alive.
+    // `counts` is untouched by the describe change below.
     counts: (v) => (v as string[]).length > 0,
-    // HISTORICAL GAP: an empty/all-filtered list counts as a "valid field" here,
-    // so a section holding only that one is dropped without the usual
-    // "has no valid fields" warning. Preserved.
-    describe: (v) => (Array.isArray(v) ? undefined : `must be an array, got ${typeof v}`),
+    // Unconditional, like the global rule above: a well-formed array is exactly
+    // the case that silently does nothing, so it warns too.
+    describe: () => ALLOWLIST_UNSUPPORTED_PHRASE,
   },
   mutatorDenylist: {
     key: 'mutatorDenylist',
@@ -439,6 +472,17 @@ export const CONTAINER_FIELD_RULES: readonly FieldRule[] = [
   },
 ];
 
+// ─── Sandbox section fields ──────────────────────────────────────────────────
+
+/** Valid keys within a SandboxConfig section. */
+export const KNOWN_SANDBOX_KEYS = new Set(['dependencies']);
+
+/**
+ * The sandbox section. Its warnings read `"sandbox.${key}" ${phrase} — will be
+ * ignored.`, i.e. the engine-section house style, so it reuses that renderer.
+ */
+export const SANDBOX_FIELD_RULES: readonly FieldRule[] = [dependenciesRule];
+
 // ─── Rule engine ─────────────────────────────────────────────────────────────
 
 /**
@@ -558,4 +602,5 @@ export const KNOWN_TOP_LEVEL_KEYS = new Set<string>([
   ...GLOBAL_FIELD_RULES.map((rule) => rule.key),
   ...ENGINE_CONFIG_SECTIONS.map((section) => section.key),
   'container',
+  'sandbox',
 ]);

@@ -121,6 +121,7 @@ export async function handleEstimateCall(
       try {
         sandbox = await createSandbox(relFile, env.workspaceRoot, undefined, {
           signal: ctx?.signal,
+          dependencies: cfg.sandbox?.dependencies,
         });
       } catch (error: unknown) {
         return mapCreateSandboxError(error, rawFilePath, ctx);
@@ -131,7 +132,14 @@ export async function handleEstimateCall(
       const containerMode = cfg.container?.mode;
       const executor =
         sandbox && containerMode && containerMode !== 'native'
-          ? await createExecutionSession(projectType, sandbox.workDir, cfg.container, ctx?.signal)
+          ? await createExecutionSession(
+              projectType,
+              sandbox.workDir,
+              env.workspaceRoot,
+              cfg.sandbox?.dependencies ?? 'link-entries',
+              cfg.container,
+              ctx?.signal,
+            )
           : undefined;
       try {
         // ── Grade the estimate against the budget and the runner the AUDIT

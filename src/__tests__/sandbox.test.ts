@@ -13,6 +13,7 @@ vi.mock('fs', () => ({
   existsSync: vi.fn(),
   statSync: vi.fn(),
   readdirSync: vi.fn(),
+  mkdirSync: vi.fn(),
   realpathSync: vi.fn((p: unknown) => String(p)),
 }));
 
@@ -53,12 +54,13 @@ vi.mock('../utils/logger.js', () => ({
   warn: vi.fn(),
 }));
 
-import { mkdtempSync, symlinkSync, rmSync, existsSync, statSync } from 'fs';
+import { mkdtempSync, symlinkSync, rmSync, existsSync, statSync, readdirSync, mkdirSync } from 'fs';
 import type { PathLike } from 'fs';
 import { cp, readdir } from 'fs/promises';
 import { tmpdir } from 'os';
 import { resolve, join, sep } from 'path';
-import { createSandbox, SandboxContext } from '../utils/sandbox.js';
+import { createSandbox, SandboxContext, _resetWorkspaceSizeCache } from '../utils/sandbox.js';
+import { safeSymlink } from '../utils/sandbox/dependency-link.js';
 import { buildCopyPolicy, SYMLINK_DIRS } from '../utils/sandbox/copy-policy.js';
 import { ENGINE_REGISTRY, dependencyDirectories } from '../engines/registry.js';
 import { killProcessesUnder, killAllTrackedProcesses } from '../utils/process-reaper.js';
@@ -80,6 +82,8 @@ const mockReaddir = vi.mocked(readdir);
 const mockSymlinkSync = vi.mocked(symlinkSync);
 const mockRmSync = vi.mocked(rmSync);
 const mockExistsSync = vi.mocked(existsSync);
+const mockReaddirSync = vi.mocked(readdirSync);
+const mockMkdirSync = vi.mocked(mkdirSync);
 const mockTmpdir = vi.mocked(tmpdir);
 
 const SANDBOX_DIR = '/tmp/chaos-mcp-00000000-0000-0000-0000-000000000000';
@@ -100,11 +104,22 @@ describe('createSandbox', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // Most tests in this file provision the same TEST_PROJECT root, and
+    // SIZE_CACHE is module-level state that outlives any one test — without
+    // this, the first test in file order to walk TEST_PROJECT would poison
+    // every later test that provisions it within the 60s TTL (they'd get its
+    // memoised size/warn outcome instead of exercising their own mocks).
+    _resetWorkspaceSizeCache();
     Reflect.deleteProperty(process.env, ALLOWED_ROOTS_ENV);
     mockTmpdir.mockReturnValue('/tmp');
     mockMkdtempSync.mockReturnValue(SANDBOX_DIR);
     // Default: cp resolves to undefined (mimics successful copy).
     mockCp.mockResolvedValue(undefined as never);
+    // Default: no dependency entries to link. linkDependencyEntries calls
+    // readdirSync unconditionally whenever a symlink dir's source exists (see
+    // the default existsSync below, which makes node_modules "exist"), so
+    // without this every such test would iterate `undefined` and throw.
+    mockReaddirSync.mockReturnValue([]);
 
     // Default: target file exists, node_modules exists
     mockExistsSync.mockImplementation((path: PathLike) => {
@@ -154,12 +169,16 @@ describe('createSandbox', () => {
       if (path === TEST_PROJECT_NODE_MODULES) return true;
       return false;
     });
+    mockReaddirSync.mockReturnValue([{ name: 'somepkg', isDirectory: () => true }] as never);
 
     sandbox = await createSandbox('src/utils/math.ts', TEST_PROJECT);
 
+    expect(mockMkdirSync).toHaveBeenCalledWith(`${SANDBOX_DIR}/node_modules`, {
+      recursive: true,
+    });
     expect(mockSymlinkSync).toHaveBeenCalledWith(
-      TEST_PROJECT_NODE_MODULES,
-      `${SANDBOX_DIR}/node_modules`,
+      join(TEST_PROJECT_NODE_MODULES, 'somepkg'),
+      join(`${SANDBOX_DIR}/node_modules`, 'somepkg'),
       'dir',
     );
   });
@@ -170,10 +189,15 @@ describe('createSandbox', () => {
       if (path === TEST_PROJECT_VENV) return true;
       return false;
     });
+    mockReaddirSync.mockReturnValue([{ name: 'somepkg', isDirectory: () => true }] as never);
 
     sandbox = await createSandbox('src/main.py', TEST_PROJECT);
 
-    expect(mockSymlinkSync).toHaveBeenCalledWith(TEST_PROJECT_VENV, `${SANDBOX_DIR}/.venv`, 'dir');
+    expect(mockSymlinkSync).toHaveBeenCalledWith(
+      join(TEST_PROJECT_VENV, 'somepkg'),
+      join(`${SANDBOX_DIR}/.venv`, 'somepkg'),
+      'dir',
+    );
   });
 
   it('symlinks vendor into sandbox when present', async () => {
@@ -182,12 +206,13 @@ describe('createSandbox', () => {
       if (path === TEST_PROJECT_VENDOR) return true;
       return false;
     });
+    mockReaddirSync.mockReturnValue([{ name: 'somepkg', isDirectory: () => true }] as never);
 
     sandbox = await createSandbox('src/Calculator.php', TEST_PROJECT);
 
     expect(mockSymlinkSync).toHaveBeenCalledWith(
-      TEST_PROJECT_VENDOR,
-      `${SANDBOX_DIR}/vendor`,
+      join(TEST_PROJECT_VENDOR, 'somepkg'),
+      join(`${SANDBOX_DIR}/vendor`, 'somepkg'),
       'dir',
     );
   });
@@ -250,58 +275,62 @@ describe('createSandbox', () => {
       if (path === TEST_PROJECT_VENDOR) return true;
       return false;
     });
+    mockReaddirSync.mockReturnValue([{ name: 'somepkg', isDirectory: () => true }] as never);
 
     await createSandbox('src/Calculator.php', TEST_PROJECT);
 
     expect(mockSymlinkSync).toHaveBeenCalledWith(
-      TEST_PROJECT_VENDOR,
-      `${SANDBOX_DIR}/vendor`,
+      join(TEST_PROJECT_VENDOR, 'somepkg'),
+      join(`${SANDBOX_DIR}/vendor`, 'somepkg'),
       'dir',
     );
     const filter = mockCp.mock.calls[0][2]?.filter as (src: string) => boolean;
     expect(filter(`${TEST_PROJECT}/vendor`)).toBe(false);
   });
 
-  // ─── Target INSIDE a symlinked heavyweight dir (EEXIST regression) ────────
+  // ─── Target INSIDE a symlinked heavyweight dir ─────────────────────────────
   //
   // The copy filter force-includes the target and every ancestor BEFORE it
   // checks the symlink-dir list, so a target under vendor/ (or node_modules/,
-  // .venv/, venv/) makes `cp` materialise that whole directory. Step 2 then
-  // symlinked onto the existing copy and `safeSymlink` rethrew a raw EEXIST on
-  // non-Windows — provisioning died with "Ensure the file exists and the
-  // workspace is accessible" for a file that plainly existed. The already-copied
-  // directory makes the sandbox complete, so Step 2 must skip it.
+  // .venv/, venv/) makes `cp` materialise that whole directory. `linkHeavyDirs`
+  // still calls `linkDependencyEntries` on it — a bare-directory EEXIST is no
+  // longer even possible (nothing symlinks the directory itself any more), and
+  // the interesting behaviour is now per entry: linkDependencyEntries's own
+  // `existsSync(dst)` guard leaves an already-copied entry alone, and links in
+  // any entry the copy DIDN'T produce (e.g. one an ignorePattern excluded),
+  // completing a partially-materialised directory instead of leaving it with a
+  // silent gap.
 
-  it('provisions a target that lives INSIDE vendor/ without an EEXIST collision', async () => {
+  it('completes a force-copied vendor/: leaves copied entries alone, links entries the copy skipped', async () => {
     // A JS/TS repo that vendors first-party code: vendor/ is in SYMLINK_DIRS
     // (no Composer marker here, so it is NOT the isComposerPhpAudit path), yet
     // the target's ancestors force it into the copy.
     const target = 'vendor/my-lib/index.ts';
+    const copiedEntryDst = `${SANDBOX_DIR}/vendor/my-lib`;
+    const skippedEntryDst = `${SANDBOX_DIR}/vendor/sibling-pkg`;
     mockExistsSync.mockImplementation((path: PathLike) => {
       if (path === `${SANDBOX_DIR}/${target}`) return true;
       if (path === TEST_PROJECT_VENDOR) return true;
-      // Step 1 already materialised vendor/ inside the sandbox.
+      // Step 1 already materialised vendor/ AND my-lib/ inside the sandbox...
       if (path === `${SANDBOX_DIR}/vendor`) return true;
+      if (path === copiedEntryDst) return true;
+      // ...but not sibling-pkg/ — say, excluded by an ignorePattern, or any
+      // other reason the copy didn't produce this one entry.
       return false;
     });
-    // Reproduce the real failure: symlinking onto an existing dir throws EEXIST,
-    // and safeSymlink's junction retry is Windows-only so it is rethrown.
-    mockSymlinkSync.mockImplementation((_target: unknown, path: unknown) => {
-      if (String(path) === `${SANDBOX_DIR}/vendor`) {
-        throw Object.assign(
-          new Error(
-            `EEXIST: file already exists, symlink '${TEST_PROJECT_VENDOR}' -> '${SANDBOX_DIR}/vendor'`,
-          ),
-          { code: 'EEXIST' },
-        );
-      }
-    });
+    mockReaddirSync.mockReturnValue([
+      { name: 'my-lib', isDirectory: () => true },
+      { name: 'sibling-pkg', isDirectory: () => true },
+    ] as never);
 
     await expect(createSandbox(target, TEST_PROJECT)).resolves.toBeDefined();
 
-    // vendor/ was copied (force-included), so it must not be symlinked over.
     const symlinkedDsts = mockSymlinkSync.mock.calls.map((c) => String(c[1]));
-    expect(symlinkedDsts).not.toContain(`${SANDBOX_DIR}/vendor`);
+    // Already-copied entry: left alone, not relinked.
+    expect(symlinkedDsts).not.toContain(copiedEntryDst);
+    // Entry the copy skipped: completed via a host symlink rather than left
+    // silently missing from the sandbox.
+    expect(symlinkedDsts).toContain(skippedEntryDst);
   });
 
   it('force-includes vendor/ in the copy when the target lives under it', async () => {
@@ -326,35 +355,41 @@ describe('createSandbox', () => {
     expect(filter(`${TEST_PROJECT}/vendor/other-lib/lib.ts`)).toBe(true);
   });
 
-  it('provisions a target that lives INSIDE node_modules/ without an EEXIST collision', async () => {
+  it('leaves an already-copied entry alone when the target lives inside node_modules/', async () => {
     const target = 'node_modules/@acme/widget/src/index.ts';
+    // The target's own ancestor chain — including the @acme scope dir — was
+    // materialised by the copy (force-include), so this entry must be left
+    // exactly as the copy produced it.
+    const copiedEntryDst = `${SANDBOX_DIR}/node_modules/@acme`;
     mockExistsSync.mockImplementation((path: PathLike) => {
       if (path === `${SANDBOX_DIR}/${target}`) return true;
       if (path === TEST_PROJECT_NODE_MODULES) return true;
       if (path === `${SANDBOX_DIR}/node_modules`) return true;
+      if (path === copiedEntryDst) return true;
       return false;
     });
-    mockSymlinkSync.mockImplementation((_target: unknown, path: unknown) => {
-      if (String(path) === `${SANDBOX_DIR}/node_modules`) {
-        throw Object.assign(new Error('EEXIST: file already exists, symlink'), { code: 'EEXIST' });
-      }
-    });
+    mockReaddirSync.mockReturnValue([{ name: '@acme', isDirectory: () => true }] as never);
 
     await expect(createSandbox(target, TEST_PROJECT)).resolves.toBeDefined();
 
     const symlinkedDsts = mockSymlinkSync.mock.calls.map((c) => String(c[1]));
-    expect(symlinkedDsts).not.toContain(`${SANDBOX_DIR}/node_modules`);
+    expect(symlinkedDsts).not.toContain(copiedEntryDst);
   });
 
-  it('does not symlink a NESTED heavyweight dir whose destination already exists', async () => {
-    // Defensive counterpart of the root-level guard: whatever put the directory
-    // in the sandbox, linking over it can only produce EEXIST.
+  it('leaves an already-copied entry alone inside a NESTED heavyweight dir', async () => {
+    // Defensive counterpart of the root-level test above: the SECOND loop in
+    // linkHeavyDirs (nested occurrences recorded in skippedHeavyDirs, e.g.
+    // workers/typescript/node_modules) must honour the same per-entry
+    // existsSync(dst) guard as the top-level SYMLINK_DIRS loop, not just link
+    // blindly because it takes a different code path to get there.
     const nested = `${TEST_PROJECT}/workers/typescript/node_modules`;
     const nestedDst = `${SANDBOX_DIR}/workers/typescript/node_modules`;
+    const copiedEntryDst = `${nestedDst}/somepkg`;
     mockExistsSync.mockImplementation((path: PathLike) => {
       if (path === `${SANDBOX_DIR}/src/utils/math.ts`) return true;
       if (path === nested) return true;
       if (path === nestedDst) return true;
+      if (path === copiedEntryDst) return true; // already materialised by the copy
       return false;
     });
     mockCp.mockImplementation((async (
@@ -364,16 +399,12 @@ describe('createSandbox', () => {
     ) => {
       opts.filter(nested); // records it in skippedHeavyDirs
     }) as never);
-    mockSymlinkSync.mockImplementation((_target: unknown, path: unknown) => {
-      if (String(path) === nestedDst) {
-        throw Object.assign(new Error('EEXIST: file already exists, symlink'), { code: 'EEXIST' });
-      }
-    });
+    mockReaddirSync.mockReturnValue([{ name: 'somepkg', isDirectory: () => true }] as never);
 
     await expect(createSandbox('src/utils/math.ts', TEST_PROJECT)).resolves.toBeDefined();
 
     const symlinkedDsts = mockSymlinkSync.mock.calls.map((c) => String(c[1]));
-    expect(symlinkedDsts).not.toContain(nestedDst);
+    expect(symlinkedDsts).not.toContain(copiedEntryDst);
   });
 
   it('refuses to sandbox when workspace resolves outside process cwd (C2)', async () => {
@@ -644,18 +675,43 @@ describe('createSandbox', () => {
 
   // ─── safeSymlink and Windows junction fallback ──────────────────────────
 
-  it('retries with junction on Windows EPERM, surfaces error on Linux', async () => {
+  it('safeSymlink rethrows a Linux EPERM without a Windows junction retry', () => {
+    // `safeSymlink` moved into dependency-link.ts (Task 2) but its Windows
+    // fallback contract is unchanged: on this (non-Windows) platform an EPERM
+    // must propagate directly, with no 'junction' retry attempt appended.
+    // Testing it directly — rather than through createSandbox — is now
+    // required: linkDependencyEntries (below) swallows a per-entry symlink
+    // failure, so createSandbox itself no longer surfaces this error.
+    mockSymlinkSync.mockImplementationOnce(() => {
+      throw Object.assign(new Error('EPERM'), { code: 'EPERM' });
+    });
+
+    expect(() => safeSymlink('/host/node_modules', '/sandbox/node_modules')).toThrow('EPERM');
+    expect(mockSymlinkSync).toHaveBeenCalledTimes(1);
+    expect(mockSymlinkSync).toHaveBeenCalledWith(
+      '/host/node_modules',
+      '/sandbox/node_modules',
+      'dir',
+    );
+  });
+
+  it('does not fail the whole provision when one dependency entry cannot be linked', async () => {
+    // Behaviour change from Task 2: linkDependencyEntries links per entry and
+    // treats a failure as best-effort (see its docblock), so a single
+    // unlinkable package — e.g. a Linux EPERM from an unusual host
+    // filesystem — no longer aborts provisioning the way the old
+    // whole-directory safeSymlink call did.
     mockExistsSync.mockImplementation((path: PathLike) => {
       if (path === `${SANDBOX_DIR}/src/utils/math.ts`) return true;
       if (path === TEST_PROJECT_NODE_MODULES) return true;
       return false;
     });
-
+    mockReaddirSync.mockReturnValue([{ name: 'badpkg', isDirectory: () => true }] as never);
     mockSymlinkSync.mockImplementationOnce(() => {
       throw Object.assign(new Error('EPERM'), { code: 'EPERM' });
     });
 
-    await expect(createSandbox('src/utils/math.ts', TEST_PROJECT)).rejects.toThrow('EPERM');
+    await expect(createSandbox('src/utils/math.ts', TEST_PROJECT)).resolves.toBeDefined();
   });
 
   it('ensureExitHandler does not double-register on subsequent sandbox creations', async () => {
@@ -716,6 +772,32 @@ describe('createSandbox', () => {
     expect(mockedWarn).toHaveBeenCalledWith(
       expect.stringContaining('Consider using ignorePatterns'),
     );
+  });
+
+  it('reports the threshold rather than a truncated measurement', async () => {
+    const { warn } = await import('../utils/logger.js');
+    const mockedWarn = vi.mocked(warn);
+    // The root holds two subdirectories. The walk pops one (LIFO: the last
+    // pushed, dirB), reads its 250MB file, and only THEN re-checks the
+    // running total with dirA still on the stack — that is what exercises the
+    // early-return branch (stack still non-empty when the cap is crossed),
+    // not just a walk that happens to finish over the cap.
+    vi.mocked(readdir).mockResolvedValueOnce([
+      { name: 'dirA', isDirectory: () => true, isFile: () => false },
+      { name: 'dirB', isDirectory: () => true, isFile: () => false },
+    ] as never);
+    vi.mocked(readdir).mockResolvedValueOnce([
+      { name: 'big.bin', isDirectory: () => false, isFile: () => true },
+    ] as never);
+    vi.mocked(statSync).mockReturnValue({ size: 250 * 1024 * 1024 } as never);
+
+    await createSandbox('src/utils/math.ts', TEST_PROJECT);
+
+    expect(mockedWarn.mock.calls[0][0]).toContain('exceeds 200MB');
+    expect(mockedWarn.mock.calls[0][0]).not.toMatch(/~\d+MB/);
+    // dirA is never read — the early return skipped it before its own readdir
+    // call — proving the walk really did stop early rather than finishing.
+    expect(mockReaddir).toHaveBeenCalledTimes(2);
   });
 
   it('does not count ALWAYS_EXCLUDE directories toward the size estimate', async () => {
@@ -807,6 +889,29 @@ describe('createSandbox', () => {
     expect(warnCalls).toHaveLength(0);
   });
 
+  it('walks the workspace once for repeated provisions of the same root', async () => {
+    // Brief's snippet used a bare '/ws' root; the C2 cwd-boundary guard (added
+    // by a later task) rejects any root outside process.cwd(), so this uses
+    // TEST_PROJECT — the same in-cwd root every other test in this file uses —
+    // and stubs existsSync the way sibling tests do so createSandbox succeeds
+    // for both the target-under-math.ts and the target-under-b.ts provisions.
+    _resetWorkspaceSizeCache();
+    vi.mocked(readdir).mockResolvedValue([] as never);
+    mockExistsSync.mockImplementation((path: PathLike) => {
+      return (
+        path === `${SANDBOX_DIR}/src/a.ts` ||
+        path === `${SANDBOX_DIR}/src/b.ts` ||
+        path === TEST_PROJECT_NODE_MODULES
+      );
+    });
+
+    await createSandbox('src/a.ts', TEST_PROJECT);
+    const afterFirst = vi.mocked(readdir).mock.calls.length;
+    await createSandbox('src/b.ts', TEST_PROJECT);
+
+    expect(vi.mocked(readdir).mock.calls.length).toBe(afterFirst);
+  });
+
   // ─── Exit handler signals ───────────────────────────────────────────────
 
   it('registers handlers for SIGTERM, SIGINT, SIGHUP, and SIGQUIT', async () => {
@@ -855,6 +960,91 @@ describe('createSandbox', () => {
     expect(filter(`${TEST_PROJECT}/dist/bundle.js`)).toBe(false);
     expect(filter(`${TEST_PROJECT}/build/output.js`)).toBe(false);
     expect(filter(`${TEST_PROJECT}/src/dist-utils.js`)).toBe(true);
+  });
+
+  it('warns when an ignorePattern suppresses a dependency directory that exists on the host', async () => {
+    // Before entry-level linking, listing `node_modules` in ignorePatterns only
+    // excluded it from the COPY — linkHeavyDirs symlinked it back in regardless,
+    // so the entry was a harmless no-op that still yielded a working sandbox. It
+    // now suppresses the link too, and createSandbox still resolves normally: the
+    // first thing the user sees is the engine's "cannot find module", reported as
+    // a finding about the audited code. `linkDependencyEntries` warns loudly for
+    // the identical outcome one call frame away; this path must not be silent.
+    const { warn } = await import('../utils/logger.js');
+    const mockedWarn = vi.mocked(warn);
+    mockedWarn.mockClear();
+
+    await createSandbox('src/utils/math.ts', TEST_PROJECT, ['node_modules']);
+
+    // Nothing was linked: linkDependencyEntries reads the host dir first, and it
+    // is the only caller of readdirSync on this path.
+    expect(mockReaddirSync).not.toHaveBeenCalled();
+    expect(mockedWarn).toHaveBeenCalledWith(
+      expect.stringContaining(`excludes the dependency directory "${TEST_PROJECT_NODE_MODULES}"`),
+    );
+    expect(mockedWarn).toHaveBeenCalledWith(
+      expect.stringContaining('not a bug in the audited code'),
+    );
+  });
+
+  it('warns under dependencies: "copy" too, where nothing is linked to warn about', async () => {
+    // The gap the mode split opened. Under 'copy' the caller passes
+    // `symlinkDirs: []` — the dirs are meant to ride along with the tree copy —
+    // so neither loop in linkHeavyDirs ever sees `node_modules`, yet an
+    // ignorePatterns entry naming it still strips it from that copy and leaves
+    // the sandbox with no dependencies. Identical outcome, identical
+    // consequence (the engine's "cannot find module" read as a finding about
+    // the audited code); warning in two modes and not the third would be the
+    // same silence relocated.
+    const { warn } = await import('../utils/logger.js');
+    const mockedWarn = vi.mocked(warn);
+    mockedWarn.mockClear();
+
+    await createSandbox('src/utils/math.ts', TEST_PROJECT, ['node_modules'], {
+      dependencies: 'copy',
+    });
+
+    expect(mockedWarn).toHaveBeenCalledWith(
+      expect.stringContaining(`excludes the dependency directory "${TEST_PROJECT_NODE_MODULES}"`),
+    );
+  });
+
+  it('warns exactly once per excluded dependency directory', async () => {
+    // The warning list and the link list overlap under the default mode. If the
+    // pre-pass warned and the link loop warned again, every affected user would
+    // get the same paragraph twice — and a reader deduplicating it by eye would
+    // stop reading the second copy, which is where a DIFFERENT directory's
+    // warning appears.
+    const { warn } = await import('../utils/logger.js');
+    const mockedWarn = vi.mocked(warn);
+    mockedWarn.mockClear();
+
+    await createSandbox('src/utils/math.ts', TEST_PROJECT, ['node_modules']);
+
+    expect(
+      mockedWarn.mock.calls.filter((c) =>
+        String(c[0]).includes(`excludes the dependency directory "${TEST_PROJECT_NODE_MODULES}"`),
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('stays quiet when an ignorePattern names a dependency directory the host does not have', async () => {
+    // A Python project excluding "vendor" has nothing to lose and must not be
+    // told it broke its own sandbox.
+    const { warn } = await import('../utils/logger.js');
+    const mockedWarn = vi.mocked(warn);
+    mockedWarn.mockClear();
+    mockExistsSync.mockImplementation((path: PathLike) => {
+      return path === `${SANDBOX_DIR}/src/utils/math.ts`;
+    });
+
+    await createSandbox('src/utils/math.ts', TEST_PROJECT, ['vendor']);
+
+    expect(
+      mockedWarn.mock.calls.filter((c) =>
+        String(c[0]).includes('excludes the dependency directory'),
+      ),
+    ).toHaveLength(0);
   });
 
   // ─── estimateWorkspaceSize error-catch paths ─────────────────────────────
@@ -1070,13 +1260,14 @@ describe('createSandbox', () => {
         path === `${TEST_PROJECT}/venv`
       );
     });
+    mockReaddirSync.mockReturnValue([{ name: 'pkg', isDirectory: () => true }] as never);
 
     await createSandbox('src/utils/math.ts', TEST_PROJECT);
 
     const linked = mockSymlinkSync.mock.calls.map((c) => String(c[0]));
-    expect(linked).toContain(TEST_PROJECT_NODE_MODULES);
-    expect(linked).toContain(TEST_PROJECT_VENV);
-    expect(linked).toContain(`${TEST_PROJECT}/venv`);
+    expect(linked).toContain(join(TEST_PROJECT_NODE_MODULES, 'pkg'));
+    expect(linked).toContain(join(TEST_PROJECT_VENV, 'pkg'));
+    expect(linked).toContain(join(`${TEST_PROJECT}/venv`, 'pkg'));
   });
 
   it('symlinks a nested node_modules the copy filter skipped, not just the root one', async () => {
@@ -1092,6 +1283,7 @@ describe('createSandbox', () => {
       if (path === `${SANDBOX_DIR}/src/utils/math.ts`) return true;
       return path === TEST_PROJECT_NODE_MODULES || path === nested;
     });
+    mockReaddirSync.mockReturnValue([{ name: 'pkg', isDirectory: () => true }] as never);
     // Real `cp` consults the filter per entry as it walks; the mock must too,
     // or the nested dir is never observed as skipped.
     let skippedNested: boolean | undefined;
@@ -1107,8 +1299,42 @@ describe('createSandbox', () => {
 
     expect(skippedNested).toBe(false); // skipped by the copy…
     const linked = mockSymlinkSync.mock.calls.map((c) => String(c[0]));
-    expect(linked).toContain(TEST_PROJECT_NODE_MODULES);
-    expect(linked).toContain(nested);
+    expect(linked).toContain(join(TEST_PROJECT_NODE_MODULES, 'pkg'));
+    expect(linked).toContain(join(nested, 'pkg'));
+  });
+
+  it('skips a nested dependency dir in "share" mode when its destination already exists', async () => {
+    // Symmetry with the root-level check a few lines above in `linkHeavyDirs`:
+    // `safeSymlink` cannot target a path that already exists (EEXIST), so
+    // `'share'` mode must check `existsSync(dst)` for a NESTED skipped dir too,
+    // not just the workspace-root one, even though a real `fs.cp` never
+    // actually materialises a dir this loop is about to visit (it was excluded
+    // from the copy precisely because it landed in `skippedHeavyDirs`). The
+    // guard is defensive, so this test manufactures the state directly.
+    const nested = `${TEST_PROJECT}/workers/typescript/node_modules`;
+    const nestedDst = `${SANDBOX_DIR}/workers/typescript/node_modules`;
+    mockExistsSync.mockImplementation((path: PathLike) => {
+      if (path === `${SANDBOX_DIR}/src/utils/math.ts`) return true;
+      if (path === TEST_PROJECT_NODE_MODULES) return true;
+      if (path === nested) return true;
+      if (path === nestedDst) return true; // manufactured: "already there"
+      return false;
+    });
+    let skippedNested: boolean | undefined;
+    mockCp.mockImplementation((async (
+      _s: string,
+      _d: string,
+      opts: { filter: (src: string) => boolean },
+    ) => {
+      skippedNested = opts.filter(nested);
+    }) as never);
+
+    await createSandbox('src/utils/math.ts', TEST_PROJECT, undefined, { dependencies: 'share' });
+
+    expect(skippedNested).toBe(false); // skipped by the copy…
+    // …and NOT re-symlinked on top of the destination that "already exists".
+    const linkedDsts = mockSymlinkSync.mock.calls.map((c) => String(c[1]));
+    expect(linkedDsts).not.toContain(nestedDst);
   });
 
   it('does not exclude everything when an ignorePattern is only a separator', async () => {
@@ -1124,7 +1350,7 @@ describe('createSandbox', () => {
     expect(filter(`${TEST_PROJECT}/src/utils/math.ts`)).toBe(true);
   });
 
-  it('warns with the computed size and does not warn exactly at the threshold', async () => {
+  it('warns with the threshold and does not warn exactly at the cap', async () => {
     const { warn } = await import('../utils/logger.js');
     const mockedWarn = vi.mocked(warn);
 
@@ -1141,14 +1367,18 @@ describe('createSandbox', () => {
     await createSandbox('src/utils/math.ts', TEST_PROJECT);
     expect(mockedWarn.mock.calls.filter((c) => String(c[0]).includes('MB'))).toHaveLength(0);
 
-    // 300MB → warns, and the human-readable size is computed correctly.
+    // 300MB → warns, quoting the fixed threshold rather than the measured size.
+    // Reset the memo: both provisions target the same TEST_PROJECT root, and
+    // without this the second call would reuse the first's cached (200MB,
+    // not-truncated) answer instead of re-walking with the mocks below.
+    _resetWorkspaceSizeCache();
     mockedWarn.mockClear();
     mockReaddir.mockResolvedValueOnce([
       { name: 'big.bin', isDirectory: () => false, isFile: () => true },
     ] as never);
     vi.mocked(statSync).mockReturnValueOnce({ size: 300 * 1024 * 1024 } as never);
     await createSandbox('src/utils/math.ts', TEST_PROJECT);
-    expect(mockedWarn).toHaveBeenCalledWith(expect.stringContaining('~300MB'));
+    expect(mockedWarn).toHaveBeenCalledWith(expect.stringContaining('exceeds 200MB'));
   });
 
   // ─── Audit C1: AbortSignal support ────────────────────────────────────
@@ -1192,6 +1422,34 @@ describe('createSandbox', () => {
     // The abort escaped the size estimate's best-effort catch rather than being
     // swallowed and reported as "size 0".
     expect(mockMkdtempSync).not.toHaveBeenCalled();
+  });
+
+  it('does not cache a size for a walk that was aborted', async () => {
+    // A throw must not reach SIZE_CACHE.set — otherwise a cancelled walk would
+    // poison the memo with a bogus entry (e.g. `{ bytes: 0, truncated: false }`)
+    // that a LATER, uncancelled provision of the same root would then trust
+    // instead of re-walking.
+    const controller = new AbortController();
+    mockMkdtempSync.mockClear();
+    mockExistsSync.mockImplementation(
+      (path: PathLike) => path === `${SANDBOX_DIR}/src/utils/math.ts` || path === TEST_PROJECT,
+    );
+    mockReaddir.mockImplementationOnce((() => {
+      controller.abort();
+      return Promise.resolve([{ name: 'a', isDirectory: () => true, isFile: () => false }]);
+    }) as never);
+
+    await expect(
+      createSandbox('src/utils/math.ts', TEST_PROJECT, undefined, { signal: controller.signal }),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+    const callsAfterAbort = mockReaddir.mock.calls.length;
+
+    // A fresh, non-aborted provision of the SAME root must walk again rather
+    // than reusing whatever the aborted call would have cached — if the abort
+    // had populated SIZE_CACHE, readdir would NOT be called again here.
+    mockReaddir.mockResolvedValue([] as never);
+    await expect(createSandbox('src/utils/math.ts', TEST_PROJECT)).resolves.toBeDefined();
+    expect(mockReaddir.mock.calls.length).toBeGreaterThan(callsAfterAbort);
   });
 
   it('observes an abort flipped by an interleaved task mid-walk (Med#17)', async () => {

@@ -60,14 +60,15 @@ Environment:
   CHAOS_MCP_ALLOW_PREBUILD=1      Permit a caller-supplied prebuildCommand
   CHAOS_MCP_ALLOW_REPO_TEST_COMMAND=1
                                   Permit a Python test command declared by the AUDITED
-                                  project (pyproject.toml [tool.mutmut] runner) to run
-                                  as a shell command. Bare executable names are always
-                                  allowed; this opens it to full command lines.
+                                  project (pyproject.toml [tool.mutmut] runner) to be
+                                  executed by cosmic-ray. Bare executable names are
+                                  always allowed; this opens it to full command lines.
 
 Description:
-  Chaos-MCP is a Model Context Protocol (MCP) server that exposes a single tool,
-  "audit_code_resilience", which runs isolated mutation testing against a target
-  source file to identify weaknesses in the local test suite.
+  Chaos-MCP is a Model Context Protocol (MCP) server that runs isolated mutation
+  testing to identify weaknesses in the local test suite. It exposes three tools:
+  "audit_code_resilience" (mutation-test one file), "triage_test_coverage" (rank
+  a tree weakest-first) and "estimate_audit" (pre-flight mutant count/timing).
 
   It supports TypeScript/JavaScript (via StrykerJS), Python (via cosmic-ray),
   Rust (via cargo-mutants), and PHP (via Infection). All mutation runs execute inside temporary sandbox

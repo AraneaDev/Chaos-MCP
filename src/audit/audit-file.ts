@@ -128,7 +128,14 @@ export async function auditFile(input: AuditFileInput): Promise<MutationResult> 
   const containerMode = config.container?.mode;
   const executor =
     containerMode && containerMode !== 'native'
-      ? await createExecutionSession(projectType, workDir, config.container, input.signal)
+      ? await createExecutionSession(
+          projectType,
+          workDir,
+          env.workspaceRoot,
+          config.sandbox?.dependencies ?? 'link-entries',
+          config.container,
+          input.signal,
+        )
       : undefined;
   if (executor) runOptions.executor = executor;
 

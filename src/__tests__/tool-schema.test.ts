@@ -495,6 +495,7 @@ describe('audit outputSchema ↔ ResultPayload parity', () => {
     suppressedCount: true,
     driftedSuppressions: true,
     unverifiedSuppressions: true,
+    orphanedSuppressions: true,
     gate: true,
     incompetent: true,
     complete: true,

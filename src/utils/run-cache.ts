@@ -102,19 +102,57 @@ function cacheDir(opts?: RunCacheOptions): string {
   return opts?.dir ?? join(tmpdir(), 'chaos-mcp-runs', workspaceFingerprint(process.cwd()));
 }
 
-/** Read every cache file with its createdAt; unreadable/corrupt files are skipped. */
-function listEntries(dir: string): { id: string; createdAt: number }[] {
+/**
+ * What this process knows is in each cache directory: id → `createdAt`.
+ *
+ * `evict` runs on every `saveRun`, and it used to rebuild this by opening and
+ * `JSON.parse`-ing every file in the directory — up to `max` (default 200)
+ * synchronous reads per mint. Every audit and every triage row mints, so a
+ * 25-file sweep paid up to 5,000 of them on the MCP server's event loop, purely
+ * to read one number out of each file.
+ *
+ * The directory is scanned ONCE per process per directory; after that this
+ * process's own writes and removals keep the index current. `createdAt` still
+ * comes from the entry (and therefore from `RunCacheOptions.now`), so the
+ * deterministic eviction tests keep working.
+ *
+ * Staleness is bounded and harmless: another process's entries are invisible
+ * to this index until the next restart, so eviction may retain slightly more
+ * than `max`. The cap is a soft resource bound, not a correctness invariant,
+ * and `loadRun` still grades every hit against the TTL from the file itself.
+ *
+ * The same staleness covers corrupt-file reaping. Before this change,
+ * `listEntries` re-read the directory on every `evict` and dropped any file it
+ * could not `JSON.parse`, so a corrupt `.json` was cleaned up the next time
+ * ANY run saved. Now that reaping happens only inside `scanEntries`, i.e. only
+ * on the FIRST `evict` this process runs against a given directory — a corrupt
+ * file that appears afterwards (a concurrent writer, a differently-versioned
+ * process sharing the cache dir, a crash mid-write) is invisible to this
+ * process's index and is never reaped by it again before restart. It still
+ * cannot be loaded (`loadRun` parses fresh and fails the same way it always
+ * did), so this is a lost cleanup, not a correctness gap.
+ */
+const CACHE_INDEX = new Map<string, Map<string, number>>();
+
+/** Reset the per-directory scan memo. @internal Exported for testing only. */
+export function _resetRunCacheIndex(): void {
+  CACHE_INDEX.clear();
+}
+
+/** One full scan of `dir`, parsing each entry for its `createdAt`. */
+function scanEntries(dir: string): Map<string, number> {
+  const index = new Map<string, number>();
   let names: string[];
   try {
     names = readdirSync(dir).filter((n) => n.endsWith('.json'));
   } catch {
-    return [];
+    return index;
   }
-  const out: { id: string; createdAt: number }[] = [];
   for (const n of names) {
+    const id = n.slice(0, -'.json'.length);
     try {
       const parsed = JSON.parse(readFileSync(join(dir, n), 'utf8')) as RunCacheEntry;
-      out.push({ id: n.slice(0, -'.json'.length), createdAt: parsed.createdAt ?? 0 });
+      index.set(id, parsed.createdAt ?? 0);
     } catch {
       // Corrupt file: drop it so it cannot accumulate.
       try {
@@ -124,7 +162,17 @@ function listEntries(dir: string): { id: string; createdAt: number }[] {
       }
     }
   }
-  return out;
+  return index;
+}
+
+/** Read every cache file with its createdAt; unreadable/corrupt files are skipped. */
+function listEntries(dir: string): { id: string; createdAt: number }[] {
+  let index = CACHE_INDEX.get(dir);
+  if (index === undefined) {
+    index = scanEntries(dir);
+    CACHE_INDEX.set(dir, index);
+  }
+  return [...index].map(([id, createdAt]) => ({ id, createdAt }));
 }
 
 /** Best-effort eviction: drop TTL-expired entries, then trim oldest beyond `max`. */
@@ -134,8 +182,14 @@ function evict(dir: string, ttlMs: number, max: number, now: number): void {
     if (now - e.createdAt > ttlMs) {
       try {
         rmSync(join(dir, `${e.id}.json`), { force: true });
+        // Only forget it once it is actually gone: `force: true` swallows
+        // ENOENT, but EACCES/EBUSY still throw, and dropping the index entry
+        // regardless would make an undeleted file permanently invisible to
+        // every later `evict` in this process — never retried, and no longer
+        // counting against `max`.
+        CACHE_INDEX.get(dir)?.delete(e.id);
       } catch {
-        /* best-effort */
+        /* best-effort; entry stays in the index so the next evict retries it */
       }
     }
   }
@@ -149,8 +203,11 @@ function evict(dir: string, ttlMs: number, max: number, now: number): void {
   for (let i = 0; i < live.length - max + 1; i++) {
     try {
       rmSync(join(dir, `${live[i].id}.json`), { force: true });
+      // See the matching comment in the TTL loop above: only forget an entry
+      // once the file is actually gone.
+      CACHE_INDEX.get(dir)?.delete(live[i].id);
     } catch {
-      /* best-effort */
+      /* best-effort; entry stays in the index so the next evict retries it */
     }
   }
 }
@@ -186,6 +243,10 @@ export function saveRun(
     }
     throw e;
   }
+  // `evict` ran before this write and guarantees the index for `dir` exists
+  // (scanned or, on an unreadable directory, cached empty), so this keeps it
+  // current without a rescan.
+  CACHE_INDEX.get(dir)?.set(runId, now);
   return runId;
 }
 

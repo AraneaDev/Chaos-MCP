@@ -216,4 +216,233 @@ describe('applyAndCountSuppressions', () => {
     // that line retires the suppression instead of re-pointing it at whatever replaces it.
     expect(written.entries[REL][0].fingerprint).toBe(LINE_1_FINGERPRINT);
   });
+
+  describe('orphaned count', () => {
+    // Every case below stores one entry that verifies fine (fingerprint matches
+    // line 1, so it lands in `verdict.applied`) but names a mutator
+    // ('EqualityOperator') the result's only vulnerability does not carry (it is
+    // 'ConditionalExpression'). That makes the applied key match nothing —
+    // exactly the orphan case — regardless of scope, so these four tests isolate
+    // the gate in `applyAndCountSuppressions` that decides whether to report it.
+    function writeOrphanEntry(): void {
+      writeSuppressions([
+        { line: 1, mutator: 'EqualityOperator', reason: 'gone', fingerprint: LINE_1_FINGERPRINT },
+      ]);
+    }
+
+    it('reports the orphan count for a whole-file (TypeScript-shaped) run', async () => {
+      writeOrphanEntry();
+
+      const outcome = await applyAndCountSuppressions(
+        {},
+        { ...result(), scopeKind: 'whole-file' },
+        undefined,
+        ws,
+        REL,
+        undefined,
+      );
+
+      expect(outcome.ok).toBe(true);
+      if (!outcome.ok) return;
+      expect(outcome.counts.orphaned).toBe(1);
+    });
+
+    it('suppresses the orphan count for a whole-file run that stopped early', async () => {
+      // `scopeKind` records the REQUESTED scope, so `mergeBatchResults`
+      // (engines/typescript/batches.ts) stamps 'whole-file' even when the time
+      // budget stopped the run after 3 of 7 batches. Every suppression whose
+      // (line, mutator) lives in a batch that never ran matched nothing for a
+      // reason that says nothing about the suppression — reporting those as
+      // orphaned is the cry-wolf failure this gate exists to prevent, on the
+      // one engine that batches by default.
+      writeOrphanEntry();
+
+      const outcome = await applyAndCountSuppressions(
+        {},
+        {
+          ...result(),
+          scopeKind: 'whole-file',
+          complete: false,
+          batchesCompleted: 3,
+          batchesPlanned: 7,
+        },
+        undefined,
+        ws,
+        REL,
+        undefined,
+      );
+
+      expect(outcome.ok).toBe(true);
+      if (!outcome.ok) return;
+      expect(outcome.counts.orphaned).toBe(0);
+    });
+
+    it('still reports the orphan count when a batched run completed', async () => {
+      // The other side of the `complete` conjunct: `complete: true` is the
+      // normal batched outcome and must not be read as "partial".
+      writeOrphanEntry();
+
+      const outcome = await applyAndCountSuppressions(
+        {},
+        { ...result(), scopeKind: 'whole-file', complete: true },
+        undefined,
+        ws,
+        REL,
+        undefined,
+      );
+
+      expect(outcome.ok).toBe(true);
+      if (!outcome.ok) return;
+      expect(outcome.counts.orphaned).toBe(1);
+    });
+
+    it('suppresses the orphan count for a scoped run', async () => {
+      writeOrphanEntry();
+
+      const outcome = await applyAndCountSuppressions(
+        {},
+        { ...result(), scopeKind: 'scoped' },
+        undefined,
+        ws,
+        REL,
+        undefined,
+      );
+
+      expect(outcome.ok).toBe(true);
+      if (!outcome.ok) return;
+      expect(outcome.counts.orphaned).toBe(0);
+    });
+
+    it('falls back to whole-file for a result that never sets scopeKind', async () => {
+      // Rust, Python and PHP never set `scopeKind` at all — only TypeScript
+      // does — and since none of them supports line-scoping
+      // (`supportsLineScope: false` in engines/registry.ts) every run of
+      // theirs IS whole-file. Without the TRANSITIONAL fallback this case
+      // silently hard-wires `orphaned` to 0 for three of the four engines,
+      // including the Rust one the whole feature exists for.
+      writeOrphanEntry();
+
+      const outcome = await applyAndCountSuppressions({}, result(), undefined, ws, REL, undefined);
+
+      expect(outcome.ok).toBe(true);
+      if (!outcome.ok) return;
+      expect(outcome.counts.orphaned).toBe(1);
+    });
+
+    it('still reports the orphan when a whole-file run carries a diffBase scope note', async () => {
+      // The reason the three non-TypeScript engines now SET `scopeKind`
+      // themselves rather than relying on the fallback below. A Rust, Python or
+      // PHP audit run with `diffBase` is still a whole-file run — none of them
+      // supports line scoping — but `handler.ts` appends "diffBase scoping is
+      // not supported for <lang>; mutated the whole file" to the result BEFORE
+      // the suppression phase. Under the fallback alone that note made
+      // `isWholeFileRun` false, so `orphaned` was hard-wired to 0 on every
+      // diffBase run of exactly the engines this counter was built for — and
+      // the triage side, which gates on the result before the note is attached,
+      // reported the same run's orphan. The explicit `scopeKind` settles both.
+      writeOrphanEntry();
+
+      const outcome = await applyAndCountSuppressions(
+        {},
+        {
+          ...result(),
+          scopeKind: 'whole-file',
+          scopeNote: 'diffBase scoping is not supported for rust; mutated the whole file.',
+        },
+        undefined,
+        ws,
+        REL,
+        undefined,
+      );
+
+      expect(outcome.ok).toBe(true);
+      if (!outcome.ok) return;
+      expect(outcome.counts.orphaned).toBe(1);
+    });
+
+    it('does not report orphans for a scopeNote-carrying result with no scopeKind', async () => {
+      // The other side of the fallback: a scopeKind-less zero that DOES carry a
+      // scopeNote is the one non-enumerating shape the fallback must still
+      // exclude (the twin of hasNoMutableLogic's same exclusion for StrykerJS
+      // dryRun).
+      writeOrphanEntry();
+
+      const outcome = await applyAndCountSuppressions(
+        {},
+        { ...result(), scopeNote: 'Partial audit: 1 of 3.' },
+        undefined,
+        ws,
+        REL,
+        undefined,
+      );
+
+      expect(outcome.ok).toBe(true);
+      if (!outcome.ok) return;
+      expect(outcome.counts.orphaned).toBe(0);
+    });
+
+    it('still reports the orphan when suppression itself synthesises a scopeNote', async () => {
+      // The gate must read the PRE-suppression result. `applySuppressions`
+      // synthesises a scopeNote ("All N mutant(s) ... suppressed as
+      // equivalent") whenever suppression drives totalMutants to exactly 0 —
+      // and that synthesised note is a statement about SUPPRESSION, not about
+      // scope. If the gate reads the POST-suppression result instead, that
+      // note flips the scopeKind-less fallback from true to false and masks a
+      // real orphan in exactly the case this counter exists for: every mutant
+      // in the file declared equivalent, and one of those declarations gone
+      // stale.
+      //
+      // Two entries in the same batch: the ConditionalExpression suppression
+      // matches the file's only vulnerability and alone exhausts
+      // totalMutants (1 -> 0), triggering the synthesised scopeNote. The
+      // EqualityOperator suppression is fingerprint-verified (so it lands in
+      // `verdict.applied`) but names a mutator nothing in the result carries
+      // — the orphan.
+      writeSuppressions([
+        {
+          line: 1,
+          mutator: 'ConditionalExpression',
+          reason: 'ok',
+          fingerprint: LINE_1_FINGERPRINT,
+        },
+        { line: 1, mutator: 'EqualityOperator', reason: 'gone', fingerprint: LINE_1_FINGERPRINT },
+      ]);
+
+      const oneMutantResult: MutationResult = {
+        target: REL,
+        totalMutants: 1,
+        killed: 0,
+        survived: 1,
+        mutationScore: '0.00%',
+        vulnerabilities: [
+          {
+            line: 1,
+            mutator: 'ConditionalExpression',
+            kind: 'survived',
+            description: 'ConditionalExpression survived at line 1',
+          },
+        ],
+        // scopeKind-less, Rust/PHP/Python-shaped: the fallback branch of
+        // isWholeFileRun is the one under test.
+      };
+
+      const outcome = await applyAndCountSuppressions(
+        {},
+        oneMutantResult,
+        undefined,
+        ws,
+        REL,
+        undefined,
+      );
+
+      expect(outcome.ok).toBe(true);
+      if (!outcome.ok) return;
+      // Confirms the synthesised-scopeNote branch was actually reached, so a
+      // future change that stops synthesising it can't make this test pass
+      // for the wrong reason.
+      expect(outcome.result.totalMutants).toBe(0);
+      expect(outcome.result.scopeNote).toContain('suppressed as equivalent');
+      expect(outcome.counts.orphaned).toBe(1);
+    });
+  });
 });

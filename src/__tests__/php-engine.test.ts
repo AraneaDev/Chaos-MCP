@@ -227,6 +227,11 @@ describe('parseInfectionJsonLog', () => {
     expect(r.survived).toBe(1);
     expect(r.totalMutants).toBe(5);
     expect(r.mutationScore).toBe('80.00%');
+    // Infection is driven per-file; the report says so structurally rather than
+    // letting consumers read it off the absence of a scope note — which a
+    // diffBase run acquires (handler.ts) and which the transitional
+    // `scopeKind === undefined && !scopeNote` fallback then misreads as scoping.
+    expect(r.scopeKind).toBe('whole-file');
     expect(r.vulnerabilities).toHaveLength(1);
     expect(r.vulnerabilities[0]).toMatchObject({ line: 12, mutator: 'GreaterThan' });
     expect(r.vulnerabilities[0].mutated).toContain('>=');

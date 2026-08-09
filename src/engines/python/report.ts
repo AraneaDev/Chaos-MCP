@@ -191,6 +191,11 @@ export function parseCosmicRayDump(
       survived,
       mutationScore: formatMutationScore(killed, totalMutants),
       vulnerabilities,
+      // cosmic-ray mutates whole modules — `supportsLineScope: false` in
+      // engines/registry.ts — so this report always enumerated the whole file.
+      // See the same field in engines/rust/report.ts for why the absence of a
+      // scope note is NOT a usable proxy for it.
+      scopeKind: 'whole-file' as const,
       incompetent,
     },
     completed,

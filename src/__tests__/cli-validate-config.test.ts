@@ -189,6 +189,38 @@ describe('CLI --validate-config flag', () => {
     expect(stderr).toContain('Config error:');
   });
 
+  it('warns and exits 0 for a mutatorAllowlist, then exits 2 with --strict (Task 14 / M1)', async () => {
+    // mutatorAllowlist is accepted by the parser and stored on StrykerConfig,
+    // but buildRunOptions deliberately never sources it (StrykerJS v9 cannot
+    // express an allowlist), so it silently does nothing. --validate-config
+    // must say so instead of reporting a clean config.
+    const allowlistConfigPath = join(tmpdir(), `chaos-mcp-allowlist-${randomUUID()}.json`);
+    writeFileSync(
+      allowlistConfigPath,
+      JSON.stringify({ stryker: { mutatorAllowlist: ['ConditionalExpression'] } }),
+    );
+    try {
+      const plain = await spawnValidate(['--validate-config', '--config', allowlistConfigPath]);
+      expect(plain.code).toBe(0);
+      expect(plain.stderr).toContain('stryker.mutatorAllowlist');
+      expect(plain.stderr).toContain('NOT SUPPORTED');
+
+      const strict = await spawnValidate([
+        '--validate-config',
+        '--strict',
+        '--config',
+        allowlistConfigPath,
+      ]);
+      expect(strict.code).toBe(2);
+    } finally {
+      try {
+        unlinkSync(allowlistConfigPath);
+      } catch {
+        /* best-effort */
+      }
+    }
+  });
+
   it('exits 0 when --config has no value (falls back to the default path)', async () => {
     // When --config is the last argument, the value is undefined and
     // loadConfig/validateConfig use the default path (cwd/chaos-mcp.config.json).

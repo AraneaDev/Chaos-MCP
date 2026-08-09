@@ -1,32 +1,56 @@
 /**
- * Choosing the Python interpreter and the test command cosmic-ray shells.
+ * Choosing the Python interpreter and the test command cosmic-ray runs.
  *
  * Both are security-relevant: the interpreter name and the repo-supplied runner
- * end up inside a shell command executed once per mutant, so the validation
+ * end up in the string cosmic-ray executes once per mutant, so the validation
  * here is the gate that keeps a config-file string from becoming arbitrary
  * execution.
+ *
+ * HOW cosmic-ray runs it (verified against the pinned 8.4.6,
+ * containers/python/requirements.in): `run_tests` calls
+ * `subprocess.run(shlex.split(command), check=True, …)` — argv, NOT a shell. So
+ * a metacharacter is not interpreted, but the string IS word-split and the
+ * first token IS executed. `runner = "rm -rf /"` in a project's pyproject.toml
+ * would run; `runner = "x; curl … | sh"` would not. The gate below is therefore
+ * about "cosmic-ray executes this as a command", not about shell escaping —
+ * and the quoting in `resolveTestCommand` is about surviving `shlex.split`,
+ * not about neutralising a shell.
  */
 import { spawnSync } from 'node:child_process';
 import type { RunOptions } from '../base.js';
+import { quoteCommandArg } from '../../utils/shell-quote.js';
 
 /**
  * A bare executable name — letters, digits, and the few punctuation characters
- * that appear in real binary names. Deliberately excludes whitespace and every
- * shell metacharacter (`;`, `|`, `&`, `$`, backticks, redirects, parentheses),
- * so a value matching this can only ever name a program to run: it cannot carry
- * arguments, chain commands, or substitute a subshell.
+ * that appear in real binary names. Deliberately excludes whitespace, so a
+ * value matching this can only ever be ONE argv token — `shlex.split` cannot
+ * carve it into a token plus arguments. It also excludes the characters a
+ * shell would treat specially (`;`, `|`, `&`, `$`, backticks, redirects,
+ * parentheses); cosmic-ray never invokes a shell (see the module docblock
+ * above), so excluding them is belt-and-suspenders, not the load-bearing
+ * protection — whitespace exclusion is.
  */
 const BARE_EXECUTABLE_RE = /^[A-Za-z0-9._+-]+$/;
 
 /**
  * An absolute path to an interpreter, POSIX or Windows. Built from the same
  * character class as {@link BARE_EXECUTABLE_RE} plus separators, so it inherits
- * the "no whitespace, no shell metacharacter" property: `/opt/venv/bin/python3.12`
- * and `C:\Python312\python.exe` pass; `/usr/bin/python; rm -rf /` does not.
+ * the "single argv token, no shell metacharacter" property: `/opt/venv/bin/python3.12`
+ * and `C:\Python312\python.exe` pass; `/usr/bin/python; rm -rf /` does not — the
+ * embedded space alone splits it into extra argv tokens once cosmic-ray runs
+ * `shlex.split` on it.
+ *
+ * "One argv token" is not the same as "one INTACT argv token": `shlex.split`
+ * is POSIX, so it eats the backslashes out of the Windows form. That is why
+ * `resolveTestCommand` passes the accepted value through `quoteCommandArg`
+ * rather than interpolating it bare.
  */
 const ABSOLUTE_INTERPRETER_RE = /^(?:[A-Za-z]:)?[\\/](?:[A-Za-z0-9._+-]+[\\/])*[A-Za-z0-9._+-]+$/;
 
-/** Thrown when `CHAOS_MCP_PYTHON` names something that is not safe to shell. */
+/**
+ * Thrown when `CHAOS_MCP_PYTHON` names something that is not safe to use as
+ * the first token of cosmic-ray's test command.
+ */
 export class PythonInterpreterError extends Error {
   constructor(message: string) {
     super(message);
@@ -63,8 +87,12 @@ const PY3_PROBE_ARGS = ['-c', 'import sys; sys.exit(0 if sys.version_info[0] == 
  * The override is VALIDATED rather than trusted. Its doc comment used to call it
  * "deterministic, used by tests", but nothing enforced that: the value is
  * string-concatenated into `${interpreter} -m pytest -x -q` and written into the
- * cosmic-ray config as `test-command`, which cosmic-ray executes THROUGH A SHELL
- * once per mutant. `CHAOS_MCP_PYTHON='python3; curl … | sh #'` therefore ran.
+ * cosmic-ray config as `test-command`, which cosmic-ray word-splits with
+ * `shlex.split` and runs as argv — no shell — once per mutant (see the module
+ * docblock above). The override becomes the FIRST TOKEN of that argv, so
+ * `CHAOS_MCP_PYTHON='rm -rf /'` would run `rm` with `-rf` and `/` as arguments;
+ * a shell metacharacter in the value would not be interpreted, but whitespace
+ * still splits the string and hands control to whatever the first word names.
  * The elaborate {@link isRepoTestCommandAllowed} gate guarded the RUNNER half of
  * that string and left the INTERPRETER half wide open; this closes it with the
  * same machinery.
@@ -78,10 +106,10 @@ export function probePythonInterpreter(): string | undefined {
     if (!BARE_EXECUTABLE_RE.test(override) && !ABSOLUTE_INTERPRETER_RE.test(override)) {
       throw new PythonInterpreterError(
         `Refusing to use CHAOS_MCP_PYTHON="${override}" as the Python interpreter. ` +
-          `It is concatenated into cosmic-ray's \`test-command\`, which is executed through a ` +
-          `shell once per mutant, so only a bare executable name ("python3", "python3.12") or an ` +
-          `absolute path with no whitespace or shell metacharacters ("/opt/venv/bin/python3.12") ` +
-          `is accepted. Point it at the interpreter itself, not at a command line.`,
+          `It becomes the first token of cosmic-ray's \`test-command\`, which cosmic-ray executes ` +
+          `once per mutant, so only a bare executable name ("python3", "python3.12") or an ` +
+          `absolute path with no whitespace ("/opt/venv/bin/python3.12") is accepted. ` +
+          `Point it at the interpreter itself, not at a command line.`,
       );
     }
     return override;
@@ -119,20 +147,21 @@ export function describeInterpreter(interpreter: string): string {
 }
 
 /**
- * Whether a test-runner string sourced from the AUDITED PROJECT may be used as
- * a shell command verbatim.
+ * Whether a test-runner string sourced from the AUDITED PROJECT may be used
+ * verbatim as cosmic-ray's `test-command`.
  *
- * cosmic-ray executes `test-command` through a shell once per mutant, and one
- * source of that string is the audited repository's own
+ * cosmic-ray word-splits `test-command` with `shlex.split` and runs it as argv
+ * — no shell — once per mutant (see the module docblock above), and one source
+ * of that string is the audited repository's own
  * `pyproject.toml [tool.mutmut] runner` key — content Chaos-MCP does not
  * control. Mutation testing inherently runs the project's test suite, so
- * naming a test binary is in scope; accepting an arbitrary shell line from repo
- * content is not, and it is the same hazard `prebuildCommand` is gated behind
- * `allowPrebuild` for.
+ * naming a test binary is in scope; letting repo content choose an arbitrary
+ * FIRST TOKEN to execute, with arbitrary further words as its arguments, is
+ * not — the same hazard `prebuildCommand` is gated behind `allowPrebuild` for.
  *
  * A bare executable name is therefore accepted (the shape the mutmut key is
  * meant to hold — `nose2`, `ward`, `green`); anything carrying arguments or
- * shell syntax requires an explicit operator opt-in, via the
+ * additional words requires an explicit operator opt-in, via the
  * `cosmicray.testRunner` config key (which is trusted, being the operator's own
  * file) or `CHAOS_MCP_ALLOW_REPO_TEST_COMMAND=1`.
  */
@@ -143,7 +172,7 @@ export function isRepoTestCommandAllowed(runner: string): boolean {
 }
 
 /**
- * Resolve the shell test-command cosmic-ray runs per mutant.
+ * Resolve the test-command cosmic-ray runs per mutant.
  *
  * Exactly three inputs are treated as "not a project-declared command": absent,
  * the sentinel `'pytest'`, and the sentinel `'unittest'`. Those are the values
@@ -173,11 +202,23 @@ export function isRepoTestCommandAllowed(runner: string): boolean {
  */
 export function resolveTestCommand(interpreter: string, options?: RunOptions): string {
   const runner = options?.testRunner;
+  // Quote the interpreter for the same reason the selection entries below are
+  // quoted, but against a different `shlex` behaviour. `shlex.split` runs in
+  // POSIX mode, where an unquoted backslash is the ESCAPE character and is
+  // consumed: `C:\Python312\python.exe` — a value
+  // {@link ABSOLUTE_INTERPRETER_RE} deliberately accepts — arrives at
+  // `subprocess.run` as `C:Python312python.exe`, which does not exist, so the
+  // command cannot start and every mutant is recorded incompetent. The regex
+  // guarantees ONE argv token, which is what stops an injected second token;
+  // it says nothing about the token surviving intact. `quoteCommandArg`
+  // returns a POSIX path verbatim (its safe class covers `/`, letters, digits,
+  // `._-`), so this only changes the string for the Windows form.
+  const exe = quoteCommandArg(interpreter);
   let base: string;
   if (runner === 'unittest') {
-    base = `${interpreter} -m unittest`;
+    base = `${exe} -m unittest`;
   } else if (!runner || runner === 'pytest') {
-    base = `${interpreter} -m pytest -x -q`;
+    base = `${exe} -m pytest -x -q`;
   } else {
     // A custom runner string is used verbatim as the command — after the gate.
     // `testRunnerTrusted` marks a runner that came from the operator's own
@@ -188,8 +229,8 @@ export function resolveTestCommand(interpreter: string, options?: RunOptions): s
     if (options?.testRunnerTrusted !== true && !isRepoTestCommandAllowed(runner)) {
       throw new Error(
         `Refusing to run the test command "${runner}" declared by the audited project ` +
-          `(pyproject.toml [tool.mutmut] runner). cosmic-ray executes it through a shell once per ` +
-          `mutant, and only a bare executable name is accepted from project files. ` +
+          `(pyproject.toml [tool.mutmut] runner). cosmic-ray executes it once per mutant, and only ` +
+          `a bare executable name is accepted from project files. ` +
           `Set "cosmicray": { "testRunner": "…" } in your chaos-mcp.config.json to run it ` +
           `deliberately, or set CHAOS_MCP_ALLOW_REPO_TEST_COMMAND=1 to trust project-declared ` +
           `commands in this workspace.`,
@@ -198,14 +239,21 @@ export function resolveTestCommand(interpreter: string, options?: RunOptions): s
     base = runner;
   }
 
+  // Quote each entry individually. cosmic-ray splits `test-command` with
+  // `shlex.split` (8.4.6, testing.py:46), so an unquoted path containing
+  // whitespace becomes two argv entries — pytest then gets two paths that do
+  // not exist, exits 4, and `cosmic-ray baseline` reports the project's test
+  // suite as broken. A path containing a quote character is worse: shlex.split
+  // raises, cosmic-ray records `incompetent` for every mutant, and the
+  // degenerate-run guard blames the Python interpreter.
+  //
+  // These strings are the ONE contributor to this command that is not otherwise
+  // validated: when the operator has not configured `cosmicray.testSelection`,
+  // `findPythonTestSelection` (core/test-file.ts) fills it from paths it found
+  // by walking the AUDITED repository's tests/ tree.
   const selection = options?.pythonTestSelection;
-  if (selection && selection.length > 0) base += ` ${selection.join(' ')}`;
+  if (selection && selection.length > 0) {
+    base += ` ${selection.map(quoteCommandArg).join(' ')}`;
+  }
   return base;
-}
-
-/** Reset the cached interpreter probe. Exported for tests only. */
-export function _resetInterpreterCache(): void {
-  // No-op kept for source-level compatibility with existing tests; the cache
-  // now lives on the engine instance (see PythonEngine.constructor) and is
-  // reset by constructing a fresh engine. (Audit A5.)
 }

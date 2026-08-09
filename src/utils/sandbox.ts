@@ -1,5 +1,5 @@
 import { cp, readdir } from 'fs/promises';
-import { mkdtempSync, symlinkSync, rmSync, existsSync, statSync, realpathSync } from 'fs';
+import { mkdtempSync, rmSync, existsSync, statSync, realpathSync } from 'fs';
 import { join, resolve, sep } from 'path';
 import { tmpdir } from 'os';
 import { randomUUID } from 'crypto';
@@ -16,6 +16,8 @@ import {
   SYMLINK_DIRS,
   type CopyPolicy,
 } from './sandbox/copy-policy.js';
+import { linkDependencyEntries, safeSymlink } from './sandbox/dependency-link.js';
+import type { DependencyMode } from './config/types.js';
 // Exactly ONE specifier for the registry, here and in src/index.ts: its
 // ACTIVE_SANDBOXES Set is module-level state, and a second resolvable path
 // would give the signal handlers a different Set than the one sandboxes
@@ -57,6 +59,11 @@ export interface SandboxContext {
  */
 export interface CreateSandboxOptions {
   signal?: AbortSignal;
+  /**
+   * Dependency-directory strategy; defaults to `'link-entries'`. See
+   * `SandboxConfig.dependencies` in utils/config/types.ts for the trade-offs.
+   */
+  dependencies?: DependencyMode;
 }
 
 /** Standard-shaped rejection for an aborted createSandbox. */
@@ -112,40 +119,6 @@ export function assertTargetInsideSandbox(
 const MAX_WORKSPACE_SIZE_BYTES = 200 * 1024 * 1024;
 
 /**
- * Check whether the current platform is Windows.
- */
-function isWindows(): boolean {
-  return sep === '\\';
-}
-
-/**
- * Create a symlink (or junction on Windows) from `target` to `path`.
- *
- * On Windows, regular symlinks require Administrator privileges. Junctions
- * do not, and work for directories. We try 'dir' first, then fall back to
- * 'junction' on Windows if symlinkSync throws EPERM.
- */
-function safeSymlink(target: string, path: string): void {
-  try {
-    symlinkSync(target, path, 'dir');
-  } catch (error: unknown) {
-    // On Windows: EPERM means regular symlinks need Administrator privileges.
-    // Retry with junction (directory hard-link) which doesn't require admin.
-    // On non-Windows: EPERM is a genuine filesystem error (e.g. NFS root_squash)
-    // — rethrow it directly; junction fallback does not exist on Linux/macOS.
-    if (isWindows()) {
-      try {
-        symlinkSync(target, path, 'junction');
-        return;
-      } catch {
-        // Junction also failed — rethrow original error
-      }
-    }
-    throw error;
-  }
-}
-
-/**
  * How many directories {@link estimateWorkspaceSize} may visit between forced
  * event-loop yields.
  *
@@ -173,6 +146,31 @@ function fileSize(path: string): number {
 }
 
 /**
+ * Recent workspace-size answers, keyed by absolute workspace root.
+ *
+ * The walk `statSync`s every file in the tree, and each of those is a blocking
+ * syscall on the MCP server's event loop. It runs once per PROVISION, so a
+ * 25-file `triage_test_coverage` sweep performed 25 full walks of the same tree
+ * before doing any mutation work — degrading exactly the two things the server
+ * promises to keep responsive during a sweep, progress notifications and
+ * cancellation.
+ *
+ * The result drives one advisory `warn()`, so a short TTL is ample: a workspace
+ * does not cross the 200MB threshold mid-sweep in a way anyone needs told twice.
+ *
+ * Keyed by root only, NOT by `ignorePatterns` — a caller who changes
+ * `ignorePatterns` within the TTL gets the previous answer. That is acceptable
+ * for an advisory warning.
+ */
+const SIZE_CACHE = new Map<string, { at: number; bytes: number; truncated: boolean }>();
+const SIZE_CACHE_TTL_MS = 60_000;
+
+/** Reset the workspace-size memo. @internal Exported for testing only. */
+export function _resetWorkspaceSizeCache(): void {
+  SIZE_CACHE.clear();
+}
+
+/**
  * Estimate the size of a directory tree by summing file sizes.
  * Used as a pre-copy guard to warn on very large workspaces.
  *
@@ -197,7 +195,7 @@ async function estimateWorkspaceSize(
   workspaceRoot: string,
   policy: CopyPolicy,
   signal?: AbortSignal,
-): Promise<number> {
+): Promise<{ bytes: number; truncated: boolean }> {
   try {
     const stack: string[] = [workspaceRoot];
     let total = 0;
@@ -221,11 +219,11 @@ async function estimateWorkspaceSize(
       // walks on the event loop and freezing the MCP server for that window.
       //
       // Stop early once we already know the workspace exceeds the warning
-      // threshold — the result is only used for a boolean
-      // `size > MAX_WORKSPACE_SIZE_BYTES` warning, so there is nothing to gain
-      // by continuing to walk past the cap.
+      // threshold: the result only drives a boolean, and continuing would buy
+      // a number we deliberately do not report (the partial total is pinned
+      // to the threshold and would understate a very large tree).
       if (signal?.aborted) throw abortError();
-      if (total > MAX_WORKSPACE_SIZE_BYTES) break;
+      if (total > MAX_WORKSPACE_SIZE_BYTES) return { bytes: total, truncated: true };
       const current = stack.pop();
       if (current === undefined) break;
       if (++dirsSinceYield >= SIZE_WALK_YIELD_EVERY_DIRS) {
@@ -255,12 +253,12 @@ async function estimateWorkspaceSize(
       }
     }
 
-    return total;
+    return { bytes: total, truncated: false };
   } catch (err) {
     // Cancellation must escape — the enclosing best-effort catch only exists to
     // swallow transient fs errors during the size estimate, not to mask an abort.
     if (err instanceof Error && err.name === 'AbortError') throw err;
-    return 0;
+    return { bytes: 0, truncated: false };
   }
 }
 
@@ -293,44 +291,108 @@ async function copyWorkspaceTree(
 }
 
 /**
- * Step 2: symlink heavyweight directories into the sandbox.
+ * Step 2: materialise heavyweight directories in the sandbox.
  *
- * (`symlinkDirs` excludes vendor for Composer PHP audits — that dir was
- * copied in Step 1 instead, so it is intentionally not symlinked here.)
+ * `mode` selects the materialiser:
+ * - `'link-entries'` (default) and `'copy'` (nothing left to link — see the
+ *   `symlinkDirs` derivation in {@link createSandbox}) use
+ *   `linkDependencyEntries`: the sandbox owns the directory and each host entry
+ *   is symlinked INSIDE it (see `./sandbox/dependency-link.ts`), so a tool that
+ *   writes a new path under `node_modules/` writes into the sandbox rather than
+ *   into the user's tree.
+ * - `'share'` uses `safeSymlink` — the pre-1.8 whole-directory symlink — for
+ *   anyone who depends on that behaviour and accepts that a write under it
+ *   reaches the real workspace.
  *
- * A destination that ALREADY EXISTS was materialised by Step 1 and must be
- * left alone. That happens when the audited file lives inside one of these
- * dirs (e.g. `vendor/my-lib/index.ts` in a repo that vendors first-party
- * code): the filter's force-include of the target's ancestors wins over the
- * symlink-dir check, so `cp` copies the whole tree and the dir is never
- * recorded in `skippedHeavyDirs`. Symlinking over it threw a raw EEXIST
- * (`safeSymlink` only retries on Windows), failing provisioning outright.
- * Skipping is correct AND required: the real copy already makes the sandbox
- * complete, and a symlink here would point the target back at the live
- * workspace — which Step 4's containment assertion rejects anyway.
+ * (`symlinkDirs` excludes vendor for Composer PHP audits — that dir was copied
+ * in Step 1 instead, so it is intentionally not linked here.)
+ *
+ * A destination that ALREADY EXISTS was materialised by Step 1 and must be left
+ * alone. That happens when the audited file lives inside one of these dirs (e.g.
+ * `vendor/my-lib/index.ts` in a repo that vendors first-party code): the
+ * filter's force-include of the target's ancestors wins over the symlink-dir
+ * check, so `cp` copies the whole tree and the dir is never recorded in
+ * `skippedHeavyDirs`. `linkDependencyEntries` skips an existing destination per
+ * entry (so a partially-materialised directory is completed rather than
+ * clobbered); `safeSymlink` cannot target an existing path at all, so `'share'`
+ * checks `existsSync(dst)` itself before calling it.
+ *
+ * `excludes` is the caller's `ignorePatterns`, normalised (see
+ * `copyPolicy.normalisedExcludes`). A root dir excluded here is still removed
+ * from `skippedHeavyDirs` above the exclusion check, so it isn't picked up
+ * again by the nested-occurrence loop below; a nested dir is skipped when any
+ * path segment relative to the workspace root matches an exclusion.
  */
+/**
+ * Report an `ignorePatterns` entry that has suppressed a dependency directory.
+ *
+ * Silent is the wrong default here. Before entry-level linking, listing
+ * `node_modules` in `ignorePatterns` only excluded it from the COPY —
+ * `linkHeavyDirs` symlinked it back in regardless, so the entry was a harmless
+ * no-op and a working sandbox came out the other end. It now suppresses the
+ * link too, and `createSandbox` still resolves normally: the first thing the
+ * user sees is the engine's own "cannot find module", reported as a finding
+ * about the audited code. That is the same diagnosis-corrupting failure
+ * `linkDependencyEntries` (sandbox/dependency-link.ts) added its two `warn()`
+ * calls to prevent — one call frame away, and it must not be loud there and
+ * silent here.
+ *
+ * Only fires for a directory that actually EXISTS on the host, so a workspace
+ * that simply has no `vendor/` produces no noise.
+ */
+function warnDependencyExcluded(hostDir: string, pattern: string): void {
+  if (!existsSync(hostDir)) return;
+  warn(
+    `ignorePatterns entry "${pattern}" excludes the dependency directory "${hostDir}", so it is ` +
+      `neither copied into the sandbox nor linked and the sandbox has no dependencies there. ` +
+      `Excluding a dependency directory used to skip only the copy while the directory was linked ` +
+      `back in anyway; it now suppresses both. Drop the pattern (or use sandbox.dependencies to ` +
+      `choose how dependencies are provisioned) — a failure the engine reports next is a ` +
+      `provisioning problem, not a bug in the audited code.`,
+  );
+}
+
 function linkHeavyDirs(
   absoluteWorkspace: string,
   sandboxDir: string,
   symlinkDirs: readonly string[],
   skippedHeavyDirs: Set<string>,
+  mode: DependencyMode,
+  excludes: ReadonlySet<string>,
+  dependencyDirs: readonly string[] = symlinkDirs,
 ): void {
+  const materialise = mode === 'share' ? safeSymlink : linkDependencyEntries;
+  // Warn from the FULL dependency list, not from the link set. Under
+  // `dependencies: 'copy'` the caller passes `symlinkDirs: []` — the dirs are
+  // meant to be copied with the rest of the tree — so neither loop below would
+  // ever see `node_modules`, yet an `ignorePatterns` entry naming it still
+  // strips it from the copy and leaves the sandbox with no dependencies. That
+  // is the identical outcome the warning exists to report, and reporting it
+  // under two modes but not the third would be the same silence in a new place.
+  for (const dirName of dependencyDirs) {
+    if (excludes.has(dirName)) warnDependencyExcluded(join(absoluteWorkspace, dirName), dirName);
+  }
   for (const dirName of symlinkDirs) {
     const src = join(absoluteWorkspace, dirName);
     const dst = join(sandboxDir, dirName);
-    if (existsSync(src) && !existsSync(dst)) {
-      safeSymlink(src, dst);
-    }
     skippedHeavyDirs.delete(src); // handled above; do not link it twice
+    if (excludes.has(dirName)) continue; // already warned above
+    if (existsSync(src) && !(mode === 'share' && existsSync(dst))) materialise(src, dst);
   }
   // Nested occurrences (e.g. workers/typescript/node_modules). Their parent
   // directories were copied, so the link destination's parent already exists.
   for (const src of skippedHeavyDirs) {
     if (!src.startsWith(absoluteWorkspace + sep)) continue;
+    const rel = src.slice(absoluteWorkspace.length + 1);
+    const excluded = rel.split(sep).find((segment) => excludes.has(segment));
+    if (excluded !== undefined) {
+      warnDependencyExcluded(src, excluded);
+      continue;
+    }
     if (!existsSync(src)) continue;
-    const dst = join(sandboxDir, src.slice(absoluteWorkspace.length + 1));
-    if (existsSync(dst)) continue; // already materialised by the copy — see above
-    safeSymlink(src, dst);
+    const dst = join(sandboxDir, rel);
+    if (mode === 'share' && existsSync(dst)) continue;
+    materialise(src, dst);
   }
 }
 
@@ -417,9 +479,14 @@ export async function createSandbox(
   // cheap symlink. The invariant "excluded-from-copy ⇔ symlinked" is preserved
   // by deriving both the copy-filter exclusions and the symlink loop from this
   // single per-call list.
-  const symlinkDirs = isComposerPhpAudit(targetFile, absoluteWorkspace)
+  const mode: DependencyMode = options?.dependencies ?? 'link-entries';
+  const baseSymlinkDirs = isComposerPhpAudit(targetFile, absoluteWorkspace)
     ? SYMLINK_DIRS.filter((d) => d !== 'vendor')
     : SYMLINK_DIRS;
+  // 'copy' takes every dependency dir out of the symlink set, which is also the
+  // copy filter's exclusion set — so they are copied with the rest of the tree
+  // and Step 2 has nothing to link.
+  const symlinkDirs = mode === 'copy' ? [] : baseSymlinkDirs;
 
   // Absolute path of the audited file inside the workspace. The target and
   // every directory on the path to it must NEVER be excluded from the copy
@@ -451,20 +518,28 @@ export async function createSandbox(
   // must not match segments of the workspace root's own path). Its
   // `skippedHeavyDirs` is deliberately discarded — only the copy's set drives
   // the symlink step.
-  const size = await estimateWorkspaceSize(
-    absoluteWorkspace,
-    buildCopyPolicy({
-      absoluteTarget,
-      symlinkDirs,
-      userExcludes: ignorePatterns,
-      forceIncludeTarget: false,
-      matchAncestorSegments: false,
-    }),
-    options?.signal,
-  );
-  if (size > MAX_WORKSPACE_SIZE_BYTES) {
+  const cached = SIZE_CACHE.get(absoluteWorkspace);
+  const size =
+    cached !== undefined && Date.now() - cached.at < SIZE_CACHE_TTL_MS
+      ? cached
+      : {
+          at: Date.now(),
+          ...(await estimateWorkspaceSize(
+            absoluteWorkspace,
+            buildCopyPolicy({
+              absoluteTarget,
+              symlinkDirs,
+              userExcludes: ignorePatterns,
+              forceIncludeTarget: false,
+              matchAncestorSegments: false,
+            }),
+            options?.signal,
+          )),
+        };
+  SIZE_CACHE.set(absoluteWorkspace, size);
+  if (size.truncated || size.bytes > MAX_WORKSPACE_SIZE_BYTES) {
     warn(
-      `Workspace is ~${(size / 1024 / 1024).toFixed(0)}MB — sandbox copy may be slow. ` +
+      `Workspace exceeds ${MAX_WORKSPACE_SIZE_BYTES / 1024 / 1024}MB — sandbox copy may be slow. ` +
         'Consider using ignorePatterns to exclude large directories.',
     );
   }
@@ -502,7 +577,15 @@ export async function createSandbox(
     );
 
     // ── Step 2: Symlink heavyweight directories ──
-    linkHeavyDirs(absoluteWorkspace, sandboxDir, symlinkDirs, skippedHeavyDirs);
+    linkHeavyDirs(
+      absoluteWorkspace,
+      sandboxDir,
+      symlinkDirs,
+      skippedHeavyDirs,
+      mode,
+      copyPolicy.normalisedExcludes,
+      baseSymlinkDirs,
+    );
 
     if (options?.signal?.aborted) throw abortError();
 

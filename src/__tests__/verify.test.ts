@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
   parseBaseline,
-  baselineLines,
   computeVerifyDelta,
   evaluateVerifyGate,
   buildVerifyNote,
@@ -86,18 +85,6 @@ describe('parseBaseline', () => {
       survivors: [{ mutators: { M: 1 } }, { line: '9', mutators: { M: 1 } }],
     } as unknown as Parameters<typeof parseBaseline>[0];
     expect(parseBaseline(b)).toEqual([]);
-  });
-});
-
-describe('baselineLines', () => {
-  it('returns unique sorted line numbers', () => {
-    expect(
-      baselineLines([
-        { line: 88, mutator: 'A' },
-        { line: 42, mutator: 'B' },
-        { line: 42, mutator: 'C' },
-      ]),
-    ).toEqual([42, 88]);
   });
 });
 

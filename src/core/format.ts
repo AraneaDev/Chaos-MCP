@@ -408,6 +408,8 @@ export function formatResultAsText(
     driftedSuppressions?: number;
     /** Suppressions rejected because they carry no fingerprint (v1 data). */
     unverifiedSuppressions?: number;
+    /** Applied suppressions whose (line, mutator) matched no SURVIVING mutant this run. */
+    orphanedSuppressions?: number;
     /**
      * The gate verdict for this run, when the caller passed `minScore`. Must be
      * the same {@link GateResult} the payload carries — pass `evaluateGate`'s
@@ -460,7 +462,11 @@ export function formatResultAsText(
   // branch: a file can come back clean and still be carrying stale suppressions,
   // and that is exactly when the reader most needs to know the score was not
   // helped by them.
-  for (const n of suppressionDriftNotes(opts.driftedSuppressions, opts.unverifiedSuppressions)) {
+  for (const n of suppressionDriftNotes(
+    opts.driftedSuppressions,
+    opts.unverifiedSuppressions,
+    opts.orphanedSuppressions,
+  )) {
     lines.push(`Note: ${n}`);
   }
 
@@ -554,6 +560,17 @@ export interface ResultPayload {
    * at all — v1 entries, awaiting re-confirmation.
    */
   unverifiedSuppressions?: number;
+  /**
+   * Applied suppressions whose (line, mutator) matched no SURVIVING mutant this
+   * run — inert: nothing was filtered, so the score is exactly what it would
+   * have been without the entry. The mutant is now killed, its identity is
+   * gone, or a `mutatorDenylist` entry stopped it being generated; the result
+   * carries no killed-mutant identities, so the three cannot be distinguished
+   * (see `audit/apply-suppressions.ts`). Only
+   * counted for a whole-file, complete run (`isWholeFileRun` in
+   * `audit/suppression-io.ts`).
+   */
+  orphanedSuppressions?: number;
   gate?: GateResult;
   /** Mutants excluded from the score because the mutated code never scored (audit I3). */
   incompetent?: number;
@@ -573,6 +590,7 @@ export interface ResultPayloadOpts {
   suppressedCount?: number;
   driftedSuppressions?: number;
   unverifiedSuppressions?: number;
+  orphanedSuppressions?: number;
   gate?: GateResult;
 }
 
@@ -678,7 +696,14 @@ export function buildResultPayload(
   if (opts.unverifiedSuppressions && opts.unverifiedSuppressions > 0) {
     payload.unverifiedSuppressions = opts.unverifiedSuppressions;
   }
-  for (const n of suppressionDriftNotes(opts.driftedSuppressions, opts.unverifiedSuppressions)) {
+  if (opts.orphanedSuppressions && opts.orphanedSuppressions > 0) {
+    payload.orphanedSuppressions = opts.orphanedSuppressions;
+  }
+  for (const n of suppressionDriftNotes(
+    opts.driftedSuppressions,
+    opts.unverifiedSuppressions,
+    opts.orphanedSuppressions,
+  )) {
     payload.note += ` ${n}`;
   }
   if (opts.gate) payload.gate = opts.gate;
@@ -690,12 +715,4 @@ export function buildResultPayload(
     payload.note += ` ${result.incompetent} mutant(s) were excluded as incompetent (the mutated code failed before a real pass/fail, so they don't count toward the score).`;
   }
   return payload;
-}
-
-/**
- * Format a MutationResult as a compact JSON payload (single-line, deduplicated).
- * Used for the default `outputFormat: 'json'`.
- */
-export function formatResultAsJson(result: MutationResult, enrich?: EnrichContext): string {
-  return JSON.stringify(buildResultPayload(result, { enrich }));
 }
