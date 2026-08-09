@@ -1168,7 +1168,32 @@ describe("the repository's own suppressions file", () => {
   // reported by the audit itself and re-confirmed through the normal
   // suppression flow, and failing an unrelated PR's suite over it would only
   // teach people to delete the guard.
-  it('carries no unverified entries', () => {
+  /**
+   * Skipped under a mutation run.
+   *
+   * `repoRoot` is derived from this file's own location, so under StrykerJS it
+   * resolves to Stryker's sandbox — where the file being audited has been
+   * INSTRUMENTED. Its source lines are no longer the ones the corpus recorded
+   * (line 284 of a mutated `suppression.ts` reads `})());`), so this check
+   * measures Stryker's rewrite rather than the repository, and the audit dies in
+   * its dry run with "There were failed tests in the initial test run" — which
+   * reads like a broken suite rather than a check that cannot apply here.
+   *
+   * That made `src/utils/suppression.ts` unauditable: every attempt to measure
+   * the file failed before generating a single mutant.
+   *
+   * This is a corpus-hygiene guard for ordinary runs, not a behavioural test, so
+   * skipping it under Stryker costs no coverage of the code under test.
+   */
+  // Detected by PATH, not by env: Stryker sets no `STRYKER*` variable during the
+  // dry run (which is also why `tests/global-setup.ts` still rebuilds there), so
+  // an env probe misses exactly the run that breaks this check. Every Stryker
+  // sandbox lives under `.stryker-tmp/sandbox-*`, and `repoRoot` is derived from
+  // this file's own location — so the marker is in the path whenever the corpus
+  // being read is a sandbox copy rather than the repository.
+  const inStrykerSandbox = repoRoot.includes('.stryker-tmp');
+
+  it.skipIf(inStrykerSandbox)('carries no unverified entries', () => {
     let applied = 0;
     let unverified = 0;
     for (const [relFile, entries] of loadSuppressions(repoRoot)) {
@@ -1311,5 +1336,75 @@ describe('suppression storage — entry hygiene', () => {
     // junk is actually repaired away.
     await removeSuppressions(root, FILE, [{ line: 2, mutator: 'Added' }]);
     expect(rawEntries()[FILE]).toEqual([expect.objectContaining({ line: 2, mutator: 'Keep' })]);
+  });
+});
+
+describe('suppression storage — boundaries and schema', () => {
+  const FILE = 'src/edge.ts';
+  const SRC = ['export const a = 1;', 'if (a > 0) doThing();', 'export const last = 2;'];
+
+  beforeEach(() => {
+    mkdirSync(join(root, 'src'), { recursive: true });
+    writeFileSync(join(root, FILE), SRC.join('\n'));
+  });
+
+  it('stamps a suppression on the LAST line of the file', async () => {
+    // `line > lines.length` is the range check. At `>=` the final line of every
+    // file becomes unstampable — and an unstamped entry is never applied, so
+    // the guard on the last line of a file would silently stop working.
+    const res = await addSuppressions(root, FILE, [{ line: SRC.length, mutator: 'Cond' }]);
+
+    expect(res.stamped).toBe(1);
+    expect(res.unstamped).toBe(0);
+    expect(loadSuppressions(root).get(FILE)?.[0].fingerprint).toBe(
+      fingerprintOfLine(SRC[SRC.length - 1]),
+    );
+  });
+
+  it('rejects a line one past the end', async () => {
+    const res = await addSuppressions(root, FILE, [{ line: SRC.length + 1, mutator: 'Cond' }]);
+
+    expect(res.stamped).toBe(0);
+    expect(res.unstamped).toBe(1);
+  });
+
+  it('repairs a truthy non-object element on the remove path', async () => {
+    // The filter is `e && typeof e === 'object'`. A null is caught by the first
+    // half; a STRING is truthy and only the typeof half rejects it — without
+    // which `keyOf(e.line, e.mutator)` keys it as "undefined undefined", never
+    // matches the drop set, and the junk is written back forever.
+    writeRawSuppressions(
+      root,
+      JSON.stringify({
+        version: 2,
+        entries: {
+          [FILE]: [
+            'junk',
+            { line: 2, mutator: 'Drop', addedAt: 1 },
+            { line: 3, mutator: 'Keep', addedAt: 1 },
+          ],
+        },
+      }),
+    );
+
+    await removeSuppressions(root, FILE, [{ line: 2, mutator: 'Drop' }]);
+
+    const raw = JSON.parse(readFileSync(supFile(root), 'utf8')) as {
+      entries: Record<string, { mutator: string }[]>;
+    };
+    expect(raw.entries[FILE]).toEqual([expect.objectContaining({ mutator: 'Keep' })]);
+  });
+
+  it('promotes a document that carries no version at all to v2', async () => {
+    // `raw.version ?? 1` supplies the floor that `Math.max(version, 2)` needs.
+    // Without it the version is undefined, `Math.max(undefined, 2)` is NaN, and
+    // the document is written with `"version": null` — a file no reader can
+    // grade, produced by an ordinary write.
+    writeRawSuppressions(root, JSON.stringify({ entries: {} }));
+
+    await addSuppressions(root, FILE, [{ line: 2, mutator: 'Cond' }]);
+
+    const raw = JSON.parse(readFileSync(supFile(root), 'utf8')) as { version: unknown };
+    expect(raw.version).toBe(2);
   });
 });
