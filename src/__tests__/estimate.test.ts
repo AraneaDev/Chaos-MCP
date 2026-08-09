@@ -755,6 +755,35 @@ describe('estimateAudit withTiming', () => {
     expect(result.recommendation).not.toContain('cannot fit this budget');
   });
 
+  it('does not grade the budget on a baseline failure that was not a timeout', async () => {
+    // The conjunction is what ties this branch to a TIMEOUT. A crash or a
+    // non-zero exit says nothing about whether the suite fits the budget, so
+    // reporting `budgetMs` for one publishes a measurement that never happened.
+    // This is the case where the operands DISAGREE — the error is an
+    // ExecFailureError but its code is not TIMEOUT — which is the only input
+    // that separates `&&` from `||` or from either half forced true.
+    mockRunShell.mockRejectedValue(
+      new ExecFailureError(
+        { stdout: '', stderr: 'boom', exit: 1, signal: null },
+        'npx vitest exited 1',
+      ),
+    );
+
+    const result = await estimateAudit({
+      absFile: '/ws/src/a.ts',
+      relFile: 'src/a.ts',
+      projectType: 'typescript',
+      workDir: '/sandbox',
+      withTiming: true,
+      env: baseEnv(),
+      timeoutMs: 30_000,
+    });
+
+    expect(result.budgetMs).toBeUndefined();
+    expect(result.fitsBudget).toBeUndefined();
+    expect(result.note).toContain('timing unavailable');
+  });
+
   it('falls back to "timing unavailable" for a baseline timeout when no budget was given', async () => {
     // budgetMs === undefined means there is nothing to grade against: the
     // TIMEOUT branch must fall through to the pre-existing note rather than
