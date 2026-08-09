@@ -715,6 +715,15 @@
         "reason": "Same as the ObjectLiteral on this line — `added` is reassigned before any read, so a seeded `rejected` array never reaches `counts.rejected`. (The initialiser at line 125 IS read, and is covered by a test.)",
         "fingerprint": "f1dd3ee255d7"
       }
+    ],
+    "src/audit/audit-output.ts": [
+      {
+        "line": 48,
+        "mutator": "BlockStatement",
+        "addedAt": 1786307635854,
+        "reason": "`sourceLines` is declared `let sourceLines: string[] | undefined` and assigned by the single `readFileSync(...).split(...)` statement inside the try. A throw there leaves it undefined already, so the catch's `sourceLines = undefined` is a defensive re-assignment that cannot change any state. Fifth instance of this shape (triage/audit-one.ts:273/:287, core/estimate.ts:110, core/test-file.ts:124).",
+        "fingerprint": "95bc545467a5"
+      }
     ]
   }
 }
