@@ -292,23 +292,27 @@ describe('counter guards refuse a nonsensical negative', () => {
     expect(payload.note).not.toContain('suppressed and excluded');
   });
 
-  it.each([['driftedSuppressions'], ['unverifiedSuppressions'], ['orphanedSuppressions']] as const)(
-    'does not report a negative %s',
-    (key) => {
-      const payload = buildResultPayload(result({ vulnerabilities: [vuln()] }), { [key]: -1 });
+  it.each([
+    ['driftedSuppressions'],
+    ['unverifiedSuppressions'],
+    ['orphanedSuppressions'],
+    ['rejectedSuppressions'],
+  ] as const)('does not report a negative %s', (key) => {
+    const payload = buildResultPayload(result({ vulnerabilities: [vuln()] }), { [key]: -1 });
 
-      expect(Object.keys(payload)).not.toContain(key);
-    },
-  );
+    expect(Object.keys(payload)).not.toContain(key);
+  });
 
-  it.each([['driftedSuppressions'], ['unverifiedSuppressions'], ['orphanedSuppressions']] as const)(
-    'DOES report a positive %s',
-    (key) => {
-      const payload = buildResultPayload(result({ vulnerabilities: [vuln()] }), { [key]: 2 });
+  it.each([
+    ['driftedSuppressions'],
+    ['unverifiedSuppressions'],
+    ['orphanedSuppressions'],
+    ['rejectedSuppressions'],
+  ] as const)('DOES report a positive %s', (key) => {
+    const payload = buildResultPayload(result({ vulnerabilities: [vuln()] }), { [key]: 2 });
 
-      expect(payload[key]).toBe(2);
-    },
-  );
+    expect(payload[key]).toBe(2);
+  });
 });
 
 describe('the incomplete-list count sums every hiding mechanism', () => {

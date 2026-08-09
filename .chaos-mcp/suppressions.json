@@ -262,6 +262,13 @@
         "addedAt": 1786299813924,
         "reason": "When the keys are equal, forcing the branch open removes the key and the block below either re-adds it (`kept.length > 0`) or removes it again in the else — the same document in both cases.",
         "fingerprint": "5e51d86e3262"
+      },
+      {
+        "line": 434,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786302799988,
+        "reason": "The try block calls only `readFile`, which returns early for ENOENT and wraps every other failure in `new SuppressionFileError(dest, error)` before throwing. No other error type can reach this catch, so the rethrow is a guard against a future change to readFile rather than a reachable branch — forcing it false is unobservable today.",
+        "fingerprint": "b2239c1db266"
       }
     ],
     "src/core/estimate.ts": [
@@ -479,38 +486,45 @@
         "fingerprint": "883b35eed9eb"
       },
       {
-        "line": 685,
+        "line": 689,
         "mutator": "EqualityOperator",
-        "addedAt": 1786284640926,
-        "reason": "`suppressedCount >= 0` differs from `> 0` only at 0 and below; 0 is short-circuited by the preceding `&&` and a negative fails both — covered by the negative-counter test.",
+        "addedAt": 1786305227827,
+        "reason": "`suppressedCount >= 0` differs from `> 0` only at 0 and below; 0 is short-circuited by the preceding `&&` and a negative fails both — covered by the negative-counter test. Re-filed from line 685 after the rejectedSuppressions block shifted this code down.",
         "fingerprint": "f02424d0f034"
       },
       {
-        "line": 693,
+        "line": 697,
         "mutator": "EqualityOperator",
-        "addedAt": 1786284640926,
-        "reason": "`driftedSuppressions >= 0` differs from `> 0` only at 0 and below; 0 is short-circuited by the preceding `&&` and a negative fails both.",
+        "addedAt": 1786305227827,
+        "reason": "`driftedSuppressions >= 0` differs from `> 0` only at 0 and below; 0 is short-circuited by the preceding `&&` and a negative fails both. Re-filed from line 693.",
         "fingerprint": "cedb40914d3d"
       },
       {
-        "line": 696,
+        "line": 700,
         "mutator": "EqualityOperator",
-        "addedAt": 1786284640926,
-        "reason": "`unverifiedSuppressions >= 0` differs from `> 0` only at 0 and below; 0 is short-circuited by the preceding `&&` and a negative fails both.",
+        "addedAt": 1786305227827,
+        "reason": "`unverifiedSuppressions >= 0` differs from `> 0` only at 0 and below; 0 is short-circuited by the preceding `&&` and a negative fails both. Re-filed from line 696.",
         "fingerprint": "12408c6ea073"
       },
       {
-        "line": 699,
+        "line": 703,
         "mutator": "EqualityOperator",
-        "addedAt": 1786284640926,
-        "reason": "`orphanedSuppressions >= 0` differs from `> 0` only at 0 and below; 0 is short-circuited by the preceding `&&` and a negative fails both.",
+        "addedAt": 1786305227827,
+        "reason": "`orphanedSuppressions >= 0` differs from `> 0` only at 0 and below; 0 is short-circuited by the preceding `&&` and a negative fails both. Re-filed from line 699.",
         "fingerprint": "2f7a5719e855"
       },
       {
-        "line": 713,
+        "line": 709,
         "mutator": "EqualityOperator",
-        "addedAt": 1786284640926,
-        "reason": "`incompetent >= 0` differs from `> 0` only at 0 and below; 0 is short-circuited by the preceding `&&` and a negative fails both — covered by the negative-counter test.",
+        "addedAt": 1786305227827,
+        "reason": "`rejectedSuppressions >= 0` differs from `> 0` only at 0 and below; 0 is short-circuited by the preceding `&&` and a negative fails both — covered by the negative-counter test. The `&&`-to-`||` swap and the forced-true form on this line ARE killable and are left unsuppressed.",
+        "fingerprint": "7f1f2c16587c"
+      },
+      {
+        "line": 726,
+        "mutator": "EqualityOperator",
+        "addedAt": 1786305227827,
+        "reason": "`incompetent >= 0` differs from `> 0` only at 0 and below; 0 is short-circuited by the preceding `&&` and a negative fails both — covered by the negative-counter test. Re-filed from line 713.",
         "fingerprint": "77391e051022"
       }
     ],
