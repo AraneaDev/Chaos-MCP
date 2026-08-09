@@ -53,6 +53,17 @@ describe('estimateNeedsSandbox', () => {
     expect(estimateNeedsSandbox('python', false)).toBe(false);
     expect(estimateNeedsSandbox('php', false)).toBe(false);
   });
+
+  it('falls back to "no sandbox" for a project type the registry does not carry', () => {
+    // `projectType` reaches here from JSON-RPC arguments, so an unrecognised
+    // value is reachable input rather than a type error. Reading the engine
+    // descriptor without the optional link throws a TypeError instead of
+    // degrading — the same missing guard already found in core/enrich.ts and
+    // core/format.ts, on paths every audit runs.
+    expect(estimateNeedsSandbox('cobol' as never, false)).toBe(false);
+    // …and `withTiming` still wins, because timing always needs a sandbox.
+    expect(estimateNeedsSandbox('cobol' as never, true)).toBe(true);
+  });
 });
 
 describe('estimateAudit', () => {

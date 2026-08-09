@@ -12,13 +12,6 @@
     ],
     "src/core/baseline-timing.ts": [
       {
-        "line": 41,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1785439063960,
-        "reason": "Removing `return undefined` from the switch default leaves execution to fall out of the switch and off the end of the function, which returns undefined anyway.",
-        "fingerprint": "d10b36aa74a5"
-      },
-      {
         "line": 55,
         "mutator": "BlockStatement",
         "addedAt": 1785608862819,
@@ -156,22 +149,6 @@
         "fingerprint": "ab6ccff2b217"
       }
     ],
-    "src/engines/rust.ts": [
-      {
-        "line": 135,
-        "mutator": "MethodExpression",
-        "addedAt": 1785494668432,
-        "reason": "Blank-line filtering is redundant: the loop body immediately skips any line that does not start with CAUGHT/MISSED/UNCAUGHT/TIMEOUT.",
-        "fingerprint": "5233f2aa467d"
-      },
-      {
-        "line": 81,
-        "mutator": "Regex",
-        "addedAt": 1785494668432,
-        "reason": "The `$` anchor is redundant: the match runs against a single line already split on newlines, and `(.*)` is greedy to end-of-string regardless.",
-        "fingerprint": "56e772117f3e"
-      }
-    ],
     "src/utils/file-path.ts": [
       {
         "line": 82,
@@ -208,22 +185,6 @@
         "fingerprint": "a9bb27df9b2e"
       }
     ],
-    "src/utils/run-cache.ts": [
-      {
-        "line": 184,
-        "mutator": "BlockStatement",
-        "addedAt": 1786267580118,
-        "reason": "Emptying the catch lets execution fall off the end of the function, which returns undefined - exactly what the explicit return produces.",
-        "fingerprint": "a0e1e9a43db3"
-      },
-      {
-        "line": 169,
-        "mutator": "StringLiteral",
-        "addedAt": 1786267580118,
-        "reason": "Node falls back to utf8 for a string payload with an unrecognised encoding option, so writeFileSync produces byte-identical output (verified on this Node version).",
-        "fingerprint": "3501c26fb76a"
-      }
-    ],
     "src/utils/suppression.ts": [
       {
         "line": 385,
@@ -242,11 +203,11 @@
     ],
     "src/core/estimate.ts": [
       {
-        "line": 75,
-        "mutator": "StringLiteral",
-        "addedAt": 1786267580106,
-        "reason": "Reached only on a read failure, where the value feeds estimateHeuristic. Stryker's replacement text carries no countable construct, so the heuristic returns the same zero count as the empty sentinel.",
-        "fingerprint": "4906a1868d01"
+        "line": 110,
+        "mutator": "BlockStatement",
+        "addedAt": 1786292980666,
+        "reason": "`source` is declared `let source = ''` four lines above, so a readFileSync failure leaves it holding that initialiser already — the catch's `source = ''` is a defensive re-assignment that cannot change any state. Emptying the block is equivalent. Same shape as the catch blocks at triage/audit-one.ts:273 and :287.",
+        "fingerprint": "95bc545467a5"
       }
     ],
     "src/core/triage.ts": [
@@ -256,57 +217,6 @@
         "addedAt": 1786267580111,
         "reason": "Emptying the catch lets execution fall off the end and return undefined; the sole caller uses the result as an `if` condition, where undefined and false are indistinguishable.",
         "fingerprint": "2d92c34aa5a4"
-      }
-    ],
-    "src/engines/python.ts": [
-      {
-        "line": 93,
-        "mutator": "MethodExpression",
-        "addedAt": 1786267580113,
-        "reason": "JSON.parse tolerates surrounding whitespace, and a whitespace-only line still throws and is caught — so trimming first changes no outcome.",
-        "fingerprint": "a40edca2832f"
-      },
-      {
-        "line": 94,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1786267580113,
-        "reason": "Without the blank-line fast path, JSON.parse('') throws and the catch continues — the same skip, one exception later.",
-        "fingerprint": "d10b36aa74a5"
-      },
-      {
-        "line": 98,
-        "mutator": "BlockStatement",
-        "addedAt": 1786267580113,
-        "reason": "Emptying the catch leaves `parsed` undefined, and the very next line's Array.isArray check skips the line just the same.",
-        "fingerprint": "d10b36aa74a5"
-      },
-      {
-        "line": 270,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1786267580113,
-        "reason": "The probe it guards is deterministic for a fixed environment, so re-running it returns the identical interpreter; the cache is a cost optimisation only.",
-        "fingerprint": "320c444edac6"
-      },
-      {
-        "line": 271,
-        "mutator": "StringLiteral",
-        "addedAt": 1786267580113,
-        "reason": "Unreachable fallback: probePythonInterpreter always returns a string (ending in 'python3'), so the `??` right-hand side is never evaluated.",
-        "fingerprint": "d15c1e181746"
-      },
-      {
-        "line": 167,
-        "mutator": "ObjectLiteral",
-        "addedAt": 1786267580113,
-        "reason": "stdio only decides whether the probe's output is piped or discarded; the probe reads solely `error` and `status`, which are unaffected.",
-        "fingerprint": "78e9860ac08c"
-      },
-      {
-        "line": 167,
-        "mutator": "StringLiteral",
-        "addedAt": 1786267580113,
-        "reason": "stdio only selects whether the probe's streams are piped or discarded; the probe reads solely `error` and `status`, which are identical either way.",
-        "fingerprint": "78e9860ac08c"
       }
     ],
     "src/utils/execution.ts": [
