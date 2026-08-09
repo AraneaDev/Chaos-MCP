@@ -42,6 +42,7 @@
     "prepublishOnly": "npm run build && npm run check",
     "test": "vitest run",
     "test:self": "npm run build && node scripts/meta-test.js",
+    "suppressions:restamp": "npm run build && node scripts/restamp-suppressions.mjs",
     "audit:self": "npm run build && node scripts/audit-self.js",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   loadSuppressions,
   addSuppressions,
@@ -1052,5 +1053,36 @@ describe('suppression key separators', () => {
     );
     const entries = loadSuppressions(root).get(SRC);
     expect(entries?.map((e) => `${e.line} ${e.mutator}`)).toEqual(['2 A', '7 B']);
+  });
+});
+
+describe("the repository's own suppressions file", () => {
+  const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
+
+  // The file declared "version": 2 while all but two of its entries were
+  // v1-shaped, so every one of them was counted `unverified` and NONE was ever
+  // applied — 125 hand-written equivalence arguments sat dormant and nothing in
+  // the tool's output said so. `scripts/restamp-suppressions.mjs` re-pointed and
+  // stamped what git could prove; this keeps the corpus from silently going
+  // inert again.
+  //
+  // Deliberately NOT asserted here: `drifted`. An entry drifts the moment
+  // someone edits the line it guards, which is ordinary work — that state is
+  // reported by the audit itself and re-confirmed through the normal
+  // suppression flow, and failing an unrelated PR's suite over it would only
+  // teach people to delete the guard.
+  it('carries no unverified entries', () => {
+    let applied = 0;
+    let unverified = 0;
+    for (const [relFile, entries] of loadSuppressions(repoRoot)) {
+      const verdict = verifySuppressions(repoRoot, relFile, entries);
+      applied += verdict.applied.size;
+      unverified += verdict.unverified;
+    }
+    // A root that resolved wrong loads NOTHING, and "no entries" would satisfy
+    // the unverified assertion below vacuously — the same silence this guard
+    // exists to break. Prove the corpus was actually read first.
+    expect(applied).toBeGreaterThan(0);
+    expect(unverified).toBe(0);
   });
 });
