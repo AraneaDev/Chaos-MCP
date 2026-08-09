@@ -6,6 +6,7 @@ import {
   buildVerifyNote,
   formatVerifyResultAsJson,
   formatVerifyResultAsText,
+  verifyPayloadFields,
 } from '../core/verify.js';
 import type { MutationResult } from '../engines/base.js';
 
@@ -207,6 +208,44 @@ describe('computeVerifyDelta', () => {
     expect(delta.batchesCompleted).toBe(2);
     expect(delta.batchesPlanned).toBe(7);
     expect(delta.stoppedReason).toBe('time_budget_exhausted');
+  });
+
+  it('omits the provenance keys ENTIRELY when the engine reported none', () => {
+    // Four `if (x !== undefined)` guards, and the difference between honouring
+    // them and assigning unconditionally is `{}` versus `{ complete: undefined }`
+    // — invisible to `toBeUndefined()`, to `toEqual`, and to JSON (which drops
+    // undefined-valued keys). The key set is the only place it shows, and the
+    // delta is spread into a response, so a key that exists is a key a consumer
+    // can enumerate.
+    const delta = computeVerifyDelta(baseline, result([]));
+
+    expect(Object.keys(delta).sort()).toEqual([
+      'baselineTotal',
+      'newSurvivors',
+      'notReChecked',
+      'nowKilled',
+      'stillSurviving',
+    ]);
+  });
+
+  it('forwards each provenance key independently of the others', () => {
+    // One key present, the rest absent — so a guard that fires for the wrong
+    // field, or forwards all four together, is visible. `complete: false` is the
+    // one that changes the delta's meaning, so it is the one asserted alone.
+    const delta = computeVerifyDelta(baseline, {
+      ...result([]),
+      complete: false,
+    });
+
+    expect(Object.keys(delta).sort()).toEqual([
+      'baselineTotal',
+      'complete',
+      'newSurvivors',
+      'notReChecked',
+      'nowKilled',
+      'stillSurviving',
+    ]);
+    expect(delta.complete).toBe(false);
   });
 
   it('treats an explicitly complete run as complete (`=== false`, not `!== true`)', () => {
@@ -416,6 +455,29 @@ describe('buildVerifyNote', () => {
     expect(note).toContain('the run stopped before the rest could run');
   });
 
+  // Both counts absent is the easy case; the operator is only observable when
+  // the two operands DISAGREE. A half-known pair must degrade to the vague
+  // wording as well — `||` would print "only 2 of undefined batches ran", which
+  // reads as a measurement and is worse than admitting we do not know.
+  it.each([
+    ['completed but no plan', { batchesCompleted: 2, batchesPlanned: undefined }],
+    ['a plan but no completed count', { batchesCompleted: undefined, batchesPlanned: 7 }],
+  ])(
+    'falls back to vaguer wording when the batch counts are half known (%s)',
+    (_label, batches) => {
+      const note = buildVerifyNote(
+        computeVerifyDelta(
+          parseBaseline({ survivors: [{ line: 1, mutators: { A: 1 } }] }),
+          partialResult([], batches),
+        ),
+      );
+
+      expect(note).toContain('only part of the file was re-run');
+      expect(note).not.toContain('batches ran');
+      expect(note).not.toContain('undefined');
+    },
+  );
+
   it('says nothing about a partial run when the re-run was complete', () => {
     const note = buildVerifyNote(
       computeVerifyDelta(
@@ -455,6 +517,44 @@ describe('verify output — partial re-run (Finding 2)', () => {
     expect(json.killedCount).toBe(1);
   });
 
+  it('builds the payload WITHOUT the keys, rather than with undefined values', () => {
+    // The assertion above cannot tell the two apart: `JSON.stringify` drops an
+    // undefined-valued key, so `{ complete: undefined }` serialises exactly like
+    // `{}`. `structuredContent` spreads this object rather than re-parsing the
+    // string (`audit/audit-output.ts`), so the object's own key set is the
+    // contract — and it is what the five guards in `verifyPayloadFields` exist
+    // to control.
+    const fields = verifyPayloadFields(computeVerifyDelta(baseline, result([])));
+
+    expect(Object.keys(fields).sort()).toEqual([
+      'baselineTotal',
+      'killedCount',
+      'newSurvivors',
+      'nowKilled',
+      'stillSurviving',
+    ]);
+  });
+
+  it('adds each partial-run key only when the delta actually carries it', () => {
+    // The mirror image: a partial re-run earns all five extra keys. Asserted as
+    // a set, so a guard that fires on the wrong field shows up as a key in the
+    // wrong place rather than as an equal-looking value.
+    const fields = verifyPayloadFields(computeVerifyDelta(baseline, partialResult([])));
+
+    expect(Object.keys(fields).sort()).toEqual([
+      'baselineTotal',
+      'batchesCompleted',
+      'batchesPlanned',
+      'complete',
+      'killedCount',
+      'newSurvivors',
+      'notReChecked',
+      'nowKilled',
+      'stillSurviving',
+      'stoppedReason',
+    ]);
+  });
+
   it('text replaces the all-killed success line with the partial banner', () => {
     // A truncated re-run can legitimately come back with nothing surviving and
     // no regressions; "All 1 previously-uncaught mutants are now killed." is
@@ -484,6 +584,21 @@ describe('verify output — partial re-run (Finding 2)', () => {
     expect(text).toContain('New survivors (regressions on baseline lines):');
     expect(text).toContain('  9: Z');
     expect(text).not.toContain('Now killed:');
+  });
+
+  it('text omits the not-re-checked SECTION when the list is empty', () => {
+    // Reached only past the success shortcut, so this delta has something still
+    // surviving. A guard forced open prints the header — "Not re-checked (never
+    // generated by this partial run — status unknown):" — with nothing under it,
+    // telling a caller whose re-run was complete that some unnamed part of their
+    // baseline is unaccounted for.
+    const text = formatVerifyResultAsText(
+      'src/x.ts',
+      computeVerifyDelta(baseline, result([{ line: 42, mutator: 'C' }])),
+    );
+
+    expect(text).toContain('Still surviving:');
+    expect(text).not.toContain('Not re-checked');
   });
 
   it('text keeps the success line for a COMPLETE re-run', () => {

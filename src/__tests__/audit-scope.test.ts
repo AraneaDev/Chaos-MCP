@@ -4,6 +4,8 @@ import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { computeScope } from '../audit/scope.js';
+import { AuditDeadline } from '../utils/deadline.js';
+import { saveRun, workspaceFingerprint } from '../utils/run-cache.js';
 import type { EnvironmentInfo } from '../utils/project-detector.js';
 import type { ToolArgs } from '../core/tool-args-validation.js';
 
@@ -236,7 +238,11 @@ describe('computeScope — diff path against a real repository', () => {
   const setupGit = (args: string[]) =>
     execFileSync('git', args, { cwd: repo, encoding: 'utf-8', stdio: 'pipe' });
 
-  const scopeIn = (args: ToolArgs, projectType: 'typescript' | 'python' = 'typescript') =>
+  const scopeIn = (
+    args: ToolArgs,
+    projectType: 'typescript' | 'python' = 'typescript',
+    gitCtx?: { signal?: AbortSignal; deadline?: AuditDeadline },
+  ) =>
     computeScope(
       args,
       join(repo, REL),
@@ -250,6 +256,7 @@ describe('computeScope — diff path against a real repository', () => {
       projectType,
       {},
       REL,
+      gitCtx,
     );
 
   beforeEach(() => {
@@ -381,5 +388,116 @@ describe('computeScope — diff path against a real repository', () => {
     expect(textOf(scope)).toContain(
       'diffBase "no-such-ref" could not be resolved as a git ref (merge-base failed).',
     );
+  });
+
+  // ── The caller's controls reach the git subprocess (`GitOptions`) ──
+  //
+  // `resolveDiffScope` builds ONE object — `{ signal, timeoutMs }` — and hands it
+  // to `computeChangedRanges`. Nothing asserted that either property arrived, so
+  // emptying the whole literal changed no test's answer: a cancel would not have
+  // killed the git call in flight, and a diff run would have taken a fresh full
+  // git timeout instead of what remained of the audit's budget. Each property is
+  // pinned by its own case, through an observable OUTCOME rather than a spy,
+  // because the object is private to the function that builds it.
+
+  it('kills the git call in flight when the caller cancels', async () => {
+    // Cancellation is re-thrown rather than turned into a DiffResult
+    // (`classifyGitFailure`), so the abort escapes as the original error. If the
+    // signal never reached the subprocess, git would answer normally and this
+    // would resolve to the no-changes short-circuit instead.
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      scopeIn({ diffBase: 'HEAD' }, 'typescript', {
+        signal: controller.signal,
+      }),
+    ).rejects.toMatchObject({ code: 'ABORTED' });
+  });
+
+  // The `timeoutMs` half of that object is pinned in `scope-verify-fixes.test.ts`,
+  // against the mocked `computeChangedRanges`: asserting it through real git
+  // would mean racing a 1ms budget against a process that usually beats it.
+
+  it('reads no deadline at all when the caller supplies only a signal', async () => {
+    // `gitCtx.deadline` is optional and the handler passes a context with just a
+    // signal on the cancel-only path. Reading `.remainingMs()` off it without the
+    // second optional link throws a TypeError before git is ever invoked — so
+    // this pins the SAFE outcome: an ordinary, un-cancelled diff.
+    const scope = await scopeIn({ diffBase: 'HEAD' }, 'typescript', {
+      signal: new AbortController().signal,
+    });
+
+    expect(scope.kind).toBe('result');
+    expect(payloadOf(scope).scopeNote).toBe(
+      `No changed lines in ${join(repo, REL)} vs HEAD; nothing to mutate.`,
+    );
+  });
+});
+
+describe('computeScope — runId lookup honours the configured cache policy', () => {
+  // `loadBaselineFromRunId` passes `{ ttlMs: cfg.runCacheTtlMs, max: cfg.runCacheMax }`
+  // into `loadRun`. Nothing asserted that the config reached it, so emptying the
+  // literal silently fell back to the 24-hour default TTL: an operator who
+  // shortened `runCacheTtlMs` — the knob that decides how long a baseline is
+  // still considered to describe the current source — kept getting stale
+  // baselines graded as fresh.
+  //
+  // This writes to the REAL cache directory rather than a fixture one, because
+  // that is the only directory `computeScope` can read: `RunCacheOptions.dir` is
+  // deliberately not exposed through `ChaosConfig`. The entry is removed again in
+  // `afterEach`.
+  // Spelled exactly as `cacheDir` in `utils/run-cache.ts` spells it — raw
+  // `tmpdir()`, not its realpath — so the cleanup below targets the file
+  // `saveRun` actually wrote on a platform where /tmp is a symlink.
+  const cacheDir = join(tmpdir(), 'chaos-mcp-runs', workspaceFingerprint(process.cwd()));
+  let runId: string;
+
+  beforeEach(() => {
+    runId = saveRun(
+      {
+        file: REL,
+        projectType: 'typescript',
+        survivors: [{ line: 1, mutators: { ConditionalExpression: 1 } }],
+        noCoverage: [],
+      },
+      // Minted a minute ago, so a short TTL expires it and the default does not.
+      { now: Date.now() - 60_000, workspaceRoot: ws },
+    );
+  });
+
+  afterEach(() => rmSync(join(cacheDir, `${runId}.json`), { force: true }));
+
+  it('expires a baseline older than the configured TTL', async () => {
+    const scope = await computeScope(
+      { runId },
+      join(ws, REL),
+      env(),
+      'typescript',
+      { runCacheTtlMs: 1_000 },
+      REL,
+    );
+
+    expect(scope.kind).toBe('result');
+    expect(textOf(scope)).toContain(
+      `runId "${runId}" not found or expired; re-run audit to get a fresh runId.`,
+    );
+  });
+
+  it('loads a baseline still inside the configured TTL', async () => {
+    // The same entry, the same call, one config value apart — so the expiry above
+    // is the TTL doing its job and not the entry being unreadable.
+    const scope = await computeScope(
+      { runId },
+      join(ws, REL),
+      env(),
+      'typescript',
+      { runCacheTtlMs: 10 * 60_000 },
+      REL,
+    );
+
+    expect(scope.kind).toBe('scope');
+    if (scope.kind !== 'scope') return;
+    expect(scope.baselineKeys).toEqual([{ line: 1, mutator: 'ConditionalExpression' }]);
   });
 });

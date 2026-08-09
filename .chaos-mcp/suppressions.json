@@ -3,25 +3,11 @@
   "entries": {
     "src/cli.ts": [
       {
-        "line": 25,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1785459685018,
-        "reason": "MIN_NODE_VERSION is '22.0.0', so minMinor is 0 and `currentMinor < 0` can never hold — the entire second clause is unreachable and the first clause alone decides every case. It becomes killable if the floor ever gains a non-zero minor.",
-        "fingerprint": "019cee288b84"
-      },
-      {
-        "line": 25,
-        "mutator": "EqualityOperator",
-        "addedAt": 1785459685018,
-        "reason": "The `currentMajor === minMajor` comparison only gates the unreachable `currentMinor < 0` clause (minMinor is 0), so === and !== produce the same verdict for every version.",
-        "fingerprint": "019cee288b84"
-      },
-      {
-        "line": 163,
+        "line": 174,
         "mutator": "MethodExpression",
-        "addedAt": 1786267580102,
-        "reason": "argv[0] and argv[1] are the node binary and script paths; neither equals a flag, so dropping slice(2) changes no `includes` result, and `indexOf(flag) + 1` still points at the flag's value.",
-        "fingerprint": "6f48d835763b"
+        "addedAt": 1786278777989,
+        "reason": "`process.argv.slice(2)` → `process.argv` is equivalent for every use of `args` in runCli: argv[0] and argv[1] are the node binary and script paths, neither of which equals a flag string, so no `includes()` result changes and `getFlagValue`'s `indexOf` finds the same index (its value is read at index+1, which shifts with it). Re-confirmed at line 174 — the prior entry had drifted onto a comment at line 163 and was suppressing nothing.",
+        "fingerprint": "977792ccb25b"
       }
     ],
     "src/core/baseline-timing.ts": [
@@ -775,6 +761,98 @@
         "addedAt": 1786267580115,
         "reason": "With no cache entry, probedAt is undefined and `Date.now() - undefined` is NaN, so the age comparison is false anyway and the probe still runs.",
         "fingerprint": "78c51c434b18"
+      }
+    ],
+    "src/audit/scope.ts": [
+      {
+        "line": 157,
+        "mutator": "ArrayDeclaration",
+        "addedAt": 1786271049809,
+        "reason": "`nowKilled` is passed to evaluateVerifyGate, which reads only `complete`, `stillSurviving.length` and `newSurvivors.length` (core/verify.ts). The array is never read on this path, so its contents cannot change the returned gate — equivalent, not a test gap. The sibling literals on lines 158-159 ARE read and are killed.",
+        "fingerprint": "c6eb294e4c51"
+      },
+      {
+        "line": 160,
+        "mutator": "ArrayDeclaration",
+        "addedAt": 1786271049809,
+        "reason": "`notReChecked` is read only by partialVerifyNote, which runs when `complete === false`; this call site never sets `complete`, so evaluateVerifyGate returns before the array is touched. Unobservable from the gate this expression produces.",
+        "fingerprint": "c3cc78edbeb3"
+      },
+      {
+        "line": 259,
+        "mutator": "BlockStatement",
+        "addedAt": 1786271049809,
+        "reason": "Exhaustiveness guard: `diff` is narrowed to `never` in this default arm, so no runtime DiffResult reaches it. Emptying the block is unobservable without casting an invalid variant past the type system.",
+        "fingerprint": "81e7d79016d1"
+      },
+      {
+        "line": 259,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786271049809,
+        "reason": "Same `never`-narrowed default arm: removing it is a compile-time regression (a new DiffResult variant would stop erroring), not a runtime behaviour a test can observe.",
+        "fingerprint": "81e7d79016d1"
+      }
+    ],
+    "src/core/verify.ts": [
+      {
+        "line": 316,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786271874756,
+        "reason": "`if (gate) payload.gate = gate` guards the LAST statement before `JSON.stringify(payload)`. Forcing it true assigns `payload.gate = undefined`, and JSON.stringify omits undefined-valued keys, so the returned string is byte-identical. `gate` is typed `GateResult | undefined`, so no falsy-but-serialisable value (null, 0) can reach it. Equivalent on the only output this function has.",
+        "fingerprint": "4b3c95dc898e"
+      }
+    ],
+    "src/utils/sandbox.ts": [
+      {
+        "line": 228,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786273230546,
+        "reason": "`current === undefined` is unreachable: the loop is guarded by `stack.length > 0`, so `stack.pop()` always returns a string. The guard exists to narrow `string | undefined` for TypeScript, not to handle a runtime case.",
+        "fingerprint": "be923c11f156"
+      },
+      {
+        "line": 226,
+        "mutator": "BooleanLiteral",
+        "addedAt": 1786273230546,
+        "reason": "`truncated: true` is only returned when `total > MAX_WORKSPACE_SIZE_BYTES`, and the sole consumer warns on `size.truncated || size.bytes > MAX_WORKSPACE_SIZE_BYTES` — `bytes` is that same over-threshold total, so the warning fires identically with the flag false. The flag is unobservable on the only path that sets it.",
+        "fingerprint": "e3ec0e162064"
+      },
+      {
+        "line": 261,
+        "mutator": "ObjectLiteral",
+        "addedAt": 1786273230546,
+        "reason": "Emptying the catch fallback yields `{ bytes: undefined, truncated: undefined }`. The only consumer is `size.truncated || size.bytes > MAX`, where both undefined evaluate exactly as `false || 0 > MAX` does. No output distinguishes them.",
+        "fingerprint": "a413f056352d"
+      },
+      {
+        "line": 489,
+        "mutator": "ArrayDeclaration",
+        "addedAt": 1786273230546,
+        "reason": "Under `dependencies: 'copy'` the empty list means 'nothing left to link'. Filling it with a name no directory has is inert on both consumers: buildCopyPolicy gains an exclusion that matches no path, and linkHeavyDirs skips it at `existsSync(src)`.",
+        "fingerprint": "b4fb0b55ad9d"
+      }
+    ],
+    "src/triage/audit-one.ts": [
+      {
+        "line": 273,
+        "mutator": "BlockStatement",
+        "addedAt": 1786274958221,
+        "reason": "`rowRunId` is declared `let rowRunId: string | undefined` and assigned by exactly one statement inside the try. If that statement throws, the assignment never completed, so the variable is ALREADY undefined when the catch runs — `rowRunId = undefined` is a defensive re-assignment that cannot change any state. Emptying the block is equivalent.",
+        "fingerprint": "95bc545467a5"
+      },
+      {
+        "line": 287,
+        "mutator": "BlockStatement",
+        "addedAt": 1786274958221,
+        "reason": "Identical shape to line 273: `sourceLines` is declared undefined and assigned by the single `readFileSync(...).split(...)` statement inside the try. A throw there leaves it undefined already, so the catch's re-assignment is unobservable.",
+        "fingerprint": "95bc545467a5"
+      },
+      {
+        "line": 162,
+        "mutator": "ObjectLiteral",
+        "addedAt": 1786274958221,
+        "reason": "Exhaustiveness guard: `diff` is narrowed to `never` in this default arm, so no runtime DiffResult reaches it. Emptying the returned object requires casting an invalid variant past the type system — the same equivalent guard suppressed at audit/scope.ts:259.",
+        "fingerprint": "dde44124f1ee"
       }
     ]
   }

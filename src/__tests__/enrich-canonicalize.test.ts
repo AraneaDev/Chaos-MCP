@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { canonicalizeMutator, MUTATOR_SEMANTICS } from '../core/enrich.js';
 import { canonicalizePhpMutator } from '../engines/php/canonicalize.js';
+import { ENGINE_REGISTRY } from '../engines/registry.js';
 
 describe('canonicalizeMutator', () => {
   it('maps StrykerJS canonical names directly for typescript', () => {
@@ -13,6 +14,32 @@ describe('canonicalizeMutator', () => {
 
   it('returns unknown for a Stryker name not in the table', () => {
     expect(canonicalizeMutator('SomeFutureMutator', 'typescript')).toBe('unknown');
+  });
+
+  /**
+   * Both links of `ENGINE_REGISTRY[projectType]?.canonicalizeMutator?.(…)`.
+   *
+   * The documented contract is that a language the registry cannot place
+   * degrades to `'unknown'` — no severity, and UNKNOWN_SEMANTIC's why/hint
+   * saying so. Every engine registered today defines the translation, so both
+   * guards protect a case no existing test could reach: without them enrichment
+   * throws a TypeError, and enrichment runs on the reporting path of every audit.
+   */
+  it('degrades to unknown for a project type the registry does not carry', () => {
+    expect(canonicalizeMutator('ConditionalExpression', 'cobol' as never)).toBe('unknown');
+  });
+
+  it('degrades to unknown for an engine that has no mutator translation', () => {
+    // `canonicalizeMutator` is an OPTIONAL descriptor field; this is the shape a
+    // newly-added engine has before its translation table is written.
+    const entry = ENGINE_REGISTRY.typescript;
+    const original = entry.canonicalizeMutator;
+    delete entry.canonicalizeMutator;
+    try {
+      expect(canonicalizeMutator('ConditionalExpression', 'typescript')).toBe('unknown');
+    } finally {
+      entry.canonicalizeMutator = original;
+    }
   });
 
   it('infers Rust categories from the change description', () => {

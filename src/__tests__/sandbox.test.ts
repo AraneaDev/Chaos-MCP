@@ -1643,6 +1643,492 @@ describe('createSandbox', () => {
 
     exitSpy.mockRestore();
   });
+
+  // ── The four abort checkpoints, told apart ────────────────────────────────
+  //
+  // `createSandbox` polls `signal.aborted` at four points, and every one of them
+  // throws the SAME AbortError. So "it rejects" cannot distinguish a checkpoint
+  // that fired from one that was skipped — the NEXT checkpoint catches what the
+  // previous one missed and the test still passes. What separates them is the
+  // work that happens in between: the large-workspace warning, the temp dir, the
+  // dependency linking, the target verification. Each case below asserts the
+  // side effect that must NOT have happened yet.
+
+  const abortedError = expect.objectContaining({ name: 'AbortError' });
+
+  it('does no pre-copy work at all when the signal is already aborted', async () => {
+    // Checkpoint 1, before the size estimate. A warm size cache is what makes it
+    // visible: with the cache hit the estimator never runs, so its own abort
+    // check cannot stand in for this one, and the large-workspace warn() below
+    // is the first observable thing the provision would otherwise do.
+    const { warn } = await import('../utils/logger.js');
+    const mockedWarn = vi.mocked(warn);
+    mockReaddir.mockResolvedValueOnce([
+      { name: 'giant.bin', isDirectory: () => false, isFile: () => true },
+    ] as never);
+    vi.mocked(statSync).mockReturnValue({ size: 250 * 1024 * 1024 } as never);
+    await createSandbox('src/utils/math.ts', TEST_PROJECT); // warms SIZE_CACHE
+
+    mockedWarn.mockClear();
+    mockMkdtempSync.mockClear();
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      createSandbox('src/utils/math.ts', TEST_PROJECT, undefined, {
+        signal: controller.signal,
+      }),
+    ).rejects.toEqual(abortedError);
+    expect(mockedWarn).not.toHaveBeenCalled();
+    expect(mockMkdtempSync).not.toHaveBeenCalled();
+  });
+
+  it('reports the size it measured, then stops before allocating a temp dir', async () => {
+    // Checkpoint 2, between the estimate and `mkdtempSync`. The signal flips
+    // during the LAST directory read, so the walk reaches its own loop condition
+    // with the stack already empty: it must finish and hand back the total it
+    // measured (hence the warning) rather than taking one more turn and throwing
+    // from inside the walk. The provision is still cancelled — one line later,
+    // before any disk is allocated.
+    const { warn } = await import('../utils/logger.js');
+    const mockedWarn = vi.mocked(warn);
+    mockedWarn.mockClear();
+    const controller = new AbortController();
+
+    mockReaddir.mockImplementationOnce((async () => {
+      controller.abort();
+      return [{ name: 'giant.bin', isDirectory: () => false, isFile: () => true }];
+    }) as never);
+    vi.mocked(statSync).mockReturnValue({ size: 250 * 1024 * 1024 } as never);
+
+    await expect(
+      createSandbox('src/utils/math.ts', TEST_PROJECT, undefined, {
+        signal: controller.signal,
+      }),
+    ).rejects.toEqual(abortedError);
+    expect(mockedWarn).toHaveBeenCalledWith(expect.stringContaining('exceeds 200MB'));
+    expect(mockMkdtempSync).not.toHaveBeenCalled();
+  });
+
+  it('stops after the copy without linking dependencies when the abort lands during cp', async () => {
+    // Checkpoint 3, inside `copyWorkspaceTree`. `linkDependencyEntries` reads the
+    // host dependency directory with readdirSync, so an untouched readdirSync is
+    // proof that Step 2 never started — the next checkpoint would otherwise throw
+    // the identical error after doing all of that work.
+    const controller = new AbortController();
+    mockCp.mockImplementationOnce((async () => {
+      controller.abort();
+    }) as never);
+
+    await expect(
+      createSandbox('src/utils/math.ts', TEST_PROJECT, undefined, {
+        signal: controller.signal,
+      }),
+    ).rejects.toEqual(abortedError);
+    expect(mockMkdtempSync).toHaveBeenCalled();
+    expect(mockReaddirSync).not.toHaveBeenCalled();
+  });
+
+  it('does not hand back a context when the abort lands during dependency linking', async () => {
+    // Checkpoint 4, after Step 2 and before the target verification. This is the
+    // last one, so nothing downstream can cover for it: skipping it returns a
+    // fully-built SandboxContext for a provision the caller already cancelled.
+    const controller = new AbortController();
+    mockReaddirSync.mockImplementationOnce(() => {
+      controller.abort();
+      return [];
+    });
+
+    await expect(
+      createSandbox('src/utils/math.ts', TEST_PROJECT, undefined, {
+        signal: controller.signal,
+      }),
+    ).rejects.toEqual(abortedError);
+  });
+
+  // ── The size walk's own decisions ─────────────────────────────────────────
+
+  it('reads directory entries with their types, not as bare names', async () => {
+    // `withFileTypes: true` is what makes the entries Dirents. Without it readdir
+    // yields strings, and `entry.isDirectory()` is a TypeError that the outer
+    // catch swallows into "0 bytes" — the walk silently stops measuring anything.
+    // The mock returns Dirents regardless, so only the ARGUMENT can show this.
+    mockReaddir.mockResolvedValueOnce([] as never);
+
+    await createSandbox('src/utils/math.ts', TEST_PROJECT);
+
+    expect(mockReaddir).toHaveBeenCalledWith(TEST_PROJECT, { withFileTypes: true });
+  });
+
+  it('does not count the workspace as over the threshold at exactly the threshold', async () => {
+    // The boundary itself: 200MB exactly is NOT "larger than 200MB". `>=` here
+    // would both warn about a workspace that is precisely at the limit and cut
+    // the walk short, reporting it as truncated.
+    const { warn } = await import('../utils/logger.js');
+    const mockedWarn = vi.mocked(warn);
+    mockedWarn.mockClear();
+    mockReaddir.mockResolvedValueOnce([
+      { name: 'a', isDirectory: () => true, isFile: () => false },
+      { name: 'exact.bin', isDirectory: () => false, isFile: () => true },
+    ] as never);
+    mockReaddir.mockResolvedValueOnce([] as never);
+    vi.mocked(statSync).mockReturnValue({ size: 200 * 1024 * 1024 } as never);
+
+    await createSandbox('src/utils/math.ts', TEST_PROJECT);
+
+    expect(mockedWarn).not.toHaveBeenCalled();
+    // Both directories were read: nothing returned early at the boundary.
+    expect(mockReaddir).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps walking the rest of the tree when one directory cannot be read', async () => {
+    // The `continue` in the readdir catch. Dropping it leaves `entries`
+    // undefined, the for-of throws, and the OUTER catch reports the whole
+    // workspace as 0 bytes — one unreadable directory would silently disable the
+    // size warning for the entire tree.
+    const { warn } = await import('../utils/logger.js');
+    const mockedWarn = vi.mocked(warn);
+    mockedWarn.mockClear();
+    // LIFO: dirB is pushed last, so `unreadable` (pushed first) is popped first.
+    mockReaddir.mockResolvedValueOnce([
+      { name: 'unreadable', isDirectory: () => true, isFile: () => false },
+      { name: 'dirB', isDirectory: () => true, isFile: () => false },
+    ] as never);
+    mockReaddir.mockRejectedValueOnce(new Error('EACCES: permission denied'));
+    mockReaddir.mockResolvedValueOnce([
+      { name: 'giant.bin', isDirectory: () => false, isFile: () => true },
+    ] as never);
+    vi.mocked(statSync).mockReturnValue({ size: 250 * 1024 * 1024 } as never);
+
+    await createSandbox('src/utils/math.ts', TEST_PROJECT);
+
+    expect(mockedWarn).toHaveBeenCalledWith(expect.stringContaining('exceeds 200MB'));
+  });
+
+  it('counts a file whose size cannot be read as zero, not as nothing at all', async () => {
+    // `fileSize` returning nothing makes `total += undefined` NaN, and NaN fails
+    // every comparison after it — one file removed mid-scan would disable the
+    // threshold check for the whole walk.
+    const { warn } = await import('../utils/logger.js');
+    const mockedWarn = vi.mocked(warn);
+    mockedWarn.mockClear();
+    mockReaddir.mockResolvedValueOnce([
+      { name: 'vanished.txt', isDirectory: () => false, isFile: () => true },
+      { name: 'giant.bin', isDirectory: () => false, isFile: () => true },
+    ] as never);
+    vi.mocked(statSync)
+      .mockImplementationOnce(() => {
+        throw Object.assign(new Error('ENOENT: file removed during scan'), { code: 'ENOENT' });
+      })
+      .mockReturnValue({ size: 250 * 1024 * 1024 } as never);
+
+    await createSandbox('src/utils/math.ts', TEST_PROJECT);
+
+    expect(mockedWarn).toHaveBeenCalledWith(expect.stringContaining('exceeds 200MB'));
+  });
+
+  it('counts only regular files, not entries that are neither file nor directory', async () => {
+    // A dangling symlink is a Dirent that answers false to both questions. The
+    // copy does not reproduce its target's bytes, so counting it would warn about
+    // a workspace whose real copy is tiny.
+    const { warn } = await import('../utils/logger.js');
+    const mockedWarn = vi.mocked(warn);
+    mockedWarn.mockClear();
+    mockReaddir.mockResolvedValueOnce([
+      { name: 'dangling.link', isDirectory: () => false, isFile: () => false },
+    ] as never);
+    vi.mocked(statSync).mockReturnValue({ size: 250 * 1024 * 1024 } as never);
+
+    await createSandbox('src/utils/math.ts', TEST_PROJECT);
+
+    expect(mockedWarn).not.toHaveBeenCalled();
+  });
+
+  it('treats an unexpected walk failure as unmeasured, not as over the threshold', async () => {
+    // The outer catch is the last resort for something the inner guards do not
+    // model — here a readdir that resolves to a non-iterable. Reporting that as
+    // `truncated: true` would warn about a workspace nobody ever measured.
+    const { warn } = await import('../utils/logger.js');
+    const mockedWarn = vi.mocked(warn);
+    mockedWarn.mockClear();
+    mockReaddir.mockResolvedValueOnce(undefined as never);
+
+    await expect(createSandbox('src/utils/math.ts', TEST_PROJECT)).resolves.toBeDefined();
+    expect(mockedWarn).not.toHaveBeenCalled();
+  });
+
+  it('releases the event loop during a long walk so a pending abort can land', async () => {
+    // Every `readdir` here is a resolved mock, so awaiting it only drains
+    // MICROtasks — a timer or an `abort()` callback never gets a turn. The
+    // explicit yield every SIZE_WALK_YIELD_EVERY_DIRS directories is the only
+    // thing that hands the loop back, and this is the property it exists for:
+    // without it a warm page cache lets the walk run to completion with a cancel
+    // already queued behind it.
+    // 63 subdirectories plus the root itself is exactly one yield interval, so
+    // the yield lands on the LAST directory the walk visits. That pins the
+    // boundary as well as the yield: an interval one directory wider never
+    // reaches its trigger at all, and the cancel is never seen.
+    const DIRS = 63;
+    const controller = new AbortController();
+    mockReaddir.mockResolvedValueOnce(
+      Array.from({ length: DIRS }, (_, i) => ({
+        name: `d${i}`,
+        isDirectory: () => true,
+        isFile: () => false,
+      })) as never,
+    );
+    mockReaddir.mockResolvedValue([] as never);
+    // A macrotask: reachable only if the walk actually yields the loop.
+    setImmediate(() => controller.abort());
+
+    await expect(
+      createSandbox('src/utils/math.ts', TEST_PROJECT, undefined, {
+        signal: controller.signal,
+      }),
+    ).rejects.toEqual(abortedError);
+  });
+
+  // ── Which heavyweight dirs get materialised, and where ────────────────────
+
+  it('says nothing about excluded dependencies when nothing was excluded', async () => {
+    // The warning is driven by `excludes.has(dirName)`. Forced open it fires on
+    // every ordinary provision — the loudest possible false alarm, on the exact
+    // message that tells a user their sandbox has no dependencies.
+    const { warn } = await import('../utils/logger.js');
+    const mockedWarn = vi.mocked(warn);
+    mockedWarn.mockClear();
+
+    await createSandbox('src/utils/math.ts', TEST_PROJECT);
+
+    expect(mockedWarn).not.toHaveBeenCalledWith(
+      expect.stringContaining('excludes the dependency directory'),
+    );
+  });
+
+  it('does not re-symlink a shared dependency dir the copy already materialised', async () => {
+    // `share` mode uses safeSymlink, which cannot target a path that already
+    // exists — so the `mode === 'share' && existsSync(dst)` guard is what stops
+    // this provision from failing outright. Only `share` needs it, which is why
+    // the same situation under link-entries is completed per entry instead.
+    mockExistsSync.mockImplementation((path: PathLike) => {
+      if (path === `${SANDBOX_DIR}/src/utils/math.ts`) return true;
+      if (path === TEST_PROJECT_NODE_MODULES) return true;
+      if (path === `${SANDBOX_DIR}/node_modules`) return true; // copy got there first
+      return false;
+    });
+
+    await createSandbox('src/utils/math.ts', TEST_PROJECT, undefined, {
+      dependencies: 'share',
+    });
+
+    expect(mockSymlinkSync.mock.calls.map((c) => String(c[1]))).not.toContain(
+      `${SANDBOX_DIR}/node_modules`,
+    );
+  });
+
+  it('ignores a skipped directory that does not live under the workspace', async () => {
+    // `rel` is computed by slicing the workspace prefix off, so a path that does
+    // not start with it yields a nonsense relative path and a link destination
+    // somewhere unintended inside the sandbox. The guard is what makes the slice
+    // below safe.
+    const outside = `${resolve(process.cwd(), 'elsewhere')}/node_modules`;
+    mockExistsSync.mockImplementation((path: PathLike) => {
+      if (path === `${SANDBOX_DIR}/src/utils/math.ts`) return true;
+      if (path === outside) return true;
+      return false;
+    });
+    mockCp.mockImplementation((async (
+      _s: string,
+      _d: string,
+      opts: { filter: (src: string) => boolean },
+    ) => {
+      opts.filter(outside);
+    }) as never);
+
+    await createSandbox('src/utils/math.ts', TEST_PROJECT, undefined, {
+      dependencies: 'share',
+    });
+
+    expect(mockSymlinkSync).not.toHaveBeenCalled();
+  });
+
+  it('links a nested dependency dir at its path RELATIVE to the workspace', async () => {
+    // The slice drops the workspace prefix AND the separator. Off by one and the
+    // destination becomes an absolute path re-joined onto the sandbox — the
+    // dependencies land somewhere the engine will never look.
+    const nested = `${TEST_PROJECT}/workers/typescript/node_modules`;
+    mockExistsSync.mockImplementation((path: PathLike) => {
+      if (path === `${SANDBOX_DIR}/src/utils/math.ts`) return true;
+      if (path === nested) return true;
+      return false;
+    });
+    mockCp.mockImplementation((async (
+      _s: string,
+      _d: string,
+      opts: { filter: (src: string) => boolean },
+    ) => {
+      opts.filter(nested);
+    }) as never);
+
+    await createSandbox('src/utils/math.ts', TEST_PROJECT, undefined, {
+      dependencies: 'share',
+    });
+
+    expect(mockSymlinkSync).toHaveBeenCalledWith(
+      nested,
+      `${SANDBOX_DIR}/workers/typescript/node_modules`,
+      expect.anything(),
+    );
+  });
+
+  it('does not link a nested dependency dir that no longer exists on the host', async () => {
+    // `skippedHeavyDirs` is recorded during the copy; the directory can be gone
+    // by the time Step 2 runs. Linking it anyway creates a dangling symlink that
+    // fails later as a mysterious missing-module error.
+    const nested = `${TEST_PROJECT}/workers/typescript/node_modules`;
+    mockExistsSync.mockImplementation((path: PathLike) => {
+      return path === `${SANDBOX_DIR}/src/utils/math.ts`;
+    });
+    mockCp.mockImplementation((async (
+      _s: string,
+      _d: string,
+      opts: { filter: (src: string) => boolean },
+    ) => {
+      opts.filter(nested);
+    }) as never);
+
+    await createSandbox('src/utils/math.ts', TEST_PROJECT, undefined, {
+      dependencies: 'share',
+    });
+
+    expect(mockSymlinkSync).not.toHaveBeenCalled();
+  });
+
+  it('completes a partially-copied nested dependency dir under link-entries', async () => {
+    // Both operands of `mode === 'share' && existsSync(dst)` matter here, and
+    // they disagree: the destination exists, but the mode is link-entries, so the
+    // directory must be COMPLETED per entry rather than skipped. Skipping it —
+    // which is what `||`, or a forced-true mode check, would do — leaves the
+    // sandbox missing every package the copy did not produce.
+    const nested = `${TEST_PROJECT}/workers/typescript/node_modules`;
+    const nestedDst = `${SANDBOX_DIR}/workers/typescript/node_modules`;
+    mockExistsSync.mockImplementation((path: PathLike) => {
+      if (path === `${SANDBOX_DIR}/src/utils/math.ts`) return true;
+      if (path === nested) return true;
+      if (path === nestedDst) return true; // partially materialised by the copy
+      return false;
+    });
+    mockCp.mockImplementation((async (
+      _s: string,
+      _d: string,
+      opts: { filter: (src: string) => boolean },
+    ) => {
+      opts.filter(nested);
+    }) as never);
+    mockReaddirSync.mockReturnValue([{ name: 'missing-pkg', isDirectory: () => true }] as never);
+
+    await createSandbox('src/utils/math.ts', TEST_PROJECT);
+
+    expect(mockSymlinkSync.mock.calls.map((c) => String(c[1]))).toContain(
+      `${nestedDst}/missing-pkg`,
+    );
+  });
+
+  it('still links the OTHER dependency dirs for a Composer PHP audit', async () => {
+    // vendor is dropped from the symlink set so Step 1 can copy it; the filter
+    // must remove exactly that one entry. Dropping the whole list instead leaves
+    // a Composer project with no node_modules either, and the removal is
+    // invisible in a test that only checks vendor.
+    mockExistsSync.mockImplementation((path: PathLike) => {
+      if (path === `${SANDBOX_DIR}/src/Math.php`) return true;
+      if (path === `${TEST_PROJECT}/composer.json`) return true;
+      if (path === TEST_PROJECT_VENDOR) return true;
+      if (path === TEST_PROJECT_NODE_MODULES) return true;
+      return false;
+    });
+
+    await createSandbox('src/Math.php', TEST_PROJECT, undefined, { dependencies: 'share' });
+
+    const linked = mockSymlinkSync.mock.calls.map((c) => String(c[1]));
+    expect(linked).toContain(`${SANDBOX_DIR}/node_modules`);
+    expect(linked).not.toContain(`${SANDBOX_DIR}/vendor`);
+  });
+
+  // ── The estimate runs under its own policy, not the copy's ────────────────
+
+  it('does not count a dependency dir toward the size just because the target is inside it', async () => {
+    // `forceIncludeTarget: false`. The copy DOES pull the whole directory in when
+    // the target lives under it, but the size warning has never counted those
+    // bytes — turning the force-include on here makes every audit of a file
+    // inside node_modules warn about a workspace nobody can shrink.
+    const { warn } = await import('../utils/logger.js');
+    const mockedWarn = vi.mocked(warn);
+    mockedWarn.mockClear();
+    const target = 'node_modules/@acme/widget/src/index.ts';
+    mockExistsSync.mockImplementation((path: PathLike) => {
+      if (path === `${SANDBOX_DIR}/${target}`) return true;
+      if (path === TEST_PROJECT_NODE_MODULES) return true;
+      if (path === `${SANDBOX_DIR}/node_modules`) return true;
+      return false;
+    });
+    mockReaddir.mockResolvedValueOnce([
+      { name: 'node_modules', isDirectory: () => true, isFile: () => false },
+    ] as never);
+    mockReaddir.mockResolvedValue([
+      { name: 'giant.bin', isDirectory: () => false, isFile: () => true },
+    ] as never);
+    vi.mocked(statSync).mockReturnValue({ size: 250 * 1024 * 1024 } as never);
+
+    await createSandbox(target, TEST_PROJECT);
+
+    expect(mockedWarn).not.toHaveBeenCalledWith(expect.stringContaining('exceeds 200MB'));
+  });
+
+  it('matches exclusions against the walked entry, not against the workspace path', async () => {
+    // `matchAncestorSegments: false`. The pruned walk never descends into an
+    // excluded directory, so ancestor matching can only ever match segments of
+    // the workspace ROOT's own absolute path — here the root's own basename,
+    // which would silently exclude the entire workspace from its own estimate.
+    const { warn } = await import('../utils/logger.js');
+    const mockedWarn = vi.mocked(warn);
+    mockedWarn.mockClear();
+    mockReaddir.mockResolvedValueOnce([
+      { name: 'giant.bin', isDirectory: () => false, isFile: () => true },
+    ] as never);
+    vi.mocked(statSync).mockReturnValue({ size: 250 * 1024 * 1024 } as never);
+
+    await createSandbox('src/utils/math.ts', TEST_PROJECT, ['sandbox-test-project']);
+
+    expect(mockedWarn).toHaveBeenCalledWith(expect.stringContaining('exceeds 200MB'));
+  });
+
+  it('re-measures the workspace once the memo has aged past its TTL', async () => {
+    // The cache hit is `age < TTL`. Frozen exactly ON the TTL, the entry is stale
+    // and the walk must run again — `<=` would serve a 60-second-old answer as
+    // fresh, and a forced-true comparison would serve any age at all.
+    const { warn } = await import('../utils/logger.js');
+    const mockedWarn = vi.mocked(warn);
+    mockReaddir.mockResolvedValue([] as never);
+    const start = Date.now();
+    vi.spyOn(Date, 'now').mockReturnValue(start);
+
+    await createSandbox('src/utils/math.ts', TEST_PROJECT);
+    const afterFirst = mockReaddir.mock.calls.length;
+
+    // Exactly one TTL later: the memo is no longer inside the window.
+    vi.spyOn(Date, 'now').mockReturnValue(start + 60_000);
+    mockedWarn.mockClear();
+    mockReaddir.mockResolvedValueOnce([
+      { name: 'giant.bin', isDirectory: () => false, isFile: () => true },
+    ] as never);
+    vi.mocked(statSync).mockReturnValue({ size: 250 * 1024 * 1024 } as never);
+
+    await createSandbox('src/utils/math.ts', TEST_PROJECT);
+
+    expect(mockReaddir.mock.calls.length).toBeGreaterThan(afterFirst);
+    expect(mockedWarn).toHaveBeenCalledWith(expect.stringContaining('exceeds 200MB'));
+    vi.mocked(Date.now).mockRestore();
+  });
 });
 
 describe('cleanupAllSandboxes', () => {
