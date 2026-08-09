@@ -33,43 +33,6 @@
         "fingerprint": "81e7d79016d1"
       }
     ],
-    "src/core/estimate-heuristic.ts": [
-      {
-        "line": 22,
-        "mutator": "StringLiteral",
-        "addedAt": 1785438727420,
-        "reason": "A # comment match always ends at a newline or EOF, so the replacement is always adjacent to whitespace or nothing - ' ' and '' cannot fuse neighbouring tokens.",
-        "fingerprint": "7297fc3ccf02"
-      },
-      {
-        "line": 24,
-        "mutator": "StringLiteral",
-        "addedAt": 1785438727420,
-        "reason": "A // comment match always ends at a newline or EOF, so ' ' and '' produce the same token boundaries.",
-        "fingerprint": "684888c0ebb1"
-      },
-      {
-        "line": 28,
-        "mutator": "StringLiteral",
-        "addedAt": 1785438727420,
-        "reason": "A PHP # comment match always ends at a newline or EOF, so ' ' and '' produce the same token boundaries.",
-        "fingerprint": "dd92f5d9094c"
-      },
-      {
-        "line": 79,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1785438727420,
-        "reason": "Unreachable guard: every ++/-- match consumes two characters that [+\\-*/%] also counts, so arithmetic - 2*incdec is never negative. safe(n) returns n for all reachable n, identical to the mutant.",
-        "fingerprint": "64eea521b7aa"
-      },
-      {
-        "line": 79,
-        "mutator": "EqualityOperator",
-        "addedAt": 1785438727420,
-        "reason": "n > 0 and n >= 0 differ only at n < 0, which the arithmetic term cannot reach; at n === 0 both branches yield 0.",
-        "fingerprint": "64eea521b7aa"
-      }
-    ],
     "src/core/test-file.ts": [
       {
         "line": 14,
@@ -105,20 +68,6 @@
         "addedAt": 1785458749164,
         "reason": "The 'tests' prefix on the third PHP candidate duplicates the second candidate's directory; blanking it only defers to the recursive hunt, which searches tests/ and returns the same path.",
         "fingerprint": "980b911fd343"
-      },
-      {
-        "line": 110,
-        "mutator": "BlockStatement",
-        "addedAt": 1785459424696,
-        "reason": "Emptying the catch leaves `base` undefined, and the very next line's `!base` guard returns the same empty selection — no caller can tell the two paths apart.",
-        "fingerprint": "684888c0ebb1"
-      },
-      {
-        "line": 117,
-        "mutator": "StringLiteral",
-        "addedAt": 1785458749164,
-        "reason": "Superseded by the recursive collectByName pass over the same tests/ root, which finds the identical path and dedupes into the same result.",
-        "fingerprint": "6161c9836427"
       },
       {
         "line": 122,
@@ -161,55 +110,6 @@
         "addedAt": 1785458059079,
         "reason": "Pushing a non-existent root just hands a missing path to collectByName, whose readdir catch returns immediately; the found list is identical either way.",
         "fingerprint": "d10b36aa74a5"
-      },
-      {
-        "line": 228,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1785458749164,
-        "reason": "Defensive filter against segments that cannot occur: dirname() never yields empty or '.' segments mid-path, and the sourceDir filter on the next line drops them anyway, so the overlap count is unchanged.",
-        "fingerprint": "da0b5c9986ea"
-      },
-      {
-        "line": 228,
-        "mutator": "LogicalOperator",
-        "addedAt": 1785458749164,
-        "reason": "Same as above — admitting empty/'.' segments to the candidate set cannot raise the overlap, because the sourceDir side filters those out before the lookup.",
-        "fingerprint": "da0b5c9986ea"
-      },
-      {
-        "line": 228,
-        "mutator": "MethodExpression",
-        "addedAt": 1785458749164,
-        "reason": "Dropping the filter entirely only admits empty/'.' segments to the candidate set, which the sourceDir filter never asks about.",
-        "fingerprint": "da0b5c9986ea"
-      },
-      {
-        "line": 228,
-        "mutator": "StringLiteral",
-        "addedAt": 1785458749164,
-        "reason": "Comparing against '' instead of '.' only changes which non-occurring segment is admitted to the candidate set; the sourceDir filter never looks either up.",
-        "fingerprint": "da0b5c9986ea"
-      },
-      {
-        "line": 229,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1785458749164,
-        "reason": "The remaining `candidateSegments.has(s)` still rejects '' and '.', which the candidate set excludes — and no real sourceDir contains them, so the count is unchanged.",
-        "fingerprint": "5dd6536f8f71"
-      },
-      {
-        "line": 229,
-        "mutator": "LogicalOperator",
-        "addedAt": 1785458749164,
-        "reason": "The trailing `candidateSegments.has(s)` conjunct still gates every segment, and the candidate set never contains '' or '.'.",
-        "fingerprint": "5dd6536f8f71"
-      },
-      {
-        "line": 229,
-        "mutator": "StringLiteral",
-        "addedAt": 1785458749164,
-        "reason": "Comparing against '' instead of '.' only affects segments dirname() never produces.",
-        "fingerprint": "5dd6536f8f71"
       }
     ],
     "src/core/tool-args-validation.ts": [
@@ -286,20 +186,6 @@
     ],
     "src/engines/rust.ts": [
       {
-        "line": 17,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1785494668432,
-        "reason": "Redundant typeof guard: Number.isInteger returns false for every non-number, so the next conjunct rejects the same inputs and the default is returned either way.",
-        "fingerprint": "ed9623369ff0"
-      },
-      {
-        "line": 119,
-        "mutator": "MethodExpression",
-        "addedAt": 1785494668432,
-        "reason": "The trailing trim is redundant: the timing regex consumes its own leading whitespace, and the caller already trimmed the description before passing it in.",
-        "fingerprint": "341752f40136"
-      },
-      {
         "line": 135,
         "mutator": "MethodExpression",
         "addedAt": 1785494668432,
@@ -330,20 +216,6 @@
         "addedAt": 1785438919680,
         "reason": "Dropping the cache-miss guard makes copyFileSync throw ENOENT, which the surrounding catch already swallows; no file is created either way, so the observable state is identical.",
         "fingerprint": "c874e65c56b0"
-      },
-      {
-        "line": 78,
-        "mutator": "ObjectLiteral",
-        "addedAt": 1785438919680,
-        "reason": "force:true only suppresses ENOENT when the staging file was never created, and that throw is already swallowed by the enclosing try/catch.",
-        "fingerprint": "c09bade7229d"
-      },
-      {
-        "line": 78,
-        "mutator": "BooleanLiteral",
-        "addedAt": 1785438919680,
-        "reason": "force:false differs only by throwing ENOENT on a missing staging file, which the enclosing try/catch swallows.",
-        "fingerprint": "c09bade7229d"
       }
     ],
     "src/utils/path-safety.ts": [
@@ -366,76 +238,6 @@
     ],
     "src/utils/run-cache.ts": [
       {
-        "line": 53,
-        "mutator": "ObjectLiteral",
-        "addedAt": 1785442302200,
-        "reason": "force only suppresses ENOENT, and this rmSync is already wrapped in its own try/catch; the corrupt file exists at this point, so both forms delete it.",
-        "fingerprint": "49cce4639bd2"
-      },
-      {
-        "line": 53,
-        "mutator": "BooleanLiteral",
-        "addedAt": 1785442302200,
-        "reason": "force:false differs only by throwing ENOENT, which the enclosing try/catch swallows.",
-        "fingerprint": "49cce4639bd2"
-      },
-      {
-        "line": 68,
-        "mutator": "ObjectLiteral",
-        "addedAt": 1785442302200,
-        "reason": "force only suppresses ENOENT, and this rmSync is wrapped in its own try/catch; the entry was just listed from disk.",
-        "fingerprint": "19cdcc9c40cd"
-      },
-      {
-        "line": 68,
-        "mutator": "BooleanLiteral",
-        "addedAt": 1785442302200,
-        "reason": "force:false differs only by throwing ENOENT, which the enclosing try/catch swallows.",
-        "fingerprint": "19cdcc9c40cd"
-      },
-      {
-        "line": 83,
-        "mutator": "ObjectLiteral",
-        "addedAt": 1785442302200,
-        "reason": "force only suppresses ENOENT, and this rmSync is wrapped in its own try/catch; ids are unique so no entry is trimmed twice.",
-        "fingerprint": "f2287acddb43"
-      },
-      {
-        "line": 83,
-        "mutator": "BooleanLiteral",
-        "addedAt": 1785442302200,
-        "reason": "force:false differs only by throwing ENOENT, which the enclosing try/catch swallows.",
-        "fingerprint": "f2287acddb43"
-      },
-      {
-        "line": 79,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1785442302200,
-        "reason": "Forcing the live filter to true adds exactly the already-deleted expired entries, and they always sort oldest-first, so the extra trim iterations target files the TTL pass removed. live.length and the deletion index shift by the same amount, leaving the set of surviving files identical.",
-        "fingerprint": "6923e1520caa"
-      },
-      {
-        "line": 43,
-        "mutator": "ArrayDeclaration",
-        "addedAt": 1785442535584,
-        "reason": "A bogus entry has no createdAt, so `now - undefined` is NaN: NaN > ttlMs is false (no delete) and NaN <= ttlMs is false (excluded from live). It cannot reach any observable path.",
-        "fingerprint": "8d64a30d9de1"
-      },
-      {
-        "line": 45,
-        "mutator": "ArrayDeclaration",
-        "addedAt": 1785442535584,
-        "reason": "Same as line 43: a seeded entry without createdAt yields NaN comparisons that are false on both the TTL-delete and live-filter branches, so it never affects the surviving set.",
-        "fingerprint": "edc91f20def6"
-      },
-      {
-        "line": 78,
-        "mutator": "MethodExpression",
-        "addedAt": 1785442535584,
-        "reason": "Dropping the live filter adds exactly the already-deleted expired entries, which always sort oldest-first; the extra trim iterations target files the TTL pass removed, so live.length and the deletion index shift together and the surviving set is identical.",
-        "fingerprint": "684888c0ebb1"
-      },
-      {
         "line": 184,
         "mutator": "BlockStatement",
         "addedAt": 1786267580118,
@@ -451,13 +253,6 @@
       }
     ],
     "src/utils/suppression.ts": [
-      {
-        "line": 34,
-        "mutator": "StringLiteral",
-        "addedAt": 1785445526500,
-        "reason": "The '' fallback is only a constant suffix in a map key. Any other constant partitions the queue identically, so no caller can observe the difference.",
-        "fingerprint": "684888c0ebb1"
-      },
       {
         "line": 97,
         "mutator": "ConditionalExpression",
@@ -478,30 +273,9 @@
         "addedAt": 1785445526500,
         "reason": "Redundant guard: a non-object raw has no usable `entries`, so the later `typeof raw.entries !== 'object'` check returns the same default file.",
         "fingerprint": "447f8885611e"
-      },
-      {
-        "line": 199,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1785445929558,
-        "reason": "Pure fast path: with an empty set nothing is filtered out, so suppressedCount is 0 and the very next guard (`if (suppressedCount === 0) return ...`) returns the identical value.",
-        "fingerprint": "ed9623369ff0"
-      },
-      {
-        "line": 114,
-        "mutator": "StringLiteral",
-        "addedAt": 1785445929558,
-        "reason": "Node falls back to utf8 for a string payload with an unrecognised encoding option, so writeFileSync produces byte-identical output (verified on this Node version).",
-        "fingerprint": "684888c0ebb1"
       }
     ],
     "src/core/estimate.ts": [
-      {
-        "line": 71,
-        "mutator": "StringLiteral",
-        "addedAt": 1786267580106,
-        "reason": "The initialiser is overwritten on both paths: a successful read assigns the file contents, and a failed read is assigned '' by the catch. Its value is never observable.",
-        "fingerprint": "44b5168b4bee"
-      },
       {
         "line": 75,
         "mutator": "StringLiteral",
@@ -542,53 +316,11 @@
         "fingerprint": "d10b36aa74a5"
       },
       {
-        "line": 101,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1786267580113,
-        "reason": "A one-element array has an undefined second slot, which the `if (!result) continue` guard two lines down rejects identically.",
-        "fingerprint": "b1131a1fd46f"
-      },
-      {
-        "line": 221,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1786267580113,
-        "reason": "Redundant with the `!runner.includes('pytest')` conjunct on the same line, which already excludes the exact string 'pytest'.",
-        "fingerprint": "5fe06b32fbab"
-      },
-      {
-        "line": 221,
-        "mutator": "StringLiteral",
-        "addedAt": 1786267580113,
-        "reason": "Redundant with the `.includes('pytest')` conjunct, which rejects the same runner regardless of what this equality compares against.",
-        "fingerprint": "5fe06b32fbab"
-      },
-      {
         "line": 270,
         "mutator": "ConditionalExpression",
         "addedAt": 1786267580113,
         "reason": "The probe it guards is deterministic for a fixed environment, so re-running it returns the identical interpreter; the cache is a cost optimisation only.",
         "fingerprint": "320c444edac6"
-      },
-      {
-        "line": 224,
-        "mutator": "OptionalChaining",
-        "addedAt": 1786267580113,
-        "reason": "Unreachable null case: this line is only reached when `runner` is truthy, and runner is read from options?.testRunner — so options is defined by then.",
-        "fingerprint": "9f1553c51d04"
-      },
-      {
-        "line": 118,
-        "mutator": "StringLiteral",
-        "addedAt": 1786267580113,
-        "reason": "The fallback feeds extractDiffChange, which returns {undefined, undefined} for any text containing no leading -/+ line — identical to the empty-string result.",
-        "fingerprint": "e1d28af18c2b"
-      },
-      {
-        "line": 124,
-        "mutator": "StringLiteral",
-        "addedAt": 1786267580113,
-        "reason": "`kind` is only ever compared against 'noCoverage'; any other value classifies the mutant as a survivor exactly as 'survived' does.",
-        "fingerprint": "5b84a21658b5"
       },
       {
         "line": 271,
@@ -619,20 +351,6 @@
         "addedAt": 1786267580115,
         "reason": "Redundant fast path: whenever containerId is set, startPromise is set too, so the very next line returns the same already-resolved promise without recreating anything.",
         "fingerprint": "8c468a57ba68"
-      },
-      {
-        "line": 305,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1786267580115,
-        "reason": "With no listener registered, the body is `signal?.removeEventListener('abort', undefined)`, which the DOM spec treats as a no-op, followed by re-assigning undefined.",
-        "fingerprint": "c248f6160f3f"
-      },
-      {
-        "line": 328,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1786267580115,
-        "reason": "With no cache entry, probedAt is undefined and `Date.now() - undefined` is NaN, so the age comparison is false anyway and the probe still runs.",
-        "fingerprint": "78c51c434b18"
       }
     ],
     "src/audit/scope.ts": [

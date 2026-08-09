@@ -112,7 +112,7 @@ export async function applySuppressionArgs(
   relFromRoot: string,
   supPath: string | undefined,
 ): Promise<AddSuppressionsResult> {
-  let added: AddSuppressionsResult = { stamped: 0, unstamped: 0 };
+  let added: AddSuppressionsResult = { stamped: 0, unstamped: 0, rejected: [] };
   if (Array.isArray(args.suppress) && args.suppress.length > 0) {
     added = await addSuppressions(
       wsRoot,

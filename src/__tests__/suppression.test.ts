@@ -543,7 +543,7 @@ describe('suppression', () => {
     expect(removed).toBeInstanceOf(Promise);
     // The add path resolves with its stamped/unstamped tally on every path,
     // including this one — callers may read it without a null check.
-    await expect(added).resolves.toEqual({ stamped: 0, unstamped: 0 });
+    await expect(added).resolves.toEqual({ stamped: 0, unstamped: 0, rejected: [] });
     await expect(removed).resolves.toBeUndefined();
   });
 
@@ -617,9 +617,87 @@ describe('suppression fingerprints (schema v2)', () => {
       const res = await addSuppressions(root, FILE, [
         { line: 2, mutator: 'ConditionalExpression' },
       ]);
-      expect(res).toEqual({ stamped: 1, unstamped: 0 });
+      expect(res).toEqual({ stamped: 1, unstamped: 0, rejected: [] });
       const stored = loadSuppressions(root).get(FILE);
       expect(stored?.[0].fingerprint).toBe(fingerprintOfLine(SRC[1]));
+    });
+
+    /**
+     * A suppression aimed at a line no mutant can occupy.
+     *
+     * Auditing this server against its own source turned up 40 stored entries in
+     * exactly that state. They are worse than useless: stored, they fingerprint
+     * the COMMENT, so `verifySuppressions` reports them clean forever and the
+     * mismatch never surfaces — while the mutant they were written for goes on
+     * counting against the score somewhere else in the file.
+     */
+    describe('refuses a target no mutant can occupy', () => {
+      const COMMENTED = [
+        'export function pick(a: number, b: number): number {', // 1
+        '  // decide which one wins', //                           2
+        '  /* a block comment */', //                              3
+        '', //                                                     4
+        '  /* opened here', //                                     5
+        '   * continued', //                                       6
+        '   */', //                                                7
+        '  return a > b ? a : b; /* and code after a comment */', // 8
+        '}', //                                                    9
+      ];
+
+      beforeEach(() => {
+        mkdirSync(join(root, 'src'), { recursive: true });
+        writeFileSync(join(root, FILE), COMMENTED.join('\n'));
+      });
+
+      it.each([
+        ['a line comment', 2],
+        ['a whole-line block comment', 3],
+        ['a blank line', 4],
+        ['a block-comment opener', 5],
+        ['a block-comment interior', 6],
+        ['a block-comment terminator', 7],
+      ])('does not store a suppression aimed at %s', async (_label, line) => {
+        const res = await addSuppressions(root, FILE, [
+          { line, mutator: 'ConditionalExpression', reason: 'looked equivalent' },
+        ]);
+
+        expect(res.rejected).toEqual([{ line, mutator: 'ConditionalExpression' }]);
+        expect(res.stamped).toBe(0);
+        expect(loadSuppressions(root).get(FILE)).toBeUndefined();
+      });
+
+      it('says which entry it refused and why', async () => {
+        await addSuppressions(root, FILE, [{ line: 2, mutator: 'ConditionalExpression' }]);
+
+        expect(vi.mocked(warn)).toHaveBeenCalledWith(
+          expect.stringContaining('blank or comment-only'),
+        );
+        expect(vi.mocked(warn)).toHaveBeenCalledWith(expect.stringContaining(`${FILE}:2`));
+      });
+
+      it('still accepts code that merely FOLLOWS a comment on the same line', async () => {
+        // Conservative on purpose: refusing a real target loses the reason its
+        // author wrote, which is worse than storing an inert one.
+        const res = await addSuppressions(root, FILE, [
+          { line: 8, mutator: 'ConditionalExpression' },
+        ]);
+
+        expect(res.rejected).toEqual([]);
+        expect(res.stamped).toBe(1);
+        expect(loadSuppressions(root).get(FILE)).toHaveLength(1);
+      });
+
+      it('writes the good entries in a batch that also carries a bad one', async () => {
+        // A rejected entry must not cost the caller the rest of their batch.
+        const res = await addSuppressions(root, FILE, [
+          { line: 2, mutator: 'ConditionalExpression' },
+          { line: 8, mutator: 'EqualityOperator' },
+        ]);
+
+        expect(res.rejected).toEqual([{ line: 2, mutator: 'ConditionalExpression' }]);
+        expect(res.stamped).toBe(1);
+        expect(loadSuppressions(root).get(FILE)).toHaveLength(1);
+      });
     });
 
     it('bumps the stored schema version to 2', async () => {
@@ -633,13 +711,13 @@ describe('suppression fingerprints (schema v2)', () => {
     it('records NO fingerprint when the source file is missing', async () => {
       const res = await addSuppressions(root, 'src/gone.ts', [{ line: 2, mutator: 'X' }]);
       // Observable at the call site, and stored honestly rather than invented.
-      expect(res).toEqual({ stamped: 0, unstamped: 1 });
+      expect(res).toEqual({ stamped: 0, unstamped: 1, rejected: [] });
       expect(loadSuppressions(root).get('src/gone.ts')?.[0].fingerprint).toBeUndefined();
     });
 
     it('records NO fingerprint when the line is past the end of the file', async () => {
       const res = await addSuppressions(root, FILE, [{ line: 9999, mutator: 'X' }]);
-      expect(res).toEqual({ stamped: 0, unstamped: 1 });
+      expect(res).toEqual({ stamped: 0, unstamped: 1, rejected: [] });
       expect(loadSuppressions(root).get(FILE)?.[0].fingerprint).toBeUndefined();
     });
   });
@@ -774,7 +852,7 @@ describe('suppression fingerprints (schema v2)', () => {
       const res = await addSuppressions(root, FILE, [
         { line: 2, mutator: 'ConditionalExpression' },
       ]);
-      expect(res).toEqual({ stamped: 1, unstamped: 0 });
+      expect(res).toEqual({ stamped: 1, unstamped: 0, rejected: [] });
       const stored = loadSuppressions(root).get(FILE);
       expect(stored).toHaveLength(1);
       expect(stored?.[0].reason).toBe('a > b is dominated by the caller guard');
@@ -790,7 +868,7 @@ describe('suppression fingerprints (schema v2)', () => {
       const res = await addSuppressions(root, FILE, [
         { line: 2, mutator: 'ConditionalExpression' },
       ]);
-      expect(res).toEqual({ stamped: 0, unstamped: 1 });
+      expect(res).toEqual({ stamped: 0, unstamped: 1, rejected: [] });
       // An entry we could not re-verify must not keep applying on an older check.
       expect(loadSuppressions(root).get(FILE)?.[0].fingerprint).toBeUndefined();
     });
