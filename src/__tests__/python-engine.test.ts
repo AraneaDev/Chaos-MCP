@@ -892,6 +892,24 @@ describe('PythonEngine (cosmic-ray)', () => {
     expect(mockRunShell).toHaveBeenCalledTimes(1);
   });
 
+  it('runs a step on EXACTLY the minimum budget', async () => {
+    // The floor is `remaining < MIN_STEP_BUDGET_MS`, and at `<=` a budget that
+    // is precisely the minimum is refused — a run that could have completed
+    // dies naming a phase it never attempted. Time is frozen so `remainingMs()`
+    // is exactly the budget rather than a few milliseconds under it; the test
+    // above measures the drain, this one measures the boundary.
+    const frozen = 1_000_000;
+    vi.spyOn(Date, 'now').mockReturnValue(frozen);
+    // Any ordinary failure will do — what matters is WHICH error comes back.
+    mockRunShell.mockRejectedValue(fail({ exit: 1, stderr: 'baseline blew up' }));
+
+    await expect(
+      engine.run('m.py', { workDir: '/tmp/sandbox', timeoutMs: 1000 }),
+    ).rejects.not.toThrow(/audit budget exhausted/i);
+    // The step really was attempted, rather than refused before spawning.
+    expect(mockRunShell).toHaveBeenCalled();
+  });
+
   it('forwards the abort signal into the subcommands', async () => {
     queueRun('');
     const controller = new AbortController();

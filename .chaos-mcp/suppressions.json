@@ -676,6 +676,15 @@
         "reason": "Swapping the disjunction defers to the `e.runId` check for scalars and to loadRun's catch for null — both produce the same miss the guard would have.",
         "fingerprint": "077797c04b9e"
       }
+    ],
+    "src/engines/python.ts": [
+      {
+        "line": 271,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786306345921,
+        "reason": "Rethrowing a MutationToolStartupError as `new Error(error.message)` duplicates what the base class already does: `BaseEngine.onExecFailure` (engines/base.ts:412) rethrows the same class verbatim, and every downstream consumer on the audit path reads only `.message` (`failureText` / `mapHandlerFailure`). The one place that branches on the CLASS is core/estimate.ts, which calls invokeMutationTool directly rather than through this engine. Forcing the check false therefore yields the identical message from the identical path.",
+        "fingerprint": "d15c1e181746"
+      }
     ]
   }
 }
