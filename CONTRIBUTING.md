@@ -4,7 +4,7 @@
 
 ### Prerequisites
 
-- **Node.js** >= 22.0.0
+- **Node.js** >= 22.11.0
 - **npm** (bundled with Node.js)
 
 ### Setup

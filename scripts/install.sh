@@ -14,7 +14,7 @@ set -euo pipefail
 #   4. Verifies the installation
 #   5. Prints quick-start guidance
 
-readonly MIN_NODE_VERSION="22.0.0"
+readonly MIN_NODE_VERSION="22.11.0"
 readonly PACKAGE_NAME="chaos-mcp"
 
 # ── Colors ────────────────────────────────────────────────────────────────────

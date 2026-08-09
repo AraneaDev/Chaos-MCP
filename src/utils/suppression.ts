@@ -255,6 +255,38 @@ function fingerprintAt(lines: string[] | undefined, line: number): string | unde
 }
 
 /**
+ * Whether `text` is a line no mutation engine can ever report a mutant on:
+ * blank, or nothing but comment.
+ *
+ * Every engine reports a mutant at the position of the token it replaced, and a
+ * token is never inside a comment — so a suppression aimed at such a line
+ * suppresses NOTHING. It is not merely useless: it is stored, fingerprinted
+ * against the comment text, and therefore verifies clean forever, which makes
+ * the mismatch invisible to {@link verifySuppressions}. Auditing this server
+ * against itself found 40 entries in that state, several carrying a correct
+ * equivalence argument for a mutant that had moved lines — the argument was
+ * preserved while the suppression silently stopped applying.
+ *
+ * Deliberately conservative: a line is only rejected when NOTHING executable
+ * remains on it. A line that CLOSES a block comment and then declares a
+ * variable is mutable and is accepted, as is one that opens and closes a short
+ * comment before a call. Better to accept an inert entry than to refuse a real
+ * one, because refusing a real one loses the reason its author wrote.
+ */
+export function isNonMutableLine(text: string): boolean {
+  const trimmed = text.trim();
+  if (trimmed === '') return true;
+  if (trimmed.startsWith('//')) return true;
+  // A block-comment opener or interior/closing line. Code AFTER the terminator
+  // on the same line makes it mutable again, so look for what follows `*/`.
+  if (trimmed.startsWith('/*') || trimmed.startsWith('*')) {
+    const end = trimmed.indexOf('*/');
+    return end === -1 || trimmed.slice(end + 2).trim() === '';
+  }
+  return false;
+}
+
+/**
  * Fingerprint the current content of one workspace-relative source line, or
  * `undefined` if it cannot be read. Exported for callers that want to compute
  * the same digest this module stores.
@@ -435,7 +467,7 @@ export function loadSuppressions(
 
 /** Quiesces callers that prefer a Promise return even on the no-op path. */
 function noopPromise(): Promise<AddSuppressionsResult> {
-  return Promise.resolve({ stamped: 0, unstamped: 0 });
+  return Promise.resolve({ stamped: 0, unstamped: 0, rejected: [] });
 }
 
 /** What a write actually managed to record — the unstamped tally is the signal. */
@@ -448,6 +480,16 @@ export interface AddSuppressionsResult {
    * never thrown away — but they count as `unverified` and are not applied.
    */
   unstamped: number;
+  /**
+   * Entries NOT written because their target line is blank or comment-only, so
+   * no engine could ever report a mutant there (see {@link isNonMutableLine}).
+   *
+   * The one case where dropping the caller's reason is right: storing it would
+   * fingerprint the comment, verify clean forever, and suppress nothing —
+   * exactly the invisible state this field exists to prevent. The line number is
+   * almost always off by a few, so the caller is told which entry and why.
+   */
+  rejected: { line: number; mutator: string }[];
 }
 
 /**
@@ -508,9 +550,22 @@ export function addSuppressions(
     // One read for the whole batch; every entry in it targets this same file.
     const lines = readSourceLines(workspaceRoot, relFile);
     const now = Date.now();
-    const summary: AddSuppressionsResult = { stamped: 0, unstamped: 0 };
+    const summary: AddSuppressionsResult = { stamped: 0, unstamped: 0, rejected: [] };
     for (const e of entries) {
       const k = keyOf(e.line, e.mutator);
+      // Refuse a target no mutant can occupy, BEFORE it is stored and stamped.
+      // Storing it is what makes the mistake permanent and invisible.
+      const targetLine = lines?.[e.line - 1];
+      if (targetLine !== undefined && isNonMutableLine(targetLine)) {
+        summary.rejected.push({ line: e.line, mutator: e.mutator });
+        warn(
+          `${relFile}:${e.line} is blank or comment-only, so no mutant is ever reported there — ` +
+            `the "${e.mutator}" suppression for it was NOT stored. Check the line number against ` +
+            'the survivor you meant to suppress; a stored entry would fingerprint the comment and ' +
+            'verify clean forever while suppressing nothing.',
+        );
+        continue;
+      }
       const fingerprint = fingerprintAt(lines, e.line);
       if (fingerprint === undefined) summary.unstamped += 1;
       else summary.stamped += 1;

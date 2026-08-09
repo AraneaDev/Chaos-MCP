@@ -1024,3 +1024,102 @@ describe('compareTriageRows', () => {
     ]);
   });
 });
+
+/**
+ * The sweep-level suppression-drift notes.
+ *
+ * These aggregate each row's drifted / unverified / orphaned counts and are the
+ * only place a sweep tells you the suppressions corpus has rotted. Auditing this
+ * server against its own source found 40 stored suppressions pointing at comment
+ * lines — inert, and invisible for exactly as long as this reporting went
+ * untested. Each total is summed across rows, so every case below spreads the
+ * count over TWO rows: a single-row fixture cannot tell `+` from `-`.
+ */
+describe('formatTriageAsText — suppression drift notes', () => {
+  const counted = (file: string, counts: Partial<TriageRow>): TriageRow => ({
+    file,
+    mutationScore: '90.00%',
+    total: 10,
+    killed: 9,
+    survived: 1,
+    noCoverage: 0,
+    ...counts,
+  });
+
+  it.each([
+    ['driftedSuppressions', 'no longer match the code they were recorded against'],
+    ['unverifiedSuppressions', 'predate content fingerprinting'],
+    ['orphanedSuppressions', 'matched no surviving mutant this run'],
+  ] as const)('sums %s across rows and reports the total', (key, phrase) => {
+    const text = textOf([counted('a.ts', { [key]: 1 }), counted('b.ts', { [key]: 2 })]);
+
+    expect(text).toContain(`Note: 3 suppression(s) ${phrase}`);
+  });
+
+  it('says nothing about drift when no row reported any', () => {
+    const text = textOf([counted('a.ts', {}), counted('b.ts', {})]);
+
+    expect(text).not.toContain('suppression(s)');
+  });
+
+  it('reports all three kinds together when a sweep hits all three', () => {
+    const text = textOf([
+      counted('a.ts', { driftedSuppressions: 1, unverifiedSuppressions: 1 }),
+      counted('b.ts', { orphanedSuppressions: 1 }),
+    ]);
+
+    expect(text).toContain('1 suppression(s) no longer match');
+    expect(text).toContain('1 suppression(s) predate content fingerprinting');
+    expect(text).toContain('1 suppression(s) matched no surviving mutant');
+  });
+});
+
+describe('triage note — what the summary line claims', () => {
+  const plain = (file: string): TriageRow => ({
+    file,
+    mutationScore: '90.00%',
+    total: 10,
+    killed: 9,
+    survived: 1,
+    noCoverage: 0,
+  });
+
+  it('does not claim files were skipped when none were', () => {
+    // `skipped > 0` gates the truncation sentence. Forced open it appends
+    // " Audited 1; 0 skipped by maxFiles." to every ordinary sweep.
+    const payload = buildTriagePayload([plain('a.ts')], [], 1, 0);
+
+    expect(payload.note).toContain('Ranked weakest-first');
+    expect(payload.note).not.toContain('skipped by maxFiles');
+  });
+
+  it('reports the skipped count when maxFiles cut the sweep short', () => {
+    const payload = buildTriagePayload([plain('a.ts')], [], 3, 2);
+
+    expect(payload.note).toContain('Audited 1; 2 skipped by maxFiles.');
+  });
+
+  it('reports the ranking note whenever anything was discovered', () => {
+    // The `discovered === 0` arm returns a "nothing found" sentence instead.
+    // Forced open, a sweep that audited files claims it found none.
+    const payload = buildTriagePayload([plain('a.ts')], [], 1, 0);
+
+    expect(payload.note).not.toContain('No supported source files found');
+  });
+
+  it('does not blame unaudited files when every file was graded', () => {
+    // Part of the gate's fail-closed note. Forced open it appends
+    // " Note: 0 file(s) were never audited, so the gate fails closed."
+    const payload = buildTriagePayload([plain('a.ts')], [], 1, 0, undefined, 50, []);
+
+    expect(payload.gate?.passed).toBe(true);
+    expect(payload.note).not.toContain('were never audited');
+  });
+
+  it('says how many files were never audited when the budget ran out', () => {
+    const payload = buildTriagePayload([plain('a.ts')], [], 2, 0, undefined, 50, ['b.ts']);
+
+    expect(payload.note).toContain('Note: 1 file(s) were never audited');
+    expect(payload.gate?.passed).toBe(false);
+  });
+});

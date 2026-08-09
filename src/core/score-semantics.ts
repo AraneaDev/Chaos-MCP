@@ -134,6 +134,7 @@ export function suppressionDriftNotes(
   drifted?: number,
   unverified?: number,
   orphaned?: number,
+  rejected?: number,
 ): string[] {
   const notes: string[] = [];
   if (drifted !== undefined && drifted > 0) {
@@ -151,5 +152,17 @@ export function suppressionDriftNotes(
       `${orphaned} suppression(s) matched no surviving mutant this run and had no effect — the mutant may now be killed, its line/mutator may no longer exist (a mutation-tool upgrade can rename operators), or a \`mutatorDenylist\` entry may have stopped it being generated. Chaos-MCP cannot tell which; the entry is inert either way, so drop it with \`unsuppress\` unless you know the mutant still exists.`,
     );
   }
+  // Refused at WRITE time, so unlike the three above there is no stored entry
+  // to re-confirm — and no later run will mention it again. Lives here, beside
+  // its siblings, so the text and JSON projections cannot drift on it: both
+  // render this one list.
+  if (rejected !== undefined && rejected > 0) {
+    notes.push(
+      `${rejected} suppression(s) were NOT stored: their target line is blank or comment-only, ` +
+        'where no engine reports a mutant. Check the line number against the survivor you meant ' +
+        'to suppress.',
+    );
+  }
+
   return notes;
 }

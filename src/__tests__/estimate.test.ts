@@ -53,6 +53,17 @@ describe('estimateNeedsSandbox', () => {
     expect(estimateNeedsSandbox('python', false)).toBe(false);
     expect(estimateNeedsSandbox('php', false)).toBe(false);
   });
+
+  it('falls back to "no sandbox" for a project type the registry does not carry', () => {
+    // `projectType` reaches here from JSON-RPC arguments, so an unrecognised
+    // value is reachable input rather than a type error. Reading the engine
+    // descriptor without the optional link throws a TypeError instead of
+    // degrading — the same missing guard already found in core/enrich.ts and
+    // core/format.ts, on paths every audit runs.
+    expect(estimateNeedsSandbox('cobol' as never, false)).toBe(false);
+    // …and `withTiming` still wins, because timing always needs a sandbox.
+    expect(estimateNeedsSandbox('cobol' as never, true)).toBe(true);
+  });
 });
 
 describe('estimateAudit', () => {
@@ -742,6 +753,35 @@ describe('estimateAudit withTiming', () => {
     expect(result.fitsBudget).toBeUndefined();
     expect(result.recommendation).toContain('60000ms estimation cap');
     expect(result.recommendation).not.toContain('cannot fit this budget');
+  });
+
+  it('does not grade the budget on a baseline failure that was not a timeout', async () => {
+    // The conjunction is what ties this branch to a TIMEOUT. A crash or a
+    // non-zero exit says nothing about whether the suite fits the budget, so
+    // reporting `budgetMs` for one publishes a measurement that never happened.
+    // This is the case where the operands DISAGREE — the error is an
+    // ExecFailureError but its code is not TIMEOUT — which is the only input
+    // that separates `&&` from `||` or from either half forced true.
+    mockRunShell.mockRejectedValue(
+      new ExecFailureError(
+        { stdout: '', stderr: 'boom', exit: 1, signal: null },
+        'npx vitest exited 1',
+      ),
+    );
+
+    const result = await estimateAudit({
+      absFile: '/ws/src/a.ts',
+      relFile: 'src/a.ts',
+      projectType: 'typescript',
+      workDir: '/sandbox',
+      withTiming: true,
+      env: baseEnv(),
+      timeoutMs: 30_000,
+    });
+
+    expect(result.budgetMs).toBeUndefined();
+    expect(result.fitsBudget).toBeUndefined();
+    expect(result.note).toContain('timing unavailable');
   });
 
   it('falls back to "timing unavailable" for a baseline timeout when no budget was given', async () => {

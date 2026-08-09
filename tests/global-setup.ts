@@ -42,15 +42,28 @@ function rebuild(reason: string): void {
 }
 
 async function globalSetup(): Promise<void> {
+  // A MISSING build is rebuilt unconditionally — before the Stryker skip below.
+  //
+  // The sandbox a mutation run copies into excludes `build/` (it is in
+  // COMMON_IGNORE_DIRS as generated output), and six suites spawn
+  // `node ./build/index.js`: build-output, cli-help, cli-smoke, cli-version,
+  // cli-validate-config, integration. With the Stryker guard first, those six
+  // could never be repaired inside a sandbox — they failed the dry run as
+  // "There were failed tests in the initial test run", which reads like a
+  // broken suite rather than a missing artefact.
+  //
+  // The cost this guard exists to avoid is the mtime SCAN below (a `git
+  // ls-files` plus a stat per source file, per mutant). Building once when the
+  // output is absent is not that cost, and it happens at most once per sandbox.
+  if (!existsSync(OUTPUT)) {
+    rebuild(`${OUTPUT} missing`);
+    return;
+  }
+
   // Stryker skip: process.env is populated BEFORE vitest forks workers, so
   // this guard fires once per Stryker mutant-test invocation and avoids
   // hundreds of wasted rebuild cycles during a mutation run.
   if (Object.keys(process.env).some((k) => k.includes('STRYKER'))) {
-    return;
-  }
-
-  if (!existsSync(OUTPUT)) {
-    rebuild(`build/${OUTPUT} missing`);
     return;
   }
 

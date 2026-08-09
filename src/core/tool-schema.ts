@@ -385,6 +385,7 @@ export const TOOL_DEFINITION = {
       driftedSuppressions: { type: 'integer' },
       unverifiedSuppressions: { type: 'integer' },
       orphanedSuppressions: { type: 'integer' },
+      rejectedSuppressions: { type: 'integer' },
       gate: {
         type: 'object',
         properties: {
@@ -565,6 +566,7 @@ export const TRIAGE_TOOL_DEFINITION = {
             driftedSuppressions: { type: 'integer' },
             unverifiedSuppressions: { type: 'integer' },
             orphanedSuppressions: { type: 'integer' },
+            rejectedSuppressions: { type: 'integer' },
             passed: { type: 'boolean' },
             // Present (false) only when the file's audit was truncated by the
             // time budget; its score then covers only the completed batches.

@@ -131,6 +131,24 @@ describe('computeChangedRanges', () => {
     });
   });
 
+  it('does not read a SIGNAL death as evidence about the repository', async () => {
+    // The case above throws a bare Error, which never enters the
+    // `instanceof ExecFailureError` block at all — so it cannot exercise the
+    // `exit !== null` test inside it. This one does: a real ExecFailureError,
+    // an unrecognised code, and NO exit status, which is what an externally
+    // killed git leaves behind. Treating that as an "exit" hands the caller a
+    // `{ kind: 'exit', exit: null }` that the work-tree probe reads as a
+    // non-zero exit — and tells a user whose git was killed that their
+    // directory is not a git repository.
+    mockRunShell.mockRejectedValueOnce(failWith('SIGKILL', 'git was killed by a signal'));
+
+    expect(await computeChangedRanges('a.ts', '/w', 'HEAD')).toEqual({
+      kind: 'git-failed',
+      reason: 'other',
+      message: 'git was killed by a signal',
+    });
+  });
+
   /**
    * Cancellation must ESCAPE rather than become a result kind. Every cancel
    * path in this codebase funnels through `isCancel` so the handlers report the
@@ -464,6 +482,21 @@ describe('listChangedFiles', () => {
       .mockResolvedValueOnce(ok('abc123\n'))
       .mockResolvedValueOnce(ok('src/a.ts\n'))
       .mockRejectedValueOnce(aborted);
+    await expect(listChangedFiles('/ws', 'main')).rejects.toBe(aborted);
+  });
+
+  /**
+   * The third of the three cancellable calls in this function, and the only one
+   * whose catch turns a failure into `bad-ref`. Swallowing a cancel there tells
+   * a user who pressed stop that the ref they named is unusable — and, worse,
+   * hands the sweep a normal-looking result for a run that was abandoned.
+   */
+  it('re-throws a cancellation from the name-only diff instead of returning bad-ref', async () => {
+    const aborted = failWith('ABORTED', 'Command was cancelled: git');
+    mockRunShell
+      .mockResolvedValueOnce(ok('true\n')) // rev-parse work-tree
+      .mockResolvedValueOnce(ok('abc123\n')) // merge-base
+      .mockRejectedValueOnce(aborted); // diff --name-only
     await expect(listChangedFiles('/ws', 'main')).rejects.toBe(aborted);
   });
 

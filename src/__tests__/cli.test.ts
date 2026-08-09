@@ -159,13 +159,45 @@ describe('cli', () => {
     });
 
     it('exits 1 on the major version directly below the floor', () => {
-      // NOTE: this does NOT exercise the `currentMajor === minMajor` arm, despite
-      // what its previous name claimed — 21 < 22 is decided by the first clause
-      // alone. That second arm is in fact unreachable while MIN_NODE_VERSION has
-      // a minor of 0, since `currentMinor < 0` can never hold. It becomes live
-      // (and testable) the moment the floor gains a non-zero minor.
+      // Decided by the FIRST clause alone (21 < 22), so it says nothing about
+      // the same-major arm — that one is covered on its own below.
       setNode('21.9.0');
       expect(() => checkNodeVersion()).toThrow(ExitError);
+    });
+
+    // ── The same-major arm ──
+    //
+    // `currentMajor === minMajor && currentMinor < minMinor` was unreachable
+    // while the floor was 22.0.0: no minor is below zero, so the whole second
+    // clause was dead and a 22.10 runtime passed a check that claims to require
+    // 22.11. The floor now carries a non-zero minor, which is what makes these
+    // two cases exist at all — and what makes the boundary meaningful.
+
+    it('exits 1 on a runtime whose MINOR is below the floor', () => {
+      setNode('22.10.9');
+      expect(() => checkNodeVersion()).toThrow(ExitError);
+      expect(errSpy).toHaveBeenCalledWith(
+        expect.stringContaining(`requires Node.js >= ${MIN_NODE_VERSION}`),
+      );
+      expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('you are running 22.10.9'));
+    });
+
+    it('accepts the minor directly AT the floor, and the one above it', () => {
+      // The `<` boundary: equal is supported, one higher is supported. A `<=`
+      // here would reject the very version the package declares it requires.
+      for (const version of ['22.11.0', '22.12.0']) {
+        setNode(version);
+        expect(() => checkNodeVersion()).not.toThrow();
+      }
+      expect(exitSpy).not.toHaveBeenCalled();
+    });
+
+    it('accepts a HIGHER major even when its minor is below the floor minor', () => {
+      // 24.0 is newer than 22.11 despite `0 < 11`; the minor comparison must stay
+      // gated on the majors being equal, or every early x.0 release is rejected.
+      setNode('24.0.0');
+      expect(() => checkNodeVersion()).not.toThrow();
+      expect(exitSpy).not.toHaveBeenCalled();
     });
 
     it('accepts a runtime above the floor in both major and minor', () => {

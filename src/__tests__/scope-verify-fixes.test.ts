@@ -14,6 +14,7 @@ vi.mock('../utils/git-diff.js', () => ({ computeChangedRanges: vi.fn() }));
 import { computeChangedRanges } from '../utils/git-diff.js';
 import { computeScope } from '../audit/scope.js';
 import { auditFile } from '../audit/audit-file.js';
+import { AuditDeadline } from '../utils/deadline.js';
 import { saveRun } from '../utils/run-cache.js';
 import type { EnvironmentInfo } from '../utils/project-detector.js';
 import type { ToolArgs } from '../core/tool-args-validation.js';
@@ -477,5 +478,57 @@ describe('auditFile — empty lineRanges', () => {
     await auditFile({ ...baseInput, engine: { run } as never, lineRanges: [{ start: 2, end: 4 }] });
     const opts = run.mock.calls[0][1] as { lineRanges?: unknown };
     expect(opts.lineRanges).toEqual([{ start: 2, end: 4 }]);
+  });
+});
+
+// ── The caller's controls reach the git subprocess ───────────────────────────
+/**
+ * `resolveDiffScope` builds one `GitOptions` object — `{ signal, timeoutMs }` —
+ * and that is the ONLY channel by which a cancel reaches the git child process
+ * and by which the audit's remaining wall-clock budget bounds it. Nothing read
+ * the object back, so emptying it changed no answer: git calls would have
+ * ignored a cancel and taken a fresh full timeout each.
+ *
+ * Asserted against the mocked `computeChangedRanges` rather than real git,
+ * because the alternative — grading a 1ms budget by whether git actually timed
+ * out — races a process that usually beats the timer.
+ */
+describe('computeScope — GitOptions threading', () => {
+  const optionsOf = () => mockDiff.mock.calls[0][3] as { signal?: AbortSignal; timeoutMs?: number };
+
+  beforeEach(() => mockDiff.mockResolvedValue({ kind: 'no-changes' }));
+
+  it('forwards the caller signal and what remains of the deadline', async () => {
+    const signal = new AbortController().signal;
+    const deadline = new AuditDeadline(60_000);
+
+    await computeScope({ diffBase: 'main' }, FILE, env(), 'typescript', {}, FILE, {
+      signal,
+      deadline,
+    });
+
+    const opts = optionsOf();
+    expect(opts.signal).toBe(signal);
+    // The remaining budget, not the configured one: discovery and sandboxing
+    // spend from the same clock before the diff runs.
+    expect(opts.timeoutMs).toBeGreaterThan(0);
+    expect(opts.timeoutMs).toBeLessThanOrEqual(60_000);
+  });
+
+  it('leaves the timeout unset when the caller passes no deadline', async () => {
+    // `gitCtx.deadline` is optional — the cancel-only context is a real call
+    // shape — and `gitRunner` reads an undefined timeout as "use the default".
+    // Without the second optional link this throws before git is ever reached.
+    await computeScope({ diffBase: 'main' }, FILE, env(), 'typescript', {}, FILE, {
+      signal: new AbortController().signal,
+    });
+
+    expect(optionsOf().timeoutMs).toBeUndefined();
+  });
+
+  it('passes an options object even when no context was supplied at all', async () => {
+    await computeScope({ diffBase: 'main' }, FILE, env(), 'typescript', {}, FILE);
+
+    expect(optionsOf()).toEqual({ signal: undefined, timeoutMs: undefined });
   });
 });

@@ -410,6 +410,8 @@ export function formatResultAsText(
     unverifiedSuppressions?: number;
     /** Applied suppressions whose (line, mutator) matched no SURVIVING mutant this run. */
     orphanedSuppressions?: number;
+    /** Entries a `suppress` argument asked for that the write refused to store. */
+    rejectedSuppressions?: number;
     /**
      * The gate verdict for this run, when the caller passed `minScore`. Must be
      * the same {@link GateResult} the payload carries — pass `evaluateGate`'s
@@ -466,6 +468,7 @@ export function formatResultAsText(
     opts.driftedSuppressions,
     opts.unverifiedSuppressions,
     opts.orphanedSuppressions,
+    opts.rejectedSuppressions,
   )) {
     lines.push(`Note: ${n}`);
   }
@@ -571,6 +574,8 @@ export interface ResultPayload {
    * `audit/suppression-io.ts`).
    */
   orphanedSuppressions?: number;
+  /** Entries a `suppress` argument asked for that the write refused to store. */
+  rejectedSuppressions?: number;
   gate?: GateResult;
   /** Mutants excluded from the score because the mutated code never scored (audit I3). */
   incompetent?: number;
@@ -591,6 +596,8 @@ export interface ResultPayloadOpts {
   driftedSuppressions?: number;
   unverifiedSuppressions?: number;
   orphanedSuppressions?: number;
+  /** Entries a `suppress` argument asked for that the write refused to store. */
+  rejectedSuppressions?: number;
   gate?: GateResult;
 }
 
@@ -699,10 +706,16 @@ export function buildResultPayload(
   if (opts.orphanedSuppressions && opts.orphanedSuppressions > 0) {
     payload.orphanedSuppressions = opts.orphanedSuppressions;
   }
+  // The field only. The NOTE comes from `suppressionDriftNotes` below, so the
+  // text and JSON projections render one wording from one place.
+  if (opts.rejectedSuppressions && opts.rejectedSuppressions > 0) {
+    payload.rejectedSuppressions = opts.rejectedSuppressions;
+  }
   for (const n of suppressionDriftNotes(
     opts.driftedSuppressions,
     opts.unverifiedSuppressions,
     opts.orphanedSuppressions,
+    opts.rejectedSuppressions,
   )) {
     payload.note += ` ${n}`;
   }

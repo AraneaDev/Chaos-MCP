@@ -543,7 +543,7 @@ describe('suppression', () => {
     expect(removed).toBeInstanceOf(Promise);
     // The add path resolves with its stamped/unstamped tally on every path,
     // including this one — callers may read it without a null check.
-    await expect(added).resolves.toEqual({ stamped: 0, unstamped: 0 });
+    await expect(added).resolves.toEqual({ stamped: 0, unstamped: 0, rejected: [] });
     await expect(removed).resolves.toBeUndefined();
   });
 
@@ -617,9 +617,106 @@ describe('suppression fingerprints (schema v2)', () => {
       const res = await addSuppressions(root, FILE, [
         { line: 2, mutator: 'ConditionalExpression' },
       ]);
-      expect(res).toEqual({ stamped: 1, unstamped: 0 });
+      expect(res).toEqual({ stamped: 1, unstamped: 0, rejected: [] });
       const stored = loadSuppressions(root).get(FILE);
       expect(stored?.[0].fingerprint).toBe(fingerprintOfLine(SRC[1]));
+    });
+
+    /**
+     * A suppression aimed at a line no mutant can occupy.
+     *
+     * Auditing this server against its own source turned up 40 stored entries in
+     * exactly that state. They are worse than useless: stored, they fingerprint
+     * the COMMENT, so `verifySuppressions` reports them clean forever and the
+     * mismatch never surfaces — while the mutant they were written for goes on
+     * counting against the score somewhere else in the file.
+     */
+    describe('refuses a target no mutant can occupy', () => {
+      const COMMENTED = [
+        'export function pick(a: number, b: number): number {', // 1
+        '  // decide which one wins', //                           2
+        '  /* a block comment */', //                              3
+        '', //                                                     4
+        '  /* opened here', //                                     5
+        '   * continued', //                                       6
+        '   */', //                                                7
+        '  return a > b ? a : b; /* and code after a comment */', // 8
+        '}', //                                                    9
+      ];
+
+      beforeEach(() => {
+        mkdirSync(join(root, 'src'), { recursive: true });
+        writeFileSync(join(root, FILE), COMMENTED.join('\n'));
+      });
+
+      it.each([
+        ['a line comment', 2],
+        ['a whole-line block comment', 3],
+        ['a blank line', 4],
+        ['a block-comment opener', 5],
+        ['a block-comment interior', 6],
+        ['a block-comment terminator', 7],
+      ])('does not store a suppression aimed at %s', async (_label, line) => {
+        const res = await addSuppressions(root, FILE, [
+          { line, mutator: 'ConditionalExpression', reason: 'looked equivalent' },
+        ]);
+
+        expect(res.rejected).toEqual([{ line, mutator: 'ConditionalExpression' }]);
+        expect(res.stamped).toBe(0);
+        expect(loadSuppressions(root).get(FILE)).toBeUndefined();
+      });
+
+      it('says which entry it refused and why', async () => {
+        await addSuppressions(root, FILE, [{ line: 2, mutator: 'ConditionalExpression' }]);
+
+        expect(vi.mocked(warn)).toHaveBeenCalledWith(
+          expect.stringContaining('blank or comment-only'),
+        );
+        expect(vi.mocked(warn)).toHaveBeenCalledWith(expect.stringContaining(`${FILE}:2`));
+      });
+
+      it('still accepts code that merely FOLLOWS a comment on the same line', async () => {
+        // Conservative on purpose: refusing a real target loses the reason its
+        // author wrote, which is worse than storing an inert one.
+        const res = await addSuppressions(root, FILE, [
+          { line: 8, mutator: 'ConditionalExpression' },
+        ]);
+
+        expect(res.rejected).toEqual([]);
+        expect(res.stamped).toBe(1);
+        expect(loadSuppressions(root).get(FILE)).toHaveLength(1);
+      });
+
+      it('accepts a line that OPENS with a comment and then runs code', async () => {
+        // The case above starts with code, so it never reaches the block-comment
+        // branch at all. This one does: the line begins `/*`, and what decides
+        // it is whether anything survives the terminator. Treating every line
+        // that starts with a comment as unmutable would refuse a real target.
+        mkdirSync(join(root, 'src'), { recursive: true });
+        writeFileSync(
+          join(root, FILE),
+          ['export const f = () => {', '  /* fast path */ return a > b;', '};'].join('\n'),
+        );
+
+        const res = await addSuppressions(root, FILE, [
+          { line: 2, mutator: 'ConditionalExpression' },
+        ]);
+
+        expect(res.rejected).toEqual([]);
+        expect(res.stamped).toBe(1);
+      });
+
+      it('writes the good entries in a batch that also carries a bad one', async () => {
+        // A rejected entry must not cost the caller the rest of their batch.
+        const res = await addSuppressions(root, FILE, [
+          { line: 2, mutator: 'ConditionalExpression' },
+          { line: 8, mutator: 'EqualityOperator' },
+        ]);
+
+        expect(res.rejected).toEqual([{ line: 2, mutator: 'ConditionalExpression' }]);
+        expect(res.stamped).toBe(1);
+        expect(loadSuppressions(root).get(FILE)).toHaveLength(1);
+      });
     });
 
     it('bumps the stored schema version to 2', async () => {
@@ -633,13 +730,13 @@ describe('suppression fingerprints (schema v2)', () => {
     it('records NO fingerprint when the source file is missing', async () => {
       const res = await addSuppressions(root, 'src/gone.ts', [{ line: 2, mutator: 'X' }]);
       // Observable at the call site, and stored honestly rather than invented.
-      expect(res).toEqual({ stamped: 0, unstamped: 1 });
+      expect(res).toEqual({ stamped: 0, unstamped: 1, rejected: [] });
       expect(loadSuppressions(root).get('src/gone.ts')?.[0].fingerprint).toBeUndefined();
     });
 
     it('records NO fingerprint when the line is past the end of the file', async () => {
       const res = await addSuppressions(root, FILE, [{ line: 9999, mutator: 'X' }]);
-      expect(res).toEqual({ stamped: 0, unstamped: 1 });
+      expect(res).toEqual({ stamped: 0, unstamped: 1, rejected: [] });
       expect(loadSuppressions(root).get(FILE)?.[0].fingerprint).toBeUndefined();
     });
   });
@@ -774,7 +871,7 @@ describe('suppression fingerprints (schema v2)', () => {
       const res = await addSuppressions(root, FILE, [
         { line: 2, mutator: 'ConditionalExpression' },
       ]);
-      expect(res).toEqual({ stamped: 1, unstamped: 0 });
+      expect(res).toEqual({ stamped: 1, unstamped: 0, rejected: [] });
       const stored = loadSuppressions(root).get(FILE);
       expect(stored).toHaveLength(1);
       expect(stored?.[0].reason).toBe('a > b is dominated by the caller guard');
@@ -790,7 +887,7 @@ describe('suppression fingerprints (schema v2)', () => {
       const res = await addSuppressions(root, FILE, [
         { line: 2, mutator: 'ConditionalExpression' },
       ]);
-      expect(res).toEqual({ stamped: 0, unstamped: 1 });
+      expect(res).toEqual({ stamped: 0, unstamped: 1, rejected: [] });
       // An entry we could not re-verify must not keep applying on an older check.
       expect(loadSuppressions(root).get(FILE)?.[0].fingerprint).toBeUndefined();
     });
@@ -1071,7 +1168,32 @@ describe("the repository's own suppressions file", () => {
   // reported by the audit itself and re-confirmed through the normal
   // suppression flow, and failing an unrelated PR's suite over it would only
   // teach people to delete the guard.
-  it('carries no unverified entries', () => {
+  /**
+   * Skipped under a mutation run.
+   *
+   * `repoRoot` is derived from this file's own location, so under StrykerJS it
+   * resolves to Stryker's sandbox — where the file being audited has been
+   * INSTRUMENTED. Its source lines are no longer the ones the corpus recorded
+   * (line 284 of a mutated `suppression.ts` reads `})());`), so this check
+   * measures Stryker's rewrite rather than the repository, and the audit dies in
+   * its dry run with "There were failed tests in the initial test run" — which
+   * reads like a broken suite rather than a check that cannot apply here.
+   *
+   * That made `src/utils/suppression.ts` unauditable: every attempt to measure
+   * the file failed before generating a single mutant.
+   *
+   * This is a corpus-hygiene guard for ordinary runs, not a behavioural test, so
+   * skipping it under Stryker costs no coverage of the code under test.
+   */
+  // Detected by PATH, not by env: Stryker sets no `STRYKER*` variable during the
+  // dry run (which is also why `tests/global-setup.ts` still rebuilds there), so
+  // an env probe misses exactly the run that breaks this check. Every Stryker
+  // sandbox lives under `.stryker-tmp/sandbox-*`, and `repoRoot` is derived from
+  // this file's own location — so the marker is in the path whenever the corpus
+  // being read is a sandbox copy rather than the repository.
+  const inStrykerSandbox = repoRoot.includes('.stryker-tmp');
+
+  it.skipIf(inStrykerSandbox)('carries no unverified entries', () => {
     let applied = 0;
     let unverified = 0;
     for (const [relFile, entries] of loadSuppressions(repoRoot)) {
@@ -1084,5 +1206,205 @@ describe("the repository's own suppressions file", () => {
     // exists to break. Prove the corpus was actually read first.
     expect(applied).toBeGreaterThan(0);
     expect(unverified).toBe(0);
+  });
+});
+
+/**
+ * Guards on the read and merge paths that nothing was exercising.
+ *
+ * These all decide what a STORED entry becomes when it is read back or
+ * re-confirmed. A wrong answer here is invisible at the call site: the entry
+ * still loads, it just carries a field it should not, or loses one it should
+ * have kept.
+ */
+describe('suppression storage — entry hygiene', () => {
+  const FILE = 'src/calc.ts';
+  const SRC = ['export const a = 1;', 'if (a > 0) doThing();', 'export const b = 2;'];
+
+  const writeSource = () => {
+    mkdirSync(join(root, 'src'), { recursive: true });
+    writeFileSync(join(root, FILE), SRC.join('\n'));
+  };
+
+  const rawEntries = (): Record<string, { line: number; mutator: string; reason?: string }[]> =>
+    (
+      JSON.parse(readFileSync(supFile(root), 'utf8')) as {
+        entries: Record<string, { line: number; mutator: string; reason?: string }[]>;
+      }
+    ).entries;
+
+  beforeEach(writeSource);
+
+  it('prefers the portable key when a legacy-spelled one also exists', () => {
+    // A file committed from Windows can leave `src\calc.ts` behind while the
+    // POSIX key is also present. The fast path must win: without it the loop
+    // finds the BACKSLASH key first and migrates that list onto the portable
+    // key, silently discarding whatever the portable key already held.
+    writeRawSuppressions(
+      root,
+      JSON.stringify({
+        version: 2,
+        entries: {
+          'src/calc.ts': [{ line: 2, mutator: 'Portable', addedAt: 1 }],
+          'src\\calc.ts': [{ line: 2, mutator: 'Legacy', addedAt: 1 }],
+        },
+      }),
+    );
+
+    return addSuppressions(root, FILE, [{ line: 2, mutator: 'Added' }]).then(() => {
+      const entries = rawEntries();
+      expect(entries['src/calc.ts'].map((e) => e.mutator).sort()).toEqual(['Added', 'Portable']);
+      // The legacy key is left exactly as it was — it was never this call's list.
+      expect(entries['src\\calc.ts']).toHaveLength(1);
+    });
+  });
+
+  it.each([
+    ['a line below the first', 0],
+    ['a fractional line', 1.5],
+  ])('stores %s without a fingerprint rather than stamping the wrong text', async (_l, line) => {
+    // `fingerprintAt` rejects a non-integer and anything below 1 before
+    // indexing. Dropping either guard indexes `lines[-1]` or `lines[0.5]`,
+    // which is undefined — and hashing that would stamp every such entry with
+    // one identical digest that matches no source line anywhere.
+    const res = await addSuppressions(root, FILE, [{ line, mutator: 'Cond' }]);
+
+    expect(res.unstamped).toBe(1);
+    expect(res.stamped).toBe(0);
+    expect(loadSuppressions(root).get(FILE)?.[0].fingerprint).toBeUndefined();
+  });
+
+  it('drops a non-string reason instead of loading it', async () => {
+    writeRawSuppressions(
+      root,
+      JSON.stringify({
+        version: 2,
+        entries: { [FILE]: [{ line: 2, mutator: 'Cond', addedAt: 1, reason: 7 }] },
+      }),
+    );
+
+    const entry = loadSuppressions(root).get(FILE)?.[0];
+
+    expect(entry).toBeDefined();
+    expect(Object.keys(entry as object)).not.toContain('reason');
+  });
+
+  it('keeps the previous reason when a re-confirmation supplies an empty one', async () => {
+    // `mergeReason` treats '' as "no new argument". A hand-written equivalence
+    // argument is real human work; an empty string must not erase it.
+    await addSuppressions(root, FILE, [{ line: 2, mutator: 'Cond', reason: 'unreachable guard' }]);
+    await addSuppressions(root, FILE, [{ line: 2, mutator: 'Cond', reason: '' }]);
+
+    expect(loadSuppressions(root).get(FILE)?.[0].reason).toBe('unreachable guard');
+  });
+
+  it('omits reason and fingerprint entirely when it has neither', async () => {
+    // Both are optional keys. Assigning them unconditionally writes
+    // `reason: undefined` into the JSON document, where it serialises away —
+    // but the in-memory entry a caller reads back would carry the key.
+    await addSuppressions(root, 'src/missing.ts', [{ line: 2, mutator: 'Cond' }]);
+
+    const entry = loadSuppressions(root).get('src/missing.ts')?.[0];
+
+    expect(Object.keys(entry as object).sort()).toEqual(['addedAt', 'line', 'mutator']);
+  });
+
+  it('survives a junk element in a stored list on both write paths', async () => {
+    // A truncated or hand-edited document can hold `[null]`. Indexing it must
+    // skip the junk rather than dereference it — the failure mode was an
+    // opaque "Failed to update suppression list".
+    writeRawSuppressions(
+      root,
+      JSON.stringify({
+        version: 2,
+        entries: { [FILE]: [null, { line: 2, mutator: 'Keep', addedAt: 1 }] },
+      }),
+    );
+
+    // The add path only has to SKIP the junk while indexing; it does not
+    // rewrite the list, so the null is still there afterwards. What matters is
+    // that it neither threw nor lost the real entry.
+    await addSuppressions(root, FILE, [{ line: 2, mutator: 'Added' }]);
+    expect(
+      rawEntries()
+        [FILE].filter(Boolean)
+        .map((e) => e.mutator)
+        .sort(),
+    ).toEqual(['Added', 'Keep']);
+
+    // The remove path rebuilds the list through a filter, which is where the
+    // junk is actually repaired away.
+    await removeSuppressions(root, FILE, [{ line: 2, mutator: 'Added' }]);
+    expect(rawEntries()[FILE]).toEqual([expect.objectContaining({ line: 2, mutator: 'Keep' })]);
+  });
+});
+
+describe('suppression storage — boundaries and schema', () => {
+  const FILE = 'src/edge.ts';
+  const SRC = ['export const a = 1;', 'if (a > 0) doThing();', 'export const last = 2;'];
+
+  beforeEach(() => {
+    mkdirSync(join(root, 'src'), { recursive: true });
+    writeFileSync(join(root, FILE), SRC.join('\n'));
+  });
+
+  it('stamps a suppression on the LAST line of the file', async () => {
+    // `line > lines.length` is the range check. At `>=` the final line of every
+    // file becomes unstampable — and an unstamped entry is never applied, so
+    // the guard on the last line of a file would silently stop working.
+    const res = await addSuppressions(root, FILE, [{ line: SRC.length, mutator: 'Cond' }]);
+
+    expect(res.stamped).toBe(1);
+    expect(res.unstamped).toBe(0);
+    expect(loadSuppressions(root).get(FILE)?.[0].fingerprint).toBe(
+      fingerprintOfLine(SRC[SRC.length - 1]),
+    );
+  });
+
+  it('rejects a line one past the end', async () => {
+    const res = await addSuppressions(root, FILE, [{ line: SRC.length + 1, mutator: 'Cond' }]);
+
+    expect(res.stamped).toBe(0);
+    expect(res.unstamped).toBe(1);
+  });
+
+  it('repairs a truthy non-object element on the remove path', async () => {
+    // The filter is `e && typeof e === 'object'`. A null is caught by the first
+    // half; a STRING is truthy and only the typeof half rejects it — without
+    // which `keyOf(e.line, e.mutator)` keys it as "undefined undefined", never
+    // matches the drop set, and the junk is written back forever.
+    writeRawSuppressions(
+      root,
+      JSON.stringify({
+        version: 2,
+        entries: {
+          [FILE]: [
+            'junk',
+            { line: 2, mutator: 'Drop', addedAt: 1 },
+            { line: 3, mutator: 'Keep', addedAt: 1 },
+          ],
+        },
+      }),
+    );
+
+    await removeSuppressions(root, FILE, [{ line: 2, mutator: 'Drop' }]);
+
+    const raw = JSON.parse(readFileSync(supFile(root), 'utf8')) as {
+      entries: Record<string, { mutator: string }[]>;
+    };
+    expect(raw.entries[FILE]).toEqual([expect.objectContaining({ mutator: 'Keep' })]);
+  });
+
+  it('promotes a document that carries no version at all to v2', async () => {
+    // `raw.version ?? 1` supplies the floor that `Math.max(version, 2)` needs.
+    // Without it the version is undefined, `Math.max(undefined, 2)` is NaN, and
+    // the document is written with `"version": null` — a file no reader can
+    // grade, produced by an ordinary write.
+    writeRawSuppressions(root, JSON.stringify({ entries: {} }));
+
+    await addSuppressions(root, FILE, [{ line: 2, mutator: 'Cond' }]);
+
+    const raw = JSON.parse(readFileSync(supFile(root), 'utf8')) as { version: unknown };
+    expect(raw.version).toBe(2);
   });
 });
