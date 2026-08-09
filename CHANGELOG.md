@@ -2,6 +2,14 @@
 
 All notable changes to Chaos-MCP are documented in this file.
 
+## [1.8.1](https://github.com/AraneaDev/Chaos-MCP/compare/v1.8.0...v1.8.1) (2026-08-09)
+
+
+### Bug Fixes
+
+* **typescript:** fund a batch by its own start-up, not the average share ([403f46e](https://github.com/AraneaDev/Chaos-MCP/commit/403f46e5e0f2ba4e328baad8f5c6283a2b8668f0))
+* **typescript:** fund a batch by its own start-up, not the average share ([0c0d86a](https://github.com/AraneaDev/Chaos-MCP/commit/0c0d86ae503c91b8439a21136bae60f0ab291a1d))
+
 ## [1.8.0](https://github.com/AraneaDev/Chaos-MCP/compare/v1.7.0...v1.8.0) (2026-08-09)
 
 
