@@ -35,6 +35,8 @@ export interface TriageRow {
    * `audit/suppression-io.ts`).
    */
   orphanedSuppressions?: number;
+  /** Suppressions applied at a different line than stored, after an edit. */
+  relocatedSuppressions?: number;
   /** Whether this file met the minScore gate threshold (only present when minScore is set). */
   passed?: boolean;
   /** True when the file has no mutable logic (zero mutants, no scope note); score is "n/a" (audit M3). */

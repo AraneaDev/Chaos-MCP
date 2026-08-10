@@ -19,6 +19,8 @@ import type { MutationResult } from '../engines/base.js';
 import type { MutantKey } from '../core/verify.js';
 import { toolError } from '../core/tool-result.js';
 import { applySuppressions } from './apply-suppressions.js';
+import type { RelocationNote } from '../core/score-semantics.js';
+import { warn } from '../utils/logger.js';
 
 /**
  * How one file's stored suppressions were resolved for this run: how many were
@@ -55,12 +57,23 @@ export interface SuppressionCounts {
    * suppressions came to point at comments in this repository's own corpus.
    */
   rejected: number;
+  /**
+   * Entries applied at a DIFFERENT line than the one stored, because an edit
+   * moved them. Tier 2 (the line's content was found elsewhere) cannot be wrong
+   * and is only counted; tier 3 (the line itself was rewritten and the mutant
+   * was found by its change) is listed in {@link relocations}, because it is the
+   * one tier that can re-point an entry onto unrelated code.
+   */
+  relocated: number;
+  /** The tier-3 moves, for the per-entry note. Empty on the common path. */
+  relocations: RelocationNote[];
 }
 import {
   loadSuppressions,
   addSuppressions,
   removeSuppressions,
   verifySuppressions,
+  restampSuppressions,
   toPortableKey,
   type AddSuppressionsResult,
   type SuppressionVerdict,
@@ -225,6 +238,8 @@ export async function applyAndCountSuppressions(
     unverified: 0,
     orphaned: 0,
     rejected: added.rejected.length,
+    relocated: 0,
+    relocations: [],
   };
   if (!baselineKeys) {
     // Evaluated on the PRE-suppression result, before `result` is reassigned
@@ -241,15 +256,49 @@ export async function applyAndCountSuppressions(
     // disagree about the same underlying fact.
     const wholeFileRun = isWholeFileRun(result);
     const verdict = loadVerifiedSuppressions(wsRoot, relFromRoot, supPath);
-    const filtered = applySuppressions(result, verdict.applied);
+    const filtered = applySuppressions(result, verdict);
     result = filtered.result;
     counts.applied = filtered.suppressedCount;
-    counts.drifted = verdict.drifted;
+    counts.drifted = filtered.drifted;
     counts.unverified = verdict.unverified;
     // See `isWholeFileRun` above for why the count is gated on it (a scoped
     // audit legitimately generates no mutant for a suppressed line outside its
     // range, and calling that an orphan would cry wolf).
-    counts.orphaned = wholeFileRun ? filtered.orphanedKeys.length : 0;
+    counts.orphaned = wholeFileRun ? filtered.orphaned : 0;
+    counts.relocated = filtered.relocated.length;
+    counts.relocations = filtered.relocated
+      .filter((r) => r.tier === 3)
+      .map((r) => ({
+        storedLine: r.storedLine,
+        line: r.line,
+        mutator: r.mutator,
+        ...(r.reason === undefined ? {} : { reason: r.reason }),
+      }));
+    // Heal the corpus. An entry resolved to a new line keeps the old one on
+    // disk unless it is written back, so every later run would re-search and
+    // every later reader would see a number that is simply wrong. A failure
+    // here must not fail the audit: the score is already correct, and only the
+    // healing is lost.
+    if (filtered.relocated.length > 0) {
+      try {
+        await restampSuppressions(
+          wsRoot,
+          relFromRoot,
+          filtered.relocated.map((r) => ({
+            mutator: r.mutator,
+            line: r.line,
+            ...(r.change === undefined ? {} : { change: r.change }),
+          })),
+          supPath,
+        );
+      } catch (error: unknown) {
+        warn(
+          `Could not write relocated suppressions for ${relFromRoot}: ${
+            error instanceof Error ? error.message : String(error)
+          } — the score is unaffected, but the stored line numbers stay stale.`,
+        );
+      }
+    }
   }
   return { ok: true, result, counts };
 }

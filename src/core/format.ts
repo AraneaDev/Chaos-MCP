@@ -22,6 +22,7 @@ import {
   hasNoMutableLogic,
   suppressionDriftNotes,
   type LineGroup,
+  type RelocationNote,
 } from './score-semantics.js';
 
 export interface EnrichContext {
@@ -412,6 +413,10 @@ export function formatResultAsText(
     orphanedSuppressions?: number;
     /** Entries a `suppress` argument asked for that the write refused to store. */
     rejectedSuppressions?: number;
+    /** Suppressions applied at a different line than stored, after an edit. */
+    relocatedSuppressions?: number;
+    /** The tier-3 moves, each narrated individually — they can be wrong. */
+    relocations?: RelocationNote[];
     /**
      * The gate verdict for this run, when the caller passed `minScore`. Must be
      * the same {@link GateResult} the payload carries — pass `evaluateGate`'s
@@ -469,6 +474,7 @@ export function formatResultAsText(
     opts.unverifiedSuppressions,
     opts.orphanedSuppressions,
     opts.rejectedSuppressions,
+    opts.relocations,
   )) {
     lines.push(`Note: ${n}`);
   }
@@ -576,6 +582,13 @@ export interface ResultPayload {
   orphanedSuppressions?: number;
   /** Entries a `suppress` argument asked for that the write refused to store. */
   rejectedSuppressions?: number;
+  /**
+   * Stored suppressions applied at a DIFFERENT line than the one recorded,
+   * because an edit moved them. The entry still filtered its mutant and the
+   * corpus was updated, so this is not a failure — it is a repair, reported so
+   * a reader can see that a stored line number changed under them.
+   */
+  relocatedSuppressions?: number;
   gate?: GateResult;
   /** Mutants excluded from the score because the mutated code never scored (audit I3). */
   incompetent?: number;
@@ -598,6 +611,10 @@ export interface ResultPayloadOpts {
   orphanedSuppressions?: number;
   /** Entries a `suppress` argument asked for that the write refused to store. */
   rejectedSuppressions?: number;
+  /** Suppressions applied at a different line than stored, after an edit. */
+  relocatedSuppressions?: number;
+  /** The tier-3 moves, each narrated individually — they can be wrong. */
+  relocations?: RelocationNote[];
   gate?: GateResult;
 }
 
@@ -711,11 +728,15 @@ export function buildResultPayload(
   if (opts.rejectedSuppressions && opts.rejectedSuppressions > 0) {
     payload.rejectedSuppressions = opts.rejectedSuppressions;
   }
+  if (opts.relocatedSuppressions && opts.relocatedSuppressions > 0) {
+    payload.relocatedSuppressions = opts.relocatedSuppressions;
+  }
   for (const n of suppressionDriftNotes(
     opts.driftedSuppressions,
     opts.unverifiedSuppressions,
     opts.orphanedSuppressions,
     opts.rejectedSuppressions,
+    opts.relocations,
   )) {
     payload.note += ` ${n}`;
   }

@@ -4,6 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { loadVerifiedSuppressions, applyAndCountSuppressions } from '../audit/suppression-io.js';
 import type { MutationResult } from '../engines/base.js';
+import { appliedKeys } from './support/suppression-verdict.js';
 
 /**
  * `audit/suppression-io.ts` had no test file. It owns the rule that decides whether a
@@ -70,7 +71,7 @@ describe('loadVerifiedSuppressions', () => {
 
     const verdict = loadVerifiedSuppressions(ws, REL, undefined);
 
-    expect(verdict.applied.has('1 ConditionalExpression')).toBe(true);
+    expect(appliedKeys(verdict).includes('1 ConditionalExpression')).toBe(true);
     expect(verdict.drifted).toBe(0);
     expect(verdict.unverified).toBe(0);
   });
@@ -85,7 +86,7 @@ describe('loadVerifiedSuppressions', () => {
 
     const verdict = loadVerifiedSuppressions(ws, REL, undefined);
 
-    expect(verdict.applied.size).toBe(0);
+    expect(appliedKeys(verdict).length).toBe(0);
     expect(verdict.drifted).toBe(1);
     expect(verdict.unverified).toBe(0);
   });
@@ -98,7 +99,7 @@ describe('loadVerifiedSuppressions', () => {
 
     const verdict = loadVerifiedSuppressions(ws, REL, undefined);
 
-    expect(verdict.applied.size).toBe(0);
+    expect(appliedKeys(verdict).length).toBe(0);
     expect(verdict.unverified).toBe(1);
     expect(verdict.drifted).toBe(0);
   });
@@ -114,7 +115,7 @@ describe('loadVerifiedSuppressions', () => {
   it('reports nothing when no suppressions file exists', () => {
     const verdict = loadVerifiedSuppressions(ws, REL, undefined);
 
-    expect(verdict.applied.size).toBe(0);
+    expect(appliedKeys(verdict).length).toBe(0);
     expect(verdict.drifted).toBe(0);
     expect(verdict.unverified).toBe(0);
   });
@@ -475,7 +476,7 @@ describe('applyAndCountSuppressions — refused entries', () => {
     if (!outcome.ok) return;
     expect(outcome.counts.rejected).toBe(1);
     // And nothing was written for it, which is the point of the count.
-    expect(loadVerifiedSuppressions(ws, REL, undefined).applied.size).toBe(0);
+    expect(appliedKeys(loadVerifiedSuppressions(ws, REL, undefined)).length).toBe(0);
   });
 
   it('reports zero refusals when the target is real code', async () => {
@@ -491,7 +492,7 @@ describe('applyAndCountSuppressions — refused entries', () => {
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) return;
     expect(outcome.counts.rejected).toBe(0);
-    expect(loadVerifiedSuppressions(ws, REL, undefined).applied.size).toBe(1);
+    expect(appliedKeys(loadVerifiedSuppressions(ws, REL, undefined)).length).toBe(1);
   });
 });
 
@@ -520,7 +521,7 @@ describe('applyAndCountSuppressions — the write path', () => {
 
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) return;
-    expect(loadVerifiedSuppressions(ws, REL, undefined).applied.size).toBe(0);
+    expect(appliedKeys(loadVerifiedSuppressions(ws, REL, undefined)).length).toBe(0);
     // The mutant it used to hide is scored again.
     expect(outcome.counts.applied).toBe(0);
     expect(outcome.result.totalMutants).toBe(4);

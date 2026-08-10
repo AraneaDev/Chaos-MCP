@@ -130,11 +130,22 @@ export interface LineGroup {
  * DO about it: an un-applied suppression is only useful feedback if the reader
  * knows re-confirming it (re-issuing `suppress`) restores it.
  */
+/** One tier-3 relocation, as the note renderer needs it. */
+export interface RelocationNote {
+  /** The line the entry was stored against before the move. */
+  storedLine: number;
+  /** The line its mutant was found on instead. */
+  line: number;
+  mutator: string;
+  reason?: string;
+}
+
 export function suppressionDriftNotes(
   drifted?: number,
   unverified?: number,
   orphaned?: number,
   rejected?: number,
+  relocated?: RelocationNote[],
 ): string[] {
   const notes: string[] = [];
   if (drifted !== undefined && drifted > 0) {
@@ -161,6 +172,21 @@ export function suppressionDriftNotes(
       `${rejected} suppression(s) were NOT stored: their target line is blank or comment-only, ` +
         'where no engine reports a mutant. Check the line number against the survivor you meant ' +
         'to suppress.',
+    );
+  }
+  // Reported ENTRY BY ENTRY, unlike the four counts above, because this is the
+  // one suppression outcome that can be silently wrong. A tier-3 relocation
+  // matched a mutant's change elsewhere in the file after the entry's own line
+  // was edited away. Uniqueness is not proof: if the original site was DELETED
+  // and an unrelated site produces the same `original → mutated`, the
+  // suppression has just moved onto code its reason was never written about. A
+  // bare count would hide that; naming the move and quoting the reason lets a
+  // reader judge it.
+  for (const r of relocated ?? []) {
+    notes.push(
+      `Suppression "${r.mutator}" moved from line ${r.storedLine} to line ${r.line}: its stored line was edited, and its mutant was found there instead. ` +
+        (r.reason === undefined ? '' : `Recorded reason: "${r.reason}". `) +
+        'Confirm this is still the mutant that reason was written about, and drop it with `unsuppress` if it is not.',
     );
   }
 

@@ -167,12 +167,25 @@ export interface SuppressionInput {
   line: number;
   mutator: string;
   reason?: string;
+  /**
+   * The change this mutant makes, `"<original> → <mutated>"` (see
+   * {@link ../utils/mutant-identity.changeOf}). Part of the entry's IDENTITY:
+   * two mutants of the same mutator on one line are told apart by this and
+   * nothing else.
+   *
+   * Optional because cargo-mutants reports no replacement — its mutator name IS
+   * the change description — and because a caller may omit it and let the audit
+   * path resolve it from the survivor list (`audit/suppression-io.ts`).
+   */
+  change?: string;
 }
 
 /** One suppression as it is persisted. `fingerprint` is absent on v1 data. */
 export interface StoredEntry {
   line: number;
   mutator: string;
+  /** See {@link SuppressionInput.change}. Absent = mutator-only identity. */
+  change?: string;
   reason?: string;
   addedAt: number;
   /**
@@ -189,17 +202,45 @@ interface SuppressionFile {
 }
 
 /**
- * Schema version this module writes. v1 = `(line, mutator)` only; v2 adds the
- * per-entry content `fingerprint`. v1 files still LOAD (their entries keep every
- * field verbatim, including the hand-written `reason`) — they are simply not
- * applied until re-confirmed, which is the whole point of the migration: a v1
- * entry cannot be proven to still point at the code it was argued about, and
- * back-filling a fingerprint from today's source would bless exactly the
- * mismatches this feature exists to catch.
+ * Schema version this module writes. v1 = `(line, mutator)` only; v2 added the
+ * per-entry content `fingerprint`; v3 makes IDENTITY the mutator plus the change
+ * (`original → mutated`) and demotes `line` to a relocatable hint.
+ *
+ * Older files still LOAD — their entries keep every field verbatim, including
+ * the hand-written `reason` — and are simply not applied as their authors
+ * intended until re-confirmed. A v1 entry has no fingerprint, so it cannot be
+ * proven to still point at the code it was argued about; back-filling one from
+ * today's source would bless exactly the mismatches this feature exists to
+ * catch. A v2 entry has no `change`, so it reads as mutator-only identity —
+ * correct for cargo-mutants, and broader than intended for every other engine.
+ *
+ * v2 corpora are migrated once by `scripts/migrate-suppressions-v3.mjs`, which
+ * is driven by audit reports because the change names WHICH mutant and only an
+ * audit knows which mutants exist. That is a deliberate one-time step: the
+ * alternative is a dual-format branch living in this module forever.
  */
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
-const keyOf = (line: number, mutator: string): string => `${line} ${mutator}`;
+/**
+ * Identity of one suppression: the mutator plus the change it makes.
+ *
+ * The line number is deliberately NOT in this key. It was, through v2, and that
+ * is the defect v3 fixes. A positional key is invalidated by any edit above it —
+ * the suppressions on `core/format.ts` were broken three separate times that way
+ * — and it collapses several same-mutator mutants on one line onto a single
+ * entry, so suppressing an equivalent mutant deleted a KILLED sibling's coverage
+ * signal along with it.
+ *
+ * The line survives on the entry as a lookup HINT that relocation rewrites; the
+ * identity is content.
+ *
+ * `change` is absent only for engines that report no replacement (cargo-mutants,
+ * whose description IS the mutator name), where mutator alone is all the
+ * identity available. Those entries keep the pre-v3 behaviour: one entry per
+ * (file, mutator), matching every mutant of that mutator.
+ */
+const identityKeyOf = (mutator: string, change?: string): string =>
+  change === undefined ? mutator : `${mutator} ${change}`;
 
 /**
  * Normalize a source line before hashing it.
@@ -299,34 +340,83 @@ export function fingerprintSourceLine(
   return fingerprintAt(readSourceLines(workspaceRoot, relFile), line);
 }
 
+/** One stored suppression, resolved to where its mutant is expected now. */
+export interface ResolvedSuppression {
+  /** Effective line after relocation — where the mutant is expected NOW. */
+  line: number;
+  /** The line the entry is stored against, before any relocation. */
+  storedLine: number;
+  mutator: string;
+  change?: string;
+  reason?: string;
+  fingerprint: string;
+  /** 1 = line and fingerprint agree; 2 = the fingerprint was found elsewhere. */
+  tier: 1 | 2;
+}
+
 /** What one file's stored suppressions are worth against the current source. */
 export interface SuppressionVerdict {
-  /** `"<line> <mutator>"` keys whose fingerprint still matches — safe to apply. */
-  applied: Set<string>;
-  /** Entries whose fingerprint no longer matches the line they target. */
+  /** Entries placed by source content alone (tiers 1 and 2). */
+  resolved: ResolvedSuppression[];
+  /** Fingerprint found nowhere; tier-3 candidates, resolved against survivors. */
+  pending: ResolvedSuppression[];
+  /**
+   * Entries source alone refused and tier 3 cannot rescue: an ambiguous
+   * fingerprint (found on two lines), or a vanished one on a changeless entry.
+   *
+   * Counted HERE rather than inferred by a caller from
+   * `stored − resolved − pending − unverified`. A refused entry appears in no
+   * list, so an inferred count would silently read zero the moment a fourth
+   * outcome is added — and a suppression that stops applying while reporting
+   * nothing is the exact failure this whole subsystem exists to prevent.
+   */
   drifted: number;
   /** Entries carrying no fingerprint at all (v1 data, or an unstamped write). */
   unverified: number;
 }
 
-/** An empty verdict — nothing stored, nothing applied, nothing to report. */
+/** An empty verdict — nothing stored, nothing resolved, nothing to report. */
 function emptyVerdict(): SuppressionVerdict {
-  return { applied: new Set<string>(), drifted: 0, unverified: 0 };
+  return { resolved: [], pending: [], drifted: 0, unverified: 0 };
+}
+
+/** Every 1-based line whose content hashes to `fingerprint`. */
+function linesMatching(lines: string[], fingerprint: string): number[] {
+  const hits: number[] = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    if (fingerprintOfLine(lines[i]) === fingerprint) hits.push(i + 1);
+  }
+  return hits;
 }
 
 /**
- * Decide, per entry, whether a stored suppression may still be applied.
+ * Resolve each stored suppression against the current source, as far as source
+ * alone can take it.
  *
- * Three outcomes, in this order of preference:
- *   1. fingerprint present AND matches the current source line → APPLY.
- *   2. fingerprint present AND does not match (or the line/file is unreadable,
- *      so the match cannot be shown) → do NOT apply; count as `drifted`.
- *   3. fingerprint absent (a v1 entry) → do NOT apply; count as `unverified`.
+ * TIER 1 — the stored line still hashes to the stored fingerprint. Use it. No
+ * search, no report; this is the ordinary case.
  *
- * This is fail-SAFE, and the asymmetry is the point: a suppression that is not
- * applied lowers the reported score VISIBLY — the mutant reappears and the
- * counts below say why — whereas a suppression applied to the wrong code hides
- * a real coverage gap INVISIBLY. Always fail toward the visible failure.
+ * TIER 2 — the fingerprint is gone from the stored line but appears exactly
+ * once elsewhere. The line's CONTENT is unchanged and an edit above merely
+ * shifted it, so the entry is re-pointed. This is the failure that broke the
+ * suppressions on `core/format.ts` three separate times, each time costing a
+ * hand re-point — and hand re-pointing is what corrupted this repository's
+ * corpus in the first place. It now costs nothing.
+ *
+ * PENDING — the fingerprint appears nowhere, so the line itself was edited: a
+ * reflow, a rename, a trailing comment. The mutant may well still exist, but
+ * proving it needs the SURVIVOR LIST, which this module must not see — it is a
+ * leaf over the suppression FILE, and importing `MutationResult` would point it
+ * at the domain layer. `audit/apply-suppressions.ts` finishes the job (tier 3).
+ * An entry with no `change` is never pending: mutator-only identity gives tier 3
+ * nothing to match on, so it goes straight to drift.
+ *
+ * AMBIGUITY IS REFUSAL. A fingerprint found twice resolves to neither line: the
+ * entry appears in no list and is counted as drift downstream. This is the same
+ * fail-SAFE asymmetry v2 established — a suppression that is not applied lowers
+ * the reported score VISIBLY, the mutant reappears and the counts say why,
+ * whereas a suppression applied to the wrong code hides a real coverage gap
+ * INVISIBLY. Always fail toward the visible failure.
  */
 export function verifySuppressions(
   workspaceRoot: string,
@@ -342,11 +432,34 @@ export function verifySuppressions(
       verdict.unverified += 1;
       continue;
     }
+    const base = {
+      storedLine: e.line,
+      mutator: e.mutator,
+      fingerprint: e.fingerprint,
+      ...(e.change === undefined ? {} : { change: e.change }),
+      ...(e.reason === undefined ? {} : { reason: e.reason }),
+    };
     if (fingerprintAt(lines, e.line) === e.fingerprint) {
-      verdict.applied.add(keyOf(e.line, e.mutator));
-    } else {
-      verdict.drifted += 1;
+      verdict.resolved.push({ ...base, line: e.line, tier: 1 });
+      continue;
     }
+    // An unreadable file (deleted, renamed) yields no lines, hence no
+    // relocation: the entry drifts rather than being credited on an older check.
+    const hits = lines === undefined ? [] : linesMatching(lines, e.fingerprint);
+    if (hits.length === 1) {
+      verdict.resolved.push({ ...base, line: hits[0], tier: 2 });
+      continue;
+    }
+    if (hits.length === 0 && e.change !== undefined) {
+      // `tier` is a placeholder here; `applySuppressions` stamps 3 if it places
+      // the entry, and counts it as drift if it cannot.
+      verdict.pending.push({ ...base, line: e.line, tier: 1 });
+      continue;
+    }
+    // Either the fingerprint is ambiguous (two lines carry it, and guessing is
+    // what this system refuses to do) or it is gone from a changeless entry,
+    // which leaves tier 3 nothing to match on.
+    verdict.drifted += 1;
   }
   return verdict;
 }
@@ -442,6 +555,9 @@ export function loadSuppressions(
     for (const e of list) {
       if (!e || !Number.isInteger(e.line) || typeof e.mutator !== 'string') continue;
       const entry: StoredEntry = { line: e.line, mutator: e.mutator, addedAt: e.addedAt };
+      // A non-string `change` is treated as absent → mutator-only identity,
+      // rather than a value that could never match a computed change string.
+      if (typeof e.change === 'string') entry.change = e.change;
       if (typeof e.reason === 'string') entry.reason = e.reason;
       // A non-string fingerprint is treated as absent → the entry is unverified
       // rather than compared against a value that can never match.
@@ -457,9 +573,9 @@ export function loadSuppressions(
     }
     // Same file reached under two spellings (e.g. a Windows-written
     // `src\a.ts` alongside a Linux-written `src/a.ts`). Union them by
-    // `(line, mutator)` so neither spelling's entries are dropped.
-    const byKey = new Map(existing.map((e) => [keyOf(e.line, e.mutator), e] as const));
-    for (const e of kept) byKey.set(keyOf(e.line, e.mutator), e);
+    // identity so neither spelling's entries are dropped.
+    const byKey = new Map(existing.map((e) => [identityKeyOf(e.mutator, e.change), e] as const));
+    for (const e of kept) byKey.set(identityKeyOf(e.mutator, e.change), e);
     map.set(key, [...byKey.values()]);
   }
   return map;
@@ -545,14 +661,14 @@ export function addSuppressions(
     if (legacyKey !== portableKey) data.entries = withoutKey(data.entries, legacyKey);
     const indexOfKey = new Map<string, number>();
     list.forEach((e, i) => {
-      if (e && typeof e === 'object') indexOfKey.set(keyOf(e.line, e.mutator), i);
+      if (e && typeof e === 'object') indexOfKey.set(identityKeyOf(e.mutator, e.change), i);
     });
     // One read for the whole batch; every entry in it targets this same file.
     const lines = readSourceLines(workspaceRoot, relFile);
     const now = Date.now();
     const summary: AddSuppressionsResult = { stamped: 0, unstamped: 0, rejected: [] };
     for (const e of entries) {
-      const k = keyOf(e.line, e.mutator);
+      const k = identityKeyOf(e.mutator, e.change);
       // Refuse a target no mutant can occupy, BEFORE it is stored and stamped.
       // Storing it is what makes the mistake permanent and invisible.
       const targetLine = lines?.[e.line - 1];
@@ -576,6 +692,7 @@ export function addSuppressions(
         mutator: e.mutator,
         addedAt: previous?.addedAt ?? now,
       };
+      if (e.change !== undefined) merged.change = e.change;
       const reason = mergeReason(e.reason, previous?.reason);
       if (reason !== undefined) merged.reason = reason;
       if (fingerprint !== undefined) merged.fingerprint = fingerprint;
@@ -593,7 +710,68 @@ export function addSuppressions(
 }
 
 /**
- * Drop specific `(line, mutator)` entries from one file's suppressions.
+ * Move stored entries onto the lines they were resolved to.
+ *
+ * Relocation without this is not a fix but a repeated rescue: every run would
+ * re-search, and the corpus would keep the wrong line forever, so the next
+ * person to read `suppressions.json` sees a number that has been wrong for
+ * months. Writing it back is what turns detected drift into HEALED drift.
+ *
+ * Identity is `(mutator, change)`, never the stored line — the line is the thing
+ * that moved. The fingerprint is re-derived from the NEW line, so the next run
+ * resolves at tier 1 and does no searching at all.
+ *
+ * An update naming no stored entry is a silent no-op rather than an error: the
+ * caller resolved against an audit result, and an entry may have been dropped by
+ * an `unsuppress` in the same call.
+ */
+export function restampSuppressions(
+  workspaceRoot: string,
+  relFile: string,
+  updates: { mutator: string; change?: string; line: number }[],
+  configPath?: string,
+): Promise<void> {
+  if (updates.length === 0) return Promise.resolve();
+  return withWorkspaceLock(workspaceRoot, configPath, () => {
+    const data = readFile(workspaceRoot, configPath);
+    const portableKey = toPortableKey(relFile);
+    const legacyKey = storedKeyFor(data.entries, portableKey);
+    const list = data.entries[legacyKey];
+    if (!Array.isArray(list)) return;
+    const byIdentity = new Map(
+      updates.map((u) => [identityKeyOf(u.mutator, u.change), u.line] as const),
+    );
+    const lines = readSourceLines(workspaceRoot, relFile);
+    let changed = false;
+    const next = list.map((e) => {
+      if (!e || typeof e !== 'object') return e;
+      const line = byIdentity.get(identityKeyOf(e.mutator, e.change));
+      if (line === undefined || line === e.line) return e;
+      changed = true;
+      const moved: StoredEntry = { ...e, line };
+      const fingerprint = fingerprintAt(lines, line);
+      // A line we cannot read now must not keep an old fingerprint: that would
+      // credit the entry at tier 1 on the strength of a check against different
+      // code. Dropping it demotes the entry to `unverified`, which is visible.
+      if (fingerprint === undefined) delete moved.fingerprint;
+      else moved.fingerprint = fingerprint;
+      return moved;
+    });
+    if (!changed) return;
+    if (legacyKey !== portableKey) data.entries = withoutKey(data.entries, legacyKey);
+    data.entries[portableKey] = next;
+    writeFile(workspaceRoot, data, configPath);
+  });
+}
+
+/**
+ * Drop entries from one file's suppressions.
+ *
+ * Two drop modes, chosen per key. A key carrying a `change` removes EXACTLY the
+ * entry with that identity. A key without one removes every entry for that
+ * mutator — the pre-v3 behaviour, kept so a caller who cannot name the change
+ * can still clear a line. The `line` on the key is ignored: identity is content,
+ * and an entry that has relocated would otherwise become un-removable.
  *
  * Resolves the file under its portable key, falling back to a legacy key that
  * differs only by separator so an entry written on Windows can still be
@@ -604,7 +782,7 @@ export function addSuppressions(
 export function removeSuppressions(
   workspaceRoot: string,
   relFile: string,
-  keys: { line: number; mutator: string }[],
+  keys: { line: number; mutator: string; change?: string }[],
   configPath?: string,
 ): Promise<void> {
   if (keys.length === 0) return Promise.resolve();
@@ -614,7 +792,10 @@ export function removeSuppressions(
     const legacyKey = storedKeyFor(data.entries, portableKey);
     const list = data.entries[legacyKey];
     if (!Array.isArray(list)) return;
-    const drop = new Set(keys.map((k) => keyOf(k.line, k.mutator)));
+    const dropExact = new Set(
+      keys.filter((k) => k.change !== undefined).map((k) => identityKeyOf(k.mutator, k.change)),
+    );
+    const dropByMutator = new Set(keys.filter((k) => k.change === undefined).map((k) => k.mutator));
     // `readFile` only proves `entries` is an object — per-entry shape is never
     // checked on the write path, so a hand-edited or truncated file holding
     // `{"entries":{"src/a.ts":[null]}}` made this dereference throw, surfacing
@@ -622,7 +803,11 @@ export function removeSuppressions(
     // `addSuppressions` already applies when it indexes the list; a junk entry
     // is silently dropped here, which is the repair the caller wanted anyway.
     const kept = list.filter(
-      (e) => e && typeof e === 'object' && !drop.has(keyOf(e.line, e.mutator)),
+      (e) =>
+        e &&
+        typeof e === 'object' &&
+        !dropExact.has(identityKeyOf(e.mutator, e.change)) &&
+        !dropByMutator.has(e.mutator),
     );
     if (legacyKey !== portableKey) data.entries = withoutKey(data.entries, legacyKey);
     if (kept.length > 0) {

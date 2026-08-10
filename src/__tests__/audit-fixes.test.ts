@@ -35,6 +35,7 @@ import {
 } from '../utils/incremental-cache.js';
 import { MIN_NODE_VERSION } from '../cli.js';
 import type { MutationResult } from '../engines/base.js';
+import { verdictOf } from './support/suppression-verdict.js';
 
 const temps: string[] = [];
 function tempDir(prefix: string): string {
@@ -133,7 +134,7 @@ describe('applySuppressions — every mutant suppressed', () => {
       { line: 2, mutator: 'Arith', kind: 'survived', description: 'survived' },
     ],
   };
-  const suppressed = new Set(['1 Cond', '2 Arith']);
+  const suppressed = verdictOf(['1 Cond', '2 Arith']);
 
   it('does not masquerade as a file with no mutable logic', () => {
     const { result: out } = applySuppressions(result, suppressed);
@@ -153,7 +154,7 @@ describe('applySuppressions — every mutant suppressed', () => {
   });
 
   it('adds no scope note when mutants remain', () => {
-    const { result: out } = applySuppressions(result, new Set(['1 Cond']));
+    const { result: out } = applySuppressions(result, verdictOf(['1 Cond']));
     expect(out.totalMutants).toBe(1);
     expect(out.scopeNote).toBeUndefined();
   });

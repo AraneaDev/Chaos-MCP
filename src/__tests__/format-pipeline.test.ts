@@ -395,3 +395,69 @@ describe('refused suppressions are said out loud', () => {
     expect(payload.note).not.toContain('NOT stored');
   });
 });
+
+describe('relocated suppressions', () => {
+  const move = {
+    storedLine: 134,
+    line: 96,
+    mutator: 'ConditionalExpression',
+    reason: 'guard unreachable',
+  };
+
+  it('names each tier-3 move individually, with its recorded reason', () => {
+    // A bare count would hide the one thing a reader has to judge: whether the
+    // entry landed on the mutant its reason was actually written about.
+    const payload = buildResultPayload(result({ vulnerabilities: [vuln()] }), {
+      relocatedSuppressions: 1,
+      relocations: [move],
+    });
+
+    expect(payload.relocatedSuppressions).toBe(1);
+    expect(payload.note).toContain('from line 134 to line 96');
+    expect(payload.note).toContain('guard unreachable');
+    expect(payload.note).toContain('unsuppress');
+  });
+
+  it('renders the same wording in the text projection', () => {
+    const text = formatResultAsText(result({ vulnerabilities: [vuln()] }), undefined, {
+      relocatedSuppressions: 1,
+      relocations: [move],
+    });
+
+    expect(text).toContain(
+      'Note: Suppression "ConditionalExpression" moved from line 134 to line 96',
+    );
+  });
+
+  it('counts a tier-2 move without narrating it', () => {
+    // Tier 2 cannot be wrong — the line's content is unchanged, it only moved —
+    // so `relocations` is empty and only the count is reported.
+    const payload = buildResultPayload(result({ vulnerabilities: [vuln()] }), {
+      relocatedSuppressions: 3,
+      relocations: [],
+    });
+
+    expect(payload.relocatedSuppressions).toBe(3);
+    expect(payload.note).not.toContain('moved from line');
+  });
+
+  it('says nothing when nothing relocated', () => {
+    const payload = buildResultPayload(result({ vulnerabilities: [vuln()] }), {
+      relocatedSuppressions: 0,
+      relocations: [],
+    });
+
+    expect(Object.keys(payload)).not.toContain('relocatedSuppressions');
+    expect(payload.note).not.toContain('moved from line');
+  });
+
+  it('omits the reason clause for an entry that never carried one', () => {
+    const payload = buildResultPayload(result({ vulnerabilities: [vuln()] }), {
+      relocatedSuppressions: 1,
+      relocations: [{ storedLine: 12, line: 20, mutator: 'EqualityOperator' }],
+    });
+
+    expect(payload.note).toContain('from line 12 to line 20');
+    expect(payload.note).not.toContain('Recorded reason');
+  });
+});
