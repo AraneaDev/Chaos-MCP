@@ -2,6 +2,29 @@
 
 All notable changes to Chaos-MCP are documented in this file.
 
+## [3.0.0](https://github.com/AraneaDev/Chaos-MCP/compare/v2.0.0...v3.0.0) (2026-08-10)
+
+
+### ⚠ BREAKING CHANGES
+
+* **suppression:** identify entries by change, relocate instead of drifting
+
+### Features
+
+* **php:** report original and mutated instead of the raw diff ([9428325](https://github.com/AraneaDev/Chaos-MCP/commit/942832582862b4031c148f8e1f84d6f6e936354c))
+* **suppression:** add mutant identity module ([6409d61](https://github.com/AraneaDev/Chaos-MCP/commit/6409d613f2b745f293ec72c5227cba191d9fcf3c))
+* **suppression:** identify entries by change, relocate instead of drifting ([aeb619d](https://github.com/AraneaDev/Chaos-MCP/commit/aeb619d0a07443a3ad993f4ba0a4415e9a0ad073))
+* **suppression:** resolve the change at write time, refuse ambiguous entries ([d0f6a59](https://github.com/AraneaDev/Chaos-MCP/commit/d0f6a5970cb135fd4a1c48c726e41f5ec9ddf49d))
+* **suppression:** return the candidate changes when an add is ambiguous ([b849fc3](https://github.com/AraneaDev/Chaos-MCP/commit/b849fc348ffd72698559ad4c89d9c65d0d1fcd4f))
+
+
+### Bug Fixes
+
+* **suppression:** address a relocating entry by its stored line ([aabfbc3](https://github.com/AraneaDev/Chaos-MCP/commit/aabfbc34bc39f6c891a1a5a60c40e60d3ed439d0))
+* **suppression:** key stored entries by line, not by content digest ([a4bd4ed](https://github.com/AraneaDev/Chaos-MCP/commit/a4bd4edd8d029c06d93225361fc5b05e3508795e))
+* **suppression:** refuse a changeless entry when the run stopped early ([9cfba9f](https://github.com/AraneaDev/Chaos-MCP/commit/9cfba9fe4c3aec150e8f4f99fc1c7a7e733c588d))
+* **suppression:** stop two same-change mutants collapsing into one entry ([01d49c2](https://github.com/AraneaDev/Chaos-MCP/commit/01d49c2fc9476af276a1728e1989f82c4097df18))
+
 ## [2.0.0](https://github.com/AraneaDev/Chaos-MCP/compare/v1.8.1...v2.0.0) (2026-08-09)
 
 
