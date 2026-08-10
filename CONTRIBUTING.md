@@ -60,6 +60,7 @@ src/
 ├── index.ts                     # MCP server entry point, tool definition & handler
 ├── handler.ts                   # audit_code_resilience dispatch & option wiring
 ├── audit/                       # Audit pipeline: scope, run options, suppressions, output
+│                                #   apply-suppressions.ts owns mutant matching + tier-3 relocation
 ├── triage/                      # triage_test_coverage: target discovery + per-file audit
 ├── engines/
 │   ├── base.ts                  # Abstract BaseEngine + RunOptions + MutationResult types
@@ -74,6 +75,9 @@ src/
 │   ├── constants.ts             # Shared exec constants (DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS)
 │   ├── logger.ts                # Verbose-mode logging utility
 │   ├── sandbox.ts               # Sandbox isolation (os.tmpdir, symlinks, size guard)
+│   ├── suppression.ts           # Suppression storage: load/add/remove/verify + the write lock
+│   ├── mutant-identity.ts       # A mutant's identity: mutator + the change it makes
+│   ├── diff-change.ts           # original→mutated extraction shared by cosmic-ray and Infection
 │   ├── execution.ts             # Native/container execution-session boundary
 │   ├── config-loader.ts         # Barrel (26 lines) re-exporting config/ — see below
 │   ├── config/                  # types.ts, rules.ts (one rule table), parse.ts, validate.ts
