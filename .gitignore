@@ -17,3 +17,6 @@ CLAUDE.md
 
 # Local-only documentation
 /docs
+
+# Transient artifact of scripts/migrate-suppressions-v3.mjs
+.chaos-mcp/v3-replay.json
