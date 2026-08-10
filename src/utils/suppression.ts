@@ -597,15 +597,29 @@ export interface AddSuppressionsResult {
    */
   unstamped: number;
   /**
-   * Entries NOT written because their target line is blank or comment-only, so
-   * no engine could ever report a mutant there (see {@link isNonMutableLine}).
+   * Entries NOT written, and why.
    *
-   * The one case where dropping the caller's reason is right: storing it would
-   * fingerprint the comment, verify clean forever, and suppress nothing —
-   * exactly the invisible state this field exists to prevent. The line number is
-   * almost always off by a few, so the caller is told which entry and why.
+   * `'non-mutable'` — the target line is blank or comment-only, so no engine
+   * could ever report a mutant there (see {@link isNonMutableLine}).
+   *
+   * `'ambiguous'` — the caller named a `(line, mutator)` carrying SEVERAL
+   * distinct mutants and did not say which. Filing it would suppress all of
+   * them, which is how an equivalent mutant takes a KILLED sibling's coverage
+   * signal down with it; the `candidates` are returned so the caller can name a
+   * `change` instead.
+   *
+   * Either way the caller's reason is dropped, and in both cases that is right:
+   * storing the entry is what would make the mistake permanent and invisible. A
+   * non-mutable entry would fingerprint the comment and verify clean forever
+   * while suppressing nothing.
    */
-  rejected: { line: number; mutator: string }[];
+  rejected: {
+    line: number;
+    mutator: string;
+    cause: 'non-mutable' | 'ambiguous';
+    /** The distinct changes on that line, when `cause` is `'ambiguous'`. */
+    candidates?: string[];
+  }[];
 }
 
 /**
@@ -673,7 +687,7 @@ export function addSuppressions(
       // Storing it is what makes the mistake permanent and invisible.
       const targetLine = lines?.[e.line - 1];
       if (targetLine !== undefined && isNonMutableLine(targetLine)) {
-        summary.rejected.push({ line: e.line, mutator: e.mutator });
+        summary.rejected.push({ line: e.line, mutator: e.mutator, cause: 'non-mutable' });
         warn(
           `${relFile}:${e.line} is blank or comment-only, so no mutant is ever reported there — ` +
             `the "${e.mutator}" suppression for it was NOT stored. Check the line number against ` +

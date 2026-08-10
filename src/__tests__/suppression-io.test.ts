@@ -560,3 +560,146 @@ describe('applyAndCountSuppressions — the write path', () => {
     expect(outcome.counts.rejected).toBe(0);
   });
 });
+
+describe('write-time change resolution', () => {
+  const COND = 'ConditionalExpression';
+  /** Two mutants on one line whose replacement is identical — only the original differs. */
+  const twoOnOneLine: MutationResult = {
+    target: REL,
+    totalMutants: 6,
+    killed: 4,
+    survived: 2,
+    mutationScore: '66.67%',
+    vulnerabilities: [
+      {
+        line: 1,
+        mutator: COND,
+        kind: 'survived',
+        description: 'x',
+        original: 'Array.isArray(args.unsuppress)',
+        mutated: 'true',
+      },
+      {
+        line: 1,
+        mutator: COND,
+        kind: 'survived',
+        description: 'x',
+        original: 'args.unsuppress.length > 0',
+        mutated: 'true',
+      },
+      {
+        line: 2,
+        mutator: 'EqualityOperator',
+        kind: 'survived',
+        description: 'x',
+        original: 'a > 0',
+        mutated: 'a >= 0',
+      },
+    ],
+  };
+
+  const run = (args: Record<string, unknown>, res = twoOnOneLine) =>
+    applyAndCountSuppressions(args as never, res, undefined, ws, REL, undefined);
+
+  const stored = (): Record<string, unknown>[] => {
+    const path = join(ws, '.chaos-mcp', 'suppressions.json');
+    if (!existsSync(path)) return [];
+    const doc = JSON.parse(readFileSync(path, 'utf8')) as {
+      entries: Record<string, Record<string, unknown>[]>;
+    };
+    return doc.entries[REL] ?? [];
+  };
+
+  it('stamps the change when exactly one survivor matches', async () => {
+    // The ordinary two-field call keeps working: the caller names a line and a
+    // mutator, and the identity is filled in from this run's mutants.
+    const out = await run({
+      suppress: [{ line: 2, mutator: 'EqualityOperator', reason: 'equivalent' }],
+    });
+
+    expect(out.ok).toBe(true);
+    expect(stored()).toHaveLength(1);
+    expect(stored()[0].change).toBe('a > 0 → a >= 0');
+  });
+
+  it('refuses an ambiguous request instead of suppressing every candidate', async () => {
+    // This is the trade the whole schema removes. Line 1 carries two mutants of
+    // one mutator; filing a (line, mutator) entry would suppress BOTH, so an
+    // equivalent mutant would take a killed sibling's coverage signal with it.
+    const out = await run({ suppress: [{ line: 1, mutator: COND, reason: 'x' }] });
+
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect(out.counts.rejected).toBe(1);
+    expect(stored()).toEqual([]);
+  });
+
+  it('files an explicit change verbatim, without consulting the survivors', async () => {
+    await run({
+      suppress: [
+        { line: 1, mutator: COND, change: 'args.unsuppress.length > 0 → true', reason: 'x' },
+      ],
+    });
+
+    expect(stored()).toHaveLength(1);
+    expect(stored()[0].change).toBe('args.unsuppress.length > 0 → true');
+  });
+
+  it('suppresses only the named mutant, leaving its sibling counted', async () => {
+    // The point of all of it: one mutant leaves the denominator, the other stays
+    // in the score where a test can still be written for it.
+    const out = await run({
+      suppress: [
+        { line: 1, mutator: COND, change: 'args.unsuppress.length > 0 → true', reason: 'x' },
+      ],
+    });
+
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect(out.counts.applied).toBe(1);
+    expect(out.result.totalMutants).toBe(5);
+    expect(out.result.vulnerabilities).toHaveLength(2);
+  });
+
+  it('leaves the change unset when no survivor matches at all', async () => {
+    // Mutator-only identity: right for cargo-mutants, and the pre-v3 behaviour
+    // for anything else. Refusing here would lose the caller's reason over a
+    // line number that is merely stale.
+    await run({ suppress: [{ line: 1, mutator: 'NeverSeen', reason: 'x' }] });
+
+    expect(stored()).toHaveLength(1);
+    expect(stored()[0].change).toBeUndefined();
+  });
+
+  it('writes the resolvable entries in a batch that also carries an ambiguous one', async () => {
+    const out = await run({
+      suppress: [
+        { line: 1, mutator: COND, reason: 'ambiguous' },
+        { line: 2, mutator: 'EqualityOperator', reason: 'fine' },
+      ],
+    });
+
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect(out.counts.rejected).toBe(1);
+    expect(stored()).toHaveLength(1);
+    expect(stored()[0].change).toBe('a > 0 → a >= 0');
+  });
+
+  it('removes one entry of a pair when unsuppress names its change', async () => {
+    await run({
+      suppress: [
+        { line: 1, mutator: COND, change: 'args.unsuppress.length > 0 → true', reason: 'a' },
+        { line: 1, mutator: COND, change: 'Array.isArray(args.unsuppress) → true', reason: 'b' },
+      ],
+    });
+    expect(stored()).toHaveLength(2);
+
+    await run({
+      unsuppress: [{ line: 1, mutator: COND, change: 'args.unsuppress.length > 0 → true' }],
+    });
+
+    expect(stored()).toHaveLength(1);
+    expect(stored()[0].reason).toBe('b');
+  });
+});

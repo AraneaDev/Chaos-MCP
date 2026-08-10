@@ -666,7 +666,9 @@ describe('suppression fingerprints (schema v2)', () => {
           { line, mutator: 'ConditionalExpression', reason: 'looked equivalent' },
         ]);
 
-        expect(res.rejected).toEqual([{ line, mutator: 'ConditionalExpression' }]);
+        expect(res.rejected).toEqual([
+          { line, mutator: 'ConditionalExpression', cause: 'non-mutable' },
+        ]);
         expect(res.stamped).toBe(0);
         expect(loadSuppressions(root).get(FILE)).toBeUndefined();
       });
@@ -718,7 +720,9 @@ describe('suppression fingerprints (schema v2)', () => {
           { line: 8, mutator: 'EqualityOperator' },
         ]);
 
-        expect(res.rejected).toEqual([{ line: 2, mutator: 'ConditionalExpression' }]);
+        expect(res.rejected).toEqual([
+          { line: 2, mutator: 'ConditionalExpression', cause: 'non-mutable' },
+        ]);
         expect(res.stamped).toBe(1);
         expect(loadSuppressions(root).get(FILE)).toHaveLength(1);
       });

@@ -121,15 +121,6 @@ export interface LineGroup {
   changes?: string[];
 }
 
-/**
- * The sentences that explain suppressions which were NOT applied, one per
- * non-zero count and nothing at all when both are zero.
- *
- * Shared by the text report, the structured payload's `note`, and the
- * verify-mode note so the three cannot drift apart. Each sentence says what to
- * DO about it: an un-applied suppression is only useful feedback if the reader
- * knows re-confirming it (re-issuing `suppress`) restores it.
- */
 /** One tier-3 relocation, as the note renderer needs it. */
 export interface RelocationNote {
   /** The line the entry was stored against before the move. */
@@ -140,6 +131,16 @@ export interface RelocationNote {
   reason?: string;
 }
 
+/**
+ * The sentences that explain suppressions which were NOT applied as recorded —
+ * one per non-zero count, plus one per tier-3 relocation, and nothing at all
+ * when every count is zero.
+ *
+ * Shared by the text report, the structured payload's `note`, and the
+ * verify-mode note so the three cannot drift apart. Each sentence says what to
+ * DO about it: an un-applied suppression is only useful feedback if the reader
+ * knows re-confirming it (re-issuing `suppress`) restores it.
+ */
 export function suppressionDriftNotes(
   drifted?: number,
   unverified?: number,
@@ -169,9 +170,10 @@ export function suppressionDriftNotes(
   // render this one list.
   if (rejected !== undefined && rejected > 0) {
     notes.push(
-      `${rejected} suppression(s) were NOT stored: their target line is blank or comment-only, ` +
-        'where no engine reports a mutant. Check the line number against the survivor you meant ' +
-        'to suppress.',
+      `${rejected} suppression(s) were NOT stored: either the target line is blank or comment-only ` +
+        '(where no engine reports a mutant), or it carries several mutants of that mutator and the ' +
+        'request did not say which — re-issue it with a `change` naming the one you mean. Check the ' +
+        'line number against the survivor you meant to suppress.',
     );
   }
   // Reported ENTRY BY ENTRY, unlike the four counts above, because this is the

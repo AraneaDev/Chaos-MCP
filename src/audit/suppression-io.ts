@@ -15,12 +15,13 @@
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import type { ToolArgs } from '../core/tool-args-validation.js';
 import type { ToolContext } from '../core/tool-context.js';
-import type { MutationResult } from '../engines/base.js';
+import type { MutationResult, Vulnerability } from '../engines/base.js';
 import type { MutantKey } from '../core/verify.js';
 import { toolError } from '../core/tool-result.js';
 import { applySuppressions } from './apply-suppressions.js';
 import type { RelocationNote } from '../core/score-semantics.js';
 import { warn } from '../utils/logger.js';
+import { changeOf } from '../utils/mutant-identity.js';
 
 /**
  * How one file's stored suppressions were resolved for this run: how many were
@@ -76,6 +77,7 @@ import {
   restampSuppressions,
   toPortableKey,
   type AddSuppressionsResult,
+  type SuppressionInput,
   type SuppressionVerdict,
 } from '../utils/suppression.js';
 
@@ -134,21 +136,56 @@ export async function applySuppressionArgs(
   wsRoot: string,
   relFromRoot: string,
   supPath: string | undefined,
+  survivors: Vulnerability[],
 ): Promise<AddSuppressionsResult> {
   let added: AddSuppressionsResult = { stamped: 0, unstamped: 0, rejected: [] };
   if (Array.isArray(args.suppress) && args.suppress.length > 0) {
-    added = await addSuppressions(
-      wsRoot,
-      relFromRoot,
-      args.suppress as { line: number; mutator: string; reason?: string }[],
-      supPath,
-    );
+    const requested = args.suppress as {
+      line: number;
+      mutator: string;
+      reason?: string;
+      change?: string;
+    }[];
+    const resolved: SuppressionInput[] = [];
+    const ambiguous: AddSuppressionsResult['rejected'] = [];
+    for (const r of requested) {
+      if (r.change !== undefined) {
+        resolved.push(r);
+        continue;
+      }
+      // No change given: derive it from this run's mutants. This is the ONLY
+      // place that can — the storage layer never sees a MutationResult — and it
+      // keeps the ordinary two-field call working.
+      const candidates = [
+        ...new Set(
+          survivors
+            .filter((v) => v.line === r.line && v.mutator === r.mutator)
+            .map((v) => changeOf(v))
+            .filter((c): c is string => c !== undefined),
+        ),
+      ].sort();
+      if (candidates.length > 1) {
+        // Refuse rather than suppress all of them. Filing this entry is exactly
+        // how an equivalent mutant takes a KILLED sibling's coverage signal down
+        // with it — three survivors in this repository were left unsuppressed
+        // for months to avoid that trade, and this is what removes it.
+        ambiguous.push({ line: r.line, mutator: r.mutator, cause: 'ambiguous', candidates });
+        continue;
+      }
+      // Zero candidates leaves `change` unset — mutator-only identity, which is
+      // right for cargo-mutants and is the pre-v3 behaviour otherwise.
+      resolved.push(candidates.length === 1 ? { ...r, change: candidates[0] } : r);
+    }
+    if (resolved.length > 0) {
+      added = await addSuppressions(wsRoot, relFromRoot, resolved, supPath);
+    }
+    added = { ...added, rejected: [...added.rejected, ...ambiguous] };
   }
   if (Array.isArray(args.unsuppress) && args.unsuppress.length > 0) {
     await removeSuppressions(
       wsRoot,
       relFromRoot,
-      args.unsuppress as { line: number; mutator: string }[],
+      args.unsuppress as { line: number; mutator: string; change?: string }[],
       supPath,
     );
   }
@@ -216,7 +253,13 @@ export async function applyAndCountSuppressions(
     // suppressions file. Guard the write block so cancellation stays
     // side-effect free.
     if (ctx?.signal?.aborted) return { ok: false, result: toolError('Operation cancelled.') };
-    added = await applySuppressionArgs(args, wsRoot, relFromRoot, supPath);
+    added = await applySuppressionArgs(
+      args,
+      wsRoot,
+      relFromRoot,
+      supPath,
+      auditResults.vulnerabilities,
+    );
   } catch (error: unknown) {
     // A write failure surfaces a specific error rather than the generic
     // "Chaos Engine Halted" (Fix 4). Sandbox cleanup still runs via finally.

@@ -323,7 +323,13 @@ function validateMutantKeyArray(
       Array.isArray(entry) ||
       typeof entry.mutator !== 'string' ||
       entry.mutator.trim().length === 0 ||
-      (allowReason && entry.reason !== undefined && typeof entry.reason !== 'string')
+      (allowReason && entry.reason !== undefined && typeof entry.reason !== 'string') ||
+      // An empty `change` is rejected rather than treated as absent: absent
+      // means "resolve it from the survivors", and silently converting one to
+      // the other would file a broad mutator-only entry the caller never asked
+      // for.
+      (entry.change !== undefined &&
+        (typeof entry.change !== 'string' || entry.change.trim().length === 0))
     ) {
       return `each ${field} entry must be { line: integer >= 1, mutator: non-empty string${allowReason ? ', reason?: string' : ''} }.`;
     }

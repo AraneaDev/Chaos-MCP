@@ -293,6 +293,8 @@ export const TOOL_DEFINITION = {
           'Mark mutants as equivalent (unkillable) so future runs exclude them from the score and output. ' +
           'Appended to .chaos-mcp/suppressions.json for this file, stamped with a fingerprint of the source line so a later edit to that line retires the suppression instead of silently re-pointing it. ' +
           'Re-issue the same entry to re-confirm one reported as drifted or unverified. ' +
+          'A suppression is identified by its mutator and the CHANGE it makes, not by its line, so it follows the code when an edit moves it. ' +
+          'Supply `change` (the "original \u2192 mutated" string from a survivor\'s `changes`) to name WHICH mutant when one line carries several of the same mutator; omit it and Chaos-MCP resolves it from this run\'s survivors, refusing the entry rather than suppressing all of them if several match. ' +
           'Example: [{ "line": 42, "mutator": "ConditionalExpression", "reason": "guard unreachable" }].',
         // `validateMutantKeyArray` rejects an empty array ("must be a non-empty
         // array"), and caps each line at MAX_LINE_NUMBER (19a/19d).
@@ -303,19 +305,24 @@ export const TOOL_DEFINITION = {
             line: { type: 'integer', minimum: 1, maximum: MAX_LINE_NUMBER },
             mutator: { type: 'string' },
             reason: { type: 'string' },
+            change: { type: 'string' },
           },
           required: ['line', 'mutator'],
         },
       },
       unsuppress: {
         type: 'array',
-        description: 'Remove previously-suppressed mutants for this file (undo a wrong suppress).',
+        description:
+          'Remove previously-suppressed mutants for this file (undo a wrong suppress). ' +
+          'Supply `change` to remove one specific entry; omit it to remove every entry for that mutator. ' +
+          'The `line` is ignored when matching, so an entry that has relocated is still removable.',
         minItems: 1,
         items: {
           type: 'object',
           properties: {
             line: { type: 'integer', minimum: 1, maximum: MAX_LINE_NUMBER },
             mutator: { type: 'string' },
+            change: { type: 'string' },
           },
           required: ['line', 'mutator'],
         },
