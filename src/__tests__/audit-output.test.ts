@@ -78,6 +78,7 @@ const NO_SUPPRESSION: SuppressionCounts = {
   rejected: 0,
   relocated: 0,
   relocations: [],
+  rejections: [],
 };
 
 function run(opts: {
@@ -282,6 +283,7 @@ describe('formatAuditOutput — text output', () => {
           rejected: 0,
           relocated: 0,
           relocations: [],
+          rejections: [],
         },
       }).content[0] as { text: string }
     ).text;

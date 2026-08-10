@@ -121,6 +121,15 @@ export interface LineGroup {
   changes?: string[];
 }
 
+/** One refused `suppress` request, as the note renderer needs it. */
+export interface RejectionNote {
+  line: number;
+  mutator: string;
+  cause: 'non-mutable' | 'ambiguous' | 'unresolved';
+  /** The distinct changes on that line, when `cause` is `'ambiguous'`. */
+  candidates?: string[];
+}
+
 /** One tier-3 relocation, as the note renderer needs it. */
 export interface RelocationNote {
   /** The line the entry was stored against before the move. */
@@ -147,6 +156,7 @@ export function suppressionDriftNotes(
   orphaned?: number,
   rejected?: number,
   relocated?: RelocationNote[],
+  rejections?: RejectionNote[],
 ): string[] {
   const notes: string[] = [];
   if (drifted !== undefined && drifted > 0) {
@@ -175,6 +185,19 @@ export function suppressionDriftNotes(
         'request did not say which — re-issue it with a `change` naming the one you mean; or this ' +
         'run stopped early and never generated the mutant, in which case re-run with a larger ' +
         'timeoutMs before filing it. Check the line number against the survivor you meant to suppress.',
+    );
+  }
+  // An ambiguous refusal is only actionable if the caller learns WHICH changes
+  // it had to choose between. `changes` on a survivor group is capped at
+  // CHANGES_CAP for display (core/format.ts) and aggregated across mutators, so
+  // on exactly the lines where `change` is needed — many mutants of one mutator
+  // — the report cannot show them all. These candidates are the complete,
+  // per-mutator set the resolver actually compared against.
+  for (const r of rejections ?? []) {
+    if (r.cause !== 'ambiguous' || !r.candidates || r.candidates.length === 0) continue;
+    notes.push(
+      `Line ${r.line} carries ${r.candidates.length} "${r.mutator}" mutants; the request named none of them. ` +
+        `Re-issue with one of these \`change\` values: ${r.candidates.map((c) => `"${c}"`).join(', ')}.`,
     );
   }
   // Reported ENTRY BY ENTRY, unlike the four counts above, because this is the

@@ -23,6 +23,7 @@ import {
   suppressionDriftNotes,
   type LineGroup,
   type RelocationNote,
+  type RejectionNote,
 } from './score-semantics.js';
 
 export interface EnrichContext {
@@ -417,6 +418,8 @@ export function formatResultAsText(
     relocatedSuppressions?: number;
     /** The tier-3 moves, each narrated individually — they can be wrong. */
     relocations?: RelocationNote[];
+    /** Refused `suppress` requests, with candidates for an ambiguous one. */
+    rejections?: RejectionNote[];
     /**
      * The gate verdict for this run, when the caller passed `minScore`. Must be
      * the same {@link GateResult} the payload carries — pass `evaluateGate`'s
@@ -475,6 +478,7 @@ export function formatResultAsText(
     opts.orphanedSuppressions,
     opts.rejectedSuppressions,
     opts.relocations,
+    opts.rejections,
   )) {
     lines.push(`Note: ${n}`);
   }
@@ -615,6 +619,8 @@ export interface ResultPayloadOpts {
   relocatedSuppressions?: number;
   /** The tier-3 moves, each narrated individually — they can be wrong. */
   relocations?: RelocationNote[];
+  /** Refused `suppress` requests, with candidates for an ambiguous one. */
+  rejections?: RejectionNote[];
   gate?: GateResult;
 }
 
@@ -737,6 +743,7 @@ export function buildResultPayload(
     opts.orphanedSuppressions,
     opts.rejectedSuppressions,
     opts.relocations,
+    opts.rejections,
   )) {
     payload.note += ` ${n}`;
   }

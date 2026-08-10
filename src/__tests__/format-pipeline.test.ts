@@ -461,3 +461,47 @@ describe('relocated suppressions', () => {
     expect(payload.note).not.toContain('Recorded reason');
   });
 });
+
+describe('ambiguous suppression candidates', () => {
+  it('lists every candidate change so the caller can name one', () => {
+    // `changes` on a survivor group is capped at CHANGES_CAP and aggregated
+    // across mutators, so on exactly the lines where `change` is needed — many
+    // mutants of one mutator — the report cannot show them all. Without this
+    // note the refusal is unactionable.
+    const payload = buildResultPayload(result({ vulnerabilities: [vuln()] }), {
+      rejectedSuppressions: 1,
+      rejections: [
+        {
+          line: 331,
+          mutator: 'ConditionalExpression',
+          cause: 'ambiguous',
+          candidates: ['a || b → false', 'a → false', 'b → false', 'a || b → true'],
+        },
+      ],
+    });
+
+    expect(payload.note).toContain('Line 331 carries 4 "ConditionalExpression" mutants');
+    for (const c of ['a || b → false', 'a → false', 'b → false', 'a || b → true']) {
+      expect(payload.note).toContain(`"${c}"`);
+    }
+  });
+
+  it('says nothing extra for a rejection that is not ambiguous', () => {
+    const payload = buildResultPayload(result({ vulnerabilities: [vuln()] }), {
+      rejectedSuppressions: 1,
+      rejections: [{ line: 12, mutator: 'ConditionalExpression', cause: 'non-mutable' }],
+    });
+
+    expect(payload.note).toContain('NOT stored');
+    expect(payload.note).not.toContain('Re-issue with one of these');
+  });
+
+  it('says nothing when an ambiguous rejection carries no candidates', () => {
+    const payload = buildResultPayload(result({ vulnerabilities: [vuln()] }), {
+      rejectedSuppressions: 1,
+      rejections: [{ line: 12, mutator: 'X', cause: 'ambiguous', candidates: [] }],
+    });
+
+    expect(payload.note).not.toContain('Re-issue with one of these');
+  });
+});

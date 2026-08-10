@@ -433,6 +433,96 @@
         "change": "typeof args.maxSurvivors !== 'number' → false",
         "reason": "Redundant typeof guard: `!Number.isInteger(args.maxSurvivors)` rejects every non-number with the same message.",
         "fingerprint": "53c020007f93"
+      },
+      {
+        "line": 322,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786355645941,
+        "change": "typeof entry !== 'object' → false",
+        "reason": "Forcing `typeof entry !== 'object'` false cannot admit a scalar: it has no `mutator` property, so `typeof entry.mutator !== 'string'` rejects it with the same message. Note this line is byte-identical to the guard at line 158 in `validateBaselineArg`, so the two share a mutator, a change AND a fingerprint — only the line tells them apart.",
+        "fingerprint": "ab6ccff2b217"
+      }
+    ],
+    "src/utils/run-cache.ts": [
+      {
+        "line": 159,
+        "mutator": "ObjectLiteral",
+        "addedAt": 1786355944673,
+        "change": "{ force: true } → {}",
+        "reason": "`force: true` only suppresses ENOENT, and this path deletes a file we just read (so it exists). If it did vanish in between, the enclosing try/catch swallows the throw and nothing else happens either way.",
+        "fingerprint": "e3bf5c6acc79"
+      },
+      {
+        "line": 159,
+        "mutator": "BooleanLiteral",
+        "addedAt": 1786355944673,
+        "change": "true → false",
+        "reason": "Same as the ObjectLiteral on this line: force only matters for a missing file, and a throw here is swallowed by the surrounding best-effort catch.",
+        "fingerprint": "e3bf5c6acc79"
+      },
+      {
+        "line": 190,
+        "mutator": "OptionalChaining",
+        "addedAt": 1786355944673,
+        "change": "CACHE_INDEX.get(dir)?.delete → CACHE_INDEX.get(dir).delete",
+        "reason": "`CACHE_INDEX.get(dir)` cannot be undefined here: `evict` begins with `listEntries(dir)`, which sets the index (scanned, or cached empty on an unreadable directory) before either loop runs. The `?.` is defensive against a state this call order makes unreachable.",
+        "fingerprint": "2e36324e2232"
+      },
+      {
+        "line": 200,
+        "mutator": "MethodExpression",
+        "addedAt": 1786355944673,
+        "change": "entries .filter((e) => now - e.createdAt <= ttlMs) → entries",
+        "reason": "Dropping the TTL filter lets expired entries into `live`. Expiry is `now - createdAt > ttlMs` against a single `now`, so every expired entry is strictly OLDER than every live one and sorts ahead of them. They therefore occupy the leading slots of the deletion window, which grows by exactly the number added — so the same set of live files is deleted either way.",
+        "fingerprint": "4d73bb327810"
+      },
+      {
+        "line": 201,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786355944673,
+        "change": "now - e.createdAt <= ttlMs → true",
+        "reason": "Same as the MethodExpression on line 200: forcing the predicate true admits only expired entries, which sort strictly ahead of every live entry and absorb the extra deletion slots their presence creates. The set of live files removed is unchanged.",
+        "fingerprint": "bb5ce0c2fff2"
+      },
+      {
+        "line": 208,
+        "mutator": "OptionalChaining",
+        "addedAt": 1786355944673,
+        "change": "CACHE_INDEX.get(dir)?.delete → CACHE_INDEX.get(dir).delete",
+        "reason": "Same as line 190 — `listEntries` at the top of `evict` has already populated the index for this directory.",
+        "fingerprint": "8e8d40ba5d70"
+      },
+      {
+        "line": 240,
+        "mutator": "ObjectLiteral",
+        "addedAt": 1786356003019,
+        "change": "{ force: true } → {}",
+        "reason": "This rmSync cleans the temp file inside the write-failure catch, wrapped in its own try/catch marked best-effort. Whether force suppresses ENOENT or the catch swallows it, the outcome is identical: the original error is rethrown.",
+        "fingerprint": "1dca0f73b3bf"
+      },
+      {
+        "line": 240,
+        "mutator": "BooleanLiteral",
+        "addedAt": 1786356003019,
+        "change": "true → false",
+        "reason": "Same as the ObjectLiteral on this line — the surrounding best-effort catch makes the force flag unobservable.",
+        "fingerprint": "1dca0f73b3bf"
+      },
+      {
+        "line": 249,
+        "mutator": "OptionalChaining",
+        "addedAt": 1786356003019,
+        "change": "CACHE_INDEX.get(dir)?.set → CACHE_INDEX.get(dir).set",
+        "reason": "`saveRun` calls `evict` before this line, and `evict` populates the index via `listEntries`; the comment two lines above states exactly that guarantee. Unreachable defensively.",
+        "fingerprint": "ada296a0beb1"
+      },
+      {
+        "line": 329,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786356380576,
+        "change": "!Array.isArray(value) → false",
+        "reason": "Forcing `!Array.isArray(value)` false sends a non-array to `value.every`, which does not exist on a string or plain object — the TypeError is caught by loadRun's own try/catch and returns undefined, the same miss the guard produces.",
+        "fingerprint": "3e367224ee85"
       }
     ]
   }

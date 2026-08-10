@@ -19,7 +19,7 @@ import type { MutationResult } from '../engines/base.js';
 import type { MutantKey } from '../core/verify.js';
 import { toolError } from '../core/tool-result.js';
 import { applySuppressions } from './apply-suppressions.js';
-import type { RelocationNote } from '../core/score-semantics.js';
+import type { RelocationNote, RejectionNote } from '../core/score-semantics.js';
 import { warn } from '../utils/logger.js';
 import { changeOf } from '../utils/mutant-identity.js';
 
@@ -68,6 +68,8 @@ export interface SuppressionCounts {
   relocated: number;
   /** The tier-3 moves, for the per-entry note. Empty on the common path. */
   relocations: RelocationNote[];
+  /** The refused `suppress` requests, with the candidates for an ambiguous one. */
+  rejections: RejectionNote[];
 }
 import {
   loadSuppressions,
@@ -293,6 +295,7 @@ export async function applyAndCountSuppressions(
     rejected: added.rejected.length,
     relocated: 0,
     relocations: [],
+    rejections: added.rejected,
   };
   if (!baselineKeys) {
     // Evaluated on the PRE-suppression result, before `result` is reassigned

@@ -252,6 +252,7 @@ function formatStandardOutput({
     rejectedSuppressions: suppression.rejected,
     relocatedSuppressions: suppression.relocated,
     relocations: suppression.relocations,
+    rejections: suppression.rejections,
     gate,
   });
 
@@ -265,6 +266,7 @@ function formatStandardOutput({
           rejectedSuppressions: suppression.rejected,
           relocatedSuppressions: suppression.relocated,
           relocations: suppression.relocations,
+          rejections: suppression.rejections,
           // The SAME GateResult the payload carries, not a second evaluation:
           // text output previously rendered no verdict at all, so a caller
           // reading only the text block saw a clean report for a failing gate.
