@@ -563,6 +563,102 @@
         "change": "{ return undefined; } → {}",
         "reason": "Emptying the catch drops `return undefined`, but control then falls out of the try/catch to the end of the function, which returns undefined implicitly. Identical result for every input.",
         "fingerprint": "95bc545467a5"
+      },
+      {
+        "line": 331,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786360263348,
+        "change": "typeof g !== 'object' || g === null || Array.isArray(g) → false",
+        "reason": "Redundant guard, whole condition: a scalar group has no `line` property, so `typeof group.line !== 'number'` on the next line rejects it; a null group throws on that same property read and loadRun's catch turns it into the same miss.",
+        "fingerprint": "26f4196cd6de"
+      },
+      {
+        "line": 331,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786360263348,
+        "change": "typeof g !== 'object' || g === null → false",
+        "reason": "Same redundant guard, left pair forced false: whatever the weakened guard admits is rejected by the `group.line` check below, or throws into loadRun's catch — the same miss either way.",
+        "fingerprint": "26f4196cd6de"
+      },
+      {
+        "line": 331,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786360263348,
+        "change": "typeof g !== 'object' → false",
+        "reason": "Same redundant guard, first disjunct forced false: a string or number then passes the guard and is rejected by `typeof group.line !== 'number'` below.",
+        "fingerprint": "26f4196cd6de"
+      },
+      {
+        "line": 331,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786360263348,
+        "change": "g === null → false",
+        "reason": "Same redundant guard, null disjunct forced false: `null` has typeof 'object', so it passes the guard and throws on the `group.line` read, which loadRun's catch turns into the same miss.",
+        "fingerprint": "26f4196cd6de"
+      },
+      {
+        "line": 331,
+        "mutator": "LogicalOperator",
+        "addedAt": 1786360263348,
+        "change": "typeof g !== 'object' || g === null || Array.isArray(g) → (typeof g !== 'object' || g === null) && Array.isArray(g)",
+        "reason": "Swapping the outer disjunction only narrows the guard, so more bad values reach the `group.line` check below — which rejects every one of them with the same miss.",
+        "fingerprint": "26f4196cd6de"
+      },
+      {
+        "line": 331,
+        "mutator": "LogicalOperator",
+        "addedAt": 1786360263348,
+        "change": "typeof g !== 'object' || g === null → typeof g !== 'object' && g === null",
+        "reason": "Swapping the inner disjunction narrows the guard the same way: what it now admits is rejected downstream, or throws into loadRun's catch.",
+        "fingerprint": "26f4196cd6de"
+      },
+      {
+        "line": 357,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786360400179,
+        "change": "typeof value !== 'object' || value === null || Array.isArray(value) → false",
+        "reason": "Redundant guard, whole condition: a scalar `value` has no `runId`, so `typeof e.runId !== 'string'` two lines down rejects it; `null` throws on that same read and loadRun's catch returns the same miss.",
+        "fingerprint": "077797c04b9e"
+      },
+      {
+        "line": 357,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786360400179,
+        "change": "typeof value !== 'object' || value === null → false",
+        "reason": "Same redundant guard, left pair forced false: whatever the weakened guard admits is rejected by the `e.runId` check below, or throws into loadRun's catch.",
+        "fingerprint": "077797c04b9e"
+      },
+      {
+        "line": 357,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786360400179,
+        "change": "typeof value !== 'object' → false",
+        "reason": "Same redundant guard, first disjunct forced false: a string or number then passes the guard and is rejected by `typeof e.runId !== 'string'` below.",
+        "fingerprint": "077797c04b9e"
+      },
+      {
+        "line": 357,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786360400179,
+        "change": "value === null → false",
+        "reason": "Same redundant guard, null disjunct forced false: `null` has typeof 'object', so it passes the guard and throws on the `e.runId` read, which loadRun's catch turns into the same miss.",
+        "fingerprint": "077797c04b9e"
+      },
+      {
+        "line": 357,
+        "mutator": "LogicalOperator",
+        "addedAt": 1786360400179,
+        "change": "typeof value !== 'object' || value === null || Array.isArray(value) → (typeof value !== 'object' || value === null) && Array.isArray(value)",
+        "reason": "Swapping the outer disjunction only narrows the guard, so more bad values reach the `e.runId` check below — which rejects every one of them with the same miss.",
+        "fingerprint": "077797c04b9e"
+      },
+      {
+        "line": 357,
+        "mutator": "LogicalOperator",
+        "addedAt": 1786360400179,
+        "change": "typeof value !== 'object' || value === null → typeof value !== 'object' && value === null",
+        "reason": "Swapping the inner disjunction narrows the guard the same way: what it now admits is rejected downstream, or throws into loadRun's catch.",
+        "fingerprint": "077797c04b9e"
       }
     ],
     "src/utils/suppression.ts": [
