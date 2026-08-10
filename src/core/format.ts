@@ -479,6 +479,7 @@ export function formatResultAsText(
     opts.rejectedSuppressions,
     opts.relocations,
     opts.rejections,
+    opts.relocatedSuppressions,
   )) {
     lines.push(`Note: ${n}`);
   }
@@ -744,6 +745,7 @@ export function buildResultPayload(
     opts.rejectedSuppressions,
     opts.relocations,
     opts.rejections,
+    opts.relocatedSuppressions,
   )) {
     payload.note += ` ${n}`;
   }

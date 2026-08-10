@@ -125,7 +125,16 @@ function formatVerifyOutput({
   // in when its mutant was filtered out of the re-run reads as "now killed",
   // which is a false claim of progress. Extending the cache format to carry the
   // change would fix it properly and belongs with the run-cache, not here.
-  const suppressedCoarse = new Set(suppression.applied.map((s) => `${s.line} ${s.mutator}`));
+  //
+  // Both lines, not just the resolved one: a relocated entry's mutant was
+  // filtered out of the re-run under its NEW line, while the cached baseline key
+  // still carries the line it was stored against. Matching only the new line
+  // leaves that baseline key in, and `computeVerifyDelta` reads its absence from
+  // the re-run as "now killed" — the false progress claim this filter exists to
+  // avoid.
+  const suppressedCoarse = new Set(
+    suppression.applied.flatMap((s) => [`${s.line} ${s.mutator}`, `${s.storedLine} ${s.mutator}`]),
+  );
   const keptBaseline = baselineKeys.filter((k) => !suppressedCoarse.has(`${k.line} ${k.mutator}`));
   // EVERY engine re-runs the whole file in verify mode now — StrykerJS
   // included, since single-line scoping silently dropped multi-line mutants
@@ -181,14 +190,21 @@ function formatVerifyOutput({
     undefined,
     undefined,
     verifyRelocations,
+    undefined,
+    suppression.relocated.length,
   );
+  // Counted OUTSIDE the drift guard. A tier-2 move produces no sentence — it
+  // cannot be wrong — so a run with only tier-2 relocations has an empty
+  // `verifyDrift` and would drop the count entirely, while the standard path
+  // (`applyAndCountSuppressions`) reports it unconditionally. The two modes must
+  // not disagree about the same fact.
+  if (suppression.relocated.length > 0) {
+    verifyStructured.relocatedSuppressions = suppression.relocated.length;
+  }
   const verifyContent: { type: 'text'; text: string }[] = [{ type: 'text', text: verifyText }];
   if (verifyDrift.length > 0) {
     if (suppression.drifted > 0) verifyStructured.driftedSuppressions = suppression.drifted;
     if (verdict.unverified > 0) verifyStructured.unverifiedSuppressions = verdict.unverified;
-    if (suppression.relocated.length > 0) {
-      verifyStructured.relocatedSuppressions = suppression.relocated.length;
-    }
     verifyStructured.note = `${verifyStructured.note as string} ${verifyDrift.join(' ')}`;
     verifyContent.push({ type: 'text', text: verifyDrift.map((n) => `Note: ${n}`).join('\n') });
   }

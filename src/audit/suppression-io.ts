@@ -342,6 +342,9 @@ export async function applyAndCountSuppressions(
           relFromRoot,
           filtered.relocated.map((r) => ({
             mutator: r.mutator,
+            // The entry is addressed by where it is STORED, not where it moved
+            // to: two entries can share an identity on different lines.
+            storedLine: r.storedLine,
             line: r.line,
             ...(r.change === undefined ? {} : { change: r.change }),
           })),

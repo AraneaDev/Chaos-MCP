@@ -603,10 +603,14 @@ export function loadSuppressions(
       continue;
     }
     // Same file reached under two spellings (e.g. a Windows-written
-    // `src\a.ts` alongside a Linux-written `src/a.ts`). Union them by
-    // identity so neither spelling's entries are dropped.
-    const byKey = new Map(existing.map((e) => [identityKeyOf(e.mutator, e.change), e] as const));
-    for (const e of kept) byKey.set(identityKeyOf(e.mutator, e.change), e);
+    // `src\a.ts` alongside a Linux-written `src/a.ts`). Union them by STORAGE
+    // key, not identity: identity alone is not unique inside one file (see
+    // `storageKeyOf`), so two mutants sharing a mutator and a change on
+    // different lines would collapse into one and a suppression would be lost.
+    const byKey = new Map(
+      existing.map((e) => [storageKeyOf(e.mutator, e.change, e.line), e] as const),
+    );
+    for (const e of kept) byKey.set(storageKeyOf(e.mutator, e.change, e.line), e);
     map.set(key, [...byKey.values()]);
   }
   return map;
@@ -768,9 +772,17 @@ export function addSuppressions(
  * person to read `suppressions.json` sees a number that has been wrong for
  * months. Writing it back is what turns detected drift into HEALED drift.
  *
- * Identity is `(mutator, change)`, never the stored line — the line is the thing
- * that moved. The fingerprint is re-derived from the NEW line, so the next run
- * resolves at tier 1 and does no searching at all.
+ * Each update names the entry by its STORED line as well as its identity, and is
+ * matched against the entry's current line. Identity alone is not enough: one
+ * file can hold two mutants with the same mutator and the same change on
+ * different lines (see {@link storageKeyOf}), and this repository's own corpus
+ * holds three such pairs. Keyed on identity alone, two of them relocating in one
+ * run would both be rewritten to whichever line the map happened to keep, with
+ * the same re-derived fingerprint — leaving one mutant unsuppressed and the two
+ * entries indistinguishable.
+ *
+ * The fingerprint is re-derived from the NEW line, so the next run resolves at
+ * tier 1 and does no searching at all.
  *
  * An update naming no stored entry is a silent no-op rather than an error: the
  * caller resolved against an audit result, and an entry may have been dropped by
@@ -779,7 +791,7 @@ export function addSuppressions(
 export function restampSuppressions(
   workspaceRoot: string,
   relFile: string,
-  updates: { mutator: string; change?: string; line: number }[],
+  updates: { mutator: string; change?: string; storedLine: number; line: number }[],
   configPath?: string,
 ): Promise<void> {
   if (updates.length === 0) return Promise.resolve();
@@ -789,14 +801,14 @@ export function restampSuppressions(
     const legacyKey = storedKeyFor(data.entries, portableKey);
     const list = data.entries[legacyKey];
     if (!Array.isArray(list)) return;
-    const byIdentity = new Map(
-      updates.map((u) => [identityKeyOf(u.mutator, u.change), u.line] as const),
+    const byEntry = new Map(
+      updates.map((u) => [storageKeyOf(u.mutator, u.change, u.storedLine), u.line] as const),
     );
     const lines = readSourceLines(workspaceRoot, relFile);
     let changed = false;
     const next = list.map((e) => {
       if (!e || typeof e !== 'object') return e;
-      const line = byIdentity.get(identityKeyOf(e.mutator, e.change));
+      const line = byEntry.get(storageKeyOf(e.mutator, e.change, e.line));
       if (line === undefined || line === e.line) return e;
       changed = true;
       const moved: StoredEntry = { ...e, line };

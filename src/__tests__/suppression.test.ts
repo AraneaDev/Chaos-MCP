@@ -1559,7 +1559,9 @@ describe('schema v3: identity is the mutator plus the change', () => {
       await addSuppressions(root, FILE, [{ line: 2, mutator: COND, change: RIGHT }]);
       const before = loadSuppressions(root).get(FILE)?.[0].fingerprint;
       writeSource(root, FILE, ['// banner', ...SRC]);
-      await restampSuppressions(root, FILE, [{ mutator: COND, change: RIGHT, line: 3 }]);
+      await restampSuppressions(root, FILE, [
+        { mutator: COND, change: RIGHT, storedLine: 2, line: 3 },
+      ]);
       const after = loadSuppressions(root).get(FILE)?.[0];
       expect(after?.line).toBe(3);
       expect(after?.fingerprint).toBe(before); // same CONTENT, so same digest
@@ -1571,7 +1573,9 @@ describe('schema v3: identity is the mutator plus the change', () => {
     it('re-derives a DIFFERENT fingerprint when the new line differs', async () => {
       await addSuppressions(root, FILE, [{ line: 2, mutator: COND, change: RIGHT }]);
       const before = loadSuppressions(root).get(FILE)?.[0].fingerprint;
-      await restampSuppressions(root, FILE, [{ mutator: COND, change: RIGHT, line: 5 }]);
+      await restampSuppressions(root, FILE, [
+        { mutator: COND, change: RIGHT, storedLine: 2, line: 5 },
+      ]);
       expect(loadSuppressions(root).get(FILE)?.[0].fingerprint).not.toBe(before);
     });
 
@@ -1580,7 +1584,9 @@ describe('schema v3: identity is the mutator plus the change', () => {
       // a check against different code. Dropping it demotes the entry to
       // `unverified`, which is visible.
       await addSuppressions(root, FILE, [{ line: 2, mutator: COND, change: RIGHT }]);
-      await restampSuppressions(root, FILE, [{ mutator: COND, change: RIGHT, line: 9999 }]);
+      await restampSuppressions(root, FILE, [
+        { mutator: COND, change: RIGHT, storedLine: 2, line: 9999 },
+      ]);
       const after = loadSuppressions(root).get(FILE)?.[0];
       expect(after?.fingerprint).toBeUndefined();
       expect(verifySuppressions(root, FILE, loadSuppressions(root).get(FILE)).unverified).toBe(1);
@@ -1590,7 +1596,9 @@ describe('schema v3: identity is the mutator plus the change', () => {
       await addSuppressions(root, FILE, [
         { line: 2, mutator: COND, change: RIGHT, reason: 'keep' },
       ]);
-      await restampSuppressions(root, FILE, [{ mutator: 'Other', change: 'x → y', line: 9 }]);
+      await restampSuppressions(root, FILE, [
+        { mutator: 'Other', change: 'x → y', storedLine: 2, line: 9 },
+      ]);
       const after = loadSuppressions(root).get(FILE)?.[0];
       expect(after?.line).toBe(2);
       expect(after?.reason).toBe('keep');
@@ -1599,7 +1607,7 @@ describe('schema v3: identity is the mutator plus the change', () => {
     it('is a no-op for an unknown file rather than an error', async () => {
       await expect(
         restampSuppressions(root, 'src/never-suppressed.ts', [
-          { mutator: COND, change: RIGHT, line: 3 },
+          { mutator: COND, change: RIGHT, storedLine: 2, line: 3 },
         ]),
       ).resolves.toBeUndefined();
     });
@@ -1608,7 +1616,9 @@ describe('schema v3: identity is the mutator plus the change', () => {
       await addSuppressions(root, FILE, [{ line: 2, mutator: COND, change: RIGHT }]);
       const dest = join(root, '.chaos-mcp', 'suppressions.json');
       const before = readFileSync(dest, 'utf8');
-      await restampSuppressions(root, FILE, [{ mutator: COND, change: RIGHT, line: 2 }]);
+      await restampSuppressions(root, FILE, [
+        { mutator: COND, change: RIGHT, storedLine: 2, line: 2 },
+      ]);
       expect(readFileSync(dest, 'utf8')).toBe(before);
     });
   });
@@ -1715,5 +1725,69 @@ describe('two byte-identical lines in one file', () => {
     const verdict = verifySuppressions(root, FILE, loadSuppressions(root).get(FILE));
     expect(verdict.resolved.map((r) => r.line).sort((a, b) => a - b)).toEqual([2, 6]);
     expect(verdict.drifted).toBe(0);
+  });
+});
+
+describe('relocating two entries that share an identity', () => {
+  const FILE = 'src/gate.ts';
+  // Both `[]` literals produce the identical change, so the two entries differ
+  // only by line. Addressed by identity alone, one relocation target would win
+  // and BOTH entries would be rewritten to it with the same fingerprint —
+  // leaving one mutant unsuppressed and the pair indistinguishable.
+  const SRC = [
+    'export const gate = evaluate({', //  1
+    '  nowKilled: [],', //                2
+    '  stillSurviving: [],', //           3
+    '  notReChecked: [],', //             4
+    '});', //                             5
+  ];
+  const CHANGE = '[] → ["Stryker was here"]';
+  const M = 'ArrayDeclaration';
+
+  beforeEach(() => writeSource(root, FILE, SRC));
+
+  it('moves each to its own new line, keeping them apart', async () => {
+    await addSuppressions(root, FILE, [
+      { line: 2, mutator: M, change: CHANGE, reason: 'nowKilled' },
+      { line: 4, mutator: M, change: CHANGE, reason: 'notReChecked' },
+    ]);
+    // Two banner lines shift the whole literal down by two.
+    writeSource(root, FILE, ['// banner', '// banner', ...SRC]);
+
+    await restampSuppressions(root, FILE, [
+      { mutator: M, change: CHANGE, storedLine: 2, line: 4 },
+      { mutator: M, change: CHANGE, storedLine: 4, line: 6 },
+    ]);
+
+    const stored = loadSuppressions(root).get(FILE);
+    expect(stored).toHaveLength(2);
+    const byReason = Object.fromEntries((stored ?? []).map((e) => [e.reason, e.line]));
+    expect(byReason).toEqual({ nowKilled: 4, notReChecked: 6 });
+    // Distinct lines, and each re-fingerprinted against the line it landed on.
+    expect(stored?.[0].fingerprint).toBe(fingerprintOfLine('  nowKilled: [],'));
+    expect(stored?.[1].fingerprint).toBe(fingerprintOfLine('  notReChecked: [],'));
+  });
+
+  it('moves only the one named when a single member of the pair relocates', async () => {
+    await addSuppressions(root, FILE, [
+      { line: 2, mutator: M, change: CHANGE, reason: 'nowKilled' },
+      { line: 4, mutator: M, change: CHANGE, reason: 'notReChecked' },
+    ]);
+
+    await restampSuppressions(root, FILE, [{ mutator: M, change: CHANGE, storedLine: 4, line: 3 }]);
+
+    const stored = loadSuppressions(root).get(FILE);
+    const byReason = Object.fromEntries((stored ?? []).map((e) => [e.reason, e.line]));
+    expect(byReason).toEqual({ nowKilled: 2, notReChecked: 3 });
+  });
+
+  it('ignores an update whose stored line names no entry', async () => {
+    await addSuppressions(root, FILE, [{ line: 2, mutator: M, change: CHANGE, reason: 'a' }]);
+
+    await restampSuppressions(root, FILE, [
+      { mutator: M, change: CHANGE, storedLine: 99, line: 3 },
+    ]);
+
+    expect(loadSuppressions(root).get(FILE)?.[0].line).toBe(2);
   });
 });

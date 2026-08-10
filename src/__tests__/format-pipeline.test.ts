@@ -444,6 +444,44 @@ describe('relocated suppressions', () => {
     );
   });
 
+  it('reports a tier-2 move that has no per-entry detail', () => {
+    // Tier 2 is counted but never narrated individually, so a TEXT-only caller
+    // would otherwise learn nothing — and a relocation rewrites the
+    // suppressions file, which they would then find changed on disk with no
+    // explanation anywhere in the response.
+    const text = formatResultAsText(result({ vulnerabilities: [vuln()] }), undefined, {
+      relocatedSuppressions: 3,
+      relocations: [],
+    });
+
+    expect(text).toContain('Note: 3 suppression(s) applied at a different line than recorded');
+    expect(text).toContain('stored line numbers have been updated');
+  });
+
+  it('does not double-report a move that IS narrated individually', () => {
+    // One tier-3 move: the count is 1 and the detail covers it, so the generic
+    // sentence must not also fire.
+    const payload = buildResultPayload(result({ vulnerabilities: [vuln()] }), {
+      relocatedSuppressions: 1,
+      relocations: [move],
+    });
+
+    expect(payload.note).toContain('moved from line 134 to line 96');
+    expect(payload.note).not.toContain('applied at a different line than recorded');
+  });
+
+  it('reports only the moves left unnarrated when both kinds occur', () => {
+    // Three relocations, one of them tier 3: the detail covers that one and the
+    // generic sentence covers the other two.
+    const payload = buildResultPayload(result({ vulnerabilities: [vuln()] }), {
+      relocatedSuppressions: 3,
+      relocations: [move],
+    });
+
+    expect(payload.note).toContain('moved from line 134 to line 96');
+    expect(payload.note).toContain('2 suppression(s) applied at a different line than recorded');
+  });
+
   it('counts a tier-2 move without narrating it', () => {
     // Tier 2 cannot be wrong — the line's content is unchanged, it only moved —
     // so `relocations` is empty and only the count is reported.

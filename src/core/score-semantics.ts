@@ -157,6 +157,7 @@ export function suppressionDriftNotes(
   rejected?: number,
   relocated?: RelocationNote[],
   rejections?: RejectionNote[],
+  relocatedCount?: number,
 ): string[] {
   const notes: string[] = [];
   if (drifted !== undefined && drifted > 0) {
@@ -208,6 +209,17 @@ export function suppressionDriftNotes(
   // suppression has just moved onto code its reason was never written about. A
   // bare count would hide that; naming the move and quoting the reason lets a
   // reader judge it.
+  // Tier-2 moves are counted but never narrated individually, so a text-only
+  // caller would otherwise learn nothing about them — and a relocation REWRITES
+  // the suppressions file, which they would then find changed on disk with no
+  // explanation. One sentence for however many were not named below.
+  const narrated = (relocated ?? []).length;
+  const silent = Math.max(0, (relocatedCount ?? narrated) - narrated);
+  if (silent > 0) {
+    notes.push(
+      `${silent} suppression(s) applied at a different line than recorded — the code moved but did not change, so the entries followed it and the stored line numbers have been updated.`,
+    );
+  }
   for (const r of relocated ?? []) {
     notes.push(
       `Suppression "${r.mutator}" moved from line ${r.storedLine} to line ${r.line}: its stored line was edited, and its mutant was found there instead. ` +
