@@ -349,7 +349,10 @@ describe('parseInfectionJsonLog', () => {
       escaped: [{ mutator: { mutatorName: 'Plus', originalStartLine: 3 } }],
       killed: [{}],
       notCovered: [
-        { mutator: { mutatorName: 'Minus', originalStartLine: 7 }, diff: '  - $a - $b\n' },
+        {
+          mutator: { mutatorName: 'Minus', originalStartLine: 7 },
+          diff: '--- Original\n+++ New\n-  $a - $b\n+  $a + $b\n',
+        },
         { mutator: { mutatorName: 'Identical', originalStartLine: 9 } },
       ],
       errored: [{}],
@@ -363,7 +366,12 @@ describe('parseInfectionJsonLog', () => {
     expect(r.vulnerabilities).toHaveLength(3);
     expect(r.vulnerabilities.filter((v) => v.kind === 'noCoverage')).toHaveLength(2);
     const nc = r.vulnerabilities.find((v) => v.line === 7);
-    expect(nc).toMatchObject({ kind: 'noCoverage', mutator: 'Minus', mutated: '- $a - $b' });
+    expect(nc).toMatchObject({
+      kind: 'noCoverage',
+      mutator: 'Minus',
+      original: '$a - $b',
+      mutated: '$a + $b',
+    });
     expect(nc?.description).toMatch(/no test reached/i);
   });
 
@@ -377,7 +385,10 @@ describe('parseInfectionJsonLog', () => {
       escaped: [{ mutator: { mutatorName: 'Plus', originalStartLine: 3 } }],
       killed: [{}],
       uncovered: [
-        { mutator: { mutatorName: 'Minus', originalStartLine: 7 }, diff: '  - $a - $b\n' },
+        {
+          mutator: { mutatorName: 'Minus', originalStartLine: 7 },
+          diff: '--- Original\n+++ New\n-  $a - $b\n+  $a + $b\n',
+        },
         { mutator: { mutatorName: 'Identical', originalStartLine: 9 } },
       ],
     });
@@ -389,7 +400,12 @@ describe('parseInfectionJsonLog', () => {
     expect(r.vulnerabilities).toHaveLength(3);
     expect(r.vulnerabilities.filter((v) => v.kind === 'noCoverage')).toHaveLength(2);
     const nc = r.vulnerabilities.find((v) => v.line === 7);
-    expect(nc).toMatchObject({ kind: 'noCoverage', mutator: 'Minus', mutated: '- $a - $b' });
+    expect(nc).toMatchObject({
+      kind: 'noCoverage',
+      mutator: 'Minus',
+      original: '$a - $b',
+      mutated: '$a + $b',
+    });
     expect(nc?.description).toMatch(/no test reached/i);
   });
 
@@ -674,16 +690,38 @@ describe('parseInfectionJsonLog', () => {
     expect(r.vulnerabilities[0].description).toContain('line 0');
   });
 
-  it('trims surrounding whitespace off a survivor diff', () => {
+  it('trims each extracted half of a survivor diff', () => {
+    // The whole diff used to be stored verbatim in `mutated`, which left every
+    // survivor in a file carrying a multi-line blob with identical leading
+    // headers — no way to say WHICH mutant a suppression meant. Both halves are
+    // now extracted and trimmed independently.
     const log = JSON.stringify({
       stats: { killedCount: 0 },
       escaped: [
-        { mutator: { mutatorName: 'Plus', originalStartLine: 4 }, diff: '\n  - $a + $b\n\n' },
+        {
+          mutator: { mutatorName: 'Plus', originalStartLine: 4 },
+          diff: '--- Original\n+++ New\n-   $a + $b   \n+   $a - $b   \n',
+        },
       ],
       killed: [],
     });
     const r = parseInfectionJsonLog(log, 'src/X.php');
-    expect(r.vulnerabilities[0].mutated).toBe('- $a + $b');
+    expect(r.vulnerabilities[0].original).toBe('$a + $b');
+    expect(r.vulnerabilities[0].mutated).toBe('$a - $b');
+  });
+
+  it('leaves both halves absent when a diff carries no +/- lines', () => {
+    // Degrades to mutator-only identity rather than inventing one.
+    const log = JSON.stringify({
+      stats: { killedCount: 0 },
+      escaped: [
+        { mutator: { mutatorName: 'Plus', originalStartLine: 4 }, diff: 'nothing parseable' },
+      ],
+      killed: [],
+    });
+    const r = parseInfectionJsonLog(log, 'src/X.php');
+    expect(r.vulnerabilities[0].original).toBeUndefined();
+    expect(r.vulnerabilities[0].mutated).toBeUndefined();
   });
 
   it('falls back to array lengths when the log carries no stats block', () => {

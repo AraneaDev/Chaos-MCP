@@ -13,6 +13,7 @@ import {
   survivorVulnerability,
 } from '../base.js';
 import { warn } from '../../utils/logger.js';
+import { extractDiffChange } from '../../utils/diff-change.js';
 
 /** One mutant entry in Infection's JSON log. */
 interface InfectionMutant {
@@ -364,7 +365,13 @@ export function parseInfectionJsonLog(logText: string, filePath: string): Mutati
         e.mutator?.originalStartLine ?? 0,
         e.mutator?.mutatorName ?? 'PHP Mutation Operator',
         'PHP',
-        { mutated: e.diff ? e.diff.trim() : undefined },
+        // Infection reports the mutation as a unified diff. Storing the whole
+        // blob in `mutated` left the mutant unidentifiable by CONTENT — every
+        // survivor in a file carried a multi-line string whose leading lines
+        // were identical headers — so a suppression could not name which mutant
+        // it meant. Extracting the changed pair yields the same
+        // `original → mutated` shape every other engine gives.
+        e.diff ? extractDiffChange(e.diff) : {},
       ),
     ),
     // Wording deliberately identical to the TypeScript engine's NoCoverage
@@ -377,7 +384,7 @@ export function parseInfectionJsonLog(logText: string, filePath: string): Mutati
         kind: 'noCoverage',
         description: `No test reached this line (NoCoverage). Consider adding tests covering this branch.`,
       };
-      if (m.diff) vuln.mutated = m.diff.trim();
+      if (m.diff) Object.assign(vuln, extractDiffChange(m.diff));
       return vuln;
     }),
   ];

@@ -155,7 +155,7 @@ export function survivorVulnerability(
   line: number,
   mutator: string,
   language: string,
-  extra?: { mutated?: string; lineLabel?: string | number },
+  extra?: { original?: string; mutated?: string; lineLabel?: string | number },
 ): Vulnerability {
   const vuln: Vulnerability = {
     line,
@@ -163,6 +163,11 @@ export function survivorVulnerability(
     kind: 'survived',
     description: `Mutation survived at line ${extra?.lineLabel ?? line}. The ${language} test suite did not catch this change.`,
   };
+  // Both halves are carried because suppression identity is the CHANGE a mutant
+  // makes — `original → mutated` (see utils/mutant-identity.ts). A replacement
+  // alone does not identify a mutant: several mutants on one line can share it
+  // and differ only in the span they replaced.
+  if (extra?.original !== undefined) vuln.original = extra.original;
   if (extra?.mutated !== undefined) vuln.mutated = extra.mutated;
   return vuln;
 }

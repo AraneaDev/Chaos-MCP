@@ -6,18 +6,7 @@
  * tolerates — and the error raised for a third — are the substance here.
  */
 import { type MutationResult, type Vulnerability, formatMutationScore } from '../base.js';
-
-/** Extract original→mutated source from a cosmic-ray unified `diff`. */
-function extractDiffChange(diff: string): { original?: string; mutated?: string } {
-  let original: string | undefined;
-  let mutated: string | undefined;
-  for (const raw of diff.split('\n')) {
-    if (raw.startsWith('---') || raw.startsWith('+++')) continue; // file headers
-    if (original === undefined && raw.startsWith('-')) original = raw.slice(1).trim();
-    else if (mutated === undefined && raw.startsWith('+')) mutated = raw.slice(1).trim();
-  }
-  return { original, mutated };
-}
+import { extractDiffChange } from '../../utils/diff-change.js';
 
 /**
  * Thrown when a surviving mutant's work item matches neither cosmic-ray dump
