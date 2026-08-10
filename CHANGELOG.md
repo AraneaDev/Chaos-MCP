@@ -7,7 +7,7 @@ All notable changes to Chaos-MCP are documented in this file.
 
 ### ⚠ BREAKING CHANGES
 
-* **cli:** the minimum supported Node.js runtime is now 22.11.0 (was 22.0.0). 22.11.0 is the first 22.x LTS release. Anything on 22.0-22.10 must upgrade; `checkNodeVersion` refuses to start below the floor, and `scripts/install.sh` was moved in step so an installer cannot provision a runtime the server then rejects. ([aaf7530](https://github.com/AraneaDev/Chaos-MCP/commit/aaf7530eab3df3b97df657196c5026c8c77e8353))
+* **cli:** the minimum supported Node.js runtime is now 22.11.0 (was 22.0.0), the first 22.x LTS release. Runtimes `>=22.0.0 <22.11.0` are no longer supported: `checkNodeVersion` prints an upgrade message and exits 1 below the floor, and `scripts/install.sh` raised its own `MIN_NODE_VERSION` constant from 22.0.0 to 22.11.0 so the installer cannot provision a runtime the server then refuses to start on. ([aaf7530](https://github.com/AraneaDev/Chaos-MCP/commit/aaf7530eab3df3b97df657196c5026c8c77e8353))
 
 <!--
   The two entries release-please originally generated here read

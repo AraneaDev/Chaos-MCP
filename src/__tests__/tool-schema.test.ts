@@ -1114,8 +1114,11 @@ describe('conjoin', () => {
   });
 
   it('joins exactly two with the conjunction and NO comma', () => {
-    // The `=== 2` branch. Falling through to the general case yields
-    // "a, and b"; taking the short branch yields "ab".
+    // The `=== 2` branch, which returns "a and b". Forcing it false drops a
+    // two-item list into the general case and yields "a, and b" — a comma
+    // before a two-item conjunction. ("ab" is a different mutant's outcome:
+    // widening `< 2` to `<= 2` sends two items down the join-as-is path, and
+    // the next case pins that one.)
     expect(conjoin(['a', 'b'], 'and')).toBe('a and b');
     expect(conjoin(['Python', 'Rust'], 'or')).toBe('Python or Rust');
   });
