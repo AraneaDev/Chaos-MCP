@@ -297,6 +297,7 @@ describe('counter guards refuse a nonsensical negative', () => {
     ['unverifiedSuppressions'],
     ['orphanedSuppressions'],
     ['rejectedSuppressions'],
+    ['relocatedSuppressions'],
   ] as const)('does not report a negative %s', (key) => {
     const payload = buildResultPayload(result({ vulnerabilities: [vuln()] }), { [key]: -1 });
 
@@ -308,6 +309,7 @@ describe('counter guards refuse a nonsensical negative', () => {
     ['unverifiedSuppressions'],
     ['orphanedSuppressions'],
     ['rejectedSuppressions'],
+    ['relocatedSuppressions'],
   ] as const)('DOES report a positive %s', (key) => {
     const payload = buildResultPayload(result({ vulnerabilities: [vuln()] }), { [key]: 2 });
 
@@ -370,7 +372,18 @@ describe('refused suppressions are said out loud', () => {
 
     expect(payload.rejectedSuppressions).toBe(2);
     expect(payload.note).toContain('2 suppression(s) were NOT stored');
+    // All THREE causes must be named, because the count alone cannot say which
+    // applied and each one sends the reader to a different fix: correct the
+    // line, name a `change`, or re-run with a larger budget.
     expect(payload.note).toContain('blank or comment-only');
+    expect(payload.note).toContain('several mutants of that mutator');
+    expect(payload.note).toContain('`change` naming the one you mean');
+    expect(payload.note).toContain('stopped early and never generated the mutant');
+    expect(payload.note).toContain('larger');
+    expect(payload.note).toContain('timeoutMs');
+    expect(payload.note).toContain(
+      'Check the line number against the survivor you meant to suppress',
+    );
   });
 
   it('renders the same refusal in TEXT output', () => {
@@ -384,6 +397,8 @@ describe('refused suppressions are said out loud', () => {
 
     expect(text).toContain('Note: 2 suppression(s) were NOT stored');
     expect(text).toContain('blank or comment-only');
+    expect(text).toContain('several mutants of that mutator');
+    expect(text).toContain('stopped early and never generated the mutant');
   });
 
   it('says nothing when every requested suppression was stored', () => {

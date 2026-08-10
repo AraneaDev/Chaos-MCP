@@ -466,6 +466,50 @@ describe('validateToolArgs — suppress / unsuppress', () => {
     expect(message({ unsuppress: [{ line: 42, mutator: 'ConditionalExpression' }] })).toBeNull();
   });
 
+  describe('the optional `change` field', () => {
+    // `change` names WHICH mutant when one line carries several of the same
+    // mutator. It is optional — omitted, the audit path resolves it from that
+    // run's survivors — so the validator has to tell "absent" from "malformed"
+    // and must not silently accept a value that could never match a mutant.
+    const entry = (change: unknown) => ({
+      suppress: [{ line: 42, mutator: 'ConditionalExpression', change }],
+    });
+
+    it('accepts a non-empty string on suppress and unsuppress', () => {
+      expect(message(entry('a > 0 → true'))).toBeNull();
+      expect(
+        message({ unsuppress: [{ line: 42, mutator: 'Cond', change: 'a > 0 → true' }] }),
+      ).toBeNull();
+    });
+
+    it('accepts an entry that omits it entirely', () => {
+      expect(message({ suppress: [{ line: 42, mutator: 'Cond' }] })).toBeNull();
+      expect(message(entry(undefined))).toBeNull();
+    });
+
+    it('rejects a non-string', () => {
+      expect(message(entry(7))).toBe(suppressEntry);
+      expect(message(entry(null))).toBe(suppressEntry);
+      expect(message(entry(['a → b']))).toBe(suppressEntry);
+      expect(message(entry({}))).toBe(suppressEntry);
+    });
+
+    it('rejects an empty or whitespace-only string', () => {
+      // Not treated as absent: absent means "resolve it from the survivors",
+      // and silently converting one to the other would file a broad
+      // mutator-only entry the caller never asked for.
+      expect(message(entry(''))).toBe(suppressEntry);
+      expect(message(entry('   '))).toBe(suppressEntry);
+      expect(message(entry('\t\n'))).toBe(suppressEntry);
+    });
+
+    it('rejects it on unsuppress too, not just suppress', () => {
+      expect(message({ unsuppress: [{ line: 1, mutator: 'Cond', change: '' }] })).toBe(
+        unsuppressEntry,
+      );
+    });
+  });
+
   it('rejects a non-array or empty array, naming the argument', () => {
     expect(message({ suppress: [] })).toBe(suppressShape);
     expect(message({ suppress: {} })).toBe(suppressShape);
