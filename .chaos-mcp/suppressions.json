@@ -133,6 +133,22 @@
         "change": "{ sourceLines = undefined; } → {}",
         "reason": "`sourceLines` is declared `let sourceLines: string[] | undefined` and assigned by the single `readFileSync(...).split(...)` statement inside the try. A throw there leaves it undefined already, so the catch's `sourceLines = undefined` is a defensive re-assignment that cannot change any state. Fifth instance of this shape (triage/audit-one.ts:273/:287, core/estimate.ts:110, core/test-file.ts:124).",
         "fingerprint": "95bc545467a5"
+      },
+      {
+        "line": 246,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786360772731,
+        "change": "ignored.length > 0 → true",
+        "reason": "Forcing the ternary true passes the EMPTY array instead of `undefined`, and `buildResultPayload` re-checks with `opts.ignoredOptions && opts.ignoredOptions.length > 0` before assigning — so the payload key is omitted either way. Left unsuppressed under schema v2 because a `(line, mutator)` key would also have masked any FUTURE mutant of this mutator on this line; naming the change makes it exact.",
+        "fingerprint": "74643a81d42b"
+      },
+      {
+        "line": 246,
+        "mutator": "EqualityOperator",
+        "addedAt": 1786360772731,
+        "change": "ignored.length > 0 → ignored.length >= 0",
+        "reason": "`length >= 0` is always true, so this is the same mutant as the forced-true form above: an empty array reaches the payload builder, whose own `length > 0` guard omits the key.",
+        "fingerprint": "74643a81d42b"
       }
     ],
     "src/audit/suppression-io.ts": [
@@ -269,6 +285,22 @@
         "change": "[] → [\"Stryker was here\"]",
         "reason": "Under `dependencies: 'copy'` the empty list means 'nothing left to link'. Filling it with a name no directory has is inert on both consumers: buildCopyPolicy gains an exclusion that matches no path, and linkHeavyDirs skips it at `existsSync(src)`.",
         "fingerprint": "b4fb0b55ad9d"
+      },
+      {
+        "line": 229,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786360704065,
+        "change": "++dirsSinceYield >= SIZE_WALK_YIELD_EVERY_DIRS → true",
+        "reason": "This branch controls only WHEN the walk yields to the event loop, never what it computes. Forcing it true yields on every directory instead of every SIZE_WALK_YIELD_EVERY_DIRS; the returned `{ bytes, truncated }` is identical, and the abort check on the line above runs every iteration regardless of yielding. Left unsuppressed under schema v2 because a `(line, mutator)` key would also have masked any FUTURE mutant of this mutator on this line; naming the change makes it exact.",
+        "fingerprint": "72077045f710"
+      },
+      {
+        "line": 229,
+        "mutator": "EqualityOperator",
+        "addedAt": 1786360704065,
+        "change": "++dirsSinceYield >= SIZE_WALK_YIELD_EVERY_DIRS → ++dirsSinceYield < SIZE_WALK_YIELD_EVERY_DIRS",
+        "reason": "Same yield-cadence branch, and this mutant collapses to the same behaviour as the forced-true form: the counter is reset to 0 inside the block, so `1 < THRESHOLD` holds on every iteration and the walk yields on every directory. The computed total and truncated flag are unchanged.",
+        "fingerprint": "72077045f710"
       }
     ],
     "src/core/test-file.ts": [

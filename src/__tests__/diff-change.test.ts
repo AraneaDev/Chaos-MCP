@@ -32,9 +32,21 @@ describe('extractDiffChange', () => {
   });
 
   it('omits absent halves rather than setting them undefined', () => {
-    // `Object.assign(vuln, ...)` is a call site: an explicit `mutated:
-    // undefined` would overwrite a value already on the vulnerability.
+    // `Object.assign(vuln, ...)` in the PHP engine is a live call site: an
+    // explicit `mutated: undefined` would OVERWRITE a value already on the
+    // vulnerability, so each half must be absent rather than undefined.
     expect(Object.hasOwn(extractDiffChange('+added'), 'original')).toBe(false);
+    expect(Object.hasOwn(extractDiffChange('-removed'), 'mutated')).toBe(false);
+    expect(Object.hasOwn(extractDiffChange('no markers'), 'original')).toBe(false);
+    expect(Object.hasOwn(extractDiffChange('no markers'), 'mutated')).toBe(false);
+  });
+
+  it('does not clobber an existing value when spread onto a vulnerability', () => {
+    // The behaviour the omission exists for, asserted at the shape the PHP
+    // engine actually uses.
+    const vuln = { mutated: 'already here' };
+    Object.assign(vuln, extractDiffChange('-removed'));
+    expect(vuln.mutated).toBe('already here');
   });
 
   it('keeps only the first pair when a diff has several hunks', () => {
