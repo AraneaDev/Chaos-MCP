@@ -97,6 +97,22 @@
         "change": "{ scopeNote: `diff scoping returned an unrecognised git result (${JSON.stringify(unhandled)}); whole file`, } → {}",
         "reason": "Exhaustiveness guard: `diff` is narrowed to `never` in this default arm, so no runtime DiffResult reaches it. Emptying the returned object requires casting an invalid variant past the type system — the same equivalent guard suppressed at audit/scope.ts:259.",
         "fingerprint": "dde44124f1ee"
+      },
+      {
+        "line": 280,
+        "mutator": "BlockStatement",
+        "addedAt": 1786359158797,
+        "change": "{ rowRunId = undefined; } → {}",
+        "reason": "`rowRunId` is declared `let rowRunId: string | undefined` and assigned by exactly one statement inside the try. If that statement throws, the assignment never completed, so the variable is ALREADY undefined when the catch runs — `rowRunId = undefined` is a defensive re-assignment that cannot change any state. Emptying the block is equivalent.",
+        "fingerprint": "95bc545467a5"
+      },
+      {
+        "line": 294,
+        "mutator": "BlockStatement",
+        "addedAt": 1786359158797,
+        "change": "{ sourceLines = undefined; } → {}",
+        "reason": "Identical shape to the rowRunId catch above: `sourceLines` is declared undefined and assigned by the single `readFileSync(...).split(...)` statement inside the try. A throw there leaves it undefined already, so the catch's re-assignment is unobservable.",
+        "fingerprint": "95bc545467a5"
       }
     ],
     "src/engines/python.ts": [
@@ -121,7 +137,7 @@
     ],
     "src/audit/suppression-io.ts": [
       {
-        "line": 143,
+        "line": 145,
         "mutator": "ConditionalExpression",
         "addedAt": 1786350215200,
         "change": "args.suppress.length > 0 → true",
@@ -129,12 +145,28 @@
         "fingerprint": "82ad11f4950d"
       },
       {
-        "line": 143,
+        "line": 145,
         "mutator": "EqualityOperator",
         "addedAt": 1786350215200,
         "change": "args.suppress.length > 0 → args.suppress.length >= 0",
         "reason": "`length >= 0` is always true, making it the same as the forced-true form above: an empty array reaches `addSuppressions`, which early-returns the identical result.",
         "fingerprint": "82ad11f4950d"
+      },
+      {
+        "line": 267,
+        "mutator": "ObjectLiteral",
+        "addedAt": 1786359207860,
+        "change": "{ stamped: 0, unstamped: 0, rejected: [] } → {}",
+        "reason": "This initialiser is dead on every path that reads `added`: the try either reassigns it from `applySuppressionArgs` or throws, and the catch returns before `added` is used. Emptying it cannot be observed. (The identical initialiser inside `applySuppressionArgs` IS read, and stays unsuppressed.)",
+        "fingerprint": "f1dd3ee255d7"
+      },
+      {
+        "line": 267,
+        "mutator": "ArrayDeclaration",
+        "addedAt": 1786359207860,
+        "change": "[] → [\"Stryker was here\"]",
+        "reason": "Same as the ObjectLiteral on this line — `added` is reassigned before any read, so a seeded `rejected` array never reaches `counts.rejected`.",
+        "fingerprint": "f1dd3ee255d7"
       }
     ],
     "src/core/score-semantics.ts": [
@@ -523,6 +555,290 @@
         "change": "!Array.isArray(value) → false",
         "reason": "Forcing `!Array.isArray(value)` false sends a non-array to `value.every`, which does not exist on a string or plain object — the TypeError is caught by loadRun's own try/catch and returns undefined, the same miss the guard produces.",
         "fingerprint": "3e367224ee85"
+      },
+      {
+        "line": 387,
+        "mutator": "BlockStatement",
+        "addedAt": 1786359088307,
+        "change": "{ return undefined; } → {}",
+        "reason": "Emptying the catch drops `return undefined`, but control then falls out of the try/catch to the end of the function, which returns undefined implicitly. Identical result for every input.",
+        "fingerprint": "95bc545467a5"
+      }
+    ],
+    "src/utils/suppression.ts": [
+      {
+        "line": 100,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786356697492,
+        "change": "key !== portable → true",
+        "reason": "This loop is only reached when `Object.hasOwn(entries, portable)` was FALSE, so no key in `entries` can equal `portable` — `key !== portable` is already true for every iteration. Forcing it true changes nothing.",
+        "fingerprint": "74415619fcf2"
+      },
+      {
+        "line": 314,
+        "mutator": "BlockStatement",
+        "addedAt": 1786357019642,
+        "change": "{ return undefined; } → {}",
+        "reason": "Emptying the catch drops `return undefined`, but control then falls out of the try/catch to the end of the function, which returns undefined implicitly. Identical for every input.",
+        "fingerprint": "95bc545467a5"
+      },
+      {
+        "line": 356,
+        "mutator": "MethodExpression",
+        "addedAt": 1786357019642,
+        "change": "trimmed.slice(end + 2).trim() → trimmed.slice(end + 2)",
+        "reason": "Dropping `.trim()` cannot change the result: `trimmed` is already `text.trim()`, so no trailing whitespace survives, and the slice after `*/` is therefore either empty or contains a non-space character. Both spellings agree on every input.",
+        "fingerprint": "53a2fb47a384"
+      },
+      {
+        "line": 458,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786357092535,
+        "change": "entries.length === 0 → false",
+        "reason": "A fast path only: with an empty `entries` array the loop below runs zero times and the same `emptyVerdict()` is returned. The mutant costs one extra source read and produces the identical verdict.",
+        "fingerprint": "6c47ac607938"
+      },
+      {
+        "line": 529,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786357218512,
+        "change": "typeof raw !== 'object' → false",
+        "reason": "Forcing `typeof raw !== 'object'` false only defers to the next conjunct: a scalar `raw` has no `entries` property, so `typeof raw.entries !== 'object'` is true and the same empty document is returned; `null` is already short-circuited by `!raw`.",
+        "fingerprint": "d346c321fe1b"
+      },
+      {
+        "line": 578,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786357290976,
+        "change": "!(error instanceof SuppressionFileError) → false",
+        "reason": "The try block calls only `readFile`, which returns early for ENOENT and wraps every other failure in `new SuppressionFileError(dest, error)` before throwing. No other error type can reach this catch, so the rethrow is a guard against a future change to readFile rather than a reachable branch — forcing it false is unobservable today.",
+        "fingerprint": "b2239c1db266"
+      },
+      {
+        "line": 740,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786357445233,
+        "change": "at === undefined → false",
+        "reason": "`at === undefined ? undefined : list[at]` — forcing the condition false evaluates `list[undefined]`, which is itself `undefined`. Both arms yield the same value.",
+        "fingerprint": "fde71cbc045c"
+      },
+      {
+        "line": 748,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786357445233,
+        "change": "reason !== undefined → true",
+        "reason": "Assigning `merged.reason = undefined` instead of omitting the key is unobservable: `merged` is only serialised by `JSON.stringify` in writeFile, which drops undefined-valued keys, and nothing reads the in-memory object.",
+        "fingerprint": "f365a61c3cb0"
+      },
+      {
+        "line": 749,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786357445233,
+        "change": "fingerprint !== undefined → true",
+        "reason": "Same as the reason line above for `fingerprint`: the object's only consumer is `JSON.stringify`, which omits an undefined value, so the stored document is byte-identical.",
+        "fingerprint": "dfe66bfafa26"
+      },
+      {
+        "line": 712,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786359424169,
+        "change": "legacyKey !== portableKey → true",
+        "reason": "When the two keys are equal, forcing the branch open removes the key and the line below re-adds it as `data.entries[portableKey] = list` — the same document either way. (In `addSuppressions`; the twin in `removeSuppressions` is filed separately, and a third occurrence now lives in `restampSuppressions`, so the three share a fingerprint and only the line separates them.)",
+        "fingerprint": "5e51d86e3262"
+      },
+      {
+        "line": 715,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786359424169,
+        "change": "typeof e === 'object' → true",
+        "reason": "`e && typeof e === 'object'` guards the index build. Forcing the typeof half true admits a truthy non-object, which keys as `storageKeyOf(undefined, undefined, undefined)` — a key no real entry can collide with, so the index behaves identically and the written list is unchanged.",
+        "fingerprint": "3506566f2487"
+      },
+      {
+        "line": 863,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786359521222,
+        "change": "legacyKey !== portableKey → true",
+        "reason": "When the keys are equal, forcing the branch open removes the key and the block below either re-adds it (`kept.length > 0`) or removes it again in the else — the same document in both cases. (In `removeSuppressions`; the twin in `addSuppressions` is filed separately, and a third occurrence lives in `restampSuppressions`, so the three share a fingerprint and only the line separates them.)",
+        "fingerprint": "5e51d86e3262"
+      }
+    ],
+    "src/core/format.ts": [
+      {
+        "line": 49,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786357768858,
+        "change": "o → true",
+        "reason": "Forcing `if (o) return o` true returns the empty string when both halves are empty. The sole caller is `if (change) acc.changes.add(change)`, which drops a falsy value — so no change is recorded either way.",
+        "fingerprint": "d8912fa1cbb4"
+      },
+      {
+        "line": 90,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786357768858,
+        "change": "acc.changes.size > 0 → true",
+        "reason": "With an empty change set the mutant stores `uncapped.set(line, [])` instead of storing nothing. The only consumer is `uncapped.get(g.line) ?? g.changes`, where an empty list and an absent one both carry zero change evidence into enrichment.",
+        "fingerprint": "f3e970760c7e"
+      },
+      {
+        "line": 90,
+        "mutator": "EqualityOperator",
+        "addedAt": 1786357768858,
+        "change": "acc.changes.size > 0 → acc.changes.size >= 0",
+        "reason": "`size >= 0` is always true, making it identical to the always-true form above: an empty list and an absent one are the same evidence at the enrichment call site.",
+        "fingerprint": "f3e970760c7e"
+      },
+      {
+        "line": 162,
+        "mutator": "ArithmeticOperator",
+        "addedAt": 1786358089440,
+        "change": "a.line - b.line → a.line + b.line",
+        "reason": "`a.line + b.line` is always positive for 1-based lines, so every element compares as belonging after every other and binary insertion sort leaves the already-ascending array in place. Verified empirically: applying this mutant by hand leaves the ordering assertions in format-pipeline.test.ts passing.",
+        "fingerprint": "4d7d17546c6e"
+      },
+      {
+        "line": 166,
+        "mutator": "EqualityOperator",
+        "addedAt": 1786358089440,
+        "change": "SEVERITY_RANK[g.severity] > SEVERITY_RANK[worst] → SEVERITY_RANK[g.severity] >= SEVERITY_RANK[worst]",
+        "reason": "`>` → `>=` reassigns `worst` when the ranks are EQUAL, which stores the same severity value it already held. The running maximum is unchanged for every input.",
+        "fingerprint": "897bad63edf8"
+      },
+      {
+        "line": 187,
+        "mutator": "EqualityOperator",
+        "addedAt": 1786358089440,
+        "change": "groups.length <= max → groups.length < max",
+        "reason": "At the boundary `groups.length === max`, `slice(0, max)` returns a list with identical contents and `truncated` is `length - max` = 0 — the same value the early return produces. Only the array identity differs.",
+        "fingerprint": "79dc470287a8"
+      },
+      {
+        "line": 288,
+        "mutator": "ArrayDeclaration",
+        "addedAt": 1786358302810,
+        "change": "[] → [\"Stryker was here\"]",
+        "reason": "Seeding `candidates` with a non-Severity string gives it `SEVERITY_RANK[...] === undefined`, and every comparison against undefined is false, so the reduce below always prefers the real candidate. The enclosing `if` guarantees at least one real candidate is pushed.",
+        "fingerprint": "e6e816ac3c90"
+      },
+      {
+        "line": 289,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786358302810,
+        "change": "survivors.length > 0 → true",
+        "reason": "Pushing `s.worst` when there are no survivors pushes 'unknown', which is rank 0 — the lowest — so it can never win the reduce below.",
+        "fingerprint": "7f7442927d04"
+      },
+      {
+        "line": 289,
+        "mutator": "EqualityOperator",
+        "addedAt": 1786358302810,
+        "change": "survivors.length > 0 → survivors.length >= 0",
+        "reason": "`length >= 0` is always true, identical to the always-true form: the pushed value is the lowest-ranked severity and cannot change the maximum.",
+        "fingerprint": "7f7442927d04"
+      },
+      {
+        "line": 290,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786358302810,
+        "change": "noCoverage.length > 0 → true",
+        "reason": "Same as the survivors line above for the no-coverage side: with no groups, `n.worst` is 'unknown' (rank 0) and cannot win the reduce.",
+        "fingerprint": "ee48eab51e1e"
+      },
+      {
+        "line": 290,
+        "mutator": "EqualityOperator",
+        "addedAt": 1786358302810,
+        "change": "noCoverage.length > 0 → noCoverage.length >= 0",
+        "reason": "`length >= 0` is always true; the pushed 'unknown' is rank 0 and cannot change the maximum.",
+        "fingerprint": "ee48eab51e1e"
+      },
+      {
+        "line": 291,
+        "mutator": "EqualityOperator",
+        "addedAt": 1786358302810,
+        "change": "SEVERITY_RANK[a] >= SEVERITY_RANK[b] → SEVERITY_RANK[a] > SEVERITY_RANK[b]",
+        "reason": "On a tie `>=` keeps `a` and `>` takes `b`, but a tie means both operands hold the SAME severity value, so the reduce returns the same string either way.",
+        "fingerprint": "709df59f1c39"
+      },
+      {
+        "line": 319,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786358355299,
+        "change": "worstSeverity → true",
+        "reason": "Forcing this true assigns `prepared.worstSeverity = undefined`. Every consumer re-checks truthiness — `if (prepared.worstSeverity)` in the payload builder — so the key's presence with an undefined value changes no output.",
+        "fingerprint": "85b035352f5d"
+      },
+      {
+        "line": 320,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786358355299,
+        "change": "enrichNote → true",
+        "reason": "Same as the worstSeverity line above: `prepared.enrichNote = undefined` is re-checked by `if (prepared.enrichNote)` in both the text and payload projections, so nothing downstream can observe it.",
+        "fingerprint": "a64a26c2b420"
+      },
+      {
+        "line": 500,
+        "mutator": "LogicalOperator",
+        "addedAt": 1786358488334,
+        "change": "enrich && e.severity → enrich || e.severity",
+        "reason": "The operands cannot disagree: `e.severity` is only present when the groups were enriched, which happens only when `enrich` is set. Both are true together or false together, so `&&` and `||` return the same result.",
+        "fingerprint": "883b35eed9eb"
+      },
+      {
+        "line": 715,
+        "mutator": "EqualityOperator",
+        "addedAt": 1786358877194,
+        "change": "opts.suppressedCount > 0 → opts.suppressedCount >= 0",
+        "reason": "`suppressedCount >= 0` differs from `> 0` only at 0 and below; 0 is short-circuited by the preceding `&&` and a negative fails both — covered by the negative-counter test.",
+        "fingerprint": "f02424d0f034"
+      },
+      {
+        "line": 723,
+        "mutator": "EqualityOperator",
+        "addedAt": 1786358877194,
+        "change": "opts.driftedSuppressions > 0 → opts.driftedSuppressions >= 0",
+        "reason": "`driftedSuppressions >= 0` differs from `> 0` only at 0 and below; 0 is short-circuited by the preceding `&&` and a negative fails both.",
+        "fingerprint": "cedb40914d3d"
+      },
+      {
+        "line": 726,
+        "mutator": "EqualityOperator",
+        "addedAt": 1786358877194,
+        "change": "opts.unverifiedSuppressions > 0 → opts.unverifiedSuppressions >= 0",
+        "reason": "`unverifiedSuppressions >= 0` differs from `> 0` only at 0 and below; 0 is short-circuited by the preceding `&&` and a negative fails both.",
+        "fingerprint": "12408c6ea073"
+      },
+      {
+        "line": 729,
+        "mutator": "EqualityOperator",
+        "addedAt": 1786358877194,
+        "change": "opts.orphanedSuppressions > 0 → opts.orphanedSuppressions >= 0",
+        "reason": "`orphanedSuppressions >= 0` differs from `> 0` only at 0 and below; 0 is short-circuited by the preceding `&&` and a negative fails both.",
+        "fingerprint": "2f7a5719e855"
+      },
+      {
+        "line": 734,
+        "mutator": "EqualityOperator",
+        "addedAt": 1786358877194,
+        "change": "opts.rejectedSuppressions > 0 → opts.rejectedSuppressions >= 0",
+        "reason": "`rejectedSuppressions >= 0` differs from `> 0` only at 0 and below; 0 is short-circuited by the preceding `&&` and a negative fails both — covered by the negative-counter test. The `&&`-to-`||` swap and the forced-true form on this line are killable and stay unsuppressed.",
+        "fingerprint": "7f1f2c16587c"
+      },
+      {
+        "line": 460,
+        "mutator": "EqualityOperator",
+        "addedAt": 1786359299048,
+        "change": "result.incompetent > 0 → result.incompetent >= 0",
+        "reason": "`incompetent >= 0` differs from `> 0` only at 0 and below; 0 is short-circuited by the preceding `&&` and a negative fails both — covered by the negative-counter test. This is the TEXT projection; the payload one is filed separately where the identical expression appears.",
+        "fingerprint": "77391e051022"
+      },
+      {
+        "line": 754,
+        "mutator": "EqualityOperator",
+        "addedAt": 1786359362473,
+        "change": "result.incompetent > 0 → result.incompetent >= 0",
+        "reason": "`incompetent >= 0` differs from `> 0` only at 0 and below; 0 is short-circuited by the preceding `&&` and a negative fails both — covered by the negative-counter test. This is the PAYLOAD projection; the text one is filed separately, where the identical expression appears. The two share a fingerprint, so only the line tells them apart.",
+        "fingerprint": "77391e051022"
       }
     ]
   }
