@@ -15,7 +15,7 @@
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import type { ToolArgs } from '../core/tool-args-validation.js';
 import type { ToolContext } from '../core/tool-context.js';
-import type { MutationResult, Vulnerability } from '../engines/base.js';
+import type { MutationResult } from '../engines/base.js';
 import type { MutantKey } from '../core/verify.js';
 import { toolError } from '../core/tool-result.js';
 import { applySuppressions } from './apply-suppressions.js';
@@ -136,8 +136,9 @@ export async function applySuppressionArgs(
   wsRoot: string,
   relFromRoot: string,
   supPath: string | undefined,
-  survivors: Vulnerability[],
+  auditResults: MutationResult,
 ): Promise<AddSuppressionsResult> {
+  const survivors = auditResults.vulnerabilities;
   let added: AddSuppressionsResult = { stamped: 0, unstamped: 0, rejected: [] };
   if (Array.isArray(args.suppress) && args.suppress.length > 0) {
     const requested = args.suppress as {
@@ -172,9 +173,24 @@ export async function applySuppressionArgs(
         ambiguous.push({ line: r.line, mutator: r.mutator, cause: 'ambiguous', candidates });
         continue;
       }
-      // Zero candidates leaves `change` unset — mutator-only identity, which is
-      // right for cargo-mutants and is the pre-v3 behaviour otherwise.
-      resolved.push(candidates.length === 1 ? { ...r, change: candidates[0] } : r);
+      if (candidates.length === 1) {
+        resolved.push({ ...r, change: candidates[0] });
+        continue;
+      }
+      // Zero candidates. On a COMPLETE run that means the mutant does not exist
+      // — killed, or gone — and filing the entry changeless preserves the
+      // caller's reason under mutator-only identity, which is the pre-v3
+      // behaviour and the only identity cargo-mutants can offer anyway.
+      //
+      // On an INCOMPLETE run it means nothing at all: the mutant may sit in a
+      // batch that never ran. Storing a broader entry than the caller asked for,
+      // on the strength of a run that did not look, is exactly the silent
+      // over-suppression this schema exists to end.
+      if (auditResults.complete === false) {
+        ambiguous.push({ line: r.line, mutator: r.mutator, cause: 'unresolved' });
+        continue;
+      }
+      resolved.push(r);
     }
     if (resolved.length > 0) {
       added = await addSuppressions(wsRoot, relFromRoot, resolved, supPath);
@@ -253,13 +269,7 @@ export async function applyAndCountSuppressions(
     // suppressions file. Guard the write block so cancellation stays
     // side-effect free.
     if (ctx?.signal?.aborted) return { ok: false, result: toolError('Operation cancelled.') };
-    added = await applySuppressionArgs(
-      args,
-      wsRoot,
-      relFromRoot,
-      supPath,
-      auditResults.vulnerabilities,
-    );
+    added = await applySuppressionArgs(args, wsRoot, relFromRoot, supPath, auditResults);
   } catch (error: unknown) {
     // A write failure surfaces a specific error rather than the generic
     // "Chaos Engine Halted" (Fix 4). Sandbox cleanup still runs via finally.

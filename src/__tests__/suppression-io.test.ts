@@ -703,3 +703,69 @@ describe('write-time change resolution', () => {
     expect(stored()[0].reason).toBe('b');
   });
 });
+
+describe('a partial run cannot file a changeless entry', () => {
+  const partial = (complete: boolean | undefined): MutationResult => ({
+    target: REL,
+    totalMutants: 4,
+    killed: 4,
+    survived: 0,
+    mutationScore: '100.00%',
+    vulnerabilities: [],
+    ...(complete === undefined ? {} : { complete }),
+  });
+
+  const run = (res: MutationResult) =>
+    applyAndCountSuppressions(
+      { suppress: [{ line: 1, mutator: 'ConditionalExpression', reason: 'x' }] } as never,
+      res,
+      undefined,
+      ws,
+      REL,
+      undefined,
+    );
+
+  const storedCount = (): number => {
+    const path = join(ws, '.chaos-mcp', 'suppressions.json');
+    if (!existsSync(path)) return 0;
+    const doc = JSON.parse(readFileSync(path, 'utf8')) as {
+      entries: Record<string, unknown[]>;
+    };
+    return (doc.entries[REL] ?? []).length;
+  };
+
+  it('refuses when the run stopped early and generated no matching mutant', () => {
+    // Absence proves nothing here: the mutant may sit in a batch that never
+    // ran. Filing it changeless would store mutator-only identity — broader
+    // than the caller asked for — on the strength of a run that did not look.
+    return run(partial(false)).then((out) => {
+      expect(out.ok).toBe(true);
+      if (!out.ok) return;
+      expect(out.counts.rejected).toBe(1);
+      expect(storedCount()).toBe(0);
+    });
+  });
+
+  it('files it changeless when the run was COMPLETE', async () => {
+    // A complete run that generated no such mutant means it does not exist —
+    // killed, or gone. Keeping the entry preserves the caller's reason, and it
+    // will report as orphaned rather than vanishing.
+    const out = await run(partial(true));
+
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect(out.counts.rejected).toBe(0);
+    expect(storedCount()).toBe(1);
+  });
+
+  it('files it changeless when the engine reports no completeness at all', async () => {
+    // Python, Rust and PHP leave `complete` undefined; they have no batching
+    // concept, so their runs are always whole and `!== false` must hold.
+    const out = await run(partial(undefined));
+
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect(out.counts.rejected).toBe(0);
+    expect(storedCount()).toBe(1);
+  });
+});

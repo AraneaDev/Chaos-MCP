@@ -170,10 +170,11 @@ export function suppressionDriftNotes(
   // render this one list.
   if (rejected !== undefined && rejected > 0) {
     notes.push(
-      `${rejected} suppression(s) were NOT stored: either the target line is blank or comment-only ` +
-        '(where no engine reports a mutant), or it carries several mutants of that mutator and the ' +
-        'request did not say which — re-issue it with a `change` naming the one you mean. Check the ' +
-        'line number against the survivor you meant to suppress.',
+      `${rejected} suppression(s) were NOT stored. Either the target line is blank or comment-only ` +
+        '(where no engine reports a mutant); or it carries several mutants of that mutator and the ' +
+        'request did not say which — re-issue it with a `change` naming the one you mean; or this ' +
+        'run stopped early and never generated the mutant, in which case re-run with a larger ' +
+        'timeoutMs before filing it. Check the line number against the survivor you meant to suppress.',
     );
   }
   // Reported ENTRY BY ENTRY, unlike the four counts above, because this is the
