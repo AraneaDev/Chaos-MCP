@@ -3,6 +3,7 @@ import {
   TOOL_DEFINITION,
   TRIAGE_TOOL_DEFINITION,
   ESTIMATE_TOOL_DEFINITION,
+  conjoin,
 } from '../core/tool-schema.js';
 import {
   MAX_LINE_NUMBER,
@@ -1093,5 +1094,39 @@ describe('supported-extension prose', () => {
       // '.' terminates the sentence; 'src/utils/math.ts' is the example path.
       expect(known.has(token) || token === '.').toBe(true);
     }
+  });
+});
+
+/**
+ * The list formatter behind every "a, b, or c" in the schema prose.
+ *
+ * Its three branches are chosen by LENGTH, and every call site today passes
+ * three or more items, so the schema strings exercise only the last one. The
+ * others are still reachable — the lists come from `ENGINE_REGISTRY`, so a
+ * language gaining line scoping, or the registry shrinking, lands on them — and
+ * getting one wrong writes "Python, and Rust" or "PythonRust" into prose the
+ * model reads as the tool's contract.
+ */
+describe('conjoin', () => {
+  it('joins three or more with an Oxford comma', () => {
+    expect(conjoin(['a', 'b', 'c'], 'or')).toBe('a, b, or c');
+    expect(conjoin(['a', 'b', 'c', 'd'], 'and')).toBe('a, b, c, and d');
+  });
+
+  it('joins exactly two with the conjunction and NO comma', () => {
+    // The `=== 2` branch, which returns "a and b". Forcing it false drops a
+    // two-item list into the general case and yields "a, and b" — a comma
+    // before a two-item conjunction. ("ab" is a different mutant's outcome:
+    // widening `< 2` to `<= 2` sends two items down the join-as-is path, and
+    // the next case pins that one.)
+    expect(conjoin(['a', 'b'], 'and')).toBe('a and b');
+    expect(conjoin(['Python', 'Rust'], 'or')).toBe('Python or Rust');
+  });
+
+  it('returns one or zero items as-is, with no conjunction', () => {
+    // The `< 2` branch. At `<= 2` a two-item list collapses to "ab"; forced
+    // false, a single item becomes ", and a".
+    expect(conjoin(['only'], 'and')).toBe('only');
+    expect(conjoin([], 'and')).toBe('');
   });
 });

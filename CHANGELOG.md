@@ -7,11 +7,19 @@ All notable changes to Chaos-MCP are documented in this file.
 
 ### ⚠ BREAKING CHANGES
 
-* **cli:** ` if the floor bump should be treated as breaking.
+* **cli:** the minimum supported Node.js runtime is now 22.11.0 (was 22.0.0), the first 22.x LTS release. Runtimes `>=22.0.0 <22.11.0` are no longer supported: `checkNodeVersion` prints an upgrade message and exits 1 below the floor, and `scripts/install.sh` raised its own `MIN_NODE_VERSION` constant from 22.0.0 to 22.11.0 so the installer cannot provision a runtime the server then refuses to start on. ([aaf7530](https://github.com/AraneaDev/Chaos-MCP/commit/aaf7530eab3df3b97df657196c5026c8c77e8353))
 
-### `feat
-
-* **cli:** ` if the floor bump should be treated as breaking. ([aaf7530](https://github.com/AraneaDev/Chaos-MCP/commit/aaf7530eab3df3b97df657196c5026c8c77e8353))
+<!--
+  The two entries release-please originally generated here read
+  "**cli:** ` if the floor bump should be treated as breaking." under a stray
+  "### `feat" heading. That text was not a description: commit aaf7530's BODY
+  explained why the change was committed as `fix` rather than as a breaking
+  change, and in doing so quoted the literal token `feat(cli)!:`. The
+  conventional-commit parser matched that token inside the sentence and read the
+  remainder of the line - starting at the closing backtick - as a breaking
+  change description. Corrected by hand; the 2.0.0 version itself is right,
+  since raising the runtime floor is a breaking change on its own merits.
+-->
 
 
 ### Features
