@@ -1613,3 +1613,61 @@ describe('schema v3: identity is the mutator plus the change', () => {
     });
   });
 });
+
+describe('two mutants sharing a change on different lines', () => {
+  const FILE = 'src/gate.ts';
+  // Both `[]` literals produce the identical change `[] → ["Stryker was here"]`.
+  // They are different mutants on different lines; storing them under identity
+  // alone collapsed them into one entry and silently un-suppressed the other.
+  const SRC = [
+    'export const gate = evaluate({', //  1
+    '  nowKilled: [],', //                2
+    '  stillSurviving: [],', //           3
+    '  notReChecked: [],', //             4
+    '});', //                             5
+  ];
+  const CHANGE = '[] → ["Stryker was here"]';
+
+  beforeEach(() => writeSource(root, FILE, SRC));
+
+  it('keeps both entries rather than letting the second overwrite the first', async () => {
+    await addSuppressions(root, FILE, [
+      { line: 2, mutator: 'ArrayDeclaration', change: CHANGE, reason: 'nowKilled unread' },
+      { line: 4, mutator: 'ArrayDeclaration', change: CHANGE, reason: 'notReChecked unread' },
+    ]);
+
+    const stored = loadSuppressions(root).get(FILE);
+    expect(stored).toHaveLength(2);
+    expect(stored?.map((e) => e.line).sort((a, b) => a - b)).toEqual([2, 4]);
+    expect(stored?.map((e) => e.reason).sort()).toEqual([
+      'notReChecked unread',
+      'nowKilled unread',
+    ]);
+  });
+
+  it('still re-confirms in place rather than duplicating', async () => {
+    // The digest only SEPARATES entries whose lines differ in content. Re-adding
+    // the same entry must still update it, not append a second copy.
+    await addSuppressions(root, FILE, [
+      { line: 2, mutator: 'ArrayDeclaration', change: CHANGE, reason: 'first' },
+    ]);
+    await addSuppressions(root, FILE, [
+      { line: 2, mutator: 'ArrayDeclaration', change: CHANGE, reason: 'second' },
+    ]);
+
+    const stored = loadSuppressions(root).get(FILE);
+    expect(stored).toHaveLength(1);
+    expect(stored?.[0].reason).toBe('second');
+  });
+
+  it('resolves each entry to its own line', async () => {
+    await addSuppressions(root, FILE, [
+      { line: 2, mutator: 'ArrayDeclaration', change: CHANGE },
+      { line: 4, mutator: 'ArrayDeclaration', change: CHANGE },
+    ]);
+
+    const verdict = verifySuppressions(root, FILE, loadSuppressions(root).get(FILE));
+    expect(verdict.resolved.map((r) => r.line).sort((a, b) => a - b)).toEqual([2, 4]);
+    expect(verdict.drifted).toBe(0);
+  });
+});

@@ -50,6 +50,136 @@
         "reason": "`source` is declared `let source = ''` four lines above, so a readFileSync failure leaves it holding that initialiser already — the catch's `source = ''` is a defensive re-assignment that cannot change any state. Emptying the block is equivalent. Same shape as the catch blocks at triage/audit-one.ts:273 and :287.",
         "fingerprint": "95bc545467a5"
       }
+    ],
+    "src/core/verify.ts": [
+      {
+        "line": 316,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786349633199,
+        "change": "gate → true",
+        "reason": "`if (gate) payload.gate = gate` guards the LAST statement before `JSON.stringify(payload)`. Forcing it true assigns `payload.gate = undefined`, and JSON.stringify omits undefined-valued keys, so the returned string is byte-identical. `gate` is typed `GateResult | undefined`, so no falsy-but-serialisable value (null, 0) can reach it. Equivalent on the only output this function has.",
+        "fingerprint": "4b3c95dc898e"
+      }
+    ],
+    "src/cli.ts": [
+      {
+        "line": 174,
+        "mutator": "MethodExpression",
+        "addedAt": 1786349704573,
+        "change": "process.argv.slice(2) → process.argv",
+        "reason": "`process.argv.slice(2)` → `process.argv` is equivalent for every use of `args` in runCli: argv[0] and argv[1] are the node binary and script paths, neither of which equals a flag string, so no `includes()` result changes and `getFlagValue`'s `indexOf` finds the same index (its value is read at index+1, which shifts with it). Re-confirmed at line 174 — the prior entry had drifted onto a comment at line 163 and was suppressing nothing.",
+        "fingerprint": "977792ccb25b"
+      }
+    ],
+    "src/core/baseline-timing.ts": [
+      {
+        "line": 55,
+        "mutator": "BlockStatement",
+        "addedAt": 1786349815821,
+        "change": "{ // Exhaustiveness guard, not a runtime check: `projectType` is narrowed to // `never` here, so adding a SupportedProj… → {}",
+        "reason": "Exhaustiveness guard: the block only calls assertNeverProjectType and returns undefined, unreachable for the declared SupportedProjectType union. Emptying it is behaviourally equivalent at runtime.",
+        "fingerprint": "81e7d79016d1"
+      },
+      {
+        "line": 55,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786349815821,
+        "change": "default: { // Exhaustiveness guard, not a runtime check: `projectType` is narrowed to // `never` here, so adding a Supp… → default:",
+        "reason": "Exhaustiveness guard: projectType is narrowed to never in this default arm, so no runtime input can reach it. Killing this would require casting an invalid value past the type system, defeating the guard.",
+        "fingerprint": "81e7d79016d1"
+      }
+    ],
+    "src/triage/audit-one.ts": [
+      {
+        "line": 162,
+        "mutator": "ObjectLiteral",
+        "addedAt": 1786349886731,
+        "change": "{ scopeNote: `diff scoping returned an unrecognised git result (${JSON.stringify(unhandled)}); whole file`, } → {}",
+        "reason": "Exhaustiveness guard: `diff` is narrowed to `never` in this default arm, so no runtime DiffResult reaches it. Emptying the returned object requires casting an invalid variant past the type system — the same equivalent guard suppressed at audit/scope.ts:259.",
+        "fingerprint": "dde44124f1ee"
+      }
+    ],
+    "src/engines/python.ts": [
+      {
+        "line": 271,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786349956232,
+        "change": "error instanceof MutationToolStartupError → false",
+        "reason": "Rethrowing a MutationToolStartupError as `new Error(error.message)` duplicates what the base class already does: `BaseEngine.onExecFailure` (engines/base.ts:412) rethrows the same class verbatim, and every downstream consumer on the audit path reads only `.message` (`failureText` / `mapHandlerFailure`). The one place that branches on the CLASS is core/estimate.ts, which calls invokeMutationTool directly rather than through this engine. Forcing the check false therefore yields the identical message from the identical path.",
+        "fingerprint": "d15c1e181746"
+      }
+    ],
+    "src/audit/audit-output.ts": [
+      {
+        "line": 48,
+        "mutator": "BlockStatement",
+        "addedAt": 1786350018897,
+        "change": "{ sourceLines = undefined; } → {}",
+        "reason": "`sourceLines` is declared `let sourceLines: string[] | undefined` and assigned by the single `readFileSync(...).split(...)` statement inside the try. A throw there leaves it undefined already, so the catch's `sourceLines = undefined` is a defensive re-assignment that cannot change any state. Fifth instance of this shape (triage/audit-one.ts:273/:287, core/estimate.ts:110, core/test-file.ts:124).",
+        "fingerprint": "95bc545467a5"
+      }
+    ],
+    "src/audit/suppression-io.ts": [
+      {
+        "line": 143,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786350215200,
+        "change": "args.suppress.length > 0 → true",
+        "reason": "A fast path only. `Array.isArray` still guards the dereference, so the mutant differs solely for an EMPTY `suppress` array — and `addSuppressions` returns `{ stamped: 0, unstamped: 0, rejected: [] }` immediately for one (its own `entries.length === 0` early return). Identical `added` either way.",
+        "fingerprint": "82ad11f4950d"
+      },
+      {
+        "line": 143,
+        "mutator": "EqualityOperator",
+        "addedAt": 1786350215200,
+        "change": "args.suppress.length > 0 → args.suppress.length >= 0",
+        "reason": "`length >= 0` is always true, making it the same as the forced-true form above: an empty array reaches `addSuppressions`, which early-returns the identical result.",
+        "fingerprint": "82ad11f4950d"
+      }
+    ],
+    "src/core/score-semantics.ts": [
+      {
+        "line": 152,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786350527677,
+        "change": "drifted !== undefined → true",
+        "reason": "`undefined > 0` is false, so the `!== undefined` half cannot change the outcome: forcing it true still fails the comparison and pushes no note. The guard states intent rather than doing work. Note this is the MIRROR of the `x && x > 0` pattern in core/format.ts — there `&&` alone admits a negative, so the comparison is load-bearing; here the comparison alone already rejects undefined.",
+        "fingerprint": "347b145661ae"
+      },
+      {
+        "line": 157,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786350527677,
+        "change": "unverified !== undefined → true",
+        "reason": "Same as the drifted sibling for `unverified`: `undefined > 0` is false, so forcing the presence check true still produces no note.",
+        "fingerprint": "f3cbc728bd8c"
+      },
+      {
+        "line": 162,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786350527677,
+        "change": "orphaned !== undefined → true",
+        "reason": "Same as the drifted sibling for `orphaned`: `undefined > 0` is false, so forcing the presence check true still produces no note.",
+        "fingerprint": "d4cc9f8b0fa5"
+      },
+      {
+        "line": 171,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786350527677,
+        "change": "rejected !== undefined → true",
+        "reason": "Same as its three siblings for `rejected`: `undefined > 0` is false, so forcing the presence check true still produces no note. Kept in the same shape as the other three deliberately — this list is the single wording source for both the text and JSON projections.",
+        "fingerprint": "928ee569ded5"
+      }
+    ],
+    "src/audit/scope.ts": [
+      {
+        "line": 160,
+        "mutator": "ArrayDeclaration",
+        "addedAt": 1786350600915,
+        "change": "[] → [\"Stryker was here\"]",
+        "reason": "`notReChecked` is read only by partialVerifyNote, which runs when `complete === false`; this call site never sets `complete`, so evaluateVerifyGate returns before the array is touched. Unobservable from the gate this expression produces.",
+        "fingerprint": "c3cc78edbeb3"
+      }
     ]
   }
 }
