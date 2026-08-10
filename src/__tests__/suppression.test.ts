@@ -1671,3 +1671,49 @@ describe('two mutants sharing a change on different lines', () => {
     expect(verdict.drifted).toBe(0);
   });
 });
+
+describe('two byte-identical lines in one file', () => {
+  const FILE = 'src/validate.ts';
+  // The same guard, written twice in two different validators. Both mutants
+  // share a mutator, a change AND a content fingerprint — nothing but the line
+  // tells them apart, which is why the fingerprint is not the storage key.
+  const GUARD = "  if (typeof entry !== 'object') return 'bad';";
+  const SRC = [
+    'export function a(entry: unknown): string | null {', // 1
+    GUARD, //                                                2
+    '  return null;', //                                     3
+    '}', //                                                  4
+    'export function b(entry: unknown): string | null {', // 5
+    GUARD, //                                                6
+    '  return null;', //                                     7
+    '}', //                                                  8
+  ];
+  const CHANGE = "typeof entry !== 'object' → false";
+
+  beforeEach(() => writeSource(root, FILE, SRC));
+
+  it('keeps both entries even though their fingerprints are identical', async () => {
+    await addSuppressions(root, FILE, [
+      { line: 2, mutator: 'ConditionalExpression', change: CHANGE, reason: 'in a()' },
+      { line: 6, mutator: 'ConditionalExpression', change: CHANGE, reason: 'in b()' },
+    ]);
+
+    const stored = loadSuppressions(root).get(FILE);
+    expect(stored).toHaveLength(2);
+    expect(stored?.[0].fingerprint).toBe(stored?.[1].fingerprint);
+    expect(stored?.map((e) => e.reason).sort()).toEqual(['in a()', 'in b()']);
+  });
+
+  it('resolves each to its own line at tier 1 rather than calling either ambiguous', async () => {
+    // The fingerprint appears twice, so tier 2 could never place these. Tier 1
+    // does, because both entries still sit on the line they were stored against.
+    await addSuppressions(root, FILE, [
+      { line: 2, mutator: 'ConditionalExpression', change: CHANGE },
+      { line: 6, mutator: 'ConditionalExpression', change: CHANGE },
+    ]);
+
+    const verdict = verifySuppressions(root, FILE, loadSuppressions(root).get(FILE));
+    expect(verdict.resolved.map((r) => r.line).sort((a, b) => a - b)).toEqual([2, 6]);
+    expect(verdict.drifted).toBe(0);
+  });
+});

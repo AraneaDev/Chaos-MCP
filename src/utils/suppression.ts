@@ -243,48 +243,34 @@ const identityKeyOf = (mutator: string, change?: string): string =>
   change === undefined ? mutator : `${mutator} ${change}`;
 
 /**
- * The key one file's STORED entries are deduplicated under.
+ * The key one file's STORED entries are deduplicated under: identity plus the
+ * line the entry currently points at.
  *
- * Identity plus the line's content digest, and the digest is what stops two
- * DIFFERENT mutants from collapsing into one entry. `audit/scope.ts` builds an
- * object literal whose `nowKilled: []` and `notReChecked: []` are separate
- * mutants on separate lines that produce the identical change
- * `[] → ["Stryker was here"]`. On identity alone the second overwrote the
- * first, one of the two entries vanished at write time, and its mutant
- * silently reappeared in the score.
+ * Identity alone is not enough, because one file can hold two DIFFERENT mutants
+ * that make the same change. Both shapes occur in this repository:
  *
- * Matching never needed this — `applySuppressions` selects on the resolved LINE
- * as well as the identity, so the two entries were always applied to the right
- * mutants once both existed. Only storage was collapsing them.
+ *  - `audit/scope.ts` builds an object literal whose `nowKilled: []` and
+ *    `notReChecked: []` are separate mutants on separate lines, both mutating to
+ *    the same replacement.
+ *  - `core/tool-args-validation.ts` has the byte-identical guard
+ *    `typeof entry !== 'object'` in two different validators, so those two
+ *    mutants share a change AND a content fingerprint.
  *
- * An unstamped entry (line unreadable) falls back to bare identity: there is no
- * digest to separate it by, and merging is the safer error there because the
- * entry is not applied at all until it is re-confirmed.
+ * On identity alone the second silently overwrote the first and its mutant
+ * reappeared in the score. The fingerprint separates the first pair but NOT the
+ * second; the line separates both.
  *
- * This key alone is not enough to find an entry being RE-CONFIRMED, because
- * re-confirmation is exactly the case where the digest changed (a v1 entry had
- * none; a drifted entry had a stale one). {@link reconfirmKeyOf} is the
- * fallback for that, and the order the two are tried in matters — see
- * {@link addSuppressions}.
+ * The line is not identity — matching never uses this key, and
+ * `applySuppressions` still resolves an entry by content and relocates it. It is
+ * the entry's current ADDRESS, which is exactly what a store needs to keep two
+ * otherwise-indistinguishable records apart, and `restampSuppressions` keeps it
+ * current when the code moves.
+ *
+ * Re-confirming a drifted or v1 entry also lands here: the caller names the line
+ * it is looking at, which is the line the entry is stored against, so the entry
+ * updates in place rather than leaving a duplicate.
  */
-const storageKeyOf = (mutator: string, change: string | undefined, fingerprint?: string): string =>
-  fingerprint === undefined
-    ? identityKeyOf(mutator, change)
-    : `${identityKeyOf(mutator, change)}\u0000${fingerprint}`;
-
-/**
- * Fallback key for finding the entry a write is RE-CONFIRMING: identity plus
- * the stored line.
- *
- * Re-confirmation is how a drifted or v1 entry is promoted back to applied, and
- * its whole point is that the digest is about to change — so the digest cannot
- * be part of the key that finds it. The line can: a caller re-confirming an
- * entry names the line it is looking at.
- *
- * Two entries sharing an identity always sit on different lines (that is the
- * only way {@link storageKeyOf} lets both exist), so this never collapses them.
- */
-const reconfirmKeyOf = (mutator: string, change: string | undefined, line: number): string =>
+const storageKeyOf = (mutator: string, change: string | undefined, line: number): string =>
   `${identityKeyOf(mutator, change)}\u0000L${line}`;
 
 /**
@@ -725,12 +711,8 @@ export function addSuppressions(
     // entries onto the portable key instead of leaving a duplicate behind.
     if (legacyKey !== portableKey) data.entries = withoutKey(data.entries, legacyKey);
     const indexOfKey = new Map<string, number>();
-    const byReconfirm = new Map<string, number>();
     list.forEach((e, i) => {
-      if (e && typeof e === 'object') {
-        indexOfKey.set(storageKeyOf(e.mutator, e.change, e.fingerprint), i);
-        byReconfirm.set(reconfirmKeyOf(e.mutator, e.change, e.line), i);
-      }
+      if (e && typeof e === 'object') indexOfKey.set(storageKeyOf(e.mutator, e.change, e.line), i);
     });
     // One read for the whole batch; every entry in it targets this same file.
     const lines = readSourceLines(workspaceRoot, relFile);
@@ -753,14 +735,8 @@ export function addSuppressions(
       const fingerprint = fingerprintAt(lines, e.line);
       if (fingerprint === undefined) summary.unstamped += 1;
       else summary.stamped += 1;
-      // Keyed AFTER the fingerprint is computed: the digest is part of the
-      // storage key, so two same-change mutants on different lines stay apart.
-      const k = storageKeyOf(e.mutator, e.change, fingerprint);
-      // Exact key first: the same entry, unchanged. Then the re-confirmation
-      // key, which finds an entry on this same line whose digest has moved on
-      // (a v1 entry with none, or a drifted one with a stale one) and updates it
-      // in place instead of leaving a duplicate behind.
-      const at = indexOfKey.get(k) ?? byReconfirm.get(reconfirmKeyOf(e.mutator, e.change, e.line));
+      const k = storageKeyOf(e.mutator, e.change, e.line);
+      const at = indexOfKey.get(k);
       const previous = at === undefined ? undefined : list[at];
       const merged: StoredEntry = {
         line: e.line,
@@ -773,7 +749,6 @@ export function addSuppressions(
       if (fingerprint !== undefined) merged.fingerprint = fingerprint;
       if (at === undefined) {
         indexOfKey.set(k, list.length);
-        byReconfirm.set(reconfirmKeyOf(e.mutator, e.change, e.line), list.length);
         list.push(merged);
       } else {
         list[at] = merged;
