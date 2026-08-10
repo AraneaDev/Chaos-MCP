@@ -4,6 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { loadVerifiedSuppressions, applyAndCountSuppressions } from '../audit/suppression-io.js';
 import type { MutationResult } from '../engines/base.js';
+import { appliedKeys } from './support/suppression-verdict.js';
 
 /**
  * `audit/suppression-io.ts` had no test file. It owns the rule that decides whether a
@@ -70,7 +71,7 @@ describe('loadVerifiedSuppressions', () => {
 
     const verdict = loadVerifiedSuppressions(ws, REL, undefined);
 
-    expect(verdict.applied.has('1 ConditionalExpression')).toBe(true);
+    expect(appliedKeys(verdict).includes('1 ConditionalExpression')).toBe(true);
     expect(verdict.drifted).toBe(0);
     expect(verdict.unverified).toBe(0);
   });
@@ -85,7 +86,7 @@ describe('loadVerifiedSuppressions', () => {
 
     const verdict = loadVerifiedSuppressions(ws, REL, undefined);
 
-    expect(verdict.applied.size).toBe(0);
+    expect(appliedKeys(verdict).length).toBe(0);
     expect(verdict.drifted).toBe(1);
     expect(verdict.unverified).toBe(0);
   });
@@ -98,7 +99,7 @@ describe('loadVerifiedSuppressions', () => {
 
     const verdict = loadVerifiedSuppressions(ws, REL, undefined);
 
-    expect(verdict.applied.size).toBe(0);
+    expect(appliedKeys(verdict).length).toBe(0);
     expect(verdict.unverified).toBe(1);
     expect(verdict.drifted).toBe(0);
   });
@@ -114,7 +115,7 @@ describe('loadVerifiedSuppressions', () => {
   it('reports nothing when no suppressions file exists', () => {
     const verdict = loadVerifiedSuppressions(ws, REL, undefined);
 
-    expect(verdict.applied.size).toBe(0);
+    expect(appliedKeys(verdict).length).toBe(0);
     expect(verdict.drifted).toBe(0);
     expect(verdict.unverified).toBe(0);
   });
@@ -475,7 +476,7 @@ describe('applyAndCountSuppressions — refused entries', () => {
     if (!outcome.ok) return;
     expect(outcome.counts.rejected).toBe(1);
     // And nothing was written for it, which is the point of the count.
-    expect(loadVerifiedSuppressions(ws, REL, undefined).applied.size).toBe(0);
+    expect(appliedKeys(loadVerifiedSuppressions(ws, REL, undefined)).length).toBe(0);
   });
 
   it('reports zero refusals when the target is real code', async () => {
@@ -491,7 +492,7 @@ describe('applyAndCountSuppressions — refused entries', () => {
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) return;
     expect(outcome.counts.rejected).toBe(0);
-    expect(loadVerifiedSuppressions(ws, REL, undefined).applied.size).toBe(1);
+    expect(appliedKeys(loadVerifiedSuppressions(ws, REL, undefined)).length).toBe(1);
   });
 });
 
@@ -520,7 +521,7 @@ describe('applyAndCountSuppressions — the write path', () => {
 
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) return;
-    expect(loadVerifiedSuppressions(ws, REL, undefined).applied.size).toBe(0);
+    expect(appliedKeys(loadVerifiedSuppressions(ws, REL, undefined)).length).toBe(0);
     // The mutant it used to hide is scored again.
     expect(outcome.counts.applied).toBe(0);
     expect(outcome.result.totalMutants).toBe(4);
@@ -557,5 +558,214 @@ describe('applyAndCountSuppressions — the write path', () => {
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) return;
     expect(outcome.counts.rejected).toBe(0);
+  });
+});
+
+describe('write-time change resolution', () => {
+  const COND = 'ConditionalExpression';
+  /** Two mutants on one line whose replacement is identical — only the original differs. */
+  const twoOnOneLine: MutationResult = {
+    target: REL,
+    totalMutants: 6,
+    killed: 4,
+    survived: 2,
+    mutationScore: '66.67%',
+    vulnerabilities: [
+      {
+        line: 1,
+        mutator: COND,
+        kind: 'survived',
+        description: 'x',
+        original: 'Array.isArray(args.unsuppress)',
+        mutated: 'true',
+      },
+      {
+        line: 1,
+        mutator: COND,
+        kind: 'survived',
+        description: 'x',
+        original: 'args.unsuppress.length > 0',
+        mutated: 'true',
+      },
+      {
+        line: 2,
+        mutator: 'EqualityOperator',
+        kind: 'survived',
+        description: 'x',
+        original: 'a > 0',
+        mutated: 'a >= 0',
+      },
+    ],
+  };
+
+  const run = (args: Record<string, unknown>, res = twoOnOneLine) =>
+    applyAndCountSuppressions(args as never, res, undefined, ws, REL, undefined);
+
+  const stored = (): Record<string, unknown>[] => {
+    const path = join(ws, '.chaos-mcp', 'suppressions.json');
+    if (!existsSync(path)) return [];
+    const doc = JSON.parse(readFileSync(path, 'utf8')) as {
+      entries: Record<string, Record<string, unknown>[]>;
+    };
+    return doc.entries[REL] ?? [];
+  };
+
+  it('stamps the change when exactly one survivor matches', async () => {
+    // The ordinary two-field call keeps working: the caller names a line and a
+    // mutator, and the identity is filled in from this run's mutants.
+    const out = await run({
+      suppress: [{ line: 2, mutator: 'EqualityOperator', reason: 'equivalent' }],
+    });
+
+    expect(out.ok).toBe(true);
+    expect(stored()).toHaveLength(1);
+    expect(stored()[0].change).toBe('a > 0 → a >= 0');
+  });
+
+  it('refuses an ambiguous request instead of suppressing every candidate', async () => {
+    // This is the trade the whole schema removes. Line 1 carries two mutants of
+    // one mutator; filing a (line, mutator) entry would suppress BOTH, so an
+    // equivalent mutant would take a killed sibling's coverage signal with it.
+    const out = await run({ suppress: [{ line: 1, mutator: COND, reason: 'x' }] });
+
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect(out.counts.rejected).toBe(1);
+    expect(stored()).toEqual([]);
+  });
+
+  it('files an explicit change verbatim, without consulting the survivors', async () => {
+    await run({
+      suppress: [
+        { line: 1, mutator: COND, change: 'args.unsuppress.length > 0 → true', reason: 'x' },
+      ],
+    });
+
+    expect(stored()).toHaveLength(1);
+    expect(stored()[0].change).toBe('args.unsuppress.length > 0 → true');
+  });
+
+  it('suppresses only the named mutant, leaving its sibling counted', async () => {
+    // The point of all of it: one mutant leaves the denominator, the other stays
+    // in the score where a test can still be written for it.
+    const out = await run({
+      suppress: [
+        { line: 1, mutator: COND, change: 'args.unsuppress.length > 0 → true', reason: 'x' },
+      ],
+    });
+
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect(out.counts.applied).toBe(1);
+    expect(out.result.totalMutants).toBe(5);
+    expect(out.result.vulnerabilities).toHaveLength(2);
+  });
+
+  it('leaves the change unset when no survivor matches at all', async () => {
+    // Mutator-only identity: right for cargo-mutants, and the pre-v3 behaviour
+    // for anything else. Refusing here would lose the caller's reason over a
+    // line number that is merely stale.
+    await run({ suppress: [{ line: 1, mutator: 'NeverSeen', reason: 'x' }] });
+
+    expect(stored()).toHaveLength(1);
+    expect(stored()[0].change).toBeUndefined();
+  });
+
+  it('writes the resolvable entries in a batch that also carries an ambiguous one', async () => {
+    const out = await run({
+      suppress: [
+        { line: 1, mutator: COND, reason: 'ambiguous' },
+        { line: 2, mutator: 'EqualityOperator', reason: 'fine' },
+      ],
+    });
+
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect(out.counts.rejected).toBe(1);
+    expect(stored()).toHaveLength(1);
+    expect(stored()[0].change).toBe('a > 0 → a >= 0');
+  });
+
+  it('removes one entry of a pair when unsuppress names its change', async () => {
+    await run({
+      suppress: [
+        { line: 1, mutator: COND, change: 'args.unsuppress.length > 0 → true', reason: 'a' },
+        { line: 1, mutator: COND, change: 'Array.isArray(args.unsuppress) → true', reason: 'b' },
+      ],
+    });
+    expect(stored()).toHaveLength(2);
+
+    await run({
+      unsuppress: [{ line: 1, mutator: COND, change: 'args.unsuppress.length > 0 → true' }],
+    });
+
+    expect(stored()).toHaveLength(1);
+    expect(stored()[0].reason).toBe('b');
+  });
+});
+
+describe('a partial run cannot file a changeless entry', () => {
+  const partial = (complete: boolean | undefined): MutationResult => ({
+    target: REL,
+    totalMutants: 4,
+    killed: 4,
+    survived: 0,
+    mutationScore: '100.00%',
+    vulnerabilities: [],
+    ...(complete === undefined ? {} : { complete }),
+  });
+
+  const run = (res: MutationResult) =>
+    applyAndCountSuppressions(
+      { suppress: [{ line: 1, mutator: 'ConditionalExpression', reason: 'x' }] } as never,
+      res,
+      undefined,
+      ws,
+      REL,
+      undefined,
+    );
+
+  const storedCount = (): number => {
+    const path = join(ws, '.chaos-mcp', 'suppressions.json');
+    if (!existsSync(path)) return 0;
+    const doc = JSON.parse(readFileSync(path, 'utf8')) as {
+      entries: Record<string, unknown[]>;
+    };
+    return (doc.entries[REL] ?? []).length;
+  };
+
+  it('refuses when the run stopped early and generated no matching mutant', () => {
+    // Absence proves nothing here: the mutant may sit in a batch that never
+    // ran. Filing it changeless would store mutator-only identity — broader
+    // than the caller asked for — on the strength of a run that did not look.
+    return run(partial(false)).then((out) => {
+      expect(out.ok).toBe(true);
+      if (!out.ok) return;
+      expect(out.counts.rejected).toBe(1);
+      expect(storedCount()).toBe(0);
+    });
+  });
+
+  it('files it changeless when the run was COMPLETE', async () => {
+    // A complete run that generated no such mutant means it does not exist —
+    // killed, or gone. Keeping the entry preserves the caller's reason, and it
+    // will report as orphaned rather than vanishing.
+    const out = await run(partial(true));
+
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect(out.counts.rejected).toBe(0);
+    expect(storedCount()).toBe(1);
+  });
+
+  it('files it changeless when the engine reports no completeness at all', async () => {
+    // Python, Rust and PHP leave `complete` undefined; they have no batching
+    // concept, so their runs are always whole and `!== false` must hold.
+    const out = await run(partial(undefined));
+
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect(out.counts.rejected).toBe(0);
+    expect(storedCount()).toBe(1);
   });
 });

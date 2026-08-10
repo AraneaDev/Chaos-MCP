@@ -52,6 +52,7 @@ import { createSandbox } from '../utils/sandbox.js';
 import { loadRun, saveRun, workspaceFingerprint } from '../utils/run-cache.js';
 import { loadSuppressions, addSuppressions, fingerprintSourceLine } from '../utils/suppression.js';
 import type { MutationResult } from '../engines/base.js';
+import { verdictOf } from './support/suppression-verdict.js';
 
 const MockTSEngine = vi.mocked(TypeScriptEngine);
 const mockDetectEnv = vi.mocked(detectEnvironment);
@@ -551,7 +552,7 @@ describe('task-9 verify-mode suppression composition', () => {
       ],
     };
     // Suppress "1 A": it should not count as still-surviving.
-    const filtered = applySuppressions(rerun, new Set(['1 A']));
+    const filtered = applySuppressions(rerun, verdictOf(['1 A']));
     const delta = computeVerifyDelta(
       baseline.filter((k) => `${k.line} ${k.mutator}` !== '1 A'),
       filtered.result,

@@ -196,6 +196,12 @@ interface RowInput {
    * run, gated on {@link isWholeFileRun} the same way the audit tool gates it.
    */
   orphanedSuppressions: number;
+  /**
+   * Applied suppressions placed at a different line than the one stored,
+   * because an edit moved them. The count only — the per-entry tier-3 notes
+   * belong to a single-file audit, not a leaderboard over hundreds of files.
+   */
+  relocatedSuppressions: number;
 }
 
 /**
@@ -230,6 +236,7 @@ function buildTriageRow(input: RowInput, deps: TriageFileDeps): TriageRow {
   if (input.driftedSuppressions > 0) row.driftedSuppressions = input.driftedSuppressions;
   if (input.unverifiedSuppressions > 0) row.unverifiedSuppressions = input.unverifiedSuppressions;
   if (input.orphanedSuppressions > 0) row.orphanedSuppressions = input.orphanedSuppressions;
+  if (input.relocatedSuppressions > 0) row.relocatedSuppressions = input.relocatedSuppressions;
 
   // Mint a per-row runId so the caller can verify survivors from a triage result
   // without re-auditing. A cache failure is non-fatal (mintRunId swallows it):
@@ -459,7 +466,7 @@ export async function auditTriageFile(
       relFromRoot,
       suppressionMap.get(relFromRoot),
     );
-    const sup = applySuppressions(result, verdict.applied);
+    const sup = applySuppressions(result, verdict);
 
     return {
       row: buildTriageRow(
@@ -474,8 +481,12 @@ export async function auditTriageFile(
           projectType,
           scopeNote: scope.scopeNote,
           suppressedCount: sup.suppressedCount,
-          driftedSuppressions: verdict.drifted,
+          driftedSuppressions: sup.drifted,
           unverifiedSuppressions: verdict.unverified,
+          // The COUNT only. A leaderboard over hundreds of files would drown in
+          // the per-entry tier-3 notes; those belong to a single-file audit,
+          // where there is room to act on them.
+          relocatedSuppressions: sup.relocated.length,
           // Gated on the PRE-suppression `result`, not `sup.result`.
           // `applySuppressions` returns a new object and never reassigns this
           // one, so `result` is still the engine's own snapshot — which
@@ -486,7 +497,7 @@ export async function auditTriageFile(
           // a real orphan in exactly the case this counter exists for.
           // `applyAndCountSuppressions` evaluates it on the same pre-filter
           // snapshot for the same reason, so the two tools cannot disagree.
-          orphanedSuppressions: isWholeFileRun(result) ? sup.orphanedKeys.length : 0,
+          orphanedSuppressions: isWholeFileRun(result) ? sup.orphaned : 0,
         },
         deps,
       ),

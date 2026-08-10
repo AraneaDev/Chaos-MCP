@@ -112,9 +112,30 @@ function formatVerifyOutput({
   // it shows up as "still surviving" — visible, and explained by the note
   // appended below.
   const verdict = loadVerifiedSuppressions(env.workspaceRoot, relFromRoot, cfg.suppressionsPath);
-  const suppressed = verdict.applied;
-  const rerun = applySuppressions(auditResults, suppressed).result;
-  const keptBaseline = baselineKeys.filter((k) => !suppressed.has(`${k.line} ${k.mutator}`));
+  const suppression = applySuppressions(auditResults, verdict);
+  const rerun = suppression.result;
+  // The re-run side is filtered by CONTENT identity, but the baseline side
+  // cannot be: a cached `MutantKey` is `{ line, mutator }` and carries no
+  // change, so the only key both sides share is the coarse one. A baseline key
+  // is therefore dropped when it shares a placed entry's line AND mutator, even
+  // if a sibling mutant on that line was the one actually suppressed.
+  //
+  // That is the precision verify mode has always had, so nothing regresses —
+  // and erring toward dropping is the safe direction here: a baseline key left
+  // in when its mutant was filtered out of the re-run reads as "now killed",
+  // which is a false claim of progress. Extending the cache format to carry the
+  // change would fix it properly and belongs with the run-cache, not here.
+  //
+  // Both lines, not just the resolved one: a relocated entry's mutant was
+  // filtered out of the re-run under its NEW line, while the cached baseline key
+  // still carries the line it was stored against. Matching only the new line
+  // leaves that baseline key in, and `computeVerifyDelta` reads its absence from
+  // the re-run as "now killed" — the false progress claim this filter exists to
+  // avoid.
+  const suppressedCoarse = new Set(
+    suppression.applied.flatMap((s) => [`${s.line} ${s.mutator}`, `${s.storedLine} ${s.mutator}`]),
+  );
+  const keptBaseline = baselineKeys.filter((k) => !suppressedCoarse.has(`${k.line} ${k.mutator}`));
   // EVERY engine re-runs the whole file in verify mode now — StrykerJS
   // included, since single-line scoping silently dropped multi-line mutants
   // and `computeVerifyDelta` then read their absence as "killed" (see
@@ -155,10 +176,34 @@ function formatVerifyOutput({
   // Verify mode reports the same drift the standard report does — otherwise a
   // stale suppression makes a mutant reappear as "still surviving" with no
   // explanation anywhere in the response.
-  const verifyDrift = suppressionDriftNotes(verdict.drifted, verdict.unverified);
+  const verifyRelocations = suppression.relocated
+    .filter((r) => r.tier === 3)
+    .map((r) => ({
+      storedLine: r.storedLine,
+      line: r.line,
+      mutator: r.mutator,
+      ...(r.reason === undefined ? {} : { reason: r.reason }),
+    }));
+  const verifyDrift = suppressionDriftNotes(
+    suppression.drifted,
+    verdict.unverified,
+    undefined,
+    undefined,
+    verifyRelocations,
+    undefined,
+    suppression.relocated.length,
+  );
+  // Counted OUTSIDE the drift guard. A tier-2 move produces no sentence — it
+  // cannot be wrong — so a run with only tier-2 relocations has an empty
+  // `verifyDrift` and would drop the count entirely, while the standard path
+  // (`applyAndCountSuppressions`) reports it unconditionally. The two modes must
+  // not disagree about the same fact.
+  if (suppression.relocated.length > 0) {
+    verifyStructured.relocatedSuppressions = suppression.relocated.length;
+  }
   const verifyContent: { type: 'text'; text: string }[] = [{ type: 'text', text: verifyText }];
   if (verifyDrift.length > 0) {
-    if (verdict.drifted > 0) verifyStructured.driftedSuppressions = verdict.drifted;
+    if (suppression.drifted > 0) verifyStructured.driftedSuppressions = suppression.drifted;
     if (verdict.unverified > 0) verifyStructured.unverifiedSuppressions = verdict.unverified;
     verifyStructured.note = `${verifyStructured.note as string} ${verifyDrift.join(' ')}`;
     verifyContent.push({ type: 'text', text: verifyDrift.map((n) => `Note: ${n}`).join('\n') });
@@ -221,6 +266,9 @@ function formatStandardOutput({
     unverifiedSuppressions: suppression.unverified,
     orphanedSuppressions: suppression.orphaned,
     rejectedSuppressions: suppression.rejected,
+    relocatedSuppressions: suppression.relocated,
+    relocations: suppression.relocations,
+    rejections: suppression.rejections,
     gate,
   });
 
@@ -232,6 +280,9 @@ function formatStandardOutput({
           unverifiedSuppressions: suppression.unverified,
           orphanedSuppressions: suppression.orphaned,
           rejectedSuppressions: suppression.rejected,
+          relocatedSuppressions: suppression.relocated,
+          relocations: suppression.relocations,
+          rejections: suppression.rejections,
           // The SAME GateResult the payload carries, not a second evaluation:
           // text output previously rendered no verdict at all, so a caller
           // reading only the text block saw a clean report for a failing gate.

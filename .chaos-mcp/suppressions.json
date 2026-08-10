@@ -1,201 +1,22 @@
 {
-  "version": 2,
+  "version": 3,
   "entries": {
-    "src/cli.ts": [
+    "src/utils/pool.ts": [
       {
-        "line": 174,
-        "mutator": "MethodExpression",
-        "addedAt": 1786278777989,
-        "reason": "`process.argv.slice(2)` → `process.argv` is equivalent for every use of `args` in runCli: argv[0] and argv[1] are the node binary and script paths, neither of which equals a flag string, so no `includes()` result changes and `getFlagValue`'s `indexOf` finds the same index (its value is read at index+1, which shifts with it). Re-confirmed at line 174 — the prior entry had drifted onto a comment at line 163 and was suppressing nothing.",
-        "fingerprint": "977792ccb25b"
-      }
-    ],
-    "src/core/baseline-timing.ts": [
-      {
-        "line": 55,
-        "mutator": "BlockStatement",
-        "addedAt": 1785608862819,
-        "reason": "Exhaustiveness guard: the block only calls assertNeverProjectType and returns undefined, unreachable for the declared SupportedProjectType union. Emptying it is behaviourally equivalent at runtime.",
-        "fingerprint": "81e7d79016d1"
-      },
-      {
-        "line": 55,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1785608862819,
-        "reason": "Exhaustiveness guard: projectType is narrowed to never in this default arm, so no runtime input can reach it. Killing this would require casting an invalid value past the type system, defeating the guard.",
-        "fingerprint": "81e7d79016d1"
-      }
-    ],
-    "src/core/test-file.ts": [
-      {
-        "line": 249,
-        "mutator": "MethodExpression",
-        "addedAt": 1786289756216,
-        "reason": "Admitting empty/'.' segments to the CANDIDATE set cannot raise the overlap: line 250 still filters those same segments out of the source side before querying the set, so they are never looked up. Only mutating both lines at once would be observable, and mutants are applied one at a time.",
-        "fingerprint": "41356563e666"
-      },
-      {
-        "line": 249,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1786289756216,
-        "reason": "Same as the MethodExpression on this line: whichever half of `s && s !== '.'` is forced, the extra segments land only in the candidate set, and line 250's filter stops the source side ever asking for them.",
-        "fingerprint": "41356563e666"
-      },
-      {
-        "line": 249,
-        "mutator": "LogicalOperator",
-        "addedAt": 1786289756216,
-        "reason": "Swapping && for || only widens the candidate set with empty/'.' segments, which line 250's own filter guarantees are never queried.",
-        "fingerprint": "41356563e666"
-      },
-      {
-        "line": 250,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1786289756216,
-        "reason": "Forcing either half of `s && s !== '.'` lets empty/'.' segments reach `candidateSegments.has(s)`, but line 249 has already stripped those from the candidate set, so the lookup misses and the count is unchanged.",
-        "fingerprint": "535d67604ba7"
-      },
-      {
-        "line": 250,
-        "mutator": "LogicalOperator",
-        "addedAt": 1786289756216,
-        "reason": "Swapping && for || admits empty/'.' segments to the lookup, which line 249's filter guarantees are absent from the candidate set — the count cannot change.",
-        "fingerprint": "535d67604ba7"
-      },
-      {
-        "line": 124,
-        "mutator": "BlockStatement",
-        "addedAt": 1786305754450,
-        "reason": "`base` is declared `let base: string` with no initialiser, so when `basename()` throws it is still undefined when the catch runs. Emptying the catch drops `return []`, but control falls through to `if (!base || base.startsWith('test_')) return []`, which returns the same empty list. Fourth instance of this dead-catch shape in the codebase (triage/audit-one.ts:273/:287, core/estimate.ts:110).",
-        "fingerprint": "95bc545467a5"
-      },
-      {
-        "line": 136,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1786305754450,
-        "reason": "Forcing `existsSync(testsRoot)` true calls `collectByName` on a directory that does not exist; its first act is `readdirSync` inside a try/catch that returns on failure. The recursive hunt contributes nothing either way, so the returned selection is identical.",
-        "fingerprint": "fdfe605beb9b"
-      },
-      {
-        "line": 235,
+        "line": 12,
         "mutator": "ArrayDeclaration",
-        "addedAt": 1786305754450,
-        "reason": "Seeding `roots` with a non-path string only sends `collectByName` to `join(workspaceRoot, 'Stryker was here')`, where `readdirSync` throws ENOENT and its catch returns. A bogus root cannot contribute a match, so the suggestion is unchanged.",
-        "fingerprint": "fee3716cd6d7"
-      },
-      {
-        "line": 237,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1786305754450,
-        "reason": "Forcing `rel === targetFile` false lets the target FILE itself be pushed as a search root. `collectByName` then calls `readdirSync` on a file, which throws ENOTDIR into the same catch — no match, and the same suggestion.",
-        "fingerprint": "fa52ae6eddd2"
-      },
-      {
-        "line": 239,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1786305754450,
-        "reason": "Forcing `existsSync` true pushes every candidate root whether or not it exists; each missing one reaches `collectByName`, whose `readdirSync` throws ENOENT into its catch. The set of files found is unchanged.",
-        "fingerprint": "9b1d00cae6dc"
-      },
-      {
-        "line": 15,
-        "mutator": "Regex",
-        "addedAt": 1786305754450,
-        "reason": "Anchored and unanchored forms differ only when `./` appears MID-path, and the joined string is built from `dirname(targetFile)` plus literal suffixes. The only caller (`audit/audit-output.ts`) passes `relFromRoot` from `anchorToWorkspace`, which derives it via `path.relative()` — that never emits a `.` segment mid-path, so no reachable input distinguishes them.",
-        "fingerprint": "ae517a118d9b"
-      }
-    ],
-    "src/core/tool-args-validation.ts": [
-      {
-        "line": 27,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1786291331389,
-        "reason": "By this line `timeoutMs` is either undefined or a positive number — the check above returned an error for anything else. Forcing the typeof guard true leaves `undefined > MAX_TIMEOUT_MS`, which is false, so no input changes the outcome.",
-        "fingerprint": "ccd71318dd03"
-      },
-      {
-        "line": 41,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1786291331389,
-        "reason": "Same shape as line 27 for perMutantTimeoutMs: the preceding check already rejected every non-positive-number, and `undefined > MAX_TIMEOUT_MS` is false.",
-        "fingerprint": "2c989e0721cd"
-      },
-      {
-        "line": 63,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1786291331389,
-        "reason": "Redundant typeof guard: `Number.isInteger` returns false for every non-number, so the next disjunct rejects exactly the same inputs with the same message.",
-        "fingerprint": "edd50187157e"
-      },
-      {
-        "line": 79,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1786291331389,
-        "reason": "Forcing `typeof ls !== 'object'` false cannot admit a non-object: a string or number has no `start` property, so `typeof ls.start !== 'number'` two lines down rejects it with the same message.",
-        "fingerprint": "e06d10b91a2c"
-      },
-      {
-        "line": 81,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1786291331389,
-        "reason": "Redundant typeof guard: `!Number.isInteger(ls.start)` below rejects every non-number, including undefined.",
-        "fingerprint": "c35d2690ffdb"
-      },
-      {
-        "line": 82,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1786291331389,
-        "reason": "Redundant typeof guard: `!Number.isInteger(ls.end)` below rejects every non-number, including undefined.",
-        "fingerprint": "8913e0836851"
-      },
-      {
-        "line": 110,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1786291331389,
-        "reason": "Redundant typeof guard: `!Number.isInteger(line)` rejects every non-number, so the same inputs produce the same 'line must be an integer >= 1' error.",
-        "fingerprint": "b70233ecdc3a"
-      },
-      {
-        "line": 158,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1786291331389,
-        "reason": "Forcing `typeof entry !== 'object'` false cannot admit a scalar: it has no `mutators` property, so `typeof entry.mutators !== 'object'` rejects it with the same message.",
-        "fingerprint": "ab6ccff2b217"
-      },
-      {
-        "line": 173,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1786291331389,
-        "reason": "Redundant typeof guard: `!Number.isInteger(cnt)` rejects every non-number, so a non-numeric count still fails with the same message.",
-        "fingerprint": "4919d1e12ee3"
-      },
-      {
-        "line": 177,
-        "mutator": "AssignmentOperator",
-        "addedAt": 1786291331389,
-        "reason": "`pairCount` is only ever compared against 0, and every increment is `Object.keys(...).length` — never negative. So the sum is 0 under `+=` exactly when it is 0 under `-=`: when every entry contributed zero keys. No input distinguishes them.",
-        "fingerprint": "25862eeb1f3d"
-      },
-      {
-        "line": 246,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1786291331389,
-        "reason": "Redundant typeof guard: `!Number.isInteger(args.maxSurvivors)` rejects every non-number with the same message.",
-        "fingerprint": "53c020007f93"
-      },
-      {
-        "line": 322,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1786291331389,
-        "reason": "Forcing `typeof entry !== 'object'` false cannot admit a scalar: it has no `mutator` property, so `typeof entry.mutator !== 'string'` rejects it with the same message.",
-        "fingerprint": "ab6ccff2b217"
+        "addedAt": 1786346460184,
+        "change": "new Array<R>(items.length) → new Array()",
+        "reason": "Pre-sizing is an optimisation only: every index 0..length-1 is claimed exactly once by a worker and assigned, so new Array() ends with identical length and contents.",
+        "fingerprint": "a9bb27df9b2e"
       }
     ],
     "src/utils/file-path.ts": [
       {
         "line": 105,
         "mutator": "ConditionalExpression",
-        "addedAt": 1786293447526,
+        "addedAt": 1786346609250,
+        "change": "extra.length === 0 → false",
         "reason": "Both arms produce the same string when `extra` is empty: `[rootCwd, ...[]].join(' or ')` === `rootCwd`. The early-return arm is a readability shortcut, not a behavioural branch, so forcing the condition either way leaves the output identical for every input.",
         "fingerprint": "113f339afe24"
       }
@@ -204,7 +25,8 @@
       {
         "line": 53,
         "mutator": "ConditionalExpression",
-        "addedAt": 1785438919680,
+        "addedAt": 1786346812161,
+        "change": "!existsSync(cachePath) → false",
         "reason": "Dropping the cache-miss guard makes copyFileSync throw ENOENT, which the surrounding catch already swallows; no file is created either way, so the observable state is identical.",
         "fingerprint": "c874e65c56b0"
       }
@@ -213,546 +35,938 @@
       {
         "line": 96,
         "mutator": "EqualityOperator",
-        "addedAt": 1785439151604,
+        "addedAt": 1786347445630,
+        "change": "root.length > boundary.length → root.length >= boundary.length",
         "reason": "The tie branch is unreachable: two DIFFERENT roots of equal path length cannot both be ancestors of the same directory, and an identical root reassigns the same value. `>` and `>=` therefore always agree.",
         "fingerprint": "58200bebe3a0"
-      }
-    ],
-    "src/utils/pool.ts": [
-      {
-        "line": 12,
-        "mutator": "ArrayDeclaration",
-        "addedAt": 1785438865043,
-        "reason": "Pre-sizing is an optimisation only: every index 0..length-1 is claimed exactly once by a worker and assigned, so new Array() ends with identical length and contents.",
-        "fingerprint": "a9bb27df9b2e"
-      }
-    ],
-    "src/utils/suppression.ts": [
-      {
-        "line": 385,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1786288614641,
-        "reason": "Forcing `typeof raw !== 'object'` false only defers to the next conjunct: a scalar `raw` has no `entries` property, so `typeof raw.entries !== 'object'` is true and the same empty document is returned; `null` is already short-circuited by `!raw`. This is the argument three entries at lines 97-98 carried while pointing at `storedKeyFor` — re-filed against the line it actually describes.",
-        "fingerprint": "d346c321fe1b"
-      },
-      {
-        "line": 284,
-        "mutator": "MethodExpression",
-        "addedAt": 1786288614641,
-        "reason": "Dropping `.trim()` cannot change the result: `trimmed` is already `text.trim()`, so no trailing whitespace survives, and the slice after `*/` is therefore either empty or contains a non-space character. Both spellings agree on every input.",
-        "fingerprint": "53a2fb47a384"
-      },
-      {
-        "line": 100,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1786299813924,
-        "reason": "This loop is only reached when `Object.hasOwn(entries, portable)` was FALSE, so no key in `entries` can equal `portable` — `key !== portable` is already true for every iteration. Forcing it true changes nothing.",
-        "fingerprint": "74415619fcf2"
-      },
-      {
-        "line": 242,
-        "mutator": "BlockStatement",
-        "addedAt": 1786299813924,
-        "reason": "Emptying the catch drops `return undefined`, but control then falls out of the try/catch to the end of the function, which returns undefined implicitly. Identical for every input.",
-        "fingerprint": "95bc545467a5"
-      },
-      {
-        "line": 337,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1786299813924,
-        "reason": "A fast path only: with an empty `entries` array the loop below runs zero times and the same `emptyVerdict()` is returned. The mutant costs one extra source read and produces the identical verdict.",
-        "fingerprint": "6c47ac607938"
-      },
-      {
-        "line": 545,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1786299813924,
-        "reason": "When the two keys are equal, forcing the branch open removes the key and the line below re-adds it as `data.entries[portableKey] = list` — the same document either way.",
-        "fingerprint": "5e51d86e3262"
-      },
-      {
-        "line": 548,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1786299813924,
-        "reason": "`e && typeof e === 'object'` guards the index build. Forcing the typeof half true admits a truthy non-object, which keys as `keyOf(undefined, undefined)` — a key no real entry can collide with, so the index behaves identically and the written list is unchanged.",
-        "fingerprint": "863ecbba77fb"
-      },
-      {
-        "line": 573,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1786299813924,
-        "reason": "`at === undefined ? undefined : list[at]` — forcing the condition false evaluates `list[undefined]`, which is itself `undefined`. Both arms yield the same value.",
-        "fingerprint": "fde71cbc045c"
-      },
-      {
-        "line": 580,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1786299813924,
-        "reason": "Assigning `merged.reason = undefined` instead of omitting the key is unobservable: `merged` is only serialised by `JSON.stringify` in writeFile, which drops undefined-valued keys, and nothing reads the in-memory object.",
-        "fingerprint": "f365a61c3cb0"
-      },
-      {
-        "line": 581,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1786299813924,
-        "reason": "Same as line 580 for `fingerprint`: the object's only consumer is `JSON.stringify`, which omits an undefined value, so the stored document is byte-identical.",
-        "fingerprint": "dfe66bfafa26"
-      },
-      {
-        "line": 627,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1786299813924,
-        "reason": "When the keys are equal, forcing the branch open removes the key and the block below either re-adds it (`kept.length > 0`) or removes it again in the else — the same document in both cases.",
-        "fingerprint": "5e51d86e3262"
-      },
-      {
-        "line": 434,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1786302799988,
-        "reason": "The try block calls only `readFile`, which returns early for ENOENT and wraps every other failure in `new SuppressionFileError(dest, error)` before throwing. No other error type can reach this catch, so the rethrow is a guard against a future change to readFile rather than a reachable branch — forcing it false is unobservable today.",
-        "fingerprint": "b2239c1db266"
       }
     ],
     "src/core/estimate.ts": [
       {
         "line": 110,
         "mutator": "BlockStatement",
-        "addedAt": 1786292980666,
+        "addedAt": 1786347769695,
+        "change": "{ source = ''; } → {}",
         "reason": "`source` is declared `let source = ''` four lines above, so a readFileSync failure leaves it holding that initialiser already — the catch's `source = ''` is a defensive re-assignment that cannot change any state. Emptying the block is equivalent. Same shape as the catch blocks at triage/audit-one.ts:273 and :287.",
         "fingerprint": "95bc545467a5"
-      }
-    ],
-    "src/audit/scope.ts": [
-      {
-        "line": 157,
-        "mutator": "ArrayDeclaration",
-        "addedAt": 1786271049809,
-        "reason": "`nowKilled` is passed to evaluateVerifyGate, which reads only `complete`, `stillSurviving.length` and `newSurvivors.length` (core/verify.ts). The array is never read on this path, so its contents cannot change the returned gate — equivalent, not a test gap. The sibling literals on lines 158-159 ARE read and are killed.",
-        "fingerprint": "c6eb294e4c51"
-      },
-      {
-        "line": 160,
-        "mutator": "ArrayDeclaration",
-        "addedAt": 1786271049809,
-        "reason": "`notReChecked` is read only by partialVerifyNote, which runs when `complete === false`; this call site never sets `complete`, so evaluateVerifyGate returns before the array is touched. Unobservable from the gate this expression produces.",
-        "fingerprint": "c3cc78edbeb3"
-      },
-      {
-        "line": 259,
-        "mutator": "BlockStatement",
-        "addedAt": 1786271049809,
-        "reason": "Exhaustiveness guard: `diff` is narrowed to `never` in this default arm, so no runtime DiffResult reaches it. Emptying the block is unobservable without casting an invalid variant past the type system.",
-        "fingerprint": "81e7d79016d1"
-      },
-      {
-        "line": 259,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1786271049809,
-        "reason": "Same `never`-narrowed default arm: removing it is a compile-time regression (a new DiffResult variant would stop erroring), not a runtime behaviour a test can observe.",
-        "fingerprint": "81e7d79016d1"
       }
     ],
     "src/core/verify.ts": [
       {
         "line": 316,
         "mutator": "ConditionalExpression",
-        "addedAt": 1786271874756,
+        "addedAt": 1786349633199,
+        "change": "gate → true",
         "reason": "`if (gate) payload.gate = gate` guards the LAST statement before `JSON.stringify(payload)`. Forcing it true assigns `payload.gate = undefined`, and JSON.stringify omits undefined-valued keys, so the returned string is byte-identical. `gate` is typed `GateResult | undefined`, so no falsy-but-serialisable value (null, 0) can reach it. Equivalent on the only output this function has.",
         "fingerprint": "4b3c95dc898e"
       }
     ],
-    "src/utils/sandbox.ts": [
+    "src/cli.ts": [
       {
-        "line": 228,
+        "line": 174,
+        "mutator": "MethodExpression",
+        "addedAt": 1786349704573,
+        "change": "process.argv.slice(2) → process.argv",
+        "reason": "`process.argv.slice(2)` → `process.argv` is equivalent for every use of `args` in runCli: argv[0] and argv[1] are the node binary and script paths, neither of which equals a flag string, so no `includes()` result changes and `getFlagValue`'s `indexOf` finds the same index (its value is read at index+1, which shifts with it). Re-confirmed at line 174 — the prior entry had drifted onto a comment at line 163 and was suppressing nothing.",
+        "fingerprint": "977792ccb25b"
+      }
+    ],
+    "src/core/baseline-timing.ts": [
+      {
+        "line": 55,
+        "mutator": "BlockStatement",
+        "addedAt": 1786349815821,
+        "change": "{ // Exhaustiveness guard, not a runtime check: `projectType` is narrowed to // `never` here, so adding a SupportedProj… → {}",
+        "reason": "Exhaustiveness guard: the block only calls assertNeverProjectType and returns undefined, unreachable for the declared SupportedProjectType union. Emptying it is behaviourally equivalent at runtime.",
+        "fingerprint": "81e7d79016d1"
+      },
+      {
+        "line": 55,
         "mutator": "ConditionalExpression",
-        "addedAt": 1786273230546,
-        "reason": "`current === undefined` is unreachable: the loop is guarded by `stack.length > 0`, so `stack.pop()` always returns a string. The guard exists to narrow `string | undefined` for TypeScript, not to handle a runtime case.",
-        "fingerprint": "be923c11f156"
-      },
-      {
-        "line": 226,
-        "mutator": "BooleanLiteral",
-        "addedAt": 1786273230546,
-        "reason": "`truncated: true` is only returned when `total > MAX_WORKSPACE_SIZE_BYTES`, and the sole consumer warns on `size.truncated || size.bytes > MAX_WORKSPACE_SIZE_BYTES` — `bytes` is that same over-threshold total, so the warning fires identically with the flag false. The flag is unobservable on the only path that sets it.",
-        "fingerprint": "e3ec0e162064"
-      },
-      {
-        "line": 261,
-        "mutator": "ObjectLiteral",
-        "addedAt": 1786273230546,
-        "reason": "Emptying the catch fallback yields `{ bytes: undefined, truncated: undefined }`. The only consumer is `size.truncated || size.bytes > MAX`, where both undefined evaluate exactly as `false || 0 > MAX` does. No output distinguishes them.",
-        "fingerprint": "a413f056352d"
-      },
-      {
-        "line": 489,
-        "mutator": "ArrayDeclaration",
-        "addedAt": 1786273230546,
-        "reason": "Under `dependencies: 'copy'` the empty list means 'nothing left to link'. Filling it with a name no directory has is inert on both consumers: buildCopyPolicy gains an exclusion that matches no path, and linkHeavyDirs skips it at `existsSync(src)`.",
-        "fingerprint": "b4fb0b55ad9d"
+        "addedAt": 1786349815821,
+        "change": "default: { // Exhaustiveness guard, not a runtime check: `projectType` is narrowed to // `never` here, so adding a Supp… → default:",
+        "reason": "Exhaustiveness guard: projectType is narrowed to never in this default arm, so no runtime input can reach it. Killing this would require casting an invalid value past the type system, defeating the guard.",
+        "fingerprint": "81e7d79016d1"
       }
     ],
     "src/triage/audit-one.ts": [
       {
-        "line": 273,
+        "line": 162,
+        "mutator": "ObjectLiteral",
+        "addedAt": 1786349886731,
+        "change": "{ scopeNote: `diff scoping returned an unrecognised git result (${JSON.stringify(unhandled)}); whole file`, } → {}",
+        "reason": "Exhaustiveness guard: `diff` is narrowed to `never` in this default arm, so no runtime DiffResult reaches it. Emptying the returned object requires casting an invalid variant past the type system — the same equivalent guard suppressed at audit/scope.ts:259.",
+        "fingerprint": "dde44124f1ee"
+      },
+      {
+        "line": 280,
         "mutator": "BlockStatement",
-        "addedAt": 1786274958221,
+        "addedAt": 1786359158797,
+        "change": "{ rowRunId = undefined; } → {}",
         "reason": "`rowRunId` is declared `let rowRunId: string | undefined` and assigned by exactly one statement inside the try. If that statement throws, the assignment never completed, so the variable is ALREADY undefined when the catch runs — `rowRunId = undefined` is a defensive re-assignment that cannot change any state. Emptying the block is equivalent.",
         "fingerprint": "95bc545467a5"
       },
       {
-        "line": 287,
+        "line": 294,
         "mutator": "BlockStatement",
-        "addedAt": 1786274958221,
-        "reason": "Identical shape to line 273: `sourceLines` is declared undefined and assigned by the single `readFileSync(...).split(...)` statement inside the try. A throw there leaves it undefined already, so the catch's re-assignment is unobservable.",
+        "addedAt": 1786359158797,
+        "change": "{ sourceLines = undefined; } → {}",
+        "reason": "Identical shape to the rowRunId catch above: `sourceLines` is declared undefined and assigned by the single `readFileSync(...).split(...)` statement inside the try. A throw there leaves it undefined already, so the catch's re-assignment is unobservable.",
         "fingerprint": "95bc545467a5"
-      },
-      {
-        "line": 162,
-        "mutator": "ObjectLiteral",
-        "addedAt": 1786274958221,
-        "reason": "Exhaustiveness guard: `diff` is narrowed to `never` in this default arm, so no runtime DiffResult reaches it. Emptying the returned object requires casting an invalid variant past the type system — the same equivalent guard suppressed at audit/scope.ts:259.",
-        "fingerprint": "dde44124f1ee"
-      }
-    ],
-    "src/core/format.ts": [
-      {
-        "line": 47,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1786284640926,
-        "reason": "Forcing `if (o) return o` true returns the empty string when both halves are empty. The sole caller is `if (change) acc.changes.add(change)` (line 119), which drops a falsy value — so no change is recorded either way.",
-        "fingerprint": "d8912fa1cbb4"
-      },
-      {
-        "line": 88,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1786284640926,
-        "reason": "With an empty change set the mutant stores `uncapped.set(line, [])` instead of storing nothing. The only consumer is `uncapped.get(g.line) ?? g.changes` (line 154), where an empty list and an absent one both carry zero change evidence into enrichment.",
-        "fingerprint": "f3e970760c7e"
-      },
-      {
-        "line": 88,
-        "mutator": "EqualityOperator",
-        "addedAt": 1786284640926,
-        "reason": "`size >= 0` is always true, making it identical to the always-true form above: an empty list and an absent one are the same evidence at line 154.",
-        "fingerprint": "f3e970760c7e"
-      },
-      {
-        "line": 160,
-        "mutator": "ArithmeticOperator",
-        "addedAt": 1786284640926,
-        "reason": "`a.line + b.line` is always positive for 1-based lines, so every element compares as belonging after every other and binary insertion sort leaves the already-ascending array in place. Verified empirically: applying this mutant by hand leaves the ordering assertions in format-pipeline.test.ts passing.",
-        "fingerprint": "4d7d17546c6e"
-      },
-      {
-        "line": 164,
-        "mutator": "EqualityOperator",
-        "addedAt": 1786284640926,
-        "reason": "`>` → `>=` reassigns `worst` when the ranks are EQUAL, which stores the same severity value it already held. The running maximum is unchanged for every input.",
-        "fingerprint": "897bad63edf8"
-      },
-      {
-        "line": 185,
-        "mutator": "EqualityOperator",
-        "addedAt": 1786284640926,
-        "reason": "At the boundary `groups.length === max`, `slice(0, max)` returns a list with identical contents and `truncated` is `length - max` = 0 — the same value the early return produces. Only the array identity differs.",
-        "fingerprint": "79dc470287a8"
-      },
-      {
-        "line": 286,
-        "mutator": "ArrayDeclaration",
-        "addedAt": 1786284640926,
-        "reason": "Seeding `candidates` with a non-Severity string gives it `SEVERITY_RANK[...] === undefined`, and every comparison against undefined is false, so the reduce at line 289 always prefers the real candidate. The enclosing `if` guarantees at least one real candidate is pushed.",
-        "fingerprint": "e6e816ac3c90"
-      },
-      {
-        "line": 287,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1786284640926,
-        "reason": "Pushing `s.worst` when there are no survivors pushes 'unknown', which is rank 0 — the lowest — so it can never win the reduce at line 289.",
-        "fingerprint": "7f7442927d04"
-      },
-      {
-        "line": 287,
-        "mutator": "EqualityOperator",
-        "addedAt": 1786284640926,
-        "reason": "`length >= 0` is always true, identical to the always-true form: the pushed value is the lowest-ranked severity and cannot change the maximum.",
-        "fingerprint": "7f7442927d04"
-      },
-      {
-        "line": 288,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1786284640926,
-        "reason": "Same as line 287 for the no-coverage side: with no groups, `n.worst` is 'unknown' (rank 0) and cannot win the reduce.",
-        "fingerprint": "ee48eab51e1e"
-      },
-      {
-        "line": 288,
-        "mutator": "EqualityOperator",
-        "addedAt": 1786284640926,
-        "reason": "`length >= 0` is always true; the pushed 'unknown' is rank 0 and cannot change the maximum.",
-        "fingerprint": "ee48eab51e1e"
-      },
-      {
-        "line": 289,
-        "mutator": "EqualityOperator",
-        "addedAt": 1786284640926,
-        "reason": "On a tie `>=` keeps `a` and `>` takes `b`, but a tie means both operands hold the SAME severity value, so the reduce returns the same string either way.",
-        "fingerprint": "709df59f1c39"
-      },
-      {
-        "line": 317,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1786284640926,
-        "reason": "Forcing this true assigns `prepared.worstSeverity = undefined`. Every consumer re-checks truthiness — `if (prepared.worstSeverity)` at line 622 — so the key's presence with an undefined value changes no output.",
-        "fingerprint": "85b035352f5d"
-      },
-      {
-        "line": 318,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1786284640926,
-        "reason": "Same as line 317: `prepared.enrichNote = undefined` is re-checked by `if (prepared.enrichNote)` at lines 458 (text) and 674 (payload), so nothing downstream can observe it.",
-        "fingerprint": "a64a26c2b420"
-      },
-      {
-        "line": 700,
-        "mutator": "EqualityOperator",
-        "addedAt": 1786305227827,
-        "reason": "`driftedSuppressions >= 0` differs from `> 0` only at 0 and below; 0 is short-circuited by the preceding `&&` and a negative fails both.",
-        "fingerprint": "cedb40914d3d"
-      },
-      {
-        "line": 703,
-        "mutator": "EqualityOperator",
-        "addedAt": 1786305227827,
-        "reason": "`unverifiedSuppressions >= 0` differs from `> 0` only at 0 and below; 0 is short-circuited by the preceding `&&` and a negative fails both.",
-        "fingerprint": "12408c6ea073"
-      },
-      {
-        "line": 726,
-        "mutator": "EqualityOperator",
-        "addedAt": 1786305227827,
-        "reason": "`incompetent >= 0` differs from `> 0` only at 0 and below; 0 is short-circuited by the preceding `&&` and a negative fails both — covered by the negative-counter test. Re-filed from line 713.",
-        "fingerprint": "77391e051022"
-      },
-      {
-        "line": 452,
-        "mutator": "EqualityOperator",
-        "addedAt": 1786316397839,
-        "reason": "`incompetent >= 0` differs from `> 0` only at 0 and below; 0 is short-circuited by the preceding `&&` and a negative fails both — covered by the negative-counter test. This is the TEXT projection; the payload one is filed separately at line 726, where the identical expression appears.",
-        "fingerprint": "77391e051022"
-      },
-      {
-        "line": 490,
-        "mutator": "LogicalOperator",
-        "addedAt": 1786316397839,
-        "reason": "The operands cannot disagree: `e.severity` is only present when the groups were enriched, which happens only when `enrich` is set. Both are true together or false together, so `&&` and `||` return the same result.",
-        "fingerprint": "883b35eed9eb"
-      },
-      {
-        "line": 692,
-        "mutator": "EqualityOperator",
-        "addedAt": 1786316397839,
-        "reason": "`suppressedCount >= 0` differs from `> 0` only at 0 and below; 0 is short-circuited by the preceding `&&` and a negative fails both — covered by the negative-counter test.",
-        "fingerprint": "f02424d0f034"
-      },
-      {
-        "line": 706,
-        "mutator": "EqualityOperator",
-        "addedAt": 1786316397839,
-        "reason": "`orphanedSuppressions >= 0` differs from `> 0` only at 0 and below; 0 is short-circuited by the preceding `&&` and a negative fails both.",
-        "fingerprint": "2f7a5719e855"
-      },
-      {
-        "line": 711,
-        "mutator": "EqualityOperator",
-        "addedAt": 1786316397839,
-        "reason": "`rejectedSuppressions >= 0` differs from `> 0` only at 0 and below; 0 is short-circuited by the preceding `&&` and a negative fails both — covered by the negative-counter test. The `&&`-to-`||` swap and the forced-true form on this line are killable and stay unsuppressed.",
-        "fingerprint": "7f1f2c16587c"
-      }
-    ],
-    "src/utils/run-cache.ts": [
-      {
-        "line": 387,
-        "mutator": "BlockStatement",
-        "addedAt": 1786295525040,
-        "reason": "Emptying the catch drops `return undefined`, but control then falls out of the try/catch to the end of the function, which returns undefined implicitly. Identical result for every input.",
-        "fingerprint": "95bc545467a5"
-      },
-      {
-        "line": 190,
-        "mutator": "OptionalChaining",
-        "addedAt": 1786295525040,
-        "reason": "`CACHE_INDEX.get(dir)` cannot be undefined here: `evict` begins with `listEntries(dir)`, which sets the index (scanned, or cached empty on an unreadable directory) before either loop runs. The `?.` is defensive against a state this call order makes unreachable.",
-        "fingerprint": "2e36324e2232"
-      },
-      {
-        "line": 208,
-        "mutator": "OptionalChaining",
-        "addedAt": 1786295525040,
-        "reason": "Same as line 190 — `listEntries` at the top of `evict` has already populated the index for this directory.",
-        "fingerprint": "8e8d40ba5d70"
-      },
-      {
-        "line": 249,
-        "mutator": "OptionalChaining",
-        "addedAt": 1786295525040,
-        "reason": "`saveRun` calls `evict` before this line, and `evict` populates the index via `listEntries`; the comment two lines above states exactly that guarantee. Unreachable defensively.",
-        "fingerprint": "ada296a0beb1"
-      },
-      {
-        "line": 159,
-        "mutator": "ObjectLiteral",
-        "addedAt": 1786295525040,
-        "reason": "`force: true` only suppresses ENOENT, and this path deletes a file we just read (so it exists). If it did vanish in between, the enclosing try/catch swallows the throw and nothing else happens either way.",
-        "fingerprint": "e3bf5c6acc79"
-      },
-      {
-        "line": 159,
-        "mutator": "BooleanLiteral",
-        "addedAt": 1786295525040,
-        "reason": "Same as the ObjectLiteral on this line: force only matters for a missing file, and a throw here is swallowed by the surrounding best-effort catch.",
-        "fingerprint": "e3bf5c6acc79"
-      },
-      {
-        "line": 240,
-        "mutator": "ObjectLiteral",
-        "addedAt": 1786295525040,
-        "reason": "This rmSync cleans the temp file inside the write-failure catch, wrapped in its own try/catch marked best-effort. Whether force suppresses ENOENT or the catch swallows it, the outcome is identical: the original error is rethrown.",
-        "fingerprint": "1dca0f73b3bf"
-      },
-      {
-        "line": 240,
-        "mutator": "BooleanLiteral",
-        "addedAt": 1786295525040,
-        "reason": "Same as the ObjectLiteral on this line — the surrounding best-effort catch makes the force flag unobservable.",
-        "fingerprint": "1dca0f73b3bf"
-      },
-      {
-        "line": 200,
-        "mutator": "MethodExpression",
-        "addedAt": 1786295525040,
-        "reason": "Dropping the TTL filter lets expired entries into `live`. Expiry is `now - createdAt > ttlMs` against a single `now`, so every expired entry is strictly OLDER than every live one and sorts ahead of them. They therefore occupy the leading slots of the deletion window, which grows by exactly the number added — so the same set of live files is deleted either way.",
-        "fingerprint": "4d73bb327810"
-      },
-      {
-        "line": 201,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1786295525040,
-        "reason": "Same as the MethodExpression on line 200: forcing the predicate true admits only expired entries, which sort strictly ahead of every live entry and absorb the extra deletion slots their presence creates. The set of live files removed is unchanged.",
-        "fingerprint": "bb5ce0c2fff2"
-      },
-      {
-        "line": 329,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1786295525040,
-        "reason": "Forcing `!Array.isArray(value)` false sends a non-array to `value.every`, which does not exist on a string or plain object — the TypeError is caught by loadRun's own try/catch and returns undefined, the same miss the guard produces.",
-        "fingerprint": "3e367224ee85"
-      },
-      {
-        "line": 331,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1786295525040,
-        "reason": "Redundant guard: a group that is a scalar has no `line` property, so `typeof group.line !== 'number'` on the next line rejects it; a null group throws on the same property read and loadRun's catch turns that into the same miss.",
-        "fingerprint": "26f4196cd6de"
-      },
-      {
-        "line": 331,
-        "mutator": "LogicalOperator",
-        "addedAt": 1786295525040,
-        "reason": "Swapping the disjunction only defers to the `group.line` check below, which rejects every scalar, and to loadRun's catch for null. The verdict is unchanged for every input.",
-        "fingerprint": "26f4196cd6de"
-      },
-      {
-        "line": 357,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1786295525040,
-        "reason": "Redundant guard, exactly as in tool-args-validation.ts: a scalar `value` has no `runId`, so `typeof e.runId !== 'string'` two lines down rejects it; `null` throws on that same read and loadRun's catch returns the same miss.",
-        "fingerprint": "077797c04b9e"
-      },
-      {
-        "line": 357,
-        "mutator": "LogicalOperator",
-        "addedAt": 1786295525040,
-        "reason": "Swapping the disjunction defers to the `e.runId` check for scalars and to loadRun's catch for null — both produce the same miss the guard would have.",
-        "fingerprint": "077797c04b9e"
       }
     ],
     "src/engines/python.ts": [
       {
         "line": 271,
         "mutator": "ConditionalExpression",
-        "addedAt": 1786306345921,
+        "addedAt": 1786349956232,
+        "change": "error instanceof MutationToolStartupError → false",
         "reason": "Rethrowing a MutationToolStartupError as `new Error(error.message)` duplicates what the base class already does: `BaseEngine.onExecFailure` (engines/base.ts:412) rethrows the same class verbatim, and every downstream consumer on the audit path reads only `.message` (`failureText` / `mapHandlerFailure`). The one place that branches on the CLASS is core/estimate.ts, which calls invokeMutationTool directly rather than through this engine. Forcing the check false therefore yields the identical message from the identical path.",
         "fingerprint": "d15c1e181746"
-      }
-    ],
-    "src/audit/suppression-io.ts": [
-      {
-        "line": 126,
-        "mutator": "ConditionalExpression",
-        "addedAt": 1786307249165,
-        "reason": "A fast path only. `Array.isArray` still guards the dereference, so the mutant differs solely for an EMPTY `suppress` array — and `addSuppressions` returns `{ stamped: 0, unstamped: 0, rejected: [] }` immediately for one (its own `entries.length === 0` early return). Identical `added` either way.",
-        "fingerprint": "82ad11f4950d"
-      },
-      {
-        "line": 126,
-        "mutator": "EqualityOperator",
-        "addedAt": 1786307249165,
-        "reason": "`length >= 0` is always true, making it the same as the forced-true form above: an empty array reaches `addSuppressions`, which early-returns the identical result.",
-        "fingerprint": "82ad11f4950d"
-      },
-      {
-        "line": 199,
-        "mutator": "ObjectLiteral",
-        "addedAt": 1786307249165,
-        "reason": "This initialiser is dead on every path that reads `added`: the try either reassigns it from `applySuppressionArgs` or throws, and the catch returns before `added` is used. Emptying it cannot be observed.",
-        "fingerprint": "f1dd3ee255d7"
-      },
-      {
-        "line": 199,
-        "mutator": "ArrayDeclaration",
-        "addedAt": 1786307249165,
-        "reason": "Same as the ObjectLiteral on this line — `added` is reassigned before any read, so a seeded `rejected` array never reaches `counts.rejected`. (The initialiser at line 125 IS read, and is covered by a test.)",
-        "fingerprint": "f1dd3ee255d7"
       }
     ],
     "src/audit/audit-output.ts": [
       {
         "line": 48,
         "mutator": "BlockStatement",
-        "addedAt": 1786307635854,
+        "addedAt": 1786350018897,
+        "change": "{ sourceLines = undefined; } → {}",
         "reason": "`sourceLines` is declared `let sourceLines: string[] | undefined` and assigned by the single `readFileSync(...).split(...)` statement inside the try. A throw there leaves it undefined already, so the catch's `sourceLines = undefined` is a defensive re-assignment that cannot change any state. Fifth instance of this shape (triage/audit-one.ts:273/:287, core/estimate.ts:110, core/test-file.ts:124).",
         "fingerprint": "95bc545467a5"
+      },
+      {
+        "line": 246,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786360772731,
+        "change": "ignored.length > 0 → true",
+        "reason": "Forcing the ternary true passes the EMPTY array instead of `undefined`, and `buildResultPayload` re-checks with `opts.ignoredOptions && opts.ignoredOptions.length > 0` before assigning — so the payload key is omitted either way. Left unsuppressed under schema v2 because a `(line, mutator)` key would also have masked any FUTURE mutant of this mutator on this line; naming the change makes it exact.",
+        "fingerprint": "74643a81d42b"
+      },
+      {
+        "line": 246,
+        "mutator": "EqualityOperator",
+        "addedAt": 1786360772731,
+        "change": "ignored.length > 0 → ignored.length >= 0",
+        "reason": "`length >= 0` is always true, so this is the same mutant as the forced-true form above: an empty array reaches the payload builder, whose own `length > 0` guard omits the key.",
+        "fingerprint": "74643a81d42b"
+      }
+    ],
+    "src/audit/suppression-io.ts": [
+      {
+        "line": 145,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786350215200,
+        "change": "args.suppress.length > 0 → true",
+        "reason": "A fast path only. `Array.isArray` still guards the dereference, so the mutant differs solely for an EMPTY `suppress` array — and `addSuppressions` returns `{ stamped: 0, unstamped: 0, rejected: [] }` immediately for one (its own `entries.length === 0` early return). Identical `added` either way.",
+        "fingerprint": "82ad11f4950d"
+      },
+      {
+        "line": 145,
+        "mutator": "EqualityOperator",
+        "addedAt": 1786350215200,
+        "change": "args.suppress.length > 0 → args.suppress.length >= 0",
+        "reason": "`length >= 0` is always true, making it the same as the forced-true form above: an empty array reaches `addSuppressions`, which early-returns the identical result.",
+        "fingerprint": "82ad11f4950d"
+      },
+      {
+        "line": 267,
+        "mutator": "ObjectLiteral",
+        "addedAt": 1786359207860,
+        "change": "{ stamped: 0, unstamped: 0, rejected: [] } → {}",
+        "reason": "This initialiser is dead on every path that reads `added`: the try either reassigns it from `applySuppressionArgs` or throws, and the catch returns before `added` is used. Emptying it cannot be observed. (The identical initialiser inside `applySuppressionArgs` IS read, and stays unsuppressed.)",
+        "fingerprint": "f1dd3ee255d7"
+      },
+      {
+        "line": 267,
+        "mutator": "ArrayDeclaration",
+        "addedAt": 1786359207860,
+        "change": "[] → [\"Stryker was here\"]",
+        "reason": "Same as the ObjectLiteral on this line — `added` is reassigned before any read, so a seeded `rejected` array never reaches `counts.rejected`.",
+        "fingerprint": "f1dd3ee255d7"
       }
     ],
     "src/core/score-semantics.ts": [
       {
-        "line": 140,
+        "line": 152,
         "mutator": "ConditionalExpression",
-        "addedAt": 1786316827829,
+        "addedAt": 1786350527677,
+        "change": "drifted !== undefined → true",
         "reason": "`undefined > 0` is false, so the `!== undefined` half cannot change the outcome: forcing it true still fails the comparison and pushes no note. The guard states intent rather than doing work. Note this is the MIRROR of the `x && x > 0` pattern in core/format.ts — there `&&` alone admits a negative, so the comparison is load-bearing; here the comparison alone already rejects undefined.",
         "fingerprint": "347b145661ae"
       },
       {
-        "line": 145,
+        "line": 157,
         "mutator": "ConditionalExpression",
-        "addedAt": 1786316827829,
-        "reason": "Same as line 140 for `unverified`: `undefined > 0` is false, so forcing the presence check true still produces no note.",
+        "addedAt": 1786350527677,
+        "change": "unverified !== undefined → true",
+        "reason": "Same as the drifted sibling for `unverified`: `undefined > 0` is false, so forcing the presence check true still produces no note.",
         "fingerprint": "f3cbc728bd8c"
       },
       {
-        "line": 150,
+        "line": 162,
         "mutator": "ConditionalExpression",
-        "addedAt": 1786316827829,
-        "reason": "Same as line 140 for `orphaned`: `undefined > 0` is false, so forcing the presence check true still produces no note.",
+        "addedAt": 1786350527677,
+        "change": "orphaned !== undefined → true",
+        "reason": "Same as the drifted sibling for `orphaned`: `undefined > 0` is false, so forcing the presence check true still produces no note.",
         "fingerprint": "d4cc9f8b0fa5"
       },
       {
-        "line": 159,
+        "line": 171,
         "mutator": "ConditionalExpression",
-        "addedAt": 1786316827829,
+        "addedAt": 1786350527677,
+        "change": "rejected !== undefined → true",
         "reason": "Same as its three siblings for `rejected`: `undefined > 0` is false, so forcing the presence check true still produces no note. Kept in the same shape as the other three deliberately — this list is the single wording source for both the text and JSON projections.",
         "fingerprint": "928ee569ded5"
+      }
+    ],
+    "src/audit/scope.ts": [
+      {
+        "line": 160,
+        "mutator": "ArrayDeclaration",
+        "addedAt": 1786350600915,
+        "change": "[] → [\"Stryker was here\"]",
+        "reason": "`notReChecked` is read only by partialVerifyNote, which runs when `complete === false`; this call site never sets `complete`, so evaluateVerifyGate returns before the array is touched. Unobservable from the gate this expression produces.",
+        "fingerprint": "c3cc78edbeb3"
+      },
+      {
+        "line": 157,
+        "mutator": "ArrayDeclaration",
+        "addedAt": 1786351040156,
+        "change": "[] → [\"Stryker was here\"]",
+        "reason": "`nowKilled` is passed to evaluateVerifyGate, which reads only `complete`, `stillSurviving.length` and `newSurvivors.length` (core/verify.ts). The array is never read on this path, so its contents cannot change the returned gate — equivalent, not a test gap. The sibling literals on lines 158-159 ARE read and are killed.",
+        "fingerprint": "c6eb294e4c51"
+      },
+      {
+        "line": 259,
+        "mutator": "BlockStatement",
+        "addedAt": 1786351145157,
+        "change": "{ // Exhaustiveness guard, in the spirit of `assertNeverProjectType` // (utils/project-detector.ts, audit F15): `diff` … → {}",
+        "reason": "Exhaustiveness guard: `diff` is narrowed to `never` in this default arm, so no runtime DiffResult reaches it. Emptying the block is unobservable without casting an invalid variant past the type system.",
+        "fingerprint": "81e7d79016d1"
+      },
+      {
+        "line": 259,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786351145157,
+        "change": "default: { // Exhaustiveness guard, in the spirit of `assertNeverProjectType` // (utils/project-detector.ts, audit F15)… → default:",
+        "reason": "Same `never`-narrowed default arm: removing it is a compile-time regression (a new DiffResult variant would stop erroring), not a runtime behaviour a test can observe.",
+        "fingerprint": "81e7d79016d1"
+      }
+    ],
+    "src/utils/sandbox.ts": [
+      {
+        "line": 228,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786351335320,
+        "change": "current === undefined → false",
+        "reason": "`current === undefined` is unreachable: the loop is guarded by `stack.length > 0`, so `stack.pop()` always returns a string. The guard exists to narrow `string | undefined` for TypeScript, not to handle a runtime case.",
+        "fingerprint": "be923c11f156"
+      },
+      {
+        "line": 226,
+        "mutator": "BooleanLiteral",
+        "addedAt": 1786351335320,
+        "change": "true → false",
+        "reason": "`truncated: true` is only returned when `total > MAX_WORKSPACE_SIZE_BYTES`, and the sole consumer warns on `size.truncated || size.bytes > MAX_WORKSPACE_SIZE_BYTES` — `bytes` is that same over-threshold total, so the warning fires identically with the flag false. The flag is unobservable on the only path that sets it.",
+        "fingerprint": "e3ec0e162064"
+      },
+      {
+        "line": 261,
+        "mutator": "ObjectLiteral",
+        "addedAt": 1786351335320,
+        "change": "{ bytes: 0, truncated: false } → {}",
+        "reason": "Emptying the catch fallback yields `{ bytes: undefined, truncated: undefined }`. The only consumer is `size.truncated || size.bytes > MAX`, where both undefined evaluate exactly as `false || 0 > MAX` does. No output distinguishes them.",
+        "fingerprint": "a413f056352d"
+      },
+      {
+        "line": 489,
+        "mutator": "ArrayDeclaration",
+        "addedAt": 1786351399266,
+        "change": "[] → [\"Stryker was here\"]",
+        "reason": "Under `dependencies: 'copy'` the empty list means 'nothing left to link'. Filling it with a name no directory has is inert on both consumers: buildCopyPolicy gains an exclusion that matches no path, and linkHeavyDirs skips it at `existsSync(src)`.",
+        "fingerprint": "b4fb0b55ad9d"
+      },
+      {
+        "line": 229,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786360704065,
+        "change": "++dirsSinceYield >= SIZE_WALK_YIELD_EVERY_DIRS → true",
+        "reason": "This branch controls only WHEN the walk yields to the event loop, never what it computes. Forcing it true yields on every directory instead of every SIZE_WALK_YIELD_EVERY_DIRS; the returned `{ bytes, truncated }` is identical, and the abort check on the line above runs every iteration regardless of yielding. Left unsuppressed under schema v2 because a `(line, mutator)` key would also have masked any FUTURE mutant of this mutator on this line; naming the change makes it exact.",
+        "fingerprint": "72077045f710"
+      },
+      {
+        "line": 229,
+        "mutator": "EqualityOperator",
+        "addedAt": 1786360704065,
+        "change": "++dirsSinceYield >= SIZE_WALK_YIELD_EVERY_DIRS → ++dirsSinceYield < SIZE_WALK_YIELD_EVERY_DIRS",
+        "reason": "Same yield-cadence branch, and this mutant collapses to the same behaviour as the forced-true form: the counter is reset to 0 inside the block, so `1 < THRESHOLD` holds on every iteration and the walk yields on every directory. The computed total and truncated flag are unchanged.",
+        "fingerprint": "72077045f710"
+      }
+    ],
+    "src/core/test-file.ts": [
+      {
+        "line": 15,
+        "mutator": "Regex",
+        "addedAt": 1786352190110,
+        "change": "/^\\.\\// → /\\.\\//",
+        "reason": "Anchored and unanchored forms differ only when `./` appears MID-path, and the joined string is built from `dirname(targetFile)` plus literal suffixes. The only caller (`audit/audit-output.ts`) passes `relFromRoot` from `anchorToWorkspace`, which derives it via `path.relative()` — that never emits a `.` segment mid-path, so no reachable input distinguishes them.",
+        "fingerprint": "ae517a118d9b"
+      },
+      {
+        "line": 124,
+        "mutator": "BlockStatement",
+        "addedAt": 1786352190110,
+        "change": "{ return []; } → {}",
+        "reason": "`base` is declared `let base: string` with no initialiser, so when `basename()` throws it is still undefined when the catch runs. Emptying the catch drops `return []`, but control falls through to `if (!base || base.startsWith('test_')) return []`, which returns the same empty list. Fourth instance of this dead-catch shape in the codebase (triage/audit-one.ts:273/:287, core/estimate.ts:110).",
+        "fingerprint": "95bc545467a5"
+      },
+      {
+        "line": 136,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786352190110,
+        "change": "existsSync(testsRoot) → true",
+        "reason": "Forcing `existsSync(testsRoot)` true calls `collectByName` on a directory that does not exist; its first act is `readdirSync` inside a try/catch that returns on failure. The recursive hunt contributes nothing either way, so the returned selection is identical.",
+        "fingerprint": "fdfe605beb9b"
+      },
+      {
+        "line": 235,
+        "mutator": "ArrayDeclaration",
+        "addedAt": 1786352484102,
+        "change": "[] → [\"Stryker was here\"]",
+        "reason": "Seeding `roots` with a non-path string only sends `collectByName` to `join(workspaceRoot, 'Stryker was here')`, where `readdirSync` throws ENOENT and its catch returns. A bogus root cannot contribute a match, so the suggestion is unchanged.",
+        "fingerprint": "fee3716cd6d7"
+      },
+      {
+        "line": 237,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786352484102,
+        "change": "rel === targetFile → false",
+        "reason": "Forcing `rel === targetFile` false lets the target FILE itself be pushed as a search root. `collectByName` then calls `readdirSync` on a file, which throws ENOTDIR into the same catch — no match, and the same suggestion.",
+        "fingerprint": "fa52ae6eddd2"
+      },
+      {
+        "line": 239,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786352484102,
+        "change": "existsSync(join(workspaceRoot, rel)) → true",
+        "reason": "Forcing `existsSync` true pushes every candidate root whether or not it exists; each missing one reaches `collectByName`, whose `readdirSync` throws ENOENT into its catch. The set of files found is unchanged.",
+        "fingerprint": "9b1d00cae6dc"
+      },
+      {
+        "line": 249,
+        "mutator": "MethodExpression",
+        "addedAt": 1786352484102,
+        "change": "candidateDir.split('/').filter((s) => s && s !== '.') → candidateDir.split('/')",
+        "reason": "Admitting empty/'.' segments to the CANDIDATE set cannot raise the overlap: line 250 still filters those same segments out of the source side before querying the set, so they are never looked up. Only mutating both lines at once would be observable, and mutants are applied one at a time.",
+        "fingerprint": "41356563e666"
+      },
+      {
+        "line": 249,
+        "mutator": "LogicalOperator",
+        "addedAt": 1786352484102,
+        "change": "s && s !== '.' → s || s !== '.'",
+        "reason": "Swapping && for || only widens the candidate set with empty/'.' segments, which line 250's own filter guarantees are never queried.",
+        "fingerprint": "41356563e666"
+      },
+      {
+        "line": 250,
+        "mutator": "LogicalOperator",
+        "addedAt": 1786352484102,
+        "change": "s && s !== '.' → s || s !== '.'",
+        "reason": "Swapping && for || admits empty/'.' segments to the lookup, which line 249's filter guarantees are absent from the candidate set — the count cannot change.",
+        "fingerprint": "535d67604ba7"
+      },
+      {
+        "line": 249,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786352649607,
+        "change": "s && s !== '.' → true",
+        "reason": "Admitting empty/'.' segments to the CANDIDATE set cannot raise the overlap: line 250 still filters those same segments out of the source side before querying the set, so they are never looked up. Only mutating both lines at once would be observable, and mutants are applied one at a time.",
+        "fingerprint": "41356563e666"
+      },
+      {
+        "line": 249,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786352649607,
+        "change": "s !== '.' → true",
+        "reason": "The right-operand half of the same guard, equivalent for the same reason: forcing it true widens the candidate set with '.' segments that line 250's filter guarantees are never queried.",
+        "fingerprint": "41356563e666"
+      },
+      {
+        "line": 250,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786352649607,
+        "change": "s && s !== '.' → true",
+        "reason": "Forcing the whole guard true lets empty/'.' segments reach `candidateSegments.has(s)`, but line 249 has already stripped those from the candidate set, so the lookup misses and the count is unchanged.",
+        "fingerprint": "535d67604ba7"
+      },
+      {
+        "line": 250,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786352649607,
+        "change": "s !== '.' → true",
+        "reason": "The right-operand half of the same guard, equivalent for the same reason: '.' segments reach the lookup, and line 249's filter guarantees they are absent from the candidate set.",
+        "fingerprint": "535d67604ba7"
+      }
+    ],
+    "src/core/tool-args-validation.ts": [
+      {
+        "line": 110,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786353106018,
+        "change": "typeof line !== 'number' → false",
+        "reason": "Redundant typeof guard: `!Number.isInteger(line)` rejects every non-number, so the same inputs produce the same 'line must be an integer >= 1' error.",
+        "fingerprint": "b70233ecdc3a"
+      },
+      {
+        "line": 27,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786353385722,
+        "change": "typeof args.timeoutMs === 'number' → true",
+        "reason": "By this line `timeoutMs` is either undefined or a positive number — the check above returned an error for anything else. Forcing the typeof guard true leaves `undefined > MAX_TIMEOUT_MS`, which is false, so no input changes the outcome.",
+        "fingerprint": "ccd71318dd03"
+      },
+      {
+        "line": 41,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786353385722,
+        "change": "typeof args.perMutantTimeoutMs === 'number' → true",
+        "reason": "Same shape as line 27 for perMutantTimeoutMs: the preceding check already rejected every non-positive-number, and `undefined > MAX_TIMEOUT_MS` is false.",
+        "fingerprint": "2c989e0721cd"
+      },
+      {
+        "line": 63,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786353598910,
+        "change": "typeof args.concurrency !== 'number' → false",
+        "reason": "Redundant typeof guard: `Number.isInteger` returns false for every non-number, so the next disjunct rejects exactly the same inputs with the same message.",
+        "fingerprint": "edd50187157e"
+      },
+      {
+        "line": 79,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786353598910,
+        "change": "typeof ls !== 'object' → false",
+        "reason": "Forcing `typeof ls !== 'object'` false cannot admit a non-object: a string or number has no `start` property, so `typeof ls.start !== 'number'` two lines down rejects it with the same message.",
+        "fingerprint": "e06d10b91a2c"
+      },
+      {
+        "line": 81,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786353598910,
+        "change": "typeof ls.start !== 'number' → false",
+        "reason": "Redundant typeof guard: `!Number.isInteger(ls.start)` below rejects every non-number, including undefined.",
+        "fingerprint": "c35d2690ffdb"
+      },
+      {
+        "line": 82,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786353598910,
+        "change": "typeof ls.end !== 'number' → false",
+        "reason": "Redundant typeof guard: `!Number.isInteger(ls.end)` below rejects every non-number, including undefined.",
+        "fingerprint": "8913e0836851"
+      },
+      {
+        "line": 158,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786353901301,
+        "change": "typeof entry !== 'object' → false",
+        "reason": "Forcing `typeof entry !== 'object'` false cannot admit a scalar: it has no `mutators` property, so `typeof entry.mutators !== 'object'` rejects it with the same message.",
+        "fingerprint": "ab6ccff2b217"
+      },
+      {
+        "line": 173,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786353901301,
+        "change": "typeof cnt !== 'number' → false",
+        "reason": "Redundant typeof guard: `!Number.isInteger(cnt)` rejects every non-number, so a non-numeric count still fails with the same message.",
+        "fingerprint": "4919d1e12ee3"
+      },
+      {
+        "line": 177,
+        "mutator": "AssignmentOperator",
+        "addedAt": 1786353901301,
+        "change": "pairCount += Object.keys(entry.mutators as Record<string, unknown>).length → pairCount -= Object.keys(entry.mutators as Record<string, unknown>).length",
+        "reason": "`pairCount` is only ever compared against 0, and every increment is `Object.keys(...).length` — never negative. So the sum is 0 under `+=` exactly when it is 0 under `-=`: when every entry contributed zero keys. No input distinguishes them.",
+        "fingerprint": "25862eeb1f3d"
+      },
+      {
+        "line": 246,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786353959592,
+        "change": "typeof args.maxSurvivors !== 'number' → false",
+        "reason": "Redundant typeof guard: `!Number.isInteger(args.maxSurvivors)` rejects every non-number with the same message.",
+        "fingerprint": "53c020007f93"
+      },
+      {
+        "line": 322,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786355645941,
+        "change": "typeof entry !== 'object' → false",
+        "reason": "Forcing `typeof entry !== 'object'` false cannot admit a scalar: it has no `mutator` property, so `typeof entry.mutator !== 'string'` rejects it with the same message. Note this line is byte-identical to the guard at line 158 in `validateBaselineArg`, so the two share a mutator, a change AND a fingerprint — only the line tells them apart.",
+        "fingerprint": "ab6ccff2b217"
+      }
+    ],
+    "src/utils/run-cache.ts": [
+      {
+        "line": 159,
+        "mutator": "ObjectLiteral",
+        "addedAt": 1786355944673,
+        "change": "{ force: true } → {}",
+        "reason": "`force: true` only suppresses ENOENT, and this path deletes a file we just read (so it exists). If it did vanish in between, the enclosing try/catch swallows the throw and nothing else happens either way.",
+        "fingerprint": "e3bf5c6acc79"
+      },
+      {
+        "line": 159,
+        "mutator": "BooleanLiteral",
+        "addedAt": 1786355944673,
+        "change": "true → false",
+        "reason": "Same as the ObjectLiteral on this line: force only matters for a missing file, and a throw here is swallowed by the surrounding best-effort catch.",
+        "fingerprint": "e3bf5c6acc79"
+      },
+      {
+        "line": 190,
+        "mutator": "OptionalChaining",
+        "addedAt": 1786355944673,
+        "change": "CACHE_INDEX.get(dir)?.delete → CACHE_INDEX.get(dir).delete",
+        "reason": "`CACHE_INDEX.get(dir)` cannot be undefined here: `evict` begins with `listEntries(dir)`, which sets the index (scanned, or cached empty on an unreadable directory) before either loop runs. The `?.` is defensive against a state this call order makes unreachable.",
+        "fingerprint": "2e36324e2232"
+      },
+      {
+        "line": 200,
+        "mutator": "MethodExpression",
+        "addedAt": 1786355944673,
+        "change": "entries .filter((e) => now - e.createdAt <= ttlMs) → entries",
+        "reason": "Dropping the TTL filter lets expired entries into `live`. Expiry is `now - createdAt > ttlMs` against a single `now`, so every expired entry is strictly OLDER than every live one and sorts ahead of them. They therefore occupy the leading slots of the deletion window, which grows by exactly the number added — so the same set of live files is deleted either way.",
+        "fingerprint": "4d73bb327810"
+      },
+      {
+        "line": 201,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786355944673,
+        "change": "now - e.createdAt <= ttlMs → true",
+        "reason": "Same as the MethodExpression on line 200: forcing the predicate true admits only expired entries, which sort strictly ahead of every live entry and absorb the extra deletion slots their presence creates. The set of live files removed is unchanged.",
+        "fingerprint": "bb5ce0c2fff2"
+      },
+      {
+        "line": 208,
+        "mutator": "OptionalChaining",
+        "addedAt": 1786355944673,
+        "change": "CACHE_INDEX.get(dir)?.delete → CACHE_INDEX.get(dir).delete",
+        "reason": "Same as line 190 — `listEntries` at the top of `evict` has already populated the index for this directory.",
+        "fingerprint": "8e8d40ba5d70"
+      },
+      {
+        "line": 240,
+        "mutator": "ObjectLiteral",
+        "addedAt": 1786356003019,
+        "change": "{ force: true } → {}",
+        "reason": "This rmSync cleans the temp file inside the write-failure catch, wrapped in its own try/catch marked best-effort. Whether force suppresses ENOENT or the catch swallows it, the outcome is identical: the original error is rethrown.",
+        "fingerprint": "1dca0f73b3bf"
+      },
+      {
+        "line": 240,
+        "mutator": "BooleanLiteral",
+        "addedAt": 1786356003019,
+        "change": "true → false",
+        "reason": "Same as the ObjectLiteral on this line — the surrounding best-effort catch makes the force flag unobservable.",
+        "fingerprint": "1dca0f73b3bf"
+      },
+      {
+        "line": 249,
+        "mutator": "OptionalChaining",
+        "addedAt": 1786356003019,
+        "change": "CACHE_INDEX.get(dir)?.set → CACHE_INDEX.get(dir).set",
+        "reason": "`saveRun` calls `evict` before this line, and `evict` populates the index via `listEntries`; the comment two lines above states exactly that guarantee. Unreachable defensively.",
+        "fingerprint": "ada296a0beb1"
+      },
+      {
+        "line": 329,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786356380576,
+        "change": "!Array.isArray(value) → false",
+        "reason": "Forcing `!Array.isArray(value)` false sends a non-array to `value.every`, which does not exist on a string or plain object — the TypeError is caught by loadRun's own try/catch and returns undefined, the same miss the guard produces.",
+        "fingerprint": "3e367224ee85"
+      },
+      {
+        "line": 387,
+        "mutator": "BlockStatement",
+        "addedAt": 1786359088307,
+        "change": "{ return undefined; } → {}",
+        "reason": "Emptying the catch drops `return undefined`, but control then falls out of the try/catch to the end of the function, which returns undefined implicitly. Identical result for every input.",
+        "fingerprint": "95bc545467a5"
+      },
+      {
+        "line": 331,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786360263348,
+        "change": "typeof g !== 'object' || g === null || Array.isArray(g) → false",
+        "reason": "Redundant guard, whole condition: a scalar group has no `line` property, so `typeof group.line !== 'number'` on the next line rejects it; a null group throws on that same property read and loadRun's catch turns it into the same miss.",
+        "fingerprint": "26f4196cd6de"
+      },
+      {
+        "line": 331,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786360263348,
+        "change": "typeof g !== 'object' || g === null → false",
+        "reason": "Same redundant guard, left pair forced false: whatever the weakened guard admits is rejected by the `group.line` check below, or throws into loadRun's catch — the same miss either way.",
+        "fingerprint": "26f4196cd6de"
+      },
+      {
+        "line": 331,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786360263348,
+        "change": "typeof g !== 'object' → false",
+        "reason": "Same redundant guard, first disjunct forced false: a string or number then passes the guard and is rejected by `typeof group.line !== 'number'` below.",
+        "fingerprint": "26f4196cd6de"
+      },
+      {
+        "line": 331,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786360263348,
+        "change": "g === null → false",
+        "reason": "Same redundant guard, null disjunct forced false: `null` has typeof 'object', so it passes the guard and throws on the `group.line` read, which loadRun's catch turns into the same miss.",
+        "fingerprint": "26f4196cd6de"
+      },
+      {
+        "line": 331,
+        "mutator": "LogicalOperator",
+        "addedAt": 1786360263348,
+        "change": "typeof g !== 'object' || g === null || Array.isArray(g) → (typeof g !== 'object' || g === null) && Array.isArray(g)",
+        "reason": "Swapping the outer disjunction only narrows the guard, so more bad values reach the `group.line` check below — which rejects every one of them with the same miss.",
+        "fingerprint": "26f4196cd6de"
+      },
+      {
+        "line": 331,
+        "mutator": "LogicalOperator",
+        "addedAt": 1786360263348,
+        "change": "typeof g !== 'object' || g === null → typeof g !== 'object' && g === null",
+        "reason": "Swapping the inner disjunction narrows the guard the same way: what it now admits is rejected downstream, or throws into loadRun's catch.",
+        "fingerprint": "26f4196cd6de"
+      },
+      {
+        "line": 357,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786360400179,
+        "change": "typeof value !== 'object' || value === null || Array.isArray(value) → false",
+        "reason": "Redundant guard, whole condition: a scalar `value` has no `runId`, so `typeof e.runId !== 'string'` two lines down rejects it; `null` throws on that same read and loadRun's catch returns the same miss.",
+        "fingerprint": "077797c04b9e"
+      },
+      {
+        "line": 357,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786360400179,
+        "change": "typeof value !== 'object' || value === null → false",
+        "reason": "Same redundant guard, left pair forced false: whatever the weakened guard admits is rejected by the `e.runId` check below, or throws into loadRun's catch.",
+        "fingerprint": "077797c04b9e"
+      },
+      {
+        "line": 357,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786360400179,
+        "change": "typeof value !== 'object' → false",
+        "reason": "Same redundant guard, first disjunct forced false: a string or number then passes the guard and is rejected by `typeof e.runId !== 'string'` below.",
+        "fingerprint": "077797c04b9e"
+      },
+      {
+        "line": 357,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786360400179,
+        "change": "value === null → false",
+        "reason": "Same redundant guard, null disjunct forced false: `null` has typeof 'object', so it passes the guard and throws on the `e.runId` read, which loadRun's catch turns into the same miss.",
+        "fingerprint": "077797c04b9e"
+      },
+      {
+        "line": 357,
+        "mutator": "LogicalOperator",
+        "addedAt": 1786360400179,
+        "change": "typeof value !== 'object' || value === null || Array.isArray(value) → (typeof value !== 'object' || value === null) && Array.isArray(value)",
+        "reason": "Swapping the outer disjunction only narrows the guard, so more bad values reach the `e.runId` check below — which rejects every one of them with the same miss.",
+        "fingerprint": "077797c04b9e"
+      },
+      {
+        "line": 357,
+        "mutator": "LogicalOperator",
+        "addedAt": 1786360400179,
+        "change": "typeof value !== 'object' || value === null → typeof value !== 'object' && value === null",
+        "reason": "Swapping the inner disjunction narrows the guard the same way: what it now admits is rejected downstream, or throws into loadRun's catch.",
+        "fingerprint": "077797c04b9e"
+      }
+    ],
+    "src/utils/suppression.ts": [
+      {
+        "line": 100,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786356697492,
+        "change": "key !== portable → true",
+        "reason": "This loop is only reached when `Object.hasOwn(entries, portable)` was FALSE, so no key in `entries` can equal `portable` — `key !== portable` is already true for every iteration. Forcing it true changes nothing.",
+        "fingerprint": "74415619fcf2"
+      },
+      {
+        "line": 314,
+        "mutator": "BlockStatement",
+        "addedAt": 1786357019642,
+        "change": "{ return undefined; } → {}",
+        "reason": "Emptying the catch drops `return undefined`, but control then falls out of the try/catch to the end of the function, which returns undefined implicitly. Identical for every input.",
+        "fingerprint": "95bc545467a5"
+      },
+      {
+        "line": 356,
+        "mutator": "MethodExpression",
+        "addedAt": 1786357019642,
+        "change": "trimmed.slice(end + 2).trim() → trimmed.slice(end + 2)",
+        "reason": "Dropping `.trim()` cannot change the result: `trimmed` is already `text.trim()`, so no trailing whitespace survives, and the slice after `*/` is therefore either empty or contains a non-space character. Both spellings agree on every input.",
+        "fingerprint": "53a2fb47a384"
+      },
+      {
+        "line": 458,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786357092535,
+        "change": "entries.length === 0 → false",
+        "reason": "A fast path only: with an empty `entries` array the loop below runs zero times and the same `emptyVerdict()` is returned. The mutant costs one extra source read and produces the identical verdict.",
+        "fingerprint": "6c47ac607938"
+      },
+      {
+        "line": 529,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786357218512,
+        "change": "typeof raw !== 'object' → false",
+        "reason": "Forcing `typeof raw !== 'object'` false only defers to the next conjunct: a scalar `raw` has no `entries` property, so `typeof raw.entries !== 'object'` is true and the same empty document is returned; `null` is already short-circuited by `!raw`.",
+        "fingerprint": "d346c321fe1b"
+      },
+      {
+        "line": 578,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786357290976,
+        "change": "!(error instanceof SuppressionFileError) → false",
+        "reason": "The try block calls only `readFile`, which returns early for ENOENT and wraps every other failure in `new SuppressionFileError(dest, error)` before throwing. No other error type can reach this catch, so the rethrow is a guard against a future change to readFile rather than a reachable branch — forcing it false is unobservable today.",
+        "fingerprint": "b2239c1db266"
+      },
+      {
+        "line": 740,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786357445233,
+        "change": "at === undefined → false",
+        "reason": "`at === undefined ? undefined : list[at]` — forcing the condition false evaluates `list[undefined]`, which is itself `undefined`. Both arms yield the same value.",
+        "fingerprint": "fde71cbc045c"
+      },
+      {
+        "line": 748,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786357445233,
+        "change": "reason !== undefined → true",
+        "reason": "Assigning `merged.reason = undefined` instead of omitting the key is unobservable: `merged` is only serialised by `JSON.stringify` in writeFile, which drops undefined-valued keys, and nothing reads the in-memory object.",
+        "fingerprint": "f365a61c3cb0"
+      },
+      {
+        "line": 749,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786357445233,
+        "change": "fingerprint !== undefined → true",
+        "reason": "Same as the reason line above for `fingerprint`: the object's only consumer is `JSON.stringify`, which omits an undefined value, so the stored document is byte-identical.",
+        "fingerprint": "dfe66bfafa26"
+      },
+      {
+        "line": 712,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786359424169,
+        "change": "legacyKey !== portableKey → true",
+        "reason": "When the two keys are equal, forcing the branch open removes the key and the line below re-adds it as `data.entries[portableKey] = list` — the same document either way. (In `addSuppressions`; the twin in `removeSuppressions` is filed separately, and a third occurrence now lives in `restampSuppressions`, so the three share a fingerprint and only the line separates them.)",
+        "fingerprint": "5e51d86e3262"
+      },
+      {
+        "line": 715,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786359424169,
+        "change": "typeof e === 'object' → true",
+        "reason": "`e && typeof e === 'object'` guards the index build. Forcing the typeof half true admits a truthy non-object, which keys as `storageKeyOf(undefined, undefined, undefined)` — a key no real entry can collide with, so the index behaves identically and the written list is unchanged.",
+        "fingerprint": "3506566f2487"
+      },
+      {
+        "line": 863,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786359521222,
+        "change": "legacyKey !== portableKey → true",
+        "reason": "When the keys are equal, forcing the branch open removes the key and the block below either re-adds it (`kept.length > 0`) or removes it again in the else — the same document in both cases. (In `removeSuppressions`; the twin in `addSuppressions` is filed separately, and a third occurrence lives in `restampSuppressions`, so the three share a fingerprint and only the line separates them.)",
+        "fingerprint": "5e51d86e3262"
+      }
+    ],
+    "src/core/format.ts": [
+      {
+        "line": 49,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786357768858,
+        "change": "o → true",
+        "reason": "Forcing `if (o) return o` true returns the empty string when both halves are empty. The sole caller is `if (change) acc.changes.add(change)`, which drops a falsy value — so no change is recorded either way.",
+        "fingerprint": "d8912fa1cbb4"
+      },
+      {
+        "line": 90,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786357768858,
+        "change": "acc.changes.size > 0 → true",
+        "reason": "With an empty change set the mutant stores `uncapped.set(line, [])` instead of storing nothing. The only consumer is `uncapped.get(g.line) ?? g.changes`, where an empty list and an absent one both carry zero change evidence into enrichment.",
+        "fingerprint": "f3e970760c7e"
+      },
+      {
+        "line": 90,
+        "mutator": "EqualityOperator",
+        "addedAt": 1786357768858,
+        "change": "acc.changes.size > 0 → acc.changes.size >= 0",
+        "reason": "`size >= 0` is always true, making it identical to the always-true form above: an empty list and an absent one are the same evidence at the enrichment call site.",
+        "fingerprint": "f3e970760c7e"
+      },
+      {
+        "line": 162,
+        "mutator": "ArithmeticOperator",
+        "addedAt": 1786358089440,
+        "change": "a.line - b.line → a.line + b.line",
+        "reason": "`a.line + b.line` is always positive for 1-based lines, so every element compares as belonging after every other and binary insertion sort leaves the already-ascending array in place. Verified empirically: applying this mutant by hand leaves the ordering assertions in format-pipeline.test.ts passing.",
+        "fingerprint": "4d7d17546c6e"
+      },
+      {
+        "line": 166,
+        "mutator": "EqualityOperator",
+        "addedAt": 1786358089440,
+        "change": "SEVERITY_RANK[g.severity] > SEVERITY_RANK[worst] → SEVERITY_RANK[g.severity] >= SEVERITY_RANK[worst]",
+        "reason": "`>` → `>=` reassigns `worst` when the ranks are EQUAL, which stores the same severity value it already held. The running maximum is unchanged for every input.",
+        "fingerprint": "897bad63edf8"
+      },
+      {
+        "line": 187,
+        "mutator": "EqualityOperator",
+        "addedAt": 1786358089440,
+        "change": "groups.length <= max → groups.length < max",
+        "reason": "At the boundary `groups.length === max`, `slice(0, max)` returns a list with identical contents and `truncated` is `length - max` = 0 — the same value the early return produces. Only the array identity differs.",
+        "fingerprint": "79dc470287a8"
+      },
+      {
+        "line": 288,
+        "mutator": "ArrayDeclaration",
+        "addedAt": 1786358302810,
+        "change": "[] → [\"Stryker was here\"]",
+        "reason": "Seeding `candidates` with a non-Severity string gives it `SEVERITY_RANK[...] === undefined`, and every comparison against undefined is false, so the reduce below always prefers the real candidate. The enclosing `if` guarantees at least one real candidate is pushed.",
+        "fingerprint": "e6e816ac3c90"
+      },
+      {
+        "line": 289,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786358302810,
+        "change": "survivors.length > 0 → true",
+        "reason": "Pushing `s.worst` when there are no survivors pushes 'unknown', which is rank 0 — the lowest — so it can never win the reduce below.",
+        "fingerprint": "7f7442927d04"
+      },
+      {
+        "line": 289,
+        "mutator": "EqualityOperator",
+        "addedAt": 1786358302810,
+        "change": "survivors.length > 0 → survivors.length >= 0",
+        "reason": "`length >= 0` is always true, identical to the always-true form: the pushed value is the lowest-ranked severity and cannot change the maximum.",
+        "fingerprint": "7f7442927d04"
+      },
+      {
+        "line": 290,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786358302810,
+        "change": "noCoverage.length > 0 → true",
+        "reason": "Same as the survivors line above for the no-coverage side: with no groups, `n.worst` is 'unknown' (rank 0) and cannot win the reduce.",
+        "fingerprint": "ee48eab51e1e"
+      },
+      {
+        "line": 290,
+        "mutator": "EqualityOperator",
+        "addedAt": 1786358302810,
+        "change": "noCoverage.length > 0 → noCoverage.length >= 0",
+        "reason": "`length >= 0` is always true; the pushed 'unknown' is rank 0 and cannot change the maximum.",
+        "fingerprint": "ee48eab51e1e"
+      },
+      {
+        "line": 291,
+        "mutator": "EqualityOperator",
+        "addedAt": 1786358302810,
+        "change": "SEVERITY_RANK[a] >= SEVERITY_RANK[b] → SEVERITY_RANK[a] > SEVERITY_RANK[b]",
+        "reason": "On a tie `>=` keeps `a` and `>` takes `b`, but a tie means both operands hold the SAME severity value, so the reduce returns the same string either way.",
+        "fingerprint": "709df59f1c39"
+      },
+      {
+        "line": 319,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786358355299,
+        "change": "worstSeverity → true",
+        "reason": "Forcing this true assigns `prepared.worstSeverity = undefined`. Every consumer re-checks truthiness — `if (prepared.worstSeverity)` in the payload builder — so the key's presence with an undefined value changes no output.",
+        "fingerprint": "85b035352f5d"
+      },
+      {
+        "line": 320,
+        "mutator": "ConditionalExpression",
+        "addedAt": 1786358355299,
+        "change": "enrichNote → true",
+        "reason": "Same as the worstSeverity line above: `prepared.enrichNote = undefined` is re-checked by `if (prepared.enrichNote)` in both the text and payload projections, so nothing downstream can observe it.",
+        "fingerprint": "a64a26c2b420"
+      },
+      {
+        "line": 500,
+        "mutator": "LogicalOperator",
+        "addedAt": 1786358488334,
+        "change": "enrich && e.severity → enrich || e.severity",
+        "reason": "The operands cannot disagree: `e.severity` is only present when the groups were enriched, which happens only when `enrich` is set. Both are true together or false together, so `&&` and `||` return the same result.",
+        "fingerprint": "883b35eed9eb"
+      },
+      {
+        "line": 715,
+        "mutator": "EqualityOperator",
+        "addedAt": 1786358877194,
+        "change": "opts.suppressedCount > 0 → opts.suppressedCount >= 0",
+        "reason": "`suppressedCount >= 0` differs from `> 0` only at 0 and below; 0 is short-circuited by the preceding `&&` and a negative fails both — covered by the negative-counter test.",
+        "fingerprint": "f02424d0f034"
+      },
+      {
+        "line": 723,
+        "mutator": "EqualityOperator",
+        "addedAt": 1786358877194,
+        "change": "opts.driftedSuppressions > 0 → opts.driftedSuppressions >= 0",
+        "reason": "`driftedSuppressions >= 0` differs from `> 0` only at 0 and below; 0 is short-circuited by the preceding `&&` and a negative fails both.",
+        "fingerprint": "cedb40914d3d"
+      },
+      {
+        "line": 726,
+        "mutator": "EqualityOperator",
+        "addedAt": 1786358877194,
+        "change": "opts.unverifiedSuppressions > 0 → opts.unverifiedSuppressions >= 0",
+        "reason": "`unverifiedSuppressions >= 0` differs from `> 0` only at 0 and below; 0 is short-circuited by the preceding `&&` and a negative fails both.",
+        "fingerprint": "12408c6ea073"
+      },
+      {
+        "line": 729,
+        "mutator": "EqualityOperator",
+        "addedAt": 1786358877194,
+        "change": "opts.orphanedSuppressions > 0 → opts.orphanedSuppressions >= 0",
+        "reason": "`orphanedSuppressions >= 0` differs from `> 0` only at 0 and below; 0 is short-circuited by the preceding `&&` and a negative fails both.",
+        "fingerprint": "2f7a5719e855"
+      },
+      {
+        "line": 734,
+        "mutator": "EqualityOperator",
+        "addedAt": 1786358877194,
+        "change": "opts.rejectedSuppressions > 0 → opts.rejectedSuppressions >= 0",
+        "reason": "`rejectedSuppressions >= 0` differs from `> 0` only at 0 and below; 0 is short-circuited by the preceding `&&` and a negative fails both — covered by the negative-counter test. The `&&`-to-`||` swap and the forced-true form on this line are killable and stay unsuppressed.",
+        "fingerprint": "7f1f2c16587c"
+      },
+      {
+        "line": 460,
+        "mutator": "EqualityOperator",
+        "addedAt": 1786359299048,
+        "change": "result.incompetent > 0 → result.incompetent >= 0",
+        "reason": "`incompetent >= 0` differs from `> 0` only at 0 and below; 0 is short-circuited by the preceding `&&` and a negative fails both — covered by the negative-counter test. This is the TEXT projection; the payload one is filed separately where the identical expression appears.",
+        "fingerprint": "77391e051022"
+      },
+      {
+        "line": 754,
+        "mutator": "EqualityOperator",
+        "addedAt": 1786359362473,
+        "change": "result.incompetent > 0 → result.incompetent >= 0",
+        "reason": "`incompetent >= 0` differs from `> 0` only at 0 and below; 0 is short-circuited by the preceding `&&` and a negative fails both — covered by the negative-counter test. This is the PAYLOAD projection; the text one is filed separately, where the identical expression appears. The two share a fingerprint, so only the line tells them apart.",
+        "fingerprint": "77391e051022"
       }
     ]
   }

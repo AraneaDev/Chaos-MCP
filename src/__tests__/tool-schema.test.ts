@@ -498,6 +498,7 @@ describe('audit outputSchema ↔ ResultPayload parity', () => {
     unverifiedSuppressions: true,
     orphanedSuppressions: true,
     rejectedSuppressions: true,
+    relocatedSuppressions: true,
     gate: true,
     incompetent: true,
     complete: true,
@@ -580,15 +581,18 @@ describe('nested argument schemas', () => {
     }
   });
 
-  it('shapes suppress entries as { line, mutator, reason? } with line and mutator required', () => {
+  it('shapes suppress entries as { line, mutator, reason?, change? } with line and mutator required', () => {
     const items = props.suppress.items as Record<string, unknown>;
     const inner = items.properties as Record<string, Record<string, unknown>>;
     expect(items.type).toBe('object');
-    expect(Object.keys(inner).sort()).toEqual(['line', 'mutator', 'reason']);
+    expect(Object.keys(inner).sort()).toEqual(['change', 'line', 'mutator', 'reason']);
     expect(inner.line.type).toBe('integer');
     expect(inner.line.minimum).toBe(1);
     expect(inner.mutator.type).toBe('string');
     expect(inner.reason.type).toBe('string');
+    // `change` names WHICH mutant when a line carries several of one mutator.
+    // Optional: omitted, the audit path resolves it from that run's survivors.
+    expect(inner.change.type).toBe('string');
     expect(items.required).toEqual(['line', 'mutator']);
   });
 
@@ -597,7 +601,7 @@ describe('nested argument schemas', () => {
     // meaningless when undoing it.
     const items = props.unsuppress.items as Record<string, unknown>;
     const inner = items.properties as Record<string, Record<string, unknown>>;
-    expect(Object.keys(inner).sort()).toEqual(['line', 'mutator']);
+    expect(Object.keys(inner).sort()).toEqual(['change', 'line', 'mutator']);
     expect(inner.line.type).toBe('integer');
     expect(inner.line.minimum).toBe(1);
     expect(inner.mutator.type).toBe('string');

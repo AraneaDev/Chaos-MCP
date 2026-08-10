@@ -297,6 +297,7 @@ describe('counter guards refuse a nonsensical negative', () => {
     ['unverifiedSuppressions'],
     ['orphanedSuppressions'],
     ['rejectedSuppressions'],
+    ['relocatedSuppressions'],
   ] as const)('does not report a negative %s', (key) => {
     const payload = buildResultPayload(result({ vulnerabilities: [vuln()] }), { [key]: -1 });
 
@@ -308,6 +309,7 @@ describe('counter guards refuse a nonsensical negative', () => {
     ['unverifiedSuppressions'],
     ['orphanedSuppressions'],
     ['rejectedSuppressions'],
+    ['relocatedSuppressions'],
   ] as const)('DOES report a positive %s', (key) => {
     const payload = buildResultPayload(result({ vulnerabilities: [vuln()] }), { [key]: 2 });
 
@@ -370,7 +372,18 @@ describe('refused suppressions are said out loud', () => {
 
     expect(payload.rejectedSuppressions).toBe(2);
     expect(payload.note).toContain('2 suppression(s) were NOT stored');
+    // All THREE causes must be named, because the count alone cannot say which
+    // applied and each one sends the reader to a different fix: correct the
+    // line, name a `change`, or re-run with a larger budget.
     expect(payload.note).toContain('blank or comment-only');
+    expect(payload.note).toContain('several mutants of that mutator');
+    expect(payload.note).toContain('`change` naming the one you mean');
+    expect(payload.note).toContain('stopped early and never generated the mutant');
+    expect(payload.note).toContain('larger');
+    expect(payload.note).toContain('timeoutMs');
+    expect(payload.note).toContain(
+      'Check the line number against the survivor you meant to suppress',
+    );
   });
 
   it('renders the same refusal in TEXT output', () => {
@@ -384,6 +397,8 @@ describe('refused suppressions are said out loud', () => {
 
     expect(text).toContain('Note: 2 suppression(s) were NOT stored');
     expect(text).toContain('blank or comment-only');
+    expect(text).toContain('several mutants of that mutator');
+    expect(text).toContain('stopped early and never generated the mutant');
   });
 
   it('says nothing when every requested suppression was stored', () => {
@@ -393,5 +408,153 @@ describe('refused suppressions are said out loud', () => {
 
     expect(Object.keys(payload)).not.toContain('rejectedSuppressions');
     expect(payload.note).not.toContain('NOT stored');
+  });
+});
+
+describe('relocated suppressions', () => {
+  const move = {
+    storedLine: 134,
+    line: 96,
+    mutator: 'ConditionalExpression',
+    reason: 'guard unreachable',
+  };
+
+  it('names each tier-3 move individually, with its recorded reason', () => {
+    // A bare count would hide the one thing a reader has to judge: whether the
+    // entry landed on the mutant its reason was actually written about.
+    const payload = buildResultPayload(result({ vulnerabilities: [vuln()] }), {
+      relocatedSuppressions: 1,
+      relocations: [move],
+    });
+
+    expect(payload.relocatedSuppressions).toBe(1);
+    expect(payload.note).toContain('from line 134 to line 96');
+    expect(payload.note).toContain('guard unreachable');
+    expect(payload.note).toContain('unsuppress');
+  });
+
+  it('renders the same wording in the text projection', () => {
+    const text = formatResultAsText(result({ vulnerabilities: [vuln()] }), undefined, {
+      relocatedSuppressions: 1,
+      relocations: [move],
+    });
+
+    expect(text).toContain(
+      'Note: Suppression "ConditionalExpression" moved from line 134 to line 96',
+    );
+  });
+
+  it('reports a tier-2 move that has no per-entry detail', () => {
+    // Tier 2 is counted but never narrated individually, so a TEXT-only caller
+    // would otherwise learn nothing — and a relocation rewrites the
+    // suppressions file, which they would then find changed on disk with no
+    // explanation anywhere in the response.
+    const text = formatResultAsText(result({ vulnerabilities: [vuln()] }), undefined, {
+      relocatedSuppressions: 3,
+      relocations: [],
+    });
+
+    expect(text).toContain('Note: 3 suppression(s) applied at a different line than recorded');
+    expect(text).toContain('stored line numbers have been updated');
+  });
+
+  it('does not double-report a move that IS narrated individually', () => {
+    // One tier-3 move: the count is 1 and the detail covers it, so the generic
+    // sentence must not also fire.
+    const payload = buildResultPayload(result({ vulnerabilities: [vuln()] }), {
+      relocatedSuppressions: 1,
+      relocations: [move],
+    });
+
+    expect(payload.note).toContain('moved from line 134 to line 96');
+    expect(payload.note).not.toContain('applied at a different line than recorded');
+  });
+
+  it('reports only the moves left unnarrated when both kinds occur', () => {
+    // Three relocations, one of them tier 3: the detail covers that one and the
+    // generic sentence covers the other two.
+    const payload = buildResultPayload(result({ vulnerabilities: [vuln()] }), {
+      relocatedSuppressions: 3,
+      relocations: [move],
+    });
+
+    expect(payload.note).toContain('moved from line 134 to line 96');
+    expect(payload.note).toContain('2 suppression(s) applied at a different line than recorded');
+  });
+
+  it('counts a tier-2 move without narrating it', () => {
+    // Tier 2 cannot be wrong — the line's content is unchanged, it only moved —
+    // so `relocations` is empty and only the count is reported.
+    const payload = buildResultPayload(result({ vulnerabilities: [vuln()] }), {
+      relocatedSuppressions: 3,
+      relocations: [],
+    });
+
+    expect(payload.relocatedSuppressions).toBe(3);
+    expect(payload.note).not.toContain('moved from line');
+  });
+
+  it('says nothing when nothing relocated', () => {
+    const payload = buildResultPayload(result({ vulnerabilities: [vuln()] }), {
+      relocatedSuppressions: 0,
+      relocations: [],
+    });
+
+    expect(Object.keys(payload)).not.toContain('relocatedSuppressions');
+    expect(payload.note).not.toContain('moved from line');
+  });
+
+  it('omits the reason clause for an entry that never carried one', () => {
+    const payload = buildResultPayload(result({ vulnerabilities: [vuln()] }), {
+      relocatedSuppressions: 1,
+      relocations: [{ storedLine: 12, line: 20, mutator: 'EqualityOperator' }],
+    });
+
+    expect(payload.note).toContain('from line 12 to line 20');
+    expect(payload.note).not.toContain('Recorded reason');
+  });
+});
+
+describe('ambiguous suppression candidates', () => {
+  it('lists every candidate change so the caller can name one', () => {
+    // `changes` on a survivor group is capped at CHANGES_CAP and aggregated
+    // across mutators, so on exactly the lines where `change` is needed — many
+    // mutants of one mutator — the report cannot show them all. Without this
+    // note the refusal is unactionable.
+    const payload = buildResultPayload(result({ vulnerabilities: [vuln()] }), {
+      rejectedSuppressions: 1,
+      rejections: [
+        {
+          line: 331,
+          mutator: 'ConditionalExpression',
+          cause: 'ambiguous',
+          candidates: ['a || b → false', 'a → false', 'b → false', 'a || b → true'],
+        },
+      ],
+    });
+
+    expect(payload.note).toContain('Line 331 carries 4 "ConditionalExpression" mutants');
+    for (const c of ['a || b → false', 'a → false', 'b → false', 'a || b → true']) {
+      expect(payload.note).toContain(`"${c}"`);
+    }
+  });
+
+  it('says nothing extra for a rejection that is not ambiguous', () => {
+    const payload = buildResultPayload(result({ vulnerabilities: [vuln()] }), {
+      rejectedSuppressions: 1,
+      rejections: [{ line: 12, mutator: 'ConditionalExpression', cause: 'non-mutable' }],
+    });
+
+    expect(payload.note).toContain('NOT stored');
+    expect(payload.note).not.toContain('Re-issue with one of these');
+  });
+
+  it('says nothing when an ambiguous rejection carries no candidates', () => {
+    const payload = buildResultPayload(result({ vulnerabilities: [vuln()] }), {
+      rejectedSuppressions: 1,
+      rejections: [{ line: 12, mutator: 'X', cause: 'ambiguous', candidates: [] }],
+    });
+
+    expect(payload.note).not.toContain('Re-issue with one of these');
   });
 });

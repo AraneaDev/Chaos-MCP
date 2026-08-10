@@ -121,9 +121,29 @@ export interface LineGroup {
   changes?: string[];
 }
 
+/** One refused `suppress` request, as the note renderer needs it. */
+export interface RejectionNote {
+  line: number;
+  mutator: string;
+  cause: 'non-mutable' | 'ambiguous' | 'unresolved';
+  /** The distinct changes on that line, when `cause` is `'ambiguous'`. */
+  candidates?: string[];
+}
+
+/** One tier-3 relocation, as the note renderer needs it. */
+export interface RelocationNote {
+  /** The line the entry was stored against before the move. */
+  storedLine: number;
+  /** The line its mutant was found on instead. */
+  line: number;
+  mutator: string;
+  reason?: string;
+}
+
 /**
- * The sentences that explain suppressions which were NOT applied, one per
- * non-zero count and nothing at all when both are zero.
+ * The sentences that explain suppressions which were NOT applied as recorded —
+ * one per non-zero count, plus one per tier-3 relocation, and nothing at all
+ * when every count is zero.
  *
  * Shared by the text report, the structured payload's `note`, and the
  * verify-mode note so the three cannot drift apart. Each sentence says what to
@@ -135,6 +155,9 @@ export function suppressionDriftNotes(
   unverified?: number,
   orphaned?: number,
   rejected?: number,
+  relocated?: RelocationNote[],
+  rejections?: RejectionNote[],
+  relocatedCount?: number,
 ): string[] {
   const notes: string[] = [];
   if (drifted !== undefined && drifted > 0) {
@@ -158,9 +181,50 @@ export function suppressionDriftNotes(
   // render this one list.
   if (rejected !== undefined && rejected > 0) {
     notes.push(
-      `${rejected} suppression(s) were NOT stored: their target line is blank or comment-only, ` +
-        'where no engine reports a mutant. Check the line number against the survivor you meant ' +
-        'to suppress.',
+      `${rejected} suppression(s) were NOT stored. Either the target line is blank or comment-only ` +
+        '(where no engine reports a mutant); or it carries several mutants of that mutator and the ' +
+        'request did not say which — re-issue it with a `change` naming the one you mean; or this ' +
+        'run stopped early and never generated the mutant, in which case re-run with a larger ' +
+        'timeoutMs before filing it. Check the line number against the survivor you meant to suppress.',
+    );
+  }
+  // An ambiguous refusal is only actionable if the caller learns WHICH changes
+  // it had to choose between. `changes` on a survivor group is capped at
+  // CHANGES_CAP for display (core/format.ts) and aggregated across mutators, so
+  // on exactly the lines where `change` is needed — many mutants of one mutator
+  // — the report cannot show them all. These candidates are the complete,
+  // per-mutator set the resolver actually compared against.
+  for (const r of rejections ?? []) {
+    if (r.cause !== 'ambiguous' || !r.candidates || r.candidates.length === 0) continue;
+    notes.push(
+      `Line ${r.line} carries ${r.candidates.length} "${r.mutator}" mutants; the request named none of them. ` +
+        `Re-issue with one of these \`change\` values: ${r.candidates.map((c) => `"${c}"`).join(', ')}.`,
+    );
+  }
+  // Reported ENTRY BY ENTRY, unlike the four counts above, because this is the
+  // one suppression outcome that can be silently wrong. A tier-3 relocation
+  // matched a mutant's change elsewhere in the file after the entry's own line
+  // was edited away. Uniqueness is not proof: if the original site was DELETED
+  // and an unrelated site produces the same `original → mutated`, the
+  // suppression has just moved onto code its reason was never written about. A
+  // bare count would hide that; naming the move and quoting the reason lets a
+  // reader judge it.
+  // Tier-2 moves are counted but never narrated individually, so a text-only
+  // caller would otherwise learn nothing about them — and a relocation REWRITES
+  // the suppressions file, which they would then find changed on disk with no
+  // explanation. One sentence for however many were not named below.
+  const narrated = (relocated ?? []).length;
+  const silent = Math.max(0, (relocatedCount ?? narrated) - narrated);
+  if (silent > 0) {
+    notes.push(
+      `${silent} suppression(s) applied at a different line than recorded — the code moved but did not change, so the entries followed it and the stored line numbers have been updated.`,
+    );
+  }
+  for (const r of relocated ?? []) {
+    notes.push(
+      `Suppression "${r.mutator}" moved from line ${r.storedLine} to line ${r.line}: its stored line was edited, and its mutant was found there instead. ` +
+        (r.reason === undefined ? '' : `Recorded reason: "${r.reason}". `) +
+        'Confirm this is still the mutant that reason was written about, and drop it with `unsuppress` if it is not.',
     );
   }
 

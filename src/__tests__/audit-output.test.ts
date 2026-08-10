@@ -10,6 +10,7 @@ import type { ToolArgs } from '../core/tool-args-validation.js';
 import type { SupportedProjectType } from '../engines/registry.js';
 import type { SuppressionCounts } from '../audit/suppression-io.js';
 import type { MutantKey } from '../core/verify.js';
+import { fingerprintOfLine } from '../utils/suppression.js';
 
 /**
  * `audit/audit-output.ts` assembles the response EVERY tool call returns, and had no
@@ -76,6 +77,9 @@ const NO_SUPPRESSION: SuppressionCounts = {
   unverified: 0,
   orphaned: 0,
   rejected: 0,
+  relocated: 0,
+  relocations: [],
+  rejections: [],
 };
 
 function run(opts: {
@@ -272,7 +276,16 @@ describe('formatAuditOutput — text output', () => {
     const text = (
       run({
         args: { outputFormat: 'text' },
-        suppression: { applied: 0, drifted: 2, unverified: 1, orphaned: 0, rejected: 0 },
+        suppression: {
+          applied: 0,
+          drifted: 2,
+          unverified: 1,
+          orphaned: 0,
+          rejected: 0,
+          relocated: 0,
+          relocations: [],
+          rejections: [],
+        },
       }).content[0] as { text: string }
     ).text;
 
@@ -330,5 +343,51 @@ describe('formatAuditOutput — options the resolved engine ignores', () => {
 
     expect(response.content.length).toBe(1);
     expect(structured(response).ignoredOptions).toBeUndefined();
+  });
+});
+
+describe('formatAuditOutput — verify mode relocation', () => {
+  // `SOURCE` line 2 is `  return a + b;`. Storing an entry against line 3 with
+  // line 2's fingerprint makes it relocate at tier 2: the content is unchanged,
+  // it simply is not where the entry says.
+  const line2Fingerprint = fingerprintOfLine('  return a + b;');
+
+  it('counts a tier-2 relocation even when nothing else is reported', () => {
+    // Tier 2 produces no sentence — it cannot be wrong — so `verifyDrift` is
+    // empty. The count must still reach structuredContent, because the standard
+    // path reports it unconditionally and the two modes must not disagree.
+    writeSuppressions([
+      { line: 3, mutator: 'ArithmeticOperator', reason: 'moved', fingerprint: line2Fingerprint },
+    ]);
+
+    const s = structured(run({ baselineKeys: [{ line: 9, mutator: 'Unrelated' }] }));
+
+    expect(s.relocatedSuppressions).toBe(1);
+    expect(s.driftedSuppressions).toBeUndefined();
+    expect(s.unverifiedSuppressions).toBeUndefined();
+  });
+
+  it('drops a baseline key that matches a relocated entry on its STORED line', () => {
+    // The baseline was cached before the code moved, so its key carries line 3.
+    // The entry now resolves to line 2, and its mutant is filtered out of the
+    // re-run under that line. Matching only the resolved line would leave the
+    // baseline key in, and its absence from the re-run reads as "now killed" —
+    // a false claim of progress.
+    writeSuppressions([
+      { line: 3, mutator: 'ArithmeticOperator', reason: 'moved', fingerprint: line2Fingerprint },
+    ]);
+
+    const s = structured(
+      run({
+        auditResults: result({
+          vulnerabilities: [
+            { line: 2, mutator: 'ArithmeticOperator', kind: 'survived', description: 'x' },
+          ],
+        }),
+        baselineKeys: [{ line: 3, mutator: 'ArithmeticOperator' }],
+      }),
+    );
+
+    expect(s.nowKilled).toEqual([]);
   });
 });
