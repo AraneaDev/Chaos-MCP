@@ -38,6 +38,20 @@ describe('projectTimingRange', () => {
     expect(result.confidence).toBe('low');
   });
 
+  it('refuses a negative measured startup, keeping the range ordered', () => {
+    // The override is a `Date.now()` delta from `applyTiming`, and a wall clock
+    // that steps backwards mid-build makes it negative. Unclamped, the two upper
+    // figures shrink below the work total and can go negative outright, breaking
+    // the ordering this function documents for every input.
+    const skewed = projectTimingRange(40, 500, 4, 'compiled', -1_000_000);
+    expect(skewed.optimisticMs).toBeLessThanOrEqual(skewed.estimatedMs);
+    expect(skewed.estimatedMs).toBeLessThanOrEqual(skewed.upperBoundMs);
+    expect(skewed.estimatedMs).toBeGreaterThan(0);
+    // A zero override is a real measurement (an already-warm build), not a
+    // missing one, so it must NOT fall back to the table's guess.
+    expect(projectTimingRange(40, 500, 4, 'compiled', 0).estimatedMs).toBe(skewed.estimatedMs);
+  });
+
   it('uses a tighter range for native runners', () => {
     const command = projectTimingRange(40, 500, 4, 'commandRunner');
     const native = projectTimingRange(40, 500, 4, 'native');

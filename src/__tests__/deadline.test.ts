@@ -88,7 +88,7 @@ describe('auditTriageFile — engine budget is re-read after provisioning', () =
     cfg: { runCacheTtlMs: 1_000, runCacheMax: 10 } as unknown as ChaosConfig,
     args: {},
     diffBase: undefined,
-    strykerConcurrency: undefined,
+    perFileConcurrency: undefined,
     survivorsPerFile: 0,
     suppressionCache: new Map(),
     deadline: new AuditDeadline(budgetMs, () => now),

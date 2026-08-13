@@ -63,6 +63,18 @@ interface VerifyOutputOptions {
   cfg: ChaosConfig;
   env: EnvironmentInfo;
   relFromRoot: string;
+  /**
+   * Counts from the handler's suppression phase. Verify mode reads only the
+   * EDIT half of them (what `suppress`/`unsuppress` just wrote), not the
+   * applied/orphaned tallies — those are recomputed below against the delta,
+   * because this mode filters the baseline as well as the re-run.
+   *
+   * Previously not passed at all, which made verify mode silent about its own
+   * writes: `applyAndCountSuppressions` runs the edits whatever the mode, so
+   * `{ runId, unsuppress }` in one call performed the removal and reported
+   * nothing — the same silence this PR removes from the standard path.
+   */
+  suppression: SuppressionCounts;
 }
 
 /** What {@link formatStandardOutput} needs — the other, disjoint subset. */
@@ -102,6 +114,7 @@ function formatVerifyOutput({
   cfg,
   env,
   relFromRoot,
+  suppression: edits,
 }: VerifyOutputOptions): CallToolResult {
   // Task 9: filter suppressed equivalent mutants from BOTH the baseline keys
   // AND the re-run result before computing the delta so known-equivalent mutants
@@ -198,6 +211,11 @@ function formatVerifyOutput({
     verifyRelocations,
     undefined,
     suppression.relocated.length,
+    // The edits this very call performed. `applyAndCountSuppressions` runs
+    // `suppress`/`unsuppress` in verify mode too — only the auto-FILTER is
+    // skipped there — so a caller combining `runId` with `unsuppress` changed
+    // the file and, until this argument, was told nothing about it.
+    edits.unsuppressMisses,
   );
   // Counted OUTSIDE the drift guard. A tier-2 move produces no sentence — it
   // cannot be wrong — so a run with only tier-2 relocations has an empty
@@ -206,6 +224,16 @@ function formatVerifyOutput({
   // not disagree about the same fact.
   if (suppression.relocated.length > 0) {
     verifyStructured.relocatedSuppressions = suppression.relocated.length;
+  }
+  // Same reasoning, for the removals themselves: a successful `unsuppress` is
+  // reported by its count in both modes, or the two disagree about a write they
+  // both performed.
+  if (edits.unsuppressed > 0) {
+    verifyStructured.unsuppressedCount = edits.unsuppressed;
+    verifyStructured.note = `${verifyStructured.note as string} ${edits.unsuppressed} suppression(s) removed by \`unsuppress\`.`;
+  }
+  if (edits.unsuppressMisses.length > 0) {
+    verifyStructured.unsuppressMissed = edits.unsuppressMisses.length;
   }
   const verifyContent: { type: 'text'; text: string }[] = [{ type: 'text', text: verifyText }];
   if (verifyDrift.length > 0) {
@@ -344,7 +372,16 @@ export function formatAuditOutput(
   relFromRoot: string,
 ): CallToolResult {
   return baselineKeys
-    ? formatVerifyOutput({ auditResults, args, baselineKeys, targetFile, cfg, env, relFromRoot })
+    ? formatVerifyOutput({
+        auditResults,
+        args,
+        baselineKeys,
+        targetFile,
+        cfg,
+        env,
+        relFromRoot,
+        suppression,
+      })
     : formatStandardOutput({
         auditResults,
         args,

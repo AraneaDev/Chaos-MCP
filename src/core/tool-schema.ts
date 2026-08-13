@@ -427,6 +427,7 @@ export const TOOL_DEFINITION = {
       orphanedSuppressions: { type: 'integer' },
       rejectedSuppressions: { type: 'integer' },
       unsuppressedCount: { type: 'integer' },
+      unsuppressMissed: { type: 'integer' },
       relocatedSuppressions: { type: 'integer' },
       gate: {
         type: 'object',

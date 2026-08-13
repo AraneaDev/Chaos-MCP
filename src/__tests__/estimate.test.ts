@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 
 // The stub for MutationToolStartupError carries `reason`, because that is what
 // `computeCount` now branches on: only a genuinely missing binary
@@ -36,6 +36,15 @@ import type { EnvironmentInfo } from '../utils/project-detector.js';
 
 const mockInvoke = vi.mocked(invokeMutationTool);
 const mockRunShell = vi.mocked(runShell);
+
+// Unconditional, because two cases here install a `Date.now` spy with a queued
+// `mockReturnValueOnce` sequence. Restoring at the END of the test only runs
+// when the test passes: one failed assertion used to leave the spy installed
+// with a drained queue, and every later case in this file inherited a clock
+// that returns the same value forever. One failure became a cascade.
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 const baseEnv = (): EnvironmentInfo => ({
   projectType: 'typescript',
@@ -163,8 +172,7 @@ describe('estimateAudit', () => {
       stderr: '',
     } as never);
     // 10s for the build, 1s for the suite.
-    const clock = vi
-      .spyOn(Date, 'now')
+    vi.spyOn(Date, 'now')
       .mockReturnValueOnce(0) // warm-up start
       .mockReturnValueOnce(10_000) // warm-up end
       .mockReturnValueOnce(10_000) // baseline start
@@ -199,7 +207,6 @@ describe('estimateAudit', () => {
     // 2 × 11s. The multiplied term is what the split protects.
     expect(r.optimisticMs).toBe(2_000);
     expect(r.estimatedMs).toBeLessThan(2 * 11_000);
-    clock.mockRestore();
   });
 
   it('does not blame the test suite when the Rust build itself times out', async () => {
@@ -686,7 +693,7 @@ describe('estimateAudit withTiming', () => {
   });
 
   it('treats an upper bound exactly equal to the budget as fitting', async () => {
-    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000);
+    vi.spyOn(Date, 'now').mockReturnValue(1_000);
     mockRunShell.mockResolvedValue({
       stdout: '',
       stderr: '',
@@ -725,7 +732,6 @@ describe('estimateAudit withTiming', () => {
     expect(atBoundary.upperBoundMs).toBe(exactBudget);
     expect(atBoundary.fitsBudget).toBe(true);
     expect(atBoundary.recommendation).toBe('Estimated to fit the configured audit budget.');
-    now.mockRestore();
   });
 
   it('omits timing fields and appends note when runShell throws', async () => {

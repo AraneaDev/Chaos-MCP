@@ -483,6 +483,11 @@ describe('refused suppressions are said out loud', () => {
     });
 
     expect(payload.unsuppressedCount).toBe(1);
+    // The miss is a structured count too: `unsuppressedCount` alone cannot say
+    // "you asked to remove one and none matched", which is the case a consumer
+    // must not miss. The offending keys are named in the note, not repeated
+    // here — the same split `rejectedSuppressions` uses on the add side.
+    expect(payload.unsuppressMissed).toBe(1);
     expect(payload.note).toContain('1 suppression(s) removed by `unsuppress`');
     expect(payload.note).toContain('matched no stored suppression and removed nothing');
     expect(payload.note).toContain('line 42 "ConditionalExpression" change "a > b → a >= b"');
@@ -492,6 +497,7 @@ describe('refused suppressions are said out loud', () => {
   it('says nothing about unsuppress when none was requested', () => {
     const payload = buildResultPayload(result({ vulnerabilities: [vuln()] }), {});
     expect(payload.unsuppressedCount).toBeUndefined();
+    expect(payload.unsuppressMissed).toBeUndefined();
     expect(payload.note).not.toContain('unsuppress');
   });
 

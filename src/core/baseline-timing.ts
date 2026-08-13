@@ -183,7 +183,15 @@ export function projectTimingRange(
   // A MEASURED one-time cost beats the table's guess whenever the caller has
   // one. Only the compiled path produces it today (the warm-up build), and it
   // is the whole reason that path stopped over-projecting by a factor of seven.
-  const startupMs = startupMsOverride ?? TIMING.startupMs[mode];
+  //
+  // Clamped at zero because the override reaches here as a `Date.now()` delta
+  // (`applyTiming` in core/estimate.ts), and a wall clock that steps backwards
+  // mid-build makes that delta negative. This function documents the invariant
+  // `optimisticMs <= estimatedMs <= upperBoundMs` for EVERY input, and a
+  // negative startup breaks it: the two upper figures shrink below the work
+  // total, and a large enough step makes them negative outright.
+  const startupMs =
+    startupMsOverride === undefined ? TIMING.startupMs[mode] : Math.max(0, startupMsOverride);
   const optimisticMs = projectEstimatedMs(mutants, baselineMs, workers);
   const adjustedWorkMs = Math.ceil(
     (mutants * (baselineMs + TIMING.perMutantOverheadMs[mode])) / workers,

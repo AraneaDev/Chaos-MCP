@@ -649,6 +649,15 @@ export interface ResultPayload {
   /** Stored entries an `unsuppress` argument actually removed. */
   unsuppressedCount?: number;
   /**
+   * `unsuppress` keys that matched no stored entry, so they removed nothing.
+   *
+   * A COUNT, with the offending keys named in `note` — the same shape
+   * `rejectedSuppressions` uses for the refusals on the add side. A JSON
+   * consumer needs the signal that a write did not land; it does not need the
+   * list twice.
+   */
+  unsuppressMissed?: number;
+  /**
    * Stored suppressions applied at a DIFFERENT line than the one recorded,
    * because an edit moved them. The entry still filtered its mutant and the
    * corpus was updated, so this is not a failure — it is a repair, reported so
@@ -813,6 +822,12 @@ export function buildResultPayload(
   if (opts.unsuppressedCount && opts.unsuppressedCount > 0) {
     payload.unsuppressedCount = opts.unsuppressedCount;
     payload.note += ` ${opts.unsuppressedCount} suppression(s) removed by \`unsuppress\`.`;
+  }
+  // The failure count is structured too, not only narrated: `unsuppressedCount`
+  // alone cannot express "you asked to remove one and none matched", which is
+  // exactly the case a consumer must not miss.
+  if (opts.unsuppressMisses && opts.unsuppressMisses.length > 0) {
+    payload.unsuppressMissed = opts.unsuppressMisses.length;
   }
   for (const n of suppressionDriftNotes(
     opts.driftedSuppressions,
