@@ -70,6 +70,14 @@ export interface SuppressionCounts {
   relocations: RelocationNote[];
   /** The refused `suppress` requests, with the candidates for an ambiguous one. */
   rejections: RejectionNote[];
+  /** Stored entries this call's `unsuppress` argument actually removed. */
+  unsuppressed: number;
+  /**
+   * `unsuppress` keys that matched no stored entry. See
+   * {@link RemoveSuppressionsResult.unmatched}: a miss removes nothing and, until
+   * this was reported, said nothing.
+   */
+  unsuppressMisses: { line: number; mutator: string; change?: string }[];
 }
 import {
   loadSuppressions,
@@ -79,6 +87,7 @@ import {
   restampSuppressions,
   toPortableKey,
   type AddSuppressionsResult,
+  type RemoveSuppressionsResult,
   type SuppressionInput,
   type SuppressionVerdict,
 } from '../utils/suppression.js';
@@ -127,11 +136,13 @@ export function isWholeFileRun(result: MutationResult): boolean {
  * behind a Promise-chain mutex). Throws whatever the write layer throws; the
  * caller decides how to report it.
  *
- * Returns what the add actually recorded. An `unstamped` entry is one whose
- * source line could not be read, so it was stored without a fingerprint and
- * will NOT be applied — visible to the caller here, and visible in the same
- * response as an `unverified` count, because this call happens before the
- * re-load that produces those counts.
+ * Returns what the add actually recorded, and what the unsuppress actually
+ * dropped. An `unstamped` entry is one whose source line could not be read, so
+ * it was stored without a fingerprint and will NOT be applied — visible to the
+ * caller here, and visible in the same response as an `unverified` count,
+ * because this call happens before the re-load that produces those counts. The
+ * remove half carries its own miss list for the same reason: a key that matches
+ * nothing removes nothing, and used to say nothing.
  */
 export async function applySuppressionArgs(
   args: ToolArgs,
@@ -139,7 +150,7 @@ export async function applySuppressionArgs(
   relFromRoot: string,
   supPath: string | undefined,
   auditResults: MutationResult,
-): Promise<AddSuppressionsResult> {
+): Promise<{ added: AddSuppressionsResult; removed: RemoveSuppressionsResult }> {
   const survivors = auditResults.vulnerabilities;
   let added: AddSuppressionsResult = { stamped: 0, unstamped: 0, rejected: [] };
   if (Array.isArray(args.suppress) && args.suppress.length > 0) {
@@ -199,15 +210,16 @@ export async function applySuppressionArgs(
     }
     added = { ...added, rejected: [...added.rejected, ...ambiguous] };
   }
+  let removed: RemoveSuppressionsResult = { removed: 0, unmatched: [] };
   if (Array.isArray(args.unsuppress) && args.unsuppress.length > 0) {
-    await removeSuppressions(
+    removed = await removeSuppressions(
       wsRoot,
       relFromRoot,
       args.unsuppress as { line: number; mutator: string; change?: string }[],
       supPath,
     );
   }
-  return added;
+  return { added, removed };
 }
 
 /**
@@ -265,13 +277,20 @@ export async function applyAndCountSuppressions(
 > {
   let result = auditResults;
   let added: AddSuppressionsResult = { stamped: 0, unstamped: 0, rejected: [] };
+  let removed: RemoveSuppressionsResult = { removed: 0, unmatched: [] };
   try {
     // CodeRabbit finding: if the request aborts after auditFile resolves
     // but before these writes, a cancelled call could still mutate the
     // suppressions file. Guard the write block so cancellation stays
     // side-effect free.
     if (ctx?.signal?.aborted) return { ok: false, result: toolError('Operation cancelled.') };
-    added = await applySuppressionArgs(args, wsRoot, relFromRoot, supPath, auditResults);
+    ({ added, removed } = await applySuppressionArgs(
+      args,
+      wsRoot,
+      relFromRoot,
+      supPath,
+      auditResults,
+    ));
   } catch (error: unknown) {
     // A write failure surfaces a specific error rather than the generic
     // "Chaos Engine Halted" (Fix 4). Sandbox cleanup still runs via finally.
@@ -296,6 +315,8 @@ export async function applyAndCountSuppressions(
     relocated: 0,
     relocations: [],
     rejections: added.rejected,
+    unsuppressed: removed.removed,
+    unsuppressMisses: removed.unmatched,
   };
   if (!baselineKeys) {
     // Evaluated on the PRE-suppression result, before `result` is reassigned

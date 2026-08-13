@@ -42,42 +42,92 @@ describe('canonicalizeMutator', () => {
     }
   });
 
-  it('infers Rust categories from the change description', () => {
-    expect(canonicalizeMutator('replace > with', 'rust', 'replace > with >=')).toBe(
-      'EqualityOperator',
-    );
-    expect(canonicalizeMutator('replace add ->', 'rust', 'replace a + b with a - b')).toBe(
-      'ArithmeticOperator',
-    );
-    expect(canonicalizeMutator('replace && with', 'rust', 'replace x && y with x || y')).toBe(
-      'LogicalOperator',
-    );
-    expect(canonicalizeMutator('replace true', 'rust', 'replace true with false')).toBe(
-      'BooleanLiteral',
-    );
+  // ── cargo-mutants vocabulary ───────────────────────────────────────────────
+  //
+  // Every description below is a REAL one, taken from `cargo mutants --list`
+  // over a Rust crate (1088 mutants, cargo-mutants 27.1.0). The block this
+  // replaced was written against invented strings — `replace a + b with a - b`,
+  // `replace get_flag->true with Default::default()` — which cargo-mutants does
+  // not emit in any version, so it pinned the behaviour of rules that never met
+  // the input they were written for. The real grammar has exactly five shapes,
+  // and the classifier reads the mutator NAME, which for cargo-mutants IS the
+  // description.
+
+  it('classifies an operator swap by the operator that was in the source', () => {
+    const rust = (desc: string) => canonicalizeMutator(desc, 'rust');
+    expect(rust('replace == with != in Policy::evaluate_command')).toBe('EqualityOperator');
+    expect(rust('replace > with >= in Policy::evaluate_command')).toBe('EqualityOperator');
+    expect(rust('replace && with || in Policy::evaluate_command')).toBe('LogicalOperator');
+    expect(rust('replace || with && in clean_ident')).toBe('LogicalOperator');
+    expect(rust('replace + with * in wildcard_match')).toBe('ArithmeticOperator');
+    expect(rust('replace - with / in count_log')).toBe('ArithmeticOperator');
+    expect(rust('replace += with -= in tally')).toBe('AssignmentOperator');
+    expect(rust('replace ^= with |= in mask')).toBe('AssignmentOperator');
+    // Bitwise operators compute a value rather than choose a branch, so they
+    // take the arithmetic advice ("assert the exact result") rather than the
+    // boundary advice. `^` and `&` must NOT be read as their logical lookalikes.
+    expect(rust('replace ^ with | in mask')).toBe('ArithmeticOperator');
+    expect(rust('replace & with ^ in mask')).toBe('ArithmeticOperator');
+    expect(rust('replace >> with << in shift')).toBe('ArithmeticOperator');
   });
 
-  it('returns unknown for Rust when the description has no recognizable operator', () => {
-    expect(canonicalizeMutator('replace foo', 'rust', 'replace foo with Default::default()')).toBe(
-      'unknown',
+  it('classifies the deletion shapes', () => {
+    expect(canonicalizeMutator('delete ! in maybe_send', 'rust')).toBe('UnaryOperator');
+    expect(canonicalizeMutator('delete - in offset', 'rust')).toBe('UnaryOperator');
+    expect(canonicalizeMutator('delete match arm "rm" | "unlink" in is_flag', 'rust')).toBe(
+      'MatchArm',
     );
-  });
-
-  it('does not misclassify cargo-mutants -> arrow as ArithmeticOperator', () => {
-    // The `-` in `->` must not trigger the arithmetic rule.
     expect(
-      canonicalizeMutator(
-        'replace get_name ->',
-        'rust',
-        'replace get_name -> String with String::new()',
-      ),
-    ).toBe('unknown');
+      canonicalizeMutator('delete match arm (Some(true), Some(code)) in dispatch', 'rust'),
+    ).toBe('MatchArm');
   });
 
-  it('classifies a bare < / > (no =) as EqualityOperator', () => {
-    // The EqualityOperator rule is /[<>]=?|==|!=/ — the `=` is OPTIONAL, so a
-    // relational flip with no `=` must still match. Guards the `=?` quantifier.
-    expect(canonicalizeMutator('replace < with >', 'rust', 'replace a < b with a > b')).toBe(
+  it('classifies a match guard forced to a constant as a conditional', () => {
+    expect(
+      canonicalizeMutator('replace match guard !scan.capped with true in preview_for', 'rust'),
+    ).toBe('ConditionalExpression');
+    expect(
+      canonicalizeMutator('replace match guard !in_double with false in tokenize', 'rust'),
+    ).toBe('ConditionalExpression');
+  });
+
+  it('classifies a whole-body replacement as ReturnValue, generics and all', () => {
+    // THE regression this file exists to pin. Every one of these used to come
+    // back `EqualityOperator` — severity high, and a why-sentence about a
+    // comparison operator being swapped — because the old rule tested for
+    // `[<>]=?` ANYWHERE in the description and a Rust generic is full of angle
+    // brackets. Stripping the `->` arrow did not help: the brackets are in the
+    // TYPE, not the arrow.
+    const rust = (desc: string) => canonicalizeMutator(desc, 'rust');
+    expect(rust('replace default_notify_on -> Vec<String> with vec![String::new()]')).toBe(
+      'ReturnValue',
+    );
+    expect(
+      rust(
+        'replace <impl fmt::Display for Action>::fmt -> fmt::Result with Ok(Default::default())',
+      ),
+    ).toBe('ReturnValue');
+    expect(rust('replace parse_tf_plan -> Option<(u32, u32, u32, Vec<String>)> with None')).toBe(
+      'ReturnValue',
+    );
+    expect(rust('replace test -> anyhow::Result<i32> with Ok(-1)')).toBe('ReturnValue');
+    expect(rust('replace is_tty -> bool with true')).toBe('ReturnValue');
+    // The `()` return: no arrow in the description at all.
+    expect(rust('replace maybe_send with ()')).toBe('ReturnValue');
+  });
+
+  it('returns unknown for a description in no known shape', () => {
+    // Not a guess: an invented category ships a confident severity and a
+    // why-sentence describing a mutation that did not happen.
+    expect(canonicalizeMutator('reticulate splines in foo', 'rust')).toBe('unknown');
+    expect(canonicalizeMutator('replace with', 'rust')).toBe('unknown');
+  });
+
+  it('falls back to changeText when the mutator name is not a description', () => {
+    // The mutator name is the primary evidence because it is per-mutant;
+    // `changeText` is joined across every mutant on the line. It remains a
+    // fallback for a caller that carries the description there instead.
+    expect(canonicalizeMutator('replace > with', 'rust', 'replace > with >= in f')).toBe(
       'EqualityOperator',
     );
   });
@@ -119,25 +169,18 @@ describe('canonicalizeMutator', () => {
     expect(canonicalizeMutator('TrueValue', 'typescript')).toBe('unknown');
   });
 
-  it('separates the tokens either side of a stripped Rust arrow', () => {
-    // The arrow strip exists so `-` and `>` cannot trigger the arithmetic or
-    // equality rules — but it must leave a SEPARATOR behind. Replacing `->`
-    // with nothing fuses the return type onto the preceding identifier, so
-    // `get_flag->true` becomes `get_flagtrue` and the `\btrue\b` rule stops
-    // matching: a boolean-literal mutant is then reported as `unknown`, with no
-    // severity and no hint.
-    expect(
-      canonicalizeMutator(
-        'replace get_flag',
-        'rust',
-        'replace get_flag->true with Default::default()',
-      ),
-    ).toBe('BooleanLiteral');
+  it('reads the return type as part of the function path, not as operators', () => {
+    // Replaces the old "separates the tokens either side of a stripped arrow"
+    // case. There is no arrow strip any more: the shapes are anchored, so the
+    // whole `<fn path> -> <type>` half is matched as one span and never scanned
+    // for operator characters. The property that matters is unchanged — a
+    // return type must not decide the category.
+    expect(canonicalizeMutator('replace get_flag -> bool with false', 'rust')).toBe('ReturnValue');
   });
 
-  it('returns unknown for Rust when changeText is absent (no throw)', () => {
-    // The `&& changeText` guard short-circuits before the .replace() call; a
-    // Rust target with no description must degrade to unknown, not crash.
+  it('returns unknown for Rust when neither evidence source is a description', () => {
+    // A name in no known shape and no changeText must degrade to unknown rather
+    // than throw.
     expect(canonicalizeMutator('replace foo', 'rust', undefined)).toBe('unknown');
   });
 

@@ -203,6 +203,24 @@ export const MUTATOR_SEMANTICS: Record<string, MutatorSemantic> = {
     why: 'a statement block (often a function body or side-effecting block) was emptied and tests still passed — that code may be effectively untested.',
     hint: 'assert an observable effect of the block: its return value, a mutation it makes, or a call it performs.',
   },
+  // ReturnValue and MatchArm are the two categories with no StrykerJS
+  // counterpart. Everything else in this table is named after a Stryker mutator
+  // because Stryker has the richest vocabulary — but it has no mutator that
+  // stubs a whole function, and none that deletes one arm of a match, which are
+  // between them a third of everything cargo-mutants generates. Routing those
+  // through the nearest Stryker key instead (BlockStatement, ConditionalExpression)
+  // was the option not taken: the severity would have been right and the
+  // sentence wrong, which is the failure mode this table exists to avoid.
+  ReturnValue: {
+    severity: 'high',
+    why: "the function's whole body was replaced with a fixed value (e.g. `Ok(0)`, `()`, `None`, `Default::default()`) and tests still passed — nothing asserts what this function actually produces or does.",
+    hint: 'call the function and assert its result, or the side effect it performs, for an input where the real answer differs from that fixed value.',
+  },
+  MatchArm: {
+    severity: 'high',
+    why: 'a `match` arm was deleted, so the values it handled fall through to another arm, and tests still passed — that arm has no case pinning it down.',
+    hint: 'add a case whose input selects exactly this arm, and assert the value or branch it produces (not merely that the call succeeded).',
+  },
   AssignmentOperator: {
     severity: 'medium',
     why: 'a compound assignment (e.g. `+=` -> `-=`) was swapped; the accumulated value is untested.',
@@ -254,7 +272,7 @@ export const MUTATOR_SEMANTICS: Record<string, MutatorSemantic> = {
  * `EngineDescriptor.canonicalizeMutator` (engines/registry.ts):
  *
  * - TypeScript: StrykerJS names ARE canonical — the identity, then the guard below.
- * - Rust: infer from `changeText` (cargo-mutants packs the operator there).
+ * - Rust: parse the description (cargo-mutants stores it AS the mutator name).
  * - Python: map the cosmic-ray operator NAME (authoritative).
  * - PHP: map the Infection mutator NAME, then its prefix families.
  *
@@ -305,11 +323,18 @@ export interface EnrichGroupInput {
   mutators: Record<string, number>;
   /**
    * Change strings for this line. Must be the COMPLETE set, not the display-
-   * capped one: for Rust this text IS the operator evidence (cargo-mutants
-   * exposes no operator field), so a mutant whose `&&` appears only in the
-   * fourth change string cannot be classified if the caller passes a list
-   * truncated to three plus a "…N more" sentinel (audit: severity derived from
-   * a capped change string). `format.ts` caps for display only, after enriching.
+   * capped one: an engine whose only operator evidence is the change text
+   * cannot classify a mutant whose operator appears solely in the fourth change
+   * string if the caller passes a list truncated to three plus a "…N more"
+   * sentinel (audit: severity derived from a capped change string). `format.ts`
+   * caps for display only, after enriching.
+   *
+   * SECONDARY evidence, and joined across every mutator on the line, so the
+   * same blob reaches each of them. Rust used to be classified from it and the
+   * bleed showed: two mutants on one line were categorised from the
+   * concatenation of both descriptions. Rust now reads its own per-mutant
+   * description out of the mutator name instead (engines/rust/canonicalize.ts);
+   * prefer that shape for any engine that can.
    */
   changes?: string[];
   projectType: SupportedProjectType;

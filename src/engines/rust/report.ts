@@ -250,7 +250,22 @@ export function parseCargoMutantsText(
       // cargo-mutants reports caught/missed/unviable/timeout — "missed" is a
       // survivor; it has no separate uncovered-line outcome, hence 'survived'.
       survivorVulnerability(mutantLine, desc || 'Rust Mutation Operator', 'Rust', {
-        mutated: desc || undefined,
+        // Deliberately NO `mutated`. cargo-mutants reports no replacement text:
+        // its description IS the mutant's name, so storing it a second time as
+        // the change made every Rust mutant carry `change: "→ <description>"` —
+        // the one-sided form `changeOf` produces when only the mutated half
+        // exists. Two things went wrong with that. The report rendered the same
+        // string WITHOUT the arrow (a separate formatter, since unified), so the
+        // `change` a caller copied out of `changes` never matched the one in
+        // suppressions.json and `unsuppress` silently did nothing. And the
+        // `changes` array itself was a verbatim duplicate of the `mutators`
+        // keys. Both docs describing this ("`change` is absent only for engines
+        // that report no replacement (cargo-mutants…)", utils/suppression.ts;
+        // "`undefined` when the engine reported neither half — cargo-mutants",
+        // utils/mutant-identity.ts) already described the behaviour this line
+        // now has: mutator-only identity, which for cargo-mutants loses nothing
+        // because the mutator IS the description.
+        //
         // No parseable location: `mutantLine` is the 0 sentinel, and "line 0"
         // reads as a real location. Render "line unknown" in the sentence.
         // The structured `line` stays 0 — the suppression/verify keys are

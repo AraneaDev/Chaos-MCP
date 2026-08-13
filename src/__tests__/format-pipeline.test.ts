@@ -79,20 +79,24 @@ describe('change strings degrade rather than inventing one', () => {
     expect(payload.note).not.toContain('changes = sampled');
   });
 
-  it('surfaces the original alone when only the mutated side is missing', () => {
+  // Both one-sided cases keep their arrow, on the side the engine DID report.
+  // Display and suppression identity are one function now (`changeOf`), and the
+  // arrow is what stops an original-only `"a > b"` and a mutated-only `"a > b"`
+  // from being the same identity — see utils/mutant-identity.ts.
+  it('surfaces the original alone, arrow trailing, when only the mutated side is missing', () => {
     const payload = buildResultPayload(
       result({ vulnerabilities: [vuln({ original: 'a > b', mutated: '' })] }),
     );
 
-    expect(payload.survivors[0].changes).toEqual(['a > b']);
+    expect(payload.survivors[0].changes).toEqual(['a > b →']);
   });
 
-  it('surfaces the mutated alone when only the original is missing', () => {
+  it('surfaces the mutated alone, arrow leading, when only the original is missing', () => {
     const payload = buildResultPayload(
       result({ vulnerabilities: [vuln({ original: '', mutated: 'a >= b' })] }),
     );
 
-    expect(payload.survivors[0].changes).toEqual(['a >= b']);
+    expect(payload.survivors[0].changes).toEqual(['→ a >= b']);
   });
 });
 
@@ -187,6 +191,72 @@ describe('the partial-run note', () => {
     expect(buildResultPayload(partial({ stoppedReason: undefined })).note).toContain(
       'the run stopped before the rest could run',
     );
+  });
+});
+
+describe('naming the workspace a target belongs to', () => {
+  it('names it in the payload and the text header when one is supplied', () => {
+    // With CHAOS_ALLOWED_ROOTS in play two different projects both report
+    // `target: "src/policy.rs"`, and the caller — who addressed the file as
+    // `../termaxa/src/policy.rs` — gets back a path that names no project.
+    const payload = buildResultPayload(result({ vulnerabilities: [vuln()] }), {
+      workspace: '/root/termaxa',
+    });
+    const text = formatResultAsText(result({ vulnerabilities: [vuln()] }), undefined, {
+      workspace: '/root/termaxa',
+    });
+
+    expect(payload.workspace).toBe('/root/termaxa');
+    expect(text.split('\n')[0]).toBe('Chaos-MCP Audit Report: src/x.ts (in /root/termaxa)');
+  });
+
+  it('stays absent for the ordinary single-root run', () => {
+    // The field is opt-in per run, so a server with one root reports exactly
+    // what it always did.
+    const payload = buildResultPayload(result({ vulnerabilities: [vuln()] }), {});
+    const text = formatResultAsText(result({ vulnerabilities: [vuln()] }), undefined, {});
+
+    expect(payload.workspace).toBeUndefined();
+    expect('workspace' in payload).toBe(false);
+    expect(text.split('\n')[0]).toBe('Chaos-MCP Audit Report: src/x.ts');
+  });
+});
+
+describe('the floor and unmeasured severity', () => {
+  it('says when a floor hid groups for having NO severity rather than a low one', () => {
+    // `unknown` ranks below `low`, so any floor drops it — right when the
+    // severity is genuinely low, wrong when it is merely unmeasured. On a Rust
+    // file whose survivors could not be classified, `severityFloor: 'low'` left
+    // exactly one group in the report and hid the rest, and the caller had no
+    // way to tell that "below the floor" meant "not ranked at all".
+    const payload = buildResultPayload(
+      result({
+        vulnerabilities: [
+          vuln({ line: 1, mutator: 'SomeUnmappedMutator' }),
+          vuln({ line: 2, mutator: 'ConditionalExpression' }),
+        ],
+      }),
+      { enrich, severityFloor: 'high' },
+    );
+
+    expect(payload.survivorsFiltered).toBe(1);
+    expect(payload.enrichNote).toMatch(/severity "unknown"/);
+    expect(payload.enrichNote).toMatch(/absence of information, not a low-risk verdict/);
+  });
+
+  it('stays quiet when the floor only dropped genuinely-ranked groups', () => {
+    const payload = buildResultPayload(
+      result({
+        vulnerabilities: [
+          vuln({ line: 1, mutator: 'StringLiteral' }), // low
+          vuln({ line: 2, mutator: 'ConditionalExpression' }), // high
+        ],
+      }),
+      { enrich, severityFloor: 'high' },
+    );
+
+    expect(payload.survivorsFiltered).toBe(1);
+    expect(payload.enrichNote).toBeUndefined();
   });
 });
 
@@ -399,6 +469,30 @@ describe('refused suppressions are said out loud', () => {
     expect(text).toContain('blank or comment-only');
     expect(text).toContain('several mutants of that mutator');
     expect(text).toContain('stopped early and never generated the mutant');
+  });
+
+  it('reports an unsuppress that removed nothing, and one that worked', () => {
+    // A key that matches no stored entry removes no stored entry, and the
+    // response used to be byte-identical to one where it worked — the more
+    // dangerous of the two silences, because the caller believes a suppression
+    // is gone while the mutant stays excluded from the score under a reason its
+    // author has already retracted.
+    const payload = buildResultPayload(result({ vulnerabilities: [vuln()] }), {
+      unsuppressedCount: 1,
+      unsuppressMisses: [{ line: 42, mutator: 'ConditionalExpression', change: 'a > b → a >= b' }],
+    });
+
+    expect(payload.unsuppressedCount).toBe(1);
+    expect(payload.note).toContain('1 suppression(s) removed by `unsuppress`');
+    expect(payload.note).toContain('matched no stored suppression and removed nothing');
+    expect(payload.note).toContain('line 42 "ConditionalExpression" change "a > b → a >= b"');
+    expect(payload.note).toContain('omit `change`');
+  });
+
+  it('says nothing about unsuppress when none was requested', () => {
+    const payload = buildResultPayload(result({ vulnerabilities: [vuln()] }), {});
+    expect(payload.unsuppressedCount).toBeUndefined();
+    expect(payload.note).not.toContain('unsuppress');
   });
 
   it('says nothing when every requested suppression was stored', () => {

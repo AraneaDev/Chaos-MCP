@@ -275,6 +275,29 @@ describe('formatVerifyResultAsJson', () => {
     expect(json.newSurvivors).toEqual([]);
   });
 
+  it("names the workspace when the target is not in the server's own tree", () => {
+    // A verify delta names a file too, and with a second project in reach via
+    // CHAOS_ALLOWED_ROOTS the name alone does not say which project.
+    const delta = computeVerifyDelta(
+      parseBaseline({ survivors: [{ line: 1, mutators: { A: 1 } }] }),
+      result([]),
+    );
+    const named = JSON.parse(
+      formatVerifyResultAsJson('src/x.ts', delta, undefined, '/root/termaxa'),
+    );
+    expect(named.workspace).toBe('/root/termaxa');
+    expect(
+      formatVerifyResultAsText('src/x.ts', delta, undefined, '/root/termaxa').split('\n')[0],
+    ).toBe('Chaos-MCP Verify Report: src/x.ts (in /root/termaxa)');
+
+    // Absent for a single-root server, so the shape is unchanged there.
+    const plain = JSON.parse(formatVerifyResultAsJson('src/x.ts', delta));
+    expect('workspace' in plain).toBe(false);
+    expect(formatVerifyResultAsText('src/x.ts', delta).split('\n')[0]).toBe(
+      'Chaos-MCP Verify Report: src/x.ts',
+    );
+  });
+
   it('includes an explanatory note string', () => {
     const delta = computeVerifyDelta(
       parseBaseline({ survivors: [{ line: 1, mutators: { A: 1 } }] }),

@@ -546,10 +546,11 @@ describe('suppression', () => {
     const removed = removeSuppressions(root, 'src/a.ts', []);
     expect(added).toBeInstanceOf(Promise);
     expect(removed).toBeInstanceOf(Promise);
-    // The add path resolves with its stamped/unstamped tally on every path,
-    // including this one — callers may read it without a null check.
+    // Both paths resolve with their tally on every path, including this one —
+    // callers may read it without a null check. The remove tally is what makes
+    // an `unsuppress` that matched nothing distinguishable from one that worked.
     await expect(added).resolves.toEqual({ stamped: 0, unstamped: 0, rejected: [] });
-    await expect(removed).resolves.toBeUndefined();
+    await expect(removed).resolves.toEqual({ removed: 0, unmatched: [] });
   });
 
   it('H3 mutex serialises concurrent add/remove on the same key without losing entries', async () => {
@@ -1048,9 +1049,12 @@ describe('suppression file read failures (fail-safe)', () => {
       }),
     );
 
+    // One entry removed, not three: the junk entries are dropped as a repair,
+    // and charging them to the caller's key would report removals nobody asked
+    // for.
     await expect(
       removeSuppressions(root, 'src/a.ts', [{ line: 1, mutator: 'A' }]),
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual({ removed: 1, unmatched: [] });
 
     // The requested key is gone, and the unusable entries went with it rather
     // than being rewritten as `null` for the next reader to trip over.
@@ -1525,6 +1529,37 @@ describe('schema v3: identity is the mutator plus the change', () => {
     it('ignores the line on the key, so a relocated entry stays removable', async () => {
       await removeSuppressions(root, FILE, [{ line: 999, mutator: COND, change: LEFT }]);
       expect(loadSuppressions(root).get(FILE)).toHaveLength(1);
+    });
+
+    it('reports a key that matched nothing instead of resolving silently', async () => {
+      // The failure this makes visible: a `change` that does not match removes
+      // nothing, and the caller was told nothing. It is how a Rust unsuppress
+      // failed for every caller who copied the `change` out of a report — the
+      // renderer dropped the arrow the store had written.
+      const miss = { line: 2, mutator: COND, change: 'no such change' };
+      const outcome = await removeSuppressions(root, FILE, [miss]);
+
+      expect(outcome).toEqual({ removed: 0, unmatched: [miss] });
+      expect(loadSuppressions(root).get(FILE)).toHaveLength(2);
+    });
+
+    it('separates the hits from the misses in one call', async () => {
+      const miss = { line: 2, mutator: COND, change: 'no such change' };
+      const outcome = await removeSuppressions(root, FILE, [
+        { line: 2, mutator: COND, change: LEFT },
+        miss,
+      ]);
+
+      expect(outcome.removed).toBe(1);
+      expect(outcome.unmatched).toEqual([miss]);
+    });
+
+    it('reports every key as unmatched when the file has no entries at all', async () => {
+      const miss = { line: 1, mutator: COND };
+      await expect(removeSuppressions(root, 'src/never-suppressed.ts', [miss])).resolves.toEqual({
+        removed: 0,
+        unmatched: [miss],
+      });
     });
   });
 

@@ -17,6 +17,7 @@ import { suppressionDriftNotes } from '../core/score-semantics.js';
 import { evaluateGate } from '../core/gate.js';
 import { toStructuredContent } from '../core/tool-result.js';
 import { suggestTestFile } from '../core/test-file.js';
+import { reportableWorkspace } from '../utils/path-safety.js';
 import { applySuppressions } from './apply-suppressions.js';
 import {
   computeVerifyDelta,
@@ -151,10 +152,11 @@ function formatVerifyOutput({
   // to the payload and to the renderer, so the two cannot disagree.
   const gate =
     typeof args.minScore === 'number' ? evaluateVerifyGate(args.minScore, delta) : undefined;
+  const verifyWorkspace = reportableWorkspace(env.workspaceRoot);
   const verifyText =
     args.outputFormat === 'text'
-      ? formatVerifyResultAsText(targetFile, delta, gate)
-      : formatVerifyResultAsJson(targetFile, delta, gate);
+      ? formatVerifyResultAsText(targetFile, delta, gate, verifyWorkspace)
+      : formatVerifyResultAsJson(targetFile, delta, gate, verifyWorkspace);
   // Verify responses must carry `structuredContent` too — the tool declares an
   // `outputSchema` whose `oneOf` includes this verify-delta shape (audit H3).
   //
@@ -168,6 +170,10 @@ function formatVerifyOutput({
   // ran.
   const verifyStructured: Record<string, unknown> = {
     target: targetFile,
+    // Same qualifier the standard report carries, for the same reason: a verify
+    // delta names a file too, and with two roots in reach the name is ambiguous
+    // on its own.
+    ...(verifyWorkspace === undefined ? {} : { workspace: verifyWorkspace }),
     mode: 'verify',
     ...verifyPayloadFields(delta),
     note: buildVerifyNote(delta),
@@ -243,6 +249,10 @@ function formatStandardOutput({
     severityFloor: resolveSeverityFloor(args, cfg),
   };
   const ignored = ignoredOptionsFor(projectType, args);
+  // Absent for the ordinary single-root server, so an existing report is
+  // byte-identical; present the moment CHAOS_ALLOWED_ROOTS makes `target`
+  // ambiguous between two projects.
+  const workspace = reportableWorkspace(env.workspaceRoot);
   const suggestion =
     auditResults.survived > 0 || auditResults.vulnerabilities.length > 0
       ? suggestTestFile(targetFile, projectType, env.workspaceRoot)
@@ -269,6 +279,9 @@ function formatStandardOutput({
     relocatedSuppressions: suppression.relocated,
     relocations: suppression.relocations,
     rejections: suppression.rejections,
+    unsuppressedCount: suppression.unsuppressed,
+    unsuppressMisses: suppression.unsuppressMisses,
+    workspace,
     gate,
   });
 
@@ -283,6 +296,9 @@ function formatStandardOutput({
           relocatedSuppressions: suppression.relocated,
           relocations: suppression.relocations,
           rejections: suppression.rejections,
+          unsuppressedCount: suppression.unsuppressed,
+          unsuppressMisses: suppression.unsuppressMisses,
+          workspace,
           // The SAME GateResult the payload carries, not a second evaluation:
           // text output previously rendered no verdict at all, so a caller
           // reading only the text block saw a clean report for a failing gate.

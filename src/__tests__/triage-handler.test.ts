@@ -2,9 +2,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { dirname, basename, join, resolve } from 'path';
 import type { CallToolRequest } from '@modelcontextprotocol/sdk/types.js';
 import type { MutationResult } from '../engines/base.js';
-// `resolveStrykerConcurrency` moved out of triage-handler.ts with the argument
+// `resolvePerFileConcurrency` moved out of triage-handler.ts with the argument
 // prelude it belongs to (Finding 3 decomposition); the import follows it there.
-import { resolveStrykerConcurrency } from '../core/triage-args-validation.js';
+import { resolvePerFileConcurrency } from '../core/triage-args-validation.js';
+import { resolveCargoJobs } from '../engines/rust/args.js';
+import { cpus } from 'node:os';
 import type { TriageRow } from '../core/triage.js';
 import type { TriageAuditOutcome } from '../triage/audit-one.js';
 import { ALLOWED_ROOTS_ENV } from '../utils/path-safety.js';
@@ -396,10 +398,9 @@ describe('handleTriageCall', () => {
       expect(mockAuditFile).not.toHaveBeenCalled();
     });
 
-    it('passes a Stryker worker cap only for TypeScript files, and only with a real pool', async () => {
-      // The cap exists so N parallel StrykerJS runs do not oversubscribe the
-      // box. A single-file pool has nothing to divide, and non-TS engines take
-      // their worker count elsewhere.
+    it('passes a per-file worker cap only with a real pool', async () => {
+      // The cap exists so N parallel engine runs do not oversubscribe the box.
+      // A single-file pool has nothing to divide.
       mockDiscover.mockReturnValue({ files: ['a.ts'], discovered: 1, skipped: 0 });
       mockAuditFile.mockResolvedValue(mrOf({}));
 
@@ -411,7 +412,10 @@ describe('handleTriageCall', () => {
       expect(mockAuditFile.mock.calls[0][0].args.concurrency).toBeTypeOf('number');
     });
 
-    it('does not pass a Stryker worker cap to a non-TypeScript engine', async () => {
+    it('does not pass a worker cap to an engine that has no worker flag', async () => {
+      // cosmic-ray takes no worker count at all — it is the one engine with
+      // `honorsConcurrency: false`, and the same registry field that keeps
+      // `concurrency` out of its argv keeps it out of the ignored-options report.
       mockDiscover.mockReturnValue({ files: ['a.py'], discovered: 1, skipped: 0 });
       mockDetectEnv.mockReturnValue({ ...tsEnv, projectType: 'python' });
       mockAuditFile.mockResolvedValue(mrOf({}));
@@ -419,6 +423,39 @@ describe('handleTriageCall', () => {
       await handleTriageCall(req({ paths: ['src'], fileConcurrency: 4 }));
 
       expect(mockAuditFile.mock.calls[0][0].args.concurrency).toBeUndefined();
+    });
+
+    it('never raises cargo-mutants above the job count it would pick for itself', async () => {
+      // The cap divides the CORE count across the pool, which is the right
+      // ceiling for an engine whose default is core-scaled. cargo-mutants' is
+      // not: it defaults to 2 jobs for a MEMORY reason (each job wants its own
+      // multi-GB target directory), so on an 8-core box a pool of 2 computes a
+      // cap of 3 — and applying it verbatim would have RAISED cargo from 2 to 3,
+      // making the sweep heavier than the bug it was fixing. Found by running a
+      // real Rust sweep, not by reading the code.
+      mockDiscover.mockReturnValue({ files: ['a.rs'], discovered: 1, skipped: 0 });
+      mockDetectEnv.mockReturnValue({ ...tsEnv, projectType: 'rust' });
+      mockAuditFile.mockResolvedValue(mrOf({}));
+
+      await handleTriageCall(req({ paths: ['src'], fileConcurrency: 2 }));
+
+      const passed = mockAuditFile.mock.calls[0][0].args.concurrency as number;
+      expect(passed).toBeLessThanOrEqual(resolveCargoJobs(undefined, cpus().length));
+    });
+
+    it('caps cargo-mutants jobs per file, like every other engine that honours one', async () => {
+      // The cap used to be gated on `projectType === 'typescript'`, so Rust fell
+      // through to cargo-mutants' own default of 2 jobs per file. Underneath a
+      // default pool of 4 that is 8 concurrent cargo builds, each wanting its own
+      // multi-GB target directory — while the tool schema promised the three
+      // layers multiplied out to about the core count.
+      mockDiscover.mockReturnValue({ files: ['a.rs'], discovered: 1, skipped: 0 });
+      mockDetectEnv.mockReturnValue({ ...tsEnv, projectType: 'rust' });
+      mockAuditFile.mockResolvedValue(mrOf({}));
+
+      await handleTriageCall(req({ paths: ['src'], fileConcurrency: 4 }));
+
+      expect(mockAuditFile.mock.calls[0][0].args.concurrency).toBeTypeOf('number');
     });
 
     it('ignores a non-integer fileConcurrency when sizing the pool', async () => {
@@ -1676,18 +1713,18 @@ describe('partitionOutcomes', () => {
   });
 });
 
-describe('resolveStrykerConcurrency', () => {
+describe('resolvePerFileConcurrency', () => {
   it('returns undefined for a single-file pool', () => {
-    expect(resolveStrykerConcurrency(1, 8)).toBeUndefined();
+    expect(resolvePerFileConcurrency(1, 8)).toBeUndefined();
   });
   it('divides (cpus-1) across the pool, min 1', () => {
-    expect(resolveStrykerConcurrency(4, 8)).toBe(1); // floor(7/4)=1
-    expect(resolveStrykerConcurrency(2, 8)).toBe(3); // floor(7/2)=3
-    expect(resolveStrykerConcurrency(8, 2)).toBe(1); // floor(1/8)=0 → clamped to 1
+    expect(resolvePerFileConcurrency(4, 8)).toBe(1); // floor(7/4)=1
+    expect(resolvePerFileConcurrency(2, 8)).toBe(3); // floor(7/2)=3
+    expect(resolvePerFileConcurrency(8, 2)).toBe(1); // floor(1/8)=0 → clamped to 1
   });
   it('clamps the result to 64 on very-high-core machines', () => {
     // floor((200-1)/2) = 99 → clamped to 64 (Stryker's documented upper bound).
     // Kills the `Math.min(64, ...)` wrapping by ensuring an unclamped result exceeds 64.
-    expect(resolveStrykerConcurrency(2, 200)).toBe(64);
+    expect(resolvePerFileConcurrency(2, 200)).toBe(64);
   });
 });

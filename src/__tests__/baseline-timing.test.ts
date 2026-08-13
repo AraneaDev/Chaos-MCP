@@ -31,7 +31,7 @@ describe('projectEstimatedMs', () => {
 
 describe('projectTimingRange', () => {
   it('adds conservative startup and per-mutant overhead for command runners', () => {
-    const result = projectTimingRange(40, 500, 4, true);
+    const result = projectTimingRange(40, 500, 4, 'commandRunner');
     expect(result.optimisticMs).toBe(5_000);
     expect(result.estimatedMs).toBe(40_000);
     expect(result.upperBoundMs).toBe(70_000);
@@ -39,8 +39,8 @@ describe('projectTimingRange', () => {
   });
 
   it('uses a tighter range for native runners', () => {
-    const command = projectTimingRange(40, 500, 4, true);
-    const native = projectTimingRange(40, 500, 4, false);
+    const command = projectTimingRange(40, 500, 4, 'commandRunner');
+    const native = projectTimingRange(40, 500, 4, 'native');
     expect(native.estimatedMs).toBe(14_000);
     expect(native.upperBoundMs).toBe(23_125);
     expect(native.upperBoundMs).toBeLessThan(command.upperBoundMs);

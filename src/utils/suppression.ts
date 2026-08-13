@@ -827,6 +827,24 @@ export function restampSuppressions(
   });
 }
 
+/** What an `unsuppress` actually managed to drop — the `unmatched` list is the signal. */
+export interface RemoveSuppressionsResult {
+  /** Stored entries removed. */
+  removed: number;
+  /**
+   * Keys that matched NO stored entry, so they removed nothing.
+   *
+   * Reported because an unsuppress that misses is indistinguishable from one
+   * that works: the response carried no count either way, so a caller who named
+   * a `change` that did not match (which every cargo-mutants caller did, while
+   * the report rendered `change` differently from the way it was stored) saw a
+   * successful audit with the suppression still in place, and no way to tell
+   * why. Silence on a write that did nothing is the same failure the `rejected`
+   * tally exists to prevent on the add path.
+   */
+  unmatched: { line: number; mutator: string; change?: string }[];
+}
+
 /**
  * Drop entries from one file's suppressions.
  *
@@ -847,18 +865,36 @@ export function removeSuppressions(
   relFile: string,
   keys: { line: number; mutator: string; change?: string }[],
   configPath?: string,
-): Promise<void> {
-  if (keys.length === 0) return Promise.resolve();
+): Promise<RemoveSuppressionsResult> {
+  if (keys.length === 0) return Promise.resolve({ removed: 0, unmatched: [] });
   return withWorkspaceLock(workspaceRoot, configPath, () => {
     const data = readFile(workspaceRoot, configPath);
     const portableKey = toPortableKey(relFile);
     const legacyKey = storedKeyFor(data.entries, portableKey);
     const list = data.entries[legacyKey];
-    if (!Array.isArray(list)) return;
+    // Nothing stored for this file: every key asked for is a miss, and saying so
+    // is the whole point of the return value — see {@link RemoveSuppressionsResult}.
+    if (!Array.isArray(list)) return { removed: 0, unmatched: [...keys] };
     const dropExact = new Set(
       keys.filter((k) => k.change !== undefined).map((k) => identityKeyOf(k.mutator, k.change)),
     );
     const dropByMutator = new Set(keys.filter((k) => k.change === undefined).map((k) => k.mutator));
+    // Which keys actually hit something, and how many entries went. Counted from
+    // the ENTRIES a key matched, not from `list.length - kept.length`: `kept`
+    // also drops junk entries (below), and charging those to the caller's keys
+    // would report a removal they did not ask for.
+    const hitExact = new Set<string>();
+    const hitByMutator = new Set<string>();
+    let removed = 0;
+    for (const e of list) {
+      if (!e || typeof e !== 'object') continue;
+      const identity = identityKeyOf(e.mutator, e.change);
+      const byExact = dropExact.has(identity);
+      const byMutator = dropByMutator.has(e.mutator);
+      if (byExact) hitExact.add(identity);
+      if (byMutator) hitByMutator.add(e.mutator);
+      if (byExact || byMutator) removed += 1;
+    }
     // `readFile` only proves `entries` is an object — per-entry shape is never
     // checked on the write path, so a hand-edited or truncated file holding
     // `{"entries":{"src/a.ts":[null]}}` made this dereference throw, surfacing
@@ -880,5 +916,13 @@ export function removeSuppressions(
       data.entries = withoutKey(data.entries, portableKey);
     }
     writeFile(workspaceRoot, data, configPath);
+    return {
+      removed,
+      unmatched: keys.filter((k) =>
+        k.change === undefined
+          ? !hitByMutator.has(k.mutator)
+          : !hitExact.has(identityKeyOf(k.mutator, k.change)),
+      ),
+    };
   });
 }

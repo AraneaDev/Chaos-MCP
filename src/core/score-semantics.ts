@@ -130,6 +130,19 @@ export interface RejectionNote {
   candidates?: string[];
 }
 
+/**
+ * One `unsuppress` key that matched nothing, as the note renderer needs it.
+ *
+ * A key that matches no stored entry removes no stored entry, and the response
+ * used to be byte-identical to one where it worked. The `change` is carried
+ * because naming a wrong one is the likeliest way to miss.
+ */
+export interface UnsuppressMiss {
+  line: number;
+  mutator: string;
+  change?: string;
+}
+
 /** One tier-3 relocation, as the note renderer needs it. */
 export interface RelocationNote {
   /** The line the entry was stored against before the move. */
@@ -158,6 +171,7 @@ export function suppressionDriftNotes(
   relocated?: RelocationNote[],
   rejections?: RejectionNote[],
   relocatedCount?: number,
+  unsuppressMisses?: UnsuppressMiss[],
 ): string[] {
   const notes: string[] = [];
   if (drifted !== undefined && drifted > 0) {
@@ -186,6 +200,24 @@ export function suppressionDriftNotes(
         'request did not say which — re-issue it with a `change` naming the one you mean; or this ' +
         'run stopped early and never generated the mutant, in which case re-run with a larger ' +
         'timeoutMs before filing it. Check the line number against the survivor you meant to suppress.',
+    );
+  }
+  // The remove path's twin of `rejected` above: a key that matched no stored
+  // entry. Reported for the same reason and it is the more dangerous silence of
+  // the two, because the caller believes an entry is gone. `unsuppress` is how
+  // you undo a suppression you have decided was wrong, so a miss leaves a
+  // mutant excluded from the score by a reason its author has already retracted.
+  if (unsuppressMisses !== undefined && unsuppressMisses.length > 0) {
+    notes.push(
+      `${unsuppressMisses.length} \`unsuppress\` request(s) matched no stored suppression and removed nothing: ` +
+        unsuppressMisses
+          .map(
+            (m) =>
+              `line ${m.line} "${m.mutator}"${m.change === undefined ? '' : ` change "${m.change}"`}`,
+          )
+          .join('; ') +
+        '. A stored entry is matched by its mutator plus its `change`, never by its line, so check ' +
+        'the mutator spelling — or omit `change` to remove every entry for that mutator.',
     );
   }
   // An ambiguous refusal is only actionable if the caller learns WHICH changes
