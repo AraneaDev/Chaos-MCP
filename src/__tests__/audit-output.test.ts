@@ -151,9 +151,11 @@ describe('formatAuditOutput — verify mode suppression drift reporting', () => 
     expect(s.unsuppressedCount).toBe(2);
     expect(s.unsuppressMissed).toBe(1);
     expect(s.note as string).toContain('2 suppression(s) removed');
-    expect((response.content[1] as { text: string }).text).toContain(
-      'matched no stored suppression',
-    );
+    // The note must NAME the key, not merely say one missed: identifying which
+    // request did nothing is the whole value of reporting the miss at all.
+    const notes = (response.content[1] as { text: string }).text;
+    expect(notes).toContain('matched no stored suppression');
+    expect(notes).toContain('line 9 "ConditionalExpression" change "no such change"');
   });
 
   it('omits the unsuppress fields when the call made no such edit', () => {
