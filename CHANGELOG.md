@@ -2,6 +2,16 @@
 
 All notable changes to Chaos-MCP are documented in this file.
 
+## [3.0.1](https://github.com/AraneaDev/Chaos-MCP/compare/v3.0.0...v3.0.1) (2026-08-14)
+
+
+### Bug Fixes
+
+* **estimate:** judge a suite timeout by the cap the suite actually got ([9775c93](https://github.com/AraneaDev/Chaos-MCP/commit/9775c935cec6db042ad7ec130dec5c0234bd448c))
+* **review:** report suppression edits in verify mode, clamp measured startup ([9cb3f92](https://github.com/AraneaDev/Chaos-MCP/commit/9cb3f924bb1ad985440233b91d18ad50ed922475))
+* **rust:** correct mutant classification, timing and path reporting ([a7faaee](https://github.com/AraneaDev/Chaos-MCP/commit/a7faaee759450ca42911994a57feb1f2d9f4ccc1))
+* **rust:** correct mutant classification, timing and path reporting ([505acc9](https://github.com/AraneaDev/Chaos-MCP/commit/505acc9681233db2c9d0c46e543f372c75016073))
+
 ## [3.0.0](https://github.com/AraneaDev/Chaos-MCP/compare/v2.0.0...v3.0.0) (2026-08-10)
 
 
