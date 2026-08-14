@@ -197,7 +197,10 @@ function validateMutatorAllowlistArg(args: ToolArgs): string | null {
     return 'mutatorAllowlist entries must be non-empty strings.';
   }
   // A non-empty allowlist is itself a configuration error in v9.
-  return 'mutatorAllowlist is not supported in StrykerJS v9 — use mutatorDenylist instead, or supply your own stryker.config.json with explicit mutator settings.';
+  // Names the engine the option BELONGS to, not the one the target runs on: the
+  // argument is StrykerJS-specific, and on a .rs or .py target the old wording
+  // read as a claim about the engine that file would actually have used.
+  return 'mutatorAllowlist is a StrykerJS option and is not supported in StrykerJS v9 — use mutatorDenylist instead, or supply your own stryker.config.json with explicit mutator settings. Non-TypeScript targets do not accept it at all.';
 }
 
 /** enrich: must be a boolean when present. */

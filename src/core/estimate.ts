@@ -7,13 +7,26 @@ import { ENGINE_REGISTRY } from '../engines/registry.js';
 import { runShell } from '../utils/exec.js';
 import { ExecFailureError } from '../utils/exec-error.js';
 import { isCancel } from '../utils/cancel.js';
-import { resolveBaselineTestCommand, projectTimingRange } from './baseline-timing.js';
+import {
+  resolveBaselineTestCommand,
+  resolveBaselineWarmupCommand,
+  projectTimingRange,
+  timingModeFor,
+  type BaselineCommand,
+} from './baseline-timing.js';
 import type { ExecutionSession } from '../utils/execution.js';
 
 export type Fidelity = 'exact' | 'approx';
 
 export interface EstimateResult {
   target: string;
+  /**
+   * The workspace root `target` is relative to — present ONLY when that root is
+   * not the server's working directory, i.e. when `CHAOS_ALLOWED_ROOTS` put a
+   * second project in reach and `target` alone no longer says which one this is.
+   * See `reportableWorkspace` in utils/path-safety.ts.
+   */
+  workspace?: string;
   language: SupportedProjectType;
   mutants: number;
   fidelity: Fidelity;
@@ -202,11 +215,17 @@ async function computeCount(opts: EstimateOptions): Promise<EstimateResult> {
         // generics or trait bounds the audit routinely scores fewer mutants
         // than this. Saying "exact" without saying exact-at-what invited the
         // reading that the audit would report the same total.
+        // The trailing clause is conditional because the note is emitted whether
+        // or not timing was requested, and "Timing below is projected …" was
+        // printed on every count-only estimate — pointing at fields that were
+        // not there.
         note:
           'Exact count of the mutants cargo-mutants --list GENERATES for this file (no tests were run). ' +
           'The audit scores fewer: mutants that fail to compile are excluded from its denominator and ' +
-          'reported as `incompetent`. Timing below is projected over the generated count, since ' +
-          'unviable mutants still cost compile time.',
+          'reported as `incompetent`.' +
+          (opts.withTiming
+            ? ' Timing below is projected over the generated count, since unviable mutants still cost compile time.'
+            : ''),
       };
     } catch (error: unknown) {
       // ONLY a genuinely missing cargo-mutants may degrade to the heuristic.
@@ -229,6 +248,32 @@ async function computeCount(opts: EstimateOptions): Promise<EstimateResult> {
 
   // Every 'approx' language (TypeScript / Python / PHP) — heuristic from source.
   return heuristicEstimate(opts);
+}
+
+/**
+ * What a caller can actually do to make a too-expensive audit fit, for THIS
+ * language.
+ *
+ * The one sentence this replaced offered `lineScope`/`diffBase` to everyone.
+ * Only StrykerJS honours either (`supportsLineScope` in engines/registry.ts):
+ * an audit of a Rust, Python or PHP file returns `ignoredOptions: ["lineScope"]`
+ * and runs whole-file regardless, so the estimate was recommending the one
+ * remedy that provably does nothing — and, being the first two of three
+ * suggestions, the one a reader tries first.
+ */
+function scopeDownAdvice(projectType: SupportedProjectType): string {
+  if (ENGINE_REGISTRY[projectType]?.supportsLineScope) {
+    return 'narrow lineScope/diffBase, or use a larger budget';
+  }
+  // cosmic-ray is the one whole-file engine with a scope knob of its own, and
+  // it is worth naming: `testSelection` cuts the per-mutant suite, which is the
+  // multiplied term.
+  const lever = projectType === 'python' ? 'narrow cosmicray.testSelection, ' : '';
+  return (
+    `${ENGINE_REGISTRY[projectType]?.displayName ?? 'this engine'} always runs whole-file, so ` +
+    `lineScope/diffBase cannot shrink it: ${lever}raise timeoutMs, speed up the test suite, or ` +
+    'split the file'
+  );
 }
 
 /**
@@ -259,20 +304,58 @@ async function applyTiming(result: EstimateResult, opts: EstimateOptions): Promi
   // be resolved".
   const budgetMs = opts.timeoutMs;
   const baselineCapMs = Math.min(budgetMs ?? ESTIMATE_TIMEOUT_MS, ESTIMATE_TIMEOUT_MS);
+  const mode = timingModeFor(opts.projectType, testRunner);
+  const warmup = resolveBaselineWarmupCommand(opts.projectType);
+  // Declared outside the try so the catch can tell WHICH phase died: a timeout
+  // before this is set was the one-time build, not the suite, and the two lead
+  // to opposite conclusions about whether an audit can fit the budget.
+  let startupMsOverride: number | undefined;
+  // The cap the SUITE actually ran under. Equal to `baselineCapMs` until a
+  // warm-up spends part of it, and the catch below reasons about the limit the
+  // suite HIT: quoting the full cap after a warm-up overstates it, and — worse —
+  // compares the wrong number against the budget. Before the warm-up existed the
+  // two were always the same, which is why the catch could read `baselineCapMs`.
+  let suiteCapMs = baselineCapMs;
   try {
-    const t0 = Date.now();
-    const execOptions = {
-      cwd: opts.workDir,
-      timeoutMs: baselineCapMs,
-      signal: opts.signal,
-      killTree: true,
+    const run = async (c: BaselineCommand, timeoutMs: number): Promise<void> => {
+      const execOptions = { cwd: opts.workDir, timeoutMs, signal: opts.signal, killTree: true };
+      if (opts.executor) await opts.executor.run(c.command, c.args, execOptions);
+      else await runShell(c.command, c.args, execOptions);
     };
-    if (opts.executor) await opts.executor.run(cmd.command, cmd.args, execOptions);
-    else await runShell(cmd.command, cmd.args, execOptions);
+
+    // Build first, measure second (compiled languages only). The two costs are
+    // charged differently — the build once per audit, the suite once per mutant
+    // — so measuring them together and multiplying by the mutant count charges
+    // the build to every mutant. See `resolveBaselineWarmupCommand`.
+    if (warmup !== undefined) {
+      const w0 = Date.now();
+      await run(warmup, baselineCapMs);
+      startupMsOverride = Date.now() - w0;
+    }
+    // Whatever the warm-up did not spend — and the FULL cap when there was no
+    // warm-up, so a language without one keeps exactly the timeout it had (a
+    // caller passing `timeoutMs: 1` is asking for a 1ms cap and must still get
+    // one). When a warm-up did run, the remainder is floored at one second
+    // rather than zero: a non-positive timeout reads as "no limit" to some
+    // executors, and a baseline given no time at all should fail as a timeout —
+    // which the catch below explains — rather than run unbounded.
+    const remainingCapMs =
+      startupMsOverride === undefined
+        ? baselineCapMs
+        : Math.max(1_000, baselineCapMs - startupMsOverride);
+    suiteCapMs = remainingCapMs;
+
+    const t0 = Date.now();
+    await run(cmd, remainingCapMs);
     const baselineMs = Date.now() - t0;
     const concurrency = opts.concurrency ?? 1;
-    const commandRunner = opts.projectType === 'typescript' && testRunner === 'command';
-    const projection = projectTimingRange(result.mutants, baselineMs, concurrency, commandRunner);
+    const projection = projectTimingRange(
+      result.mutants,
+      baselineMs,
+      concurrency,
+      mode,
+      startupMsOverride,
+    );
     result.baselineMs = baselineMs;
     result.concurrency = concurrency;
     result.optimisticMs = projection.optimisticMs;
@@ -284,7 +367,7 @@ async function applyTiming(result: EstimateResult, opts: EstimateOptions): Promi
       result.fitsBudget = projection.upperBoundMs <= budgetMs;
       result.recommendation = result.fitsBudget
         ? 'Estimated to fit the configured audit budget.'
-        : 'Upper estimate exceeds the configured audit budget; narrow lineScope/diffBase or use a larger budget.';
+        : `Upper estimate exceeds the configured audit budget; ${scopeDownAdvice(opts.projectType)}.`;
     }
   } catch (err: unknown) {
     // Cancellation must escape. This catch is a best-effort fallback for a
@@ -308,20 +391,38 @@ async function applyTiming(result: EstimateResult, opts: EstimateOptions): Promi
     // recommendation says only what actually happened.
     if (err instanceof ExecFailureError && err.code === 'TIMEOUT' && budgetMs !== undefined) {
       result.budgetMs = budgetMs;
-      if (baselineCapMs >= budgetMs) {
+      // The warm-up build timed out, so nothing about the SUITE was measured.
+      // The two branches below both reason from "one unmutated run of the suite
+      // costs X", and neither is entitled to that here: the cost that blew the
+      // cap is paid once per audit, not once per mutant, so it cannot support a
+      // `fitsBudget: false` verdict the way a slow suite can.
+      if (warmup !== undefined && startupMsOverride === undefined) {
+        result.recommendation =
+          `Building the workspace's tests alone exceeded the ${baselineCapMs}ms estimation cap, so the ` +
+          `test suite was never timed and no estimate was produced. That build is paid ONCE per audit ` +
+          `rather than once per mutant, so it does not by itself rule out the ${budgetMs}ms budget — ` +
+          `but an audit has to pay it before the first mutant runs. Pre-build the workspace, or raise ` +
+          `timeoutMs and re-estimate.`;
+        return;
+      }
+      // `suiteCapMs`, not `baselineCapMs`: the verdict below says one unmutated
+      // run of the suite costs more than the whole budget, and only the limit the
+      // suite actually hit is evidence for that. With a 60s cap, a 50s build and
+      // a suite killed at the remaining 10s, the full cap would assert
+      // `fitsBudget: false` against a 60s budget on the strength of a 10s
+      // observation.
+      if (suiteCapMs >= budgetMs) {
         result.fitsBudget = false;
         result.recommendation =
-          `The baseline test run alone exceeded ${baselineCapMs}ms, so a mutation audit — which runs ` +
-          `the suite once per mutant — cannot fit this budget. Speed up or scope down the test suite ` +
-          `(cosmicray.testSelection, a smaller lineScope/diffBase), or raise timeoutMs.`;
+          `The baseline test run alone exceeded ${suiteCapMs}ms, so a mutation audit — which runs ` +
+          `the suite once per mutant — cannot fit this budget. ${scopeDownAdvice(opts.projectType)}.`;
         return;
       }
       result.recommendation =
-        `The baseline test run alone exceeded the ${baselineCapMs}ms estimation cap, so its duration ` +
+        `The baseline test run alone exceeded the ${suiteCapMs}ms estimation cap, so its duration ` +
         `could not be measured and no timing estimate was produced. A suite that slow makes a mutation ` +
-        `audit — which runs it once per mutant — expensive against the ${budgetMs}ms budget; speed up ` +
-        `or scope down the test suite (cosmicray.testSelection, a smaller lineScope/diffBase) before ` +
-        `committing to a full run.`;
+        `audit — which runs it once per mutant — expensive against the ${budgetMs}ms budget; ` +
+        `${scopeDownAdvice(opts.projectType)} before committing to a full run.`;
       return;
     }
     result.note += ' (timing unavailable)';

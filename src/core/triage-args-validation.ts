@@ -212,19 +212,31 @@ export const TRIAGE_ARG_VALIDATORS: ((args: ToolArgs) => string | null)[] = [
 ];
 
 /**
- * Per-file StrykerJS worker cap so parallel triage doesn't oversubscribe CPU.
- * Clamped to 1–64 to stay within StrykerJS's documented concurrency range.
+ * Per-file worker cap so parallel triage doesn't oversubscribe CPU. Clamped to
+ * 1–64, which is within every engine's documented concurrency range.
+ *
+ * Applied to each engine that declares `honorsConcurrency` (StrykerJS's
+ * `--concurrency`, cargo-mutants' `-j`, Infection's `--threads`) — see
+ * `buildPerFileArgs` in triage/audit-one.ts, which used to apply it to
+ * TypeScript alone and left cargo-mutants running its own default of 2 jobs per
+ * file underneath a pool of 4.
  *
  * This bounds only the SECOND of three multiplying layers. The full product is
- * `fileConcurrency × strykerConcurrency × vitestWorkers`, and this function has
- * no say over the third: each mutant's test run is a fresh `npx vitest`, which
- * forks its own pool. That third factor used to be unbounded, which is how a
- * correctly-computed `strykerConcurrency` of 1 still put ~80 node processes and
- * ~6 GB on an 8 GB box. It is now pinned to a single worker at the command
- * itself — see `VITEST_SINGLE_WORKER` in utils/shell-quote.ts. Keep the two in
- * mind together; capping either one alone does not bound the total.
+ * `fileConcurrency × perFileConcurrency × testRunnerWorkers`, and this function
+ * has no say over the third: for StrykerJS each mutant's test run is a fresh
+ * `npx vitest`, which forks its own pool. That third factor used to be
+ * unbounded, which is how a correctly-computed cap of 1 still put ~80 node
+ * processes and ~6 GB on an 8 GB box. It is now pinned to a single worker at the
+ * command itself — see `VITEST_SINGLE_WORKER` in utils/shell-quote.ts. Keep the
+ * two in mind together; capping either one alone does not bound the total.
+ *
+ * The third layer is pinned for vitest ONLY. `cargo test` and `cargo build`
+ * parallelise internally across all cores and take no instruction from here, so
+ * a Rust sweep's true ceiling is still `fileConcurrency` concurrent cargo
+ * builds, each free to use the machine. That is the honest reason the schema no
+ * longer claims the three layers multiply out to the core count.
  */
-export function resolveStrykerConcurrency(poolSize: number, cpuCount: number): number | undefined {
+export function resolvePerFileConcurrency(poolSize: number, cpuCount: number): number | undefined {
   if (poolSize <= 1) return undefined;
   return Math.min(64, Math.max(1, Math.floor((cpuCount - 1) / poolSize)));
 }

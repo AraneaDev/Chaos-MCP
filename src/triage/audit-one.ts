@@ -13,6 +13,7 @@
  */
 import { resolve } from 'path';
 import { readFileSync } from 'fs';
+import { cpus } from 'node:os';
 import { auditFile } from '../audit/audit-file.js';
 import { createSandbox } from '../utils/sandbox.js';
 import type { EnvironmentInfo, SupportedProjectType } from '../utils/project-detector.js';
@@ -60,8 +61,14 @@ export interface TriageFileDeps {
   args: ToolArgs;
   /** Validated git ref when the sweep is diff-scoped, else `undefined`. */
   diffBase: string | undefined;
-  /** Per-file StrykerJS worker cap, or `undefined` when the pool is serial. */
-  strykerConcurrency: number | undefined;
+  /**
+   * Per-file worker cap for engines that honour one, or `undefined` when the
+   * pool is serial and no cap is needed. Named for what it bounds rather than
+   * for StrykerJS: it applies to every engine with `honorsConcurrency`, which is
+   * cargo-mutants' `-j` and Infection's `--threads` as well as Stryker's
+   * `--concurrency`.
+   */
+  perFileConcurrency: number | undefined;
   /** How many survivors to inline per row; 0 means scores only. */
   survivorsPerFile: number;
   /**
@@ -350,10 +357,33 @@ function buildPerFileArgs(
         : fileBudgetMs,
     mutatorDenylist: deps.args.mutatorDenylist,
   };
-  // A2: include Stryker concurrency cap only for TypeScript files and only
-  // when the pool size is > 1 (strykerConcurrency is defined).
-  if (deps.strykerConcurrency !== undefined && projectType === 'typescript') {
-    perFileArgs.concurrency = deps.strykerConcurrency;
+  // A2: cap the per-file worker count when the sweep runs more than one file at
+  // a time (`perFileConcurrency` is defined only then).
+  //
+  // Gated on the ENGINE's own `honorsConcurrency` flag, not on `=== 'typescript'`.
+  // The old spelling left the cap unapplied for every other language, and the
+  // one where that hurts is Rust: cargo-mutants was left at its own default of
+  // `-j 2`, so a default sweep ran fileConcurrency 4 × 2 cargo jobs = 8
+  // concurrent cargo builds, each wanting its own multi-GB target directory,
+  // while the tool schema promised the three layers multiplied out to roughly
+  // the core count. cosmic-ray has no worker flag at all and is excluded by the
+  // same registry field that already excludes it from the ignored-options report.
+  //
+  // `Math.min` with the engine's own default is what makes this a CAP rather
+  // than an instruction. `perFileConcurrency` divides the CORE count across the
+  // pool, which is the right ceiling for an engine whose default is core-scaled
+  // (Stryker auto-detects cores; Infection asks for `--threads=max`). It is the
+  // wrong number for cargo-mutants, whose low default answers a MEMORY question
+  // instead — each job wants its own target directory — so on an 8-core box a
+  // pool of 2 computes a cap of 3 and would have RAISED cargo from 2 jobs to 3.
+  // A ceiling that can raise the thing it bounds is not a ceiling.
+  const engine = ENGINE_REGISTRY[projectType];
+  if (deps.perFileConcurrency !== undefined && engine.honorsConcurrency) {
+    const ownDefault = engine.defaultWorkers?.(cpus().length);
+    perFileArgs.concurrency =
+      ownDefault === undefined
+        ? deps.perFileConcurrency
+        : Math.min(deps.perFileConcurrency, ownDefault);
   }
   return perFileArgs;
 }

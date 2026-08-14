@@ -101,8 +101,14 @@ describe('buildResultPayload — change strings', () => {
     expect(payload.survivors[0].changes).toEqual(['a > b → a >= b']);
   });
 
-  it('falls back to the mutated text alone when there is no original', () => {
-    // cargo-mutants reports a description with no "before" side.
+  it('keeps the arrow on a one-sided change, so display matches the stored identity', () => {
+    // A mutant with a replacement but no recoverable original — a Stryker mutant
+    // whose source span could not be sliced. The displayed string is now built
+    // by the SAME function that builds a suppression's identity (`changeOf`), so
+    // the `change` a caller copies out of `changes` is the one that matches on
+    // disk. It used to be rendered here without the arrow while
+    // suppressions.json stored `"→ replace foo with bar"`, and an `unsuppress`
+    // naming the displayed form matched nothing and reported nothing.
     const payload = buildResultPayload(
       result({
         vulnerabilities: [
@@ -110,7 +116,7 @@ describe('buildResultPayload — change strings', () => {
         ],
       }),
     );
-    expect(payload.survivors[0].changes).toEqual(['replace foo with bar']);
+    expect(payload.survivors[0].changes).toEqual(['→ replace foo with bar']);
   });
 });
 

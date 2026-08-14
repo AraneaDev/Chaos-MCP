@@ -825,13 +825,24 @@ describe('RustEngine', () => {
     );
   });
 
-  it('A1: text path sets mutated from the cargo-mutants description', async () => {
+  it('carries the cargo-mutants description as the mutator, and no change halves', async () => {
+    // Was "A1: text path sets mutated from the cargo-mutants description", and
+    // it asserted the duplication this engine no longer emits: `mutated` held a
+    // byte-identical copy of `mutator`. Two things came of that copy. The
+    // survivor's `changes` array repeated the `mutators` keys verbatim, and the
+    // suppression identity became the one-sided `"→ <description>"` — a string
+    // the report rendered WITHOUT its arrow, so the `change` a caller copied out
+    // of a report never matched the one on disk and `unsuppress` silently did
+    // nothing. cargo-mutants reports no replacement text; mutator-only identity
+    // is the honest shape and loses nothing, because the mutator IS the
+    // description.
     const stdout =
       'MISSED   src/lib.rs:42:9: replace add -> sub with Default::default()\n1 mutant tested: 1 missed\n';
     mockRunShell.mockResolvedValue(makeExecResult(stdout));
     const result = await engine.run('src/lib.rs');
     const vuln = result.vulnerabilities.find((v) => v.line === 42);
-    expect(vuln?.mutated).toBe('replace add -> sub with Default::default()');
+    expect(vuln?.mutator).toBe('replace add -> sub with Default::default()');
+    expect(vuln?.mutated).toBeUndefined();
     expect(vuln?.original).toBeUndefined();
   });
 
@@ -842,7 +853,7 @@ describe('RustEngine', () => {
     mockRunShell.mockResolvedValue(makeExecResult(stdout));
     const result = await engine.run('src/lib.rs');
     const vuln = result.vulnerabilities.find((v) => v.line === 42);
-    expect(vuln?.mutated).toBe('replace add -> sub');
+    expect(vuln?.mutator).toBe('replace add -> sub');
   });
 
   it('trims surrounding whitespace from the text-path description', async () => {
@@ -852,7 +863,7 @@ describe('RustEngine', () => {
     mockRunShell.mockResolvedValue(makeExecResult(stdout));
     const result = await engine.run('src/lib.rs');
     const vuln = result.vulnerabilities.find((v) => v.line === 9);
-    expect(vuln?.mutated).toBe('replace x -> y');
+    expect(vuln?.mutator).toBe('replace x -> y');
   });
 
   it('truncates a long stderr tail to 500 chars in the no-output failure message', async () => {
@@ -939,7 +950,6 @@ describe('RustEngine', () => {
     // would otherwise re-key the same mutant every time), but the semantic
     // "... in compute_score" part of the mutation text must be preserved.
     expect(result.vulnerabilities[0].mutator).toBe('replace > with >= in compute_score');
-    expect(result.vulnerabilities[0].mutated).toBe('replace > with >= in compute_score');
     expect(result.vulnerabilities[0].mutator).not.toMatch(/build \+/);
   });
 

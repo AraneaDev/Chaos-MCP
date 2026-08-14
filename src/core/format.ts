@@ -14,6 +14,7 @@ import { enrichGroup, SEVERITY_RANK, type Severity, type Enrichment } from './en
 import type { GateResult } from './gate.js';
 import { warn } from '../utils/logger.js';
 import { isNoCoverage } from '../utils/no-coverage.js';
+import { changeOf } from '../utils/mutant-identity.js';
 // Score/suppression vocabulary lives in its own leaf module: `triage.ts` renders
 // an independent leaderboard and needs the same meanings without importing this
 // renderer. Import direction is one-way — score-semantics.ts never imports here.
@@ -24,6 +25,7 @@ import {
   type LineGroup,
   type RelocationNote,
   type RejectionNote,
+  type UnsuppressMiss,
 } from './score-semantics.js';
 
 export interface EnrichContext {
@@ -39,15 +41,27 @@ interface LineAcc {
   changes: Set<string>;
 }
 
-/** Build a single-line "original → mutated" change string, degrading gracefully. */
+/**
+ * The displayed change string for one mutant.
+ *
+ * Delegates to {@link changeOf}, the function that builds a suppression's
+ * IDENTITY, because the two must produce the same string and used to not. This
+ * module had its own copy that dropped the arrow on a one-sided change and
+ * applied no length cap, so a mutant with a replacement but no recoverable
+ * original (every cargo-mutants mutant, and any Stryker mutant whose source
+ * span could not be sliced) displayed `true` while suppressions.json held
+ * `→ true`, and a change over 120 characters displayed in full while the stored
+ * identity was capped. The tool docs tell a caller to pass "the `original →
+ * mutated` string from a survivor's `changes`" as `change`; against either
+ * mismatch that string matched nothing, and `unsuppress` reported no error
+ * because a key that matches nothing removes nothing.
+ *
+ * Display and identity are therefore one function now. Anything that changes
+ * how a change is rendered changes what a suppression matches, which is the
+ * coupling that was already true and merely unwritten.
+ */
 function buildChange(original?: string, mutated?: string): string | undefined {
-  const norm = (s?: string) => (s === undefined ? '' : s.replace(/\s+/g, ' ').trim());
-  const o = norm(original);
-  const m = norm(mutated);
-  if (o && m) return `${o} → ${m}`;
-  if (m) return m; // mutated-only (e.g. Rust description) or empty original
-  if (o) return o; // mutated empty — surface the original at least
-  return undefined;
+  return changeOf({ original, mutated });
 }
 
 /** Cap a change set to CHANGES_CAP distinct entries, appending a "…N more" sentinel. */
@@ -191,19 +205,32 @@ function capGroups(
 /**
  * Filter out line groups whose severity is below `floor`.
  * Only has an effect when `enriched` is true (severity data is present).
- * Returns the kept groups and the count of dropped groups.
+ * Returns the kept groups, the count of dropped groups, and how many of those
+ * were dropped for having NO severity at all.
+ *
+ * `unknown` ranks below `low`, so any floor drops it. That is right when the
+ * severity is genuinely low and wrong when it is merely unmeasured: an
+ * unclassifiable mutant is missing information, not evidence of low risk, and
+ * dropping it hides a real gap behind a filter the caller thinks is ranking by
+ * risk. The count is separated so the note can say which of the two happened —
+ * see `unknownFloorNote`.
  */
 function floorGroups(
   groups: LineGroup[],
   floor: Severity | undefined,
   enriched: boolean,
-): { groups: LineGroup[]; filtered: number } {
-  if (!enriched || !floor) return { groups, filtered: 0 };
+): { groups: LineGroup[]; filtered: number; filteredUnknown: number } {
+  if (!enriched || !floor) return { groups, filtered: 0, filteredUnknown: 0 };
   const min = SEVERITY_RANK[floor];
-  const kept = groups.filter(
-    (g) => SEVERITY_RANK[(g as EnrichedGroup).severity ?? 'unknown'] >= min,
-  );
-  return { groups: kept, filtered: groups.length - kept.length };
+  const severityOf = (g: LineGroup): Severity => (g as EnrichedGroup).severity ?? 'unknown';
+  const kept = groups.filter((g) => SEVERITY_RANK[severityOf(g)] >= min);
+  return {
+    groups: kept,
+    filtered: groups.length - kept.length,
+    filteredUnknown: groups
+      .filter((g) => SEVERITY_RANK[severityOf(g)] < min)
+      .filter((g) => severityOf(g) === 'unknown').length,
+  };
 }
 
 /** The shared group pipeline's output, consumed by both entry points. */
@@ -302,6 +329,18 @@ function prepareGroups(result: MutationResult, opts: PrepareGroupsOpts): Prepare
   if (!enriched && opts.severityFloor) {
     enrichNote =
       'severityFloor was ignored: it requires enrichment (severity classification), which is off for this run.';
+  }
+  // Appended rather than replacing: the unclassified note explains WHY a group
+  // has no severity, and this one explains what the floor then did with it. A
+  // caller who sees only the first can reasonably assume the group is still in
+  // the list.
+  const droppedUnknown = sFloor.filteredUnknown + nFloor.filteredUnknown;
+  if (droppedUnknown > 0) {
+    const sentence =
+      `${droppedUnknown} of the hidden group(s) had severity "unknown" — unclassified, which ranks ` +
+      'below every floor. That is an absence of information, not a low-risk verdict: re-run without ' +
+      'severityFloor to see them.';
+    enrichNote = enrichNote === undefined ? sentence : `${enrichNote} ${sentence}`;
   }
 
   const sCap = capGroups(survivors, opts.maxSurvivors);
@@ -420,6 +459,12 @@ export function formatResultAsText(
     relocations?: RelocationNote[];
     /** Refused `suppress` requests, with candidates for an ambiguous one. */
     rejections?: RejectionNote[];
+    /** Stored entries an `unsuppress` argument actually removed. */
+    unsuppressedCount?: number;
+    /** `unsuppress` keys that matched no stored entry, so they removed nothing. */
+    unsuppressMisses?: UnsuppressMiss[];
+    /** Workspace root to name alongside the target; see {@link ResultPayload.workspace}. */
+    workspace?: string;
     /**
      * The gate verdict for this run, when the caller passed `minScore`. Must be
      * the same {@link GateResult} the payload carries — pass `evaluateGate`'s
@@ -447,7 +492,10 @@ export function formatResultAsText(
   // and "100%" would read as proven coverage (audit M3).
   const displayedScore = displayMutationScore(result);
   const lines: string[] = [
-    `Chaos-MCP Audit Report: ${result.target}`,
+    // The workspace is named in the header rather than on its own line: it
+    // qualifies the target, and a reader scanning for "which file, which
+    // project" should not have to find the answer in two places.
+    `Chaos-MCP Audit Report: ${result.target}${opts.workspace === undefined ? '' : ` (in ${opts.workspace})`}`,
     `Mutation score: ${displayedScore} (${result.killed}/${result.totalMutants} killed, ${result.survived} survived)`,
   ];
   // Directly under the score, because a FAILED gate reframes every number above
@@ -480,8 +528,12 @@ export function formatResultAsText(
     opts.relocations,
     opts.rejections,
     opts.relocatedSuppressions,
+    opts.unsuppressMisses,
   )) {
     lines.push(`Note: ${n}`);
+  }
+  if (opts.unsuppressedCount && opts.unsuppressedCount > 0) {
+    lines.push(`Note: ${opts.unsuppressedCount} suppression(s) removed by \`unsuppress\`.`);
   }
 
   if (prepared.clean) {
@@ -547,6 +599,13 @@ export function formatResultAsText(
 
 export interface ResultPayload {
   target: string;
+  /**
+   * The workspace root `target` is relative to — present ONLY when that root is
+   * not the server's working directory, i.e. when `CHAOS_ALLOWED_ROOTS` put a
+   * second project in reach and `target` alone no longer says which one this is.
+   * See `reportableWorkspace` in utils/path-safety.ts.
+   */
+  workspace?: string;
   mutationScore: string;
   summary: { total: number; killed: number; survived: number; worstSeverity?: Severity };
   survivors: LineGroup[];
@@ -587,6 +646,17 @@ export interface ResultPayload {
   orphanedSuppressions?: number;
   /** Entries a `suppress` argument asked for that the write refused to store. */
   rejectedSuppressions?: number;
+  /** Stored entries an `unsuppress` argument actually removed. */
+  unsuppressedCount?: number;
+  /**
+   * `unsuppress` keys that matched no stored entry, so they removed nothing.
+   *
+   * A COUNT, with the offending keys named in `note` — the same shape
+   * `rejectedSuppressions` uses for the refusals on the add side. A JSON
+   * consumer needs the signal that a write did not land; it does not need the
+   * list twice.
+   */
+  unsuppressMissed?: number;
   /**
    * Stored suppressions applied at a DIFFERENT line than the one recorded,
    * because an edit moved them. The entry still filtered its mutant and the
@@ -622,6 +692,12 @@ export interface ResultPayloadOpts {
   relocations?: RelocationNote[];
   /** Refused `suppress` requests, with candidates for an ambiguous one. */
   rejections?: RejectionNote[];
+  /** Stored entries an `unsuppress` argument actually removed. */
+  unsuppressedCount?: number;
+  /** `unsuppress` keys that matched no stored entry, so they removed nothing. */
+  unsuppressMisses?: UnsuppressMiss[];
+  /** Workspace root to name alongside `target`; see {@link ResultPayload.workspace}. */
+  workspace?: string;
   gate?: GateResult;
 }
 
@@ -658,6 +734,7 @@ export function buildResultPayload(
   // non-numeric score as passing, so gates are unaffected).
   const payload: ResultPayload = {
     target: result.target,
+    ...(opts.workspace === undefined ? {} : { workspace: opts.workspace }),
     mutationScore: displayMutationScore(result),
     summary,
     survivors,
@@ -738,6 +815,20 @@ export function buildResultPayload(
   if (opts.relocatedSuppressions && opts.relocatedSuppressions > 0) {
     payload.relocatedSuppressions = opts.relocatedSuppressions;
   }
+  // Reported even though it is the SUCCESS case: an `unsuppress` that worked and
+  // one that matched nothing produced identical responses, so the count is what
+  // makes the write observable. The miss list is rendered by
+  // `suppressionDriftNotes` alongside its siblings.
+  if (opts.unsuppressedCount && opts.unsuppressedCount > 0) {
+    payload.unsuppressedCount = opts.unsuppressedCount;
+    payload.note += ` ${opts.unsuppressedCount} suppression(s) removed by \`unsuppress\`.`;
+  }
+  // The failure count is structured too, not only narrated: `unsuppressedCount`
+  // alone cannot express "you asked to remove one and none matched", which is
+  // exactly the case a consumer must not miss.
+  if (opts.unsuppressMisses && opts.unsuppressMisses.length > 0) {
+    payload.unsuppressMissed = opts.unsuppressMisses.length;
+  }
   for (const n of suppressionDriftNotes(
     opts.driftedSuppressions,
     opts.unverifiedSuppressions,
@@ -746,6 +837,7 @@ export function buildResultPayload(
     opts.relocations,
     opts.rejections,
     opts.relocatedSuppressions,
+    opts.unsuppressMisses,
   )) {
     payload.note += ` ${n}`;
   }

@@ -26,7 +26,7 @@ import {
   TRIAGE_ARG_VALIDATORS,
   hasTriagePaths,
   hasTriageDiffBase,
-  resolveStrykerConcurrency,
+  resolvePerFileConcurrency,
 } from './core/triage-args-validation.js';
 import { resolveTriageTargets } from './triage/discover-targets.js';
 import { toolError, mapHandlerFailure, toStructuredContent } from './core/tool-result.js';
@@ -220,7 +220,7 @@ export async function handleTriageCall(
       cfg,
       args,
       diffBase,
-      strykerConcurrency: resolveStrykerConcurrency(poolSize, cpuCount),
+      perFileConcurrency: resolvePerFileConcurrency(poolSize, cpuCount),
       survivorsPerFile,
       suppressionCache: new Map(),
       deadline,

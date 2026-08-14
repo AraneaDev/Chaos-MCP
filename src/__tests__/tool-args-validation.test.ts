@@ -335,8 +335,10 @@ describe('validateToolArgs — mutatorAllowlist', () => {
   });
 
   it('rejects even a well-formed allowlist, because v9 cannot express one', () => {
+    // Names the engine the OPTION belongs to. On a .rs or .py target the old
+    // wording read as a claim about the engine that file would actually run on.
     expect(message({ mutatorAllowlist: ['ConditionalExpression'] })).toBe(
-      'mutatorAllowlist is not supported in StrykerJS v9 — use mutatorDenylist instead, or supply your own stryker.config.json with explicit mutator settings.',
+      'mutatorAllowlist is a StrykerJS option and is not supported in StrykerJS v9 — use mutatorDenylist instead, or supply your own stryker.config.json with explicit mutator settings. Non-TypeScript targets do not accept it at all.',
     );
   });
 });

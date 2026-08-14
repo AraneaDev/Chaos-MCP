@@ -50,6 +50,12 @@ export function normalizeChange(text: string): string {
  * A one-sided change keeps its arrow (`"→ true"`, `"a > 0 →"`) so the two cases
  * cannot collide with each other or with a two-sided change: without it, a
  * mutated-only `"true"` and an original-only `"true"` would be one identity.
+ *
+ * This is also the string a caller SEES: `buildChange` in core/format.ts renders
+ * a survivor's `changes` through this function, so the value copied out of a
+ * report is the value a suppression matches on. It kept its own near-copy until
+ * the two drifted (no arrow, no cap) and made the documented `change` argument
+ * unmatchable; do not reintroduce a second renderer.
  */
 export function changeOf(v: Pick<Vulnerability, 'original' | 'mutated'>): string | undefined {
   const o = v.original === undefined ? '' : normalizeChange(v.original);

@@ -7,6 +7,7 @@ import { RustEngine } from './rust.js';
 import { PhpEngine } from './php.js';
 import { canonicalizePythonMutator } from './python/canonicalize.js';
 import { canonicalizeRustMutator } from './rust/canonicalize.js';
+import { resolveCargoJobs } from './rust/args.js';
 import { canonicalizePhpMutator } from './php/canonicalize.js';
 import type {
   EnvironmentInfo,
@@ -79,6 +80,21 @@ export interface EngineDescriptor {
    * whether `concurrency` is reported to the caller as an ignored option (M1).
    */
   honorsConcurrency: boolean;
+
+  /**
+   * The worker count this engine picks for ITSELF when the caller names none,
+   * as a function of the core count. Absent when that default already scales
+   * with the cores (StrykerJS auto-detects them; Infection asks for
+   * `--threads=max`), because a core-derived cap can only lower those.
+   *
+   * Declared for cargo-mutants alone, and that is the point: its default is
+   * deliberately LOW for a reason that has nothing to do with cores — each job
+   * wants its own multi-GB `target/` — so the triage sweep's cap, which divides
+   * the core count across the file pool, computes a number ABOVE it on any
+   * roomy machine. `buildPerFileArgs` (triage/audit-one.ts) takes the minimum of
+   * the two, so the sweep can lower an engine's worker count and never raise it.
+   */
+  defaultWorkers?: (cpuCount: number) => number;
 
   /**
    * Auto-prebuild default: when `marker` exists at the workspace root, run
@@ -253,6 +269,9 @@ export const ENGINE_REGISTRY: Record<SupportedProjectType, EngineDescriptor> = {
     configKey: 'rust',
     supportsLineScope: false,
     honorsConcurrency: true,
+    // The same policy `RustEngine` applies to a single-file audit, so a sweep
+    // never asks cargo for more jobs than a lone audit would.
+    defaultWorkers: (cpuCount) => resolveCargoJobs(undefined, cpuCount),
     prebuild: { marker: 'Cargo.toml', command: 'cargo check' },
     dependencyDirs: DEPENDENCY_DIRS.rust,
     syntaxFamily: 'c',
@@ -269,7 +288,7 @@ export const ENGINE_REGISTRY: Record<SupportedProjectType, EngineDescriptor> = {
     // field, so an unclassified Rust mutant is the TOOL's limit, not this
     // server's missing table entry. Unrelated to `estimateFidelity` above.
     unclassifiedMutatorNote:
-      'some mutants could not be classified — cargo-mutants reports a free-text description rather than a per-mutant operator, and this one carried no recognizable operator (severity reported as "unknown").',
+      'some mutants could not be classified — cargo-mutants reports a free-text description rather than a per-mutant operator, and those descriptions were not in a shape this server recognises (severity reported as "unknown"). The five shapes it does read are an operator swap, a deleted `!`, a deleted match arm, a match guard forced to a constant, and a whole-body replacement.',
     canonicalizeMutator: canonicalizeRustMutator,
   },
   php: {

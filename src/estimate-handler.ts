@@ -9,6 +9,7 @@ import {
   toStructuredContent,
 } from './core/tool-result.js';
 import { validateFilePath } from './utils/file-path.js';
+import { reportableWorkspace } from './utils/path-safety.js';
 import { validateTimeoutMs } from './core/tool-args-validation.js';
 import { supportedTypeOf, anchorTarget } from './audit/target.js';
 import { estimateAudit, estimateNeedsSandbox } from './core/estimate.js';
@@ -207,9 +208,16 @@ export async function handleEstimateCall(
         // the caller a successful estimate for work it had already abandoned.
         if (ctx?.signal?.aborted) return toolError('Operation cancelled.');
 
+        // Stamped here rather than inside `estimateAudit`: which workspace a
+        // target belongs to is a property of how the handler resolved the path,
+        // and the estimator has no business reading the process cwd. Absent for
+        // a single-root server, so an existing estimate is byte-identical.
+        const workspace = reportableWorkspace(env.workspaceRoot);
+        const reported = workspace === undefined ? result : { ...result, workspace };
+
         return {
-          content: [{ type: 'text', text: JSON.stringify(result) }],
-          structuredContent: toStructuredContent(result),
+          content: [{ type: 'text', text: JSON.stringify(reported) }],
+          structuredContent: toStructuredContent(reported),
         };
       } finally {
         await executor?.dispose();

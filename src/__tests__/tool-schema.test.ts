@@ -478,6 +478,7 @@ describe('schema structural invariants', () => {
 describe('audit outputSchema ↔ ResultPayload parity', () => {
   const PAYLOAD_FIELDS: Record<keyof ResultPayload, true> = {
     target: true,
+    workspace: true,
     mutationScore: true,
     summary: true,
     survivors: true,
@@ -498,6 +499,8 @@ describe('audit outputSchema ↔ ResultPayload parity', () => {
     unverifiedSuppressions: true,
     orphanedSuppressions: true,
     rejectedSuppressions: true,
+    unsuppressedCount: true,
+    unsuppressMissed: true,
     relocatedSuppressions: true,
     gate: true,
     incompetent: true,
@@ -1062,10 +1065,15 @@ describe('parameter documentation facts', () => {
 describe('supported-extension prose', () => {
   const AUDIT = TOOL_DEFINITION.inputSchema.properties as Record<string, { description: string }>;
 
-  it('renders the audit filePath list byte-identically to the hand-written prose', () => {
-    expect(AUDIT.filePath.description).toBe(
-      'Workspace-relative path to the file to audit. ' +
-        'Must end in .ts, .js, .tsx, .jsx, .mjs, .cjs, .mts, .cts, .py, .rs, or .php. ' +
+  it('renders the audit filePath extension list byte-identically to the hand-written prose', () => {
+    // Pins the EXTENSION CLAUSE, which is what this block exists for and what
+    // the registry renders. It used to pin the whole description, including the
+    // sentence around it — so correcting that sentence (it called the path
+    // "workspace-relative" when it is resolved against the server's working
+    // directory, the very confusion the `workspace` field exists to settle)
+    // failed a test about extension rendering.
+    expect(AUDIT.filePath.description).toContain(
+      'Must end in .ts, .js, .tsx, .jsx, .mjs, .cjs, .mts, .cts, .py, .rs, or .php. ' +
         'Example: "src/utils/math.ts"',
     );
   });

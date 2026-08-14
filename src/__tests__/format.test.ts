@@ -303,11 +303,14 @@ describe('clean note for a partial (time-budget-truncated) run', () => {
 
 describe('enrichment reads the uncapped change set', () => {
   it('classifies a Rust group from a change beyond the display cap', () => {
-    // `changes` is capped to 3 entries + a "…N more" sentinel for display. Rust
-    // severity is derived from the change TEXT alone (cargo-mutants exposes no
-    // operator name), so enriching from the capped list means an operator that
-    // appears only in change #4 can never decide its own severity — and the
-    // logical-first rule ordering exists precisely so `&&` outranks the rest.
+    // `changes` is capped to 3 entries + a "…N more" sentinel for display, and
+    // enrichment must read the UNCAPPED set: an operator that appears only in
+    // change #4 can otherwise never decide its own severity.
+    //
+    // The mutator names here are deliberately NOT cargo-mutants descriptions, so
+    // this exercises the changeText FALLBACK. Real Rust survivors carry the
+    // description as the mutator name and no change at all, which is a different
+    // (and per-mutant) path — see enrich-group.test.ts.
     const r = result({
       vulnerabilities: [
         { line: 7, mutator: 'replace a', description: 'survived', mutated: 'replace a with 1' },
@@ -327,9 +330,9 @@ describe('enrichment reads the uncapped change set', () => {
     expect(payload.summary.worstSeverity).toBe('high');
     // …while the DISPLAY list is still capped exactly as before.
     expect(group.changes).toEqual([
-      'replace a with 1',
-      'replace b with 2',
-      'replace c with 3',
+      '→ replace a with 1',
+      '→ replace b with 2',
+      '→ replace c with 3',
       '…1 more',
     ]);
   });
@@ -345,7 +348,7 @@ describe('enrichment reads the uncapped change set', () => {
       changes?: string[];
     };
     expect(group.severity).toBe('high');
-    expect(group.changes).toEqual(['replace > with >=']);
+    expect(group.changes).toEqual(['→ replace > with >=']);
   });
 });
 
@@ -709,7 +712,7 @@ describe('A1 mutation detail (changes)', () => {
         { line: 5, mutator: 'Rust', description: 'survived', mutated: 'replace foo -> bar' },
       ]),
     );
-    expect(json.survivors[0].changes).toEqual(['replace foo -> bar']);
+    expect(json.survivors[0].changes).toEqual(['→ replace foo -> bar']);
   });
 
   it('omits changes entirely when no detail present', () => {
@@ -778,7 +781,7 @@ describe('A1 mutation detail (changes)', () => {
         { line: 3, mutator: 'BlockStatement', description: 'survived', original: 'doStuff()' },
       ]),
     );
-    expect(json.survivors[0].changes).toEqual(['doStuff()']);
+    expect(json.survivors[0].changes).toEqual(['doStuff() →']);
   });
 
   it('adds the changes clause to the JSON note only when detail is present', () => {

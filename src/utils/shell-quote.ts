@@ -33,10 +33,10 @@ export function quoteCommandArg(value: string): string {
  * Parallelism belongs to the layers ABOVE this command, and they already own it:
  * `triage_test_coverage` runs `fileConcurrency` files at once, and within each
  * file StrykerJS runs `--concurrency` mutants at once (capped by
- * `resolveStrykerConcurrency` so those two multiply out to about the core
+ * `resolvePerFileConcurrency` so those two multiply out to about the core
  * count). Vitest then forked its own pool INSIDE each of those slots, and
  * nothing bounded it — so the real process count was
- * `fileConcurrency × strykerConcurrency × vitestWorkers`, with only the first
+ * `fileConcurrency × perFileConcurrency × vitestWorkers`, with only the first
  * two capped.
  *
  * Measured on an 8-core / 8 GB box, auditing the SMALLEST file in this repo

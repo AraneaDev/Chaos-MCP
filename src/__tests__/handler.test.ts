@@ -322,7 +322,7 @@ describe('handleToolCall', () => {
     // Silent drop used to mask a real config error. Now rejected up-front.
     expect(response.isError).toBe(true);
     expect((response.content[0] as { text: string }).text).toContain(
-      'mutatorAllowlist is not supported',
+      'is not supported in StrykerJS v9',
     );
     expect(mockRun).not.toHaveBeenCalled();
   });

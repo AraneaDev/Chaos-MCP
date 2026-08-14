@@ -118,14 +118,23 @@ export const TOOL_DEFINITION = {
   description:
     'Runs on-demand, sandbox-isolated mutation testing against a single source file to identify gaps in unit test coverage. ' +
     'Chaos-MCP generates mutants (logical faults like changing `>` to `>=`) and checks whether the local test suite catches them. ' +
-    `Surviving mutants indicate test coverage holes. Supports ${ENGINE_SUPPORT_PROSE}.`,
+    `Surviving mutants indicate test coverage holes. Supports ${ENGINE_SUPPORT_PROSE}. ` +
+    "PATHS: `filePath` is resolved against the SERVER's working directory (or given absolute). " +
+    "The `target` in the result is relative to the audited file's own WORKSPACE, which differs " +
+    'whenever the file sits in a monorepo package or another root — `packages/api/src/math.ts` ' +
+    'comes back as `src/math.ts`. When the two differ the result carries `workspace` (an absolute ' +
+    'path) and `join(workspace, target)` is a `filePath` you can pass straight back; when it is ' +
+    'absent, `target` already is one. A `file` from triage_test_coverage is always a valid ' +
+    '`filePath` as-is.',
   inputSchema: {
     type: 'object' as const,
     properties: {
       filePath: {
         type: 'string',
         description:
-          'Workspace-relative path to the file to audit. ' +
+          "Path to the file to audit, resolved against the server's working directory (an absolute " +
+          "path is also accepted). NOT relative to the audited file's workspace — in a monorepo " +
+          'that is the package root, and the two differ. ' +
           `Must end in ${SUPPORTED_EXT_PROSE}. ` +
           'Example: "src/utils/math.ts"',
       },
@@ -195,10 +204,12 @@ export const TOOL_DEFINITION = {
         minimum: 1,
         maximum: 64,
         description:
-          'Number of parallel mutation workers (StrykerJS only). ' +
-          'When omitted, StrykerJS auto-detects CPU core count. ' +
-          'Lower this on memory-constrained machines; raise it on CI with spare cores. ' +
-          'Must be an integer between 1 and 64. Example: 4',
+          'Number of parallel mutation workers. Honoured by StrykerJS (--concurrency), ' +
+          'cargo-mutants (-j) and Infection (--threads); cosmic-ray has no worker flag and reports ' +
+          'this as an ignored option. When omitted, StrykerJS auto-detects CPU core count while ' +
+          'cargo-mutants deliberately stays low (2 jobs, or 1 on a small machine) because each job ' +
+          'wants its own multi-GB target directory. Lower this on memory-constrained machines; raise ' +
+          'it on CI with spare cores. Must be an integer between 1 and 64. Example: 4',
       },
       dryRun: {
         type: 'boolean',
@@ -366,6 +377,18 @@ export const TOOL_DEFINITION = {
     type: 'object' as const,
     properties: {
       target: { type: 'string' },
+      // Present only when the audited file's workspace root is not the server's
+      // working directory — a monorepo package, or another root reached via
+      // CHAOS_ALLOWED_ROOTS — where `target` alone cannot say which project it
+      // names. See `reportableWorkspace` in utils/path-safety.ts.
+      workspace: {
+        type: 'string',
+        description:
+          'Absolute workspace root that `target` is relative to. Present only when that root is ' +
+          "not the server's working directory (a monorepo package, or another root via " +
+          'CHAOS_ALLOWED_ROOTS). `join(workspace, target)` is a path this tool accepts as ' +
+          '`filePath`; when the field is absent, `target` already is one.',
+      },
       mutationScore: { type: 'string' },
       summary: {
         type: 'object',
@@ -403,6 +426,8 @@ export const TOOL_DEFINITION = {
       unverifiedSuppressions: { type: 'integer' },
       orphanedSuppressions: { type: 'integer' },
       rejectedSuppressions: { type: 'integer' },
+      unsuppressedCount: { type: 'integer' },
+      unsuppressMissed: { type: 'integer' },
       relocatedSuppressions: { type: 'integer' },
       gate: {
         type: 'object',
@@ -457,7 +482,9 @@ export const TRIAGE_TOOL_DEFINITION = {
     `Directories are recursively expanded to supported source files (${PRIMARY_EXT_PROSE}), skipping ` +
     'test files. Files are audited in parallel (see fileConcurrency, default min(4, cpus-1)), under a ' +
     'shared wall-clock budget (see totalTimeoutMs). Drill into a weak file with audit_code_resilience ' +
-    'for per-mutant survivor detail.',
+    "for per-mutant survivor detail: each row's `file` is relative to the server's working directory, " +
+    "so it can be passed straight back as that tool's `filePath` (its own `target` is spelled " +
+    "differently — see that tool's description).",
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -465,8 +492,10 @@ export const TRIAGE_TOOL_DEFINITION = {
         type: 'array',
         items: { type: 'string' },
         description:
-          'Workspace-relative files and/or directories to triage. Directories are recursively ' +
-          'expanded to supported source files. Example: ["src/utils", "src/index.ts"]',
+          "Files and/or directories to triage, resolved against the server's working directory. " +
+          'Directories are recursively expanded to supported source files. Each ranked row reports ' +
+          'its `file` in that same spelling, so a row can be fed straight back to this tool or to ' +
+          'audit_code_resilience. Example: ["src/utils", "src/index.ts"]',
       },
       maxFiles: {
         type: 'integer',
@@ -524,11 +553,15 @@ export const TRIAGE_TOOL_DEFINITION = {
         minimum: 1,
         maximum: 64,
         description:
-          "How many files to audit in parallel. Default min(4, cpus-1). When >1, each StrykerJS run's " +
-          "worker count is capped, and each mutant's test run is pinned to a single vitest worker, " +
-          'so the three layers multiply out to roughly the core count rather than to ' +
-          'fileConcurrency x strykerConcurrency x vitestWorkers. Raise with care on a workstation: ' +
-          'a sweep is still the most resource-hungry thing this server does. Example: 4',
+          'How many files to audit in parallel. Default min(4, cpus-1). When >1, the per-file worker ' +
+          'count is capped for every engine that has one (StrykerJS --concurrency, cargo-mutants -j, ' +
+          "Infection --threads), and for StrykerJS each mutant's test run is additionally pinned to a " +
+          'single vitest worker, so those three layers multiply out to roughly the core count. Rust is ' +
+          'the exception to watch: `cargo build`/`cargo test` parallelise internally and take no cap, ' +
+          'so a Rust sweep runs fileConcurrency concurrent cargo builds, each of which wants its own ' +
+          'multi-GB target directory — lower this to 1 or 2 on a memory-constrained machine. Raise ' +
+          'with care on a workstation: a sweep is still the most resource-hungry thing this server ' +
+          'does. Example: 4',
       },
       minScore: {
         type: 'number',
@@ -682,6 +715,18 @@ export const ESTIMATE_TOOL_DEFINITION = {
     type: 'object' as const,
     properties: {
       target: { type: 'string' },
+      // Present only when the audited file's workspace root is not the server's
+      // working directory — a monorepo package, or another root reached via
+      // CHAOS_ALLOWED_ROOTS — where `target` alone cannot say which project it
+      // names. See `reportableWorkspace` in utils/path-safety.ts.
+      workspace: {
+        type: 'string',
+        description:
+          'Absolute workspace root that `target` is relative to. Present only when that root is ' +
+          "not the server's working directory (a monorepo package, or another root via " +
+          'CHAOS_ALLOWED_ROOTS). `join(workspace, target)` is a path this tool accepts as ' +
+          '`filePath`; when the field is absent, `target` already is one.',
+      },
       language: { type: 'string' },
       mutants: { type: 'integer' },
       fidelity: { type: 'string', enum: ['exact', 'approx'] },

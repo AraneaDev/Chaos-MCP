@@ -304,9 +304,13 @@ export function formatVerifyResultAsJson(
   target: string,
   delta: VerifyDelta,
   gate?: GateResult,
+  workspace?: string,
 ): string {
   const payload: Record<string, unknown> = {
     target,
+    // Only when `target` alone is ambiguous — a second project in reach via
+    // CHAOS_ALLOWED_ROOTS. See `reportableWorkspace` in utils/path-safety.ts.
+    ...(workspace === undefined ? {} : { workspace }),
     mode: 'verify',
     ...verifyPayloadFields(delta),
     note: buildVerifyNote(delta),
@@ -322,8 +326,11 @@ export function formatVerifyResultAsText(
   target: string,
   delta: VerifyDelta,
   gate?: GateResult,
+  workspace?: string,
 ): string {
-  const lines: string[] = [`Chaos-MCP Verify Report: ${target}`];
+  const lines: string[] = [
+    `Chaos-MCP Verify Report: ${target}${workspace === undefined ? '' : ` (in ${workspace})`}`,
+  ];
   // The partial banner goes above everything, including the success shortcut
   // below — see {@link partialVerifyNote}. A re-run that covered a fraction of
   // the file can legitimately come back with nothing still surviving and no

@@ -77,6 +77,8 @@ const NO_SUPPRESSION: SuppressionCounts = {
   unverified: 0,
   orphaned: 0,
   rejected: 0,
+  unsuppressed: 0,
+  unsuppressMisses: [],
   relocated: 0,
   relocations: [],
   rejections: [],
@@ -129,6 +131,37 @@ describe('formatAuditOutput — verify mode suppression drift reporting', () => 
     // trailing content block so they cannot corrupt the JSON payload above them.
     expect(response.content.length).toBe(2);
     expect((response.content[1] as { text: string }).text).toContain('Note:');
+  });
+
+  it('reports its own unsuppress edits, which verify mode used to swallow', () => {
+    // `applyAndCountSuppressions` performs `suppress`/`unsuppress` whatever the
+    // mode — only the auto-FILTER is skipped in verify — so `{ runId,
+    // unsuppress }` in one call changed the suppressions file and reported
+    // nothing at all. Same silent-write class as the bug on the standard path.
+    const response = run({
+      baselineKeys: baseline,
+      suppression: {
+        ...NO_SUPPRESSION,
+        unsuppressed: 2,
+        unsuppressMisses: [{ line: 9, mutator: 'ConditionalExpression', change: 'no such change' }],
+      },
+    });
+    const s = structured(response);
+
+    expect(s.unsuppressedCount).toBe(2);
+    expect(s.unsuppressMissed).toBe(1);
+    expect(s.note as string).toContain('2 suppression(s) removed');
+    // The note must NAME the key, not merely say one missed: identifying which
+    // request did nothing is the whole value of reporting the miss at all.
+    const notes = (response.content[1] as { text: string }).text;
+    expect(notes).toContain('matched no stored suppression');
+    expect(notes).toContain('line 9 "ConditionalExpression" change "no such change"');
+  });
+
+  it('omits the unsuppress fields when the call made no such edit', () => {
+    const s = structured(run({ baselineKeys: baseline }));
+    expect(s.unsuppressedCount).toBeUndefined();
+    expect(s.unsuppressMissed).toBeUndefined();
   });
 
   it('omits both counts and the extra block when no suppressions are recorded', () => {
@@ -282,6 +315,8 @@ describe('formatAuditOutput — text output', () => {
           unverified: 1,
           orphaned: 0,
           rejected: 0,
+          unsuppressed: 0,
+          unsuppressMisses: [],
           relocated: 0,
           relocations: [],
           rejections: [],

@@ -17,6 +17,7 @@ import { suppressionDriftNotes } from '../core/score-semantics.js';
 import { evaluateGate } from '../core/gate.js';
 import { toStructuredContent } from '../core/tool-result.js';
 import { suggestTestFile } from '../core/test-file.js';
+import { reportableWorkspace } from '../utils/path-safety.js';
 import { applySuppressions } from './apply-suppressions.js';
 import {
   computeVerifyDelta,
@@ -62,6 +63,18 @@ interface VerifyOutputOptions {
   cfg: ChaosConfig;
   env: EnvironmentInfo;
   relFromRoot: string;
+  /**
+   * Counts from the handler's suppression phase. Verify mode reads only the
+   * EDIT half of them (what `suppress`/`unsuppress` just wrote), not the
+   * applied/orphaned tallies — those are recomputed below against the delta,
+   * because this mode filters the baseline as well as the re-run.
+   *
+   * Previously not passed at all, which made verify mode silent about its own
+   * writes: `applyAndCountSuppressions` runs the edits whatever the mode, so
+   * `{ runId, unsuppress }` in one call performed the removal and reported
+   * nothing — the same silence this PR removes from the standard path.
+   */
+  suppression: SuppressionCounts;
 }
 
 /** What {@link formatStandardOutput} needs — the other, disjoint subset. */
@@ -101,6 +114,7 @@ function formatVerifyOutput({
   cfg,
   env,
   relFromRoot,
+  suppression: edits,
 }: VerifyOutputOptions): CallToolResult {
   // Task 9: filter suppressed equivalent mutants from BOTH the baseline keys
   // AND the re-run result before computing the delta so known-equivalent mutants
@@ -151,10 +165,11 @@ function formatVerifyOutput({
   // to the payload and to the renderer, so the two cannot disagree.
   const gate =
     typeof args.minScore === 'number' ? evaluateVerifyGate(args.minScore, delta) : undefined;
+  const verifyWorkspace = reportableWorkspace(env.workspaceRoot);
   const verifyText =
     args.outputFormat === 'text'
-      ? formatVerifyResultAsText(targetFile, delta, gate)
-      : formatVerifyResultAsJson(targetFile, delta, gate);
+      ? formatVerifyResultAsText(targetFile, delta, gate, verifyWorkspace)
+      : formatVerifyResultAsJson(targetFile, delta, gate, verifyWorkspace);
   // Verify responses must carry `structuredContent` too — the tool declares an
   // `outputSchema` whose `oneOf` includes this verify-delta shape (audit H3).
   //
@@ -168,6 +183,10 @@ function formatVerifyOutput({
   // ran.
   const verifyStructured: Record<string, unknown> = {
     target: targetFile,
+    // Same qualifier the standard report carries, for the same reason: a verify
+    // delta names a file too, and with two roots in reach the name is ambiguous
+    // on its own.
+    ...(verifyWorkspace === undefined ? {} : { workspace: verifyWorkspace }),
     mode: 'verify',
     ...verifyPayloadFields(delta),
     note: buildVerifyNote(delta),
@@ -192,6 +211,11 @@ function formatVerifyOutput({
     verifyRelocations,
     undefined,
     suppression.relocated.length,
+    // The edits this very call performed. `applyAndCountSuppressions` runs
+    // `suppress`/`unsuppress` in verify mode too — only the auto-FILTER is
+    // skipped there — so a caller combining `runId` with `unsuppress` changed
+    // the file and, until this argument, was told nothing about it.
+    edits.unsuppressMisses,
   );
   // Counted OUTSIDE the drift guard. A tier-2 move produces no sentence — it
   // cannot be wrong — so a run with only tier-2 relocations has an empty
@@ -200,6 +224,16 @@ function formatVerifyOutput({
   // not disagree about the same fact.
   if (suppression.relocated.length > 0) {
     verifyStructured.relocatedSuppressions = suppression.relocated.length;
+  }
+  // Same reasoning, for the removals themselves: a successful `unsuppress` is
+  // reported by its count in both modes, or the two disagree about a write they
+  // both performed.
+  if (edits.unsuppressed > 0) {
+    verifyStructured.unsuppressedCount = edits.unsuppressed;
+    verifyStructured.note = `${verifyStructured.note as string} ${edits.unsuppressed} suppression(s) removed by \`unsuppress\`.`;
+  }
+  if (edits.unsuppressMisses.length > 0) {
+    verifyStructured.unsuppressMissed = edits.unsuppressMisses.length;
   }
   const verifyContent: { type: 'text'; text: string }[] = [{ type: 'text', text: verifyText }];
   if (verifyDrift.length > 0) {
@@ -243,6 +277,10 @@ function formatStandardOutput({
     severityFloor: resolveSeverityFloor(args, cfg),
   };
   const ignored = ignoredOptionsFor(projectType, args);
+  // Absent for the ordinary single-root server, so an existing report is
+  // byte-identical; present the moment CHAOS_ALLOWED_ROOTS makes `target`
+  // ambiguous between two projects.
+  const workspace = reportableWorkspace(env.workspaceRoot);
   const suggestion =
     auditResults.survived > 0 || auditResults.vulnerabilities.length > 0
       ? suggestTestFile(targetFile, projectType, env.workspaceRoot)
@@ -269,6 +307,9 @@ function formatStandardOutput({
     relocatedSuppressions: suppression.relocated,
     relocations: suppression.relocations,
     rejections: suppression.rejections,
+    unsuppressedCount: suppression.unsuppressed,
+    unsuppressMisses: suppression.unsuppressMisses,
+    workspace,
     gate,
   });
 
@@ -283,6 +324,9 @@ function formatStandardOutput({
           relocatedSuppressions: suppression.relocated,
           relocations: suppression.relocations,
           rejections: suppression.rejections,
+          unsuppressedCount: suppression.unsuppressed,
+          unsuppressMisses: suppression.unsuppressMisses,
+          workspace,
           // The SAME GateResult the payload carries, not a second evaluation:
           // text output previously rendered no verdict at all, so a caller
           // reading only the text block saw a clean report for a failing gate.
@@ -328,7 +372,16 @@ export function formatAuditOutput(
   relFromRoot: string,
 ): CallToolResult {
   return baselineKeys
-    ? formatVerifyOutput({ auditResults, args, baselineKeys, targetFile, cfg, env, relFromRoot })
+    ? formatVerifyOutput({
+        auditResults,
+        args,
+        baselineKeys,
+        targetFile,
+        cfg,
+        env,
+        relFromRoot,
+        suppression,
+      })
     : formatStandardOutput({
         auditResults,
         args,

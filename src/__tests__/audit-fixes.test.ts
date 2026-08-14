@@ -24,7 +24,7 @@ import { validateToolArgs } from '../handler.js';
 import { applySuppressions } from '../audit/apply-suppressions.js';
 import { hasNoMutableLogic } from '../core/score-semantics.js';
 import { isNoCoverage } from '../utils/no-coverage.js';
-import { projectTimingRange } from '../core/baseline-timing.js';
+import { projectTimingRange, type TimingMode } from '../core/baseline-timing.js';
 import { isRepoTestCommandAllowed, resolveTestCommand } from '../engines/python.js';
 import {
   INCREMENTAL_FILE_NAME,
@@ -189,11 +189,14 @@ describe('isNoCoverage', () => {
  * rewriting the tests.
  */
 describe('projectTimingRange invariants', () => {
-  const cases: [number, number, number, boolean][] = [
-    [0, 0, 1, false],
-    [1, 10, 1, false],
-    [500, 250, 4, true],
-    [10_000, 1_000, 8, false],
+  const cases: [number, number, number, TimingMode][] = [
+    [0, 0, 1, 'native'],
+    [1, 10, 1, 'native'],
+    [500, 250, 4, 'commandRunner'],
+    [10_000, 1_000, 8, 'native'],
+    // The compiled profile carries the largest per-mutant overhead, so it is the
+    // one most likely to break an ordering invariant.
+    [500, 250, 2, 'compiled'],
   ];
 
   it('always returns optimistic <= estimated <= upperBound', () => {
@@ -212,22 +215,22 @@ describe('projectTimingRange invariants', () => {
   });
 
   it('is monotonic in the mutant count', () => {
-    const few = projectTimingRange(10, 100, 2, false);
-    const many = projectTimingRange(100, 100, 2, false);
+    const few = projectTimingRange(10, 100, 2, 'native');
+    const many = projectTimingRange(100, 100, 2, 'native');
     expect(many.estimatedMs).toBeGreaterThan(few.estimatedMs);
   });
 
   it('projects the command runner as slower and less certain than a native one', () => {
-    const native = projectTimingRange(100, 100, 2, false);
-    const command = projectTimingRange(100, 100, 2, true);
+    const native = projectTimingRange(100, 100, 2, 'native');
+    const command = projectTimingRange(100, 100, 2, 'commandRunner');
     expect(command.estimatedMs).toBeGreaterThan(native.estimatedMs);
     expect(command.confidence).toBe('low');
     expect(native.confidence).toBe('medium');
   });
 
   it('more workers never makes the projection longer', () => {
-    const one = projectTimingRange(100, 100, 1, false);
-    const four = projectTimingRange(100, 100, 4, false);
+    const one = projectTimingRange(100, 100, 1, 'native');
+    const four = projectTimingRange(100, 100, 4, 'native');
     expect(four.estimatedMs).toBeLessThanOrEqual(one.estimatedMs);
   });
 });

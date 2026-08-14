@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 
 // The stub for MutationToolStartupError carries `reason`, because that is what
 // `computeCount` now branches on: only a genuinely missing binary
@@ -36,6 +36,15 @@ import type { EnvironmentInfo } from '../utils/project-detector.js';
 
 const mockInvoke = vi.mocked(invokeMutationTool);
 const mockRunShell = vi.mocked(runShell);
+
+// Unconditional, because two cases here install a `Date.now` spy with a queued
+// `mockReturnValueOnce` sequence. Restoring at the END of the test only runs
+// when the test passes: one failed assertion used to leave the spy installed
+// with a drained queue, and every later case in this file inherited a clock
+// that returns the same value forever. One failure became a cascade.
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 const baseEnv = (): EnvironmentInfo => ({
   projectType: 'typescript',
@@ -132,6 +141,170 @@ describe('estimateAudit', () => {
     expect(r.fidelity).toBe('exact');
     expect(r.mutants).toBe(2);
     expect(r.basis).toMatch(/cargo-mutants/);
+  });
+
+  it('omits the timing clause from the Rust note when no timing was requested', async () => {
+    // The note ended "Timing below is projected over the generated count" on
+    // EVERY count-only estimate, pointing at fields that were not in the result.
+    mockInvoke.mockResolvedValueOnce({
+      stdout: 'src/lib.rs:1:1: replace foo with ()\n',
+      stderr: '',
+    } as never);
+    const r = await estimateAudit({
+      absFile: '/ws/src/lib.rs',
+      relFile: 'src/lib.rs',
+      projectType: 'rust',
+      workDir: '/sandbox',
+    });
+    expect(r.note).not.toMatch(/Timing below/);
+    expect(r.note).toMatch(/incompetent/);
+  });
+
+  it('builds before it times a Rust baseline, and charges the build once', async () => {
+    // `cargo test` in a fresh sandbox compiles the whole dependency graph and
+    // THEN runs the suite. Timing the two together and multiplying by the mutant
+    // count charged the one-time build to every mutant: measured on a real
+    // crate, a 15s combined baseline projected 14 minutes for a file that
+    // audits in 2, and the estimate reported `fitsBudget: false` for a run that
+    // fits the default budget comfortably.
+    mockInvoke.mockResolvedValueOnce({
+      stdout: 'src/lib.rs:1:1: replace foo with ()\nsrc/lib.rs:2:1: replace bar with ()\n',
+      stderr: '',
+    } as never);
+    // 10s for the build, 1s for the suite.
+    vi.spyOn(Date, 'now')
+      .mockReturnValueOnce(0) // warm-up start
+      .mockReturnValueOnce(10_000) // warm-up end
+      .mockReturnValueOnce(10_000) // baseline start
+      .mockReturnValueOnce(11_000); // baseline end
+    mockRunShell.mockResolvedValue({ stdout: '', stderr: '', exit: 0, signal: null } as never);
+
+    const r = await estimateAudit({
+      absFile: '/ws/src/lib.rs',
+      relFile: 'src/lib.rs',
+      projectType: 'rust',
+      workDir: '/sandbox',
+      withTiming: true,
+      env: { ...baseEnv(), projectType: 'rust' },
+      concurrency: 1,
+    });
+
+    expect(mockRunShell).toHaveBeenNthCalledWith(
+      1,
+      'cargo',
+      ['test', '--no-run'],
+      expect.objectContaining({ cwd: '/sandbox' }),
+    );
+    expect(mockRunShell).toHaveBeenNthCalledWith(
+      2,
+      'cargo',
+      ['test'],
+      expect.objectContaining({ cwd: '/sandbox' }),
+    );
+    // The suite alone, not the suite plus the build.
+    expect(r.baselineMs).toBe(1_000);
+    // 2 mutants × (1s suite + 2s incremental rebuild) + the 10s build, and NOT
+    // 2 × 11s. The multiplied term is what the split protects.
+    expect(r.optimisticMs).toBe(2_000);
+    expect(r.estimatedMs).toBeLessThan(2 * 11_000);
+  });
+
+  it('does not blame the test suite when the Rust build itself times out', async () => {
+    // The build is paid ONCE per audit, so a build that blows the estimation cap
+    // cannot support the "runs the suite once per mutant, therefore cannot fit"
+    // verdict the slow-suite branch draws.
+    mockInvoke.mockResolvedValueOnce({
+      stdout: 'src/lib.rs:1:1: replace foo with ()\n',
+      stderr: '',
+    } as never);
+    mockRunShell.mockRejectedValueOnce(
+      new ExecFailureError(
+        { stdout: '', stderr: '', exit: null, signal: 'SIGKILL', code: 'TIMEOUT' },
+        'cargo test --no-run timed out',
+      ),
+    );
+
+    const r = await estimateAudit({
+      absFile: '/ws/src/lib.rs',
+      relFile: 'src/lib.rs',
+      projectType: 'rust',
+      workDir: '/sandbox',
+      withTiming: true,
+      env: { ...baseEnv(), projectType: 'rust' },
+      concurrency: 1,
+      timeoutMs: 30_000,
+    });
+
+    expect(r.fitsBudget).toBeUndefined();
+    expect(r.recommendation).toMatch(/paid ONCE per audit/);
+  });
+
+  it('judges a suite timeout by the cap the SUITE got, not the whole estimation cap', async () => {
+    // The warm-up spends part of the cap, so the suite runs under the remainder.
+    // Reasoning from the full cap made the verdict unsupported: with a 60s cap,
+    // a 50s build and a suite killed at the remaining 10s, `baselineCapMs >=
+    // budgetMs` held and the result asserted "the suite alone cannot fit this
+    // 60s budget" on the strength of a 10s observation.
+    mockInvoke.mockResolvedValueOnce({
+      stdout: 'src/lib.rs:1:1: replace foo with ()\n',
+      stderr: '',
+    } as never);
+    vi.spyOn(Date, 'now')
+      .mockReturnValueOnce(0) // warm-up start
+      .mockReturnValueOnce(50_000) // warm-up end: 50s of the 60s cap gone
+      .mockReturnValue(50_000);
+    mockRunShell
+      .mockResolvedValueOnce({ stdout: '', stderr: '', exit: 0, signal: null } as never)
+      .mockRejectedValueOnce(
+        new ExecFailureError(
+          { stdout: '', stderr: '', exit: null, signal: 'SIGKILL', code: 'TIMEOUT' },
+          'cargo test timed out',
+        ),
+      );
+
+    const r = await estimateAudit({
+      absFile: '/ws/src/lib.rs',
+      relFile: 'src/lib.rs',
+      projectType: 'rust',
+      workDir: '/sandbox',
+      withTiming: true,
+      env: { ...baseEnv(), projectType: 'rust' },
+      concurrency: 1,
+      timeoutMs: 60_000,
+    });
+
+    // 10s of remaining cap is no evidence about a 60s budget, so no verdict.
+    expect(r.fitsBudget).toBeUndefined();
+    // And the sentence must quote the limit the suite actually hit.
+    expect(r.recommendation).toContain('10000ms');
+    expect(r.recommendation).not.toContain('60000ms estimation cap');
+  });
+
+  it('recommends what a whole-file engine can actually do about an overrun', async () => {
+    // The old sentence offered lineScope/diffBase to every language. Only
+    // StrykerJS honours either; a Rust audit returns `ignoredOptions:
+    // ["lineScope"]` and runs whole-file regardless, so the first remedy a
+    // reader was given provably did nothing.
+    mockInvoke.mockResolvedValueOnce({
+      stdout: 'src/lib.rs:1:1: replace foo with ()\n',
+      stderr: '',
+    } as never);
+    mockRunShell.mockResolvedValue({ stdout: '', stderr: '', exit: 0, signal: null } as never);
+
+    const r = await estimateAudit({
+      absFile: '/ws/src/lib.rs',
+      relFile: 'src/lib.rs',
+      projectType: 'rust',
+      workDir: '/sandbox',
+      withTiming: true,
+      env: { ...baseEnv(), projectType: 'rust' },
+      concurrency: 1,
+      timeoutMs: 1,
+    });
+
+    expect(r.fitsBudget).toBe(false);
+    expect(r.recommendation).toMatch(/cargo-mutants always runs whole-file/);
+    expect(r.recommendation).toMatch(/raise timeoutMs/);
   });
 
   it('forwards the container session to exact counting and baseline timing', async () => {
@@ -561,7 +734,7 @@ describe('estimateAudit withTiming', () => {
   });
 
   it('treats an upper bound exactly equal to the budget as fitting', async () => {
-    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000);
+    vi.spyOn(Date, 'now').mockReturnValue(1_000);
     mockRunShell.mockResolvedValue({
       stdout: '',
       stderr: '',
@@ -581,7 +754,12 @@ describe('estimateAudit withTiming', () => {
     expect(withoutBudget.fitsBudget).toBeUndefined();
     expect(withoutBudget.recommendation).toBeUndefined();
 
-    const exactBudget = projectTimingRange(withoutBudget.mutants, 0, 1, true).upperBoundMs;
+    const exactBudget = projectTimingRange(
+      withoutBudget.mutants,
+      0,
+      1,
+      'commandRunner',
+    ).upperBoundMs;
     const atBoundary = await estimateAudit({
       absFile: __filename,
       relFile: 'src/__tests__/estimate.test.ts',
@@ -595,7 +773,6 @@ describe('estimateAudit withTiming', () => {
     expect(atBoundary.upperBoundMs).toBe(exactBudget);
     expect(atBoundary.fitsBudget).toBe(true);
     expect(atBoundary.recommendation).toBe('Estimated to fit the configured audit budget.');
-    now.mockRestore();
   });
 
   it('omits timing fields and appends note when runShell throws', async () => {

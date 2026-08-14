@@ -27,20 +27,48 @@ describe('enrichGroup', () => {
     expect(e.hint).toBe(MUTATOR_SEMANTICS.EqualityOperator.hint);
   });
 
-  it('joins multiple change strings with a separator, not end to end', () => {
-    // The Rust categoriser reads the joined change text, and its rules use word
-    // boundaries. Concatenating the entries with no separator fuses the tail of
-    // one onto the head of the next — `…with bar` + `true` becomes `bartrue` —
-    // and a boolean-literal mutant silently degrades to `unknown`: no severity,
-    // no why, no hint for the caller to act on.
+  it('classifies each Rust mutant on a line from its OWN description', () => {
+    // Replaces "joins multiple change strings with a separator, not end to end",
+    // which pinned the old design: Rust was categorised from `changes.join(' ')`,
+    // the same blob for every mutator on the line. Two mutants sharing a line
+    // were therefore classified from the concatenation of both descriptions, and
+    // whichever rule matched first decided the severity AND the why-sentence for
+    // both. Rust now reads the per-mutant description out of the mutator name,
+    // so the group takes the worst of two real verdicts rather than one verdict
+    // applied twice.
+    //
+    // `changes` is deliberately absent: cargo-mutants reports no replacement
+    // text, so a Rust survivor carries none (engines/rust/report.ts).
     const e = enrichGroup({
       line: 3,
-      mutators: { replace_flag: 1 },
-      changes: ['replace foo with bar', 'true'],
+      mutators: {
+        'replace maybe_send with ()': 1,
+        'replace == with != in maybe_send': 1,
+      },
       projectType: 'rust',
     });
-    expect(e.severity).toBe(MUTATOR_SEMANTICS.BooleanLiteral.severity);
-    expect(e.why).toBe(MUTATOR_SEMANTICS.BooleanLiteral.why);
+    // Both are `high`; what the group must carry is one of the two REAL
+    // sentences, not a category derived from the pair of them run together.
+    expect([MUTATOR_SEMANTICS.ReturnValue.why, MUTATOR_SEMANTICS.EqualityOperator.why]).toContain(
+      e.why,
+    );
+    expect(e.severity).toBe('high');
+  });
+
+  it('still separates joined change strings on the legacy changeText fallback', () => {
+    // `changeText` remains a secondary evidence source for a caller that carries
+    // a description there instead of in the mutator name. The entries must be
+    // joined WITH a separator: fusing the tail of one onto the head of the next
+    // makes the anchored shapes stop matching, and the mutant degrades to
+    // `unknown` — no severity, no why, no hint.
+    const e = enrichGroup({
+      line: 3,
+      mutators: { 'not-a-description': 1 },
+      changes: ['replace == with !=', 'in evaluate'],
+      projectType: 'rust',
+    });
+    expect(e.severity).toBe(MUTATOR_SEMANTICS.EqualityOperator.severity);
+    expect(e.why).toBe(MUTATOR_SEMANTICS.EqualityOperator.why);
   });
 
   it('keeps the highest severity even when the high mutator is listed first', () => {

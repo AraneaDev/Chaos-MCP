@@ -6,6 +6,7 @@ import {
   isPathInside,
   isPathPermitted,
   isWorkspaceRootAllowed,
+  reportableWorkspace,
   workspaceRootBoundary,
 } from '../utils/path-safety.js';
 
@@ -83,6 +84,37 @@ describe('isWorkspaceRootAllowed', () => {
     process.env[ALLOWED_ROOTS_ENV] = OUTSIDE;
     expect(isWorkspaceRootAllowed(resolve(CWD, '..', 'unlisted-project'))).toBe(false);
     expect(isWorkspaceRootAllowed(resolve(OUTSIDE, '..'))).toBe(false);
+  });
+});
+
+describe('reportableWorkspace', () => {
+  it('says nothing when the workspace IS the working directory', () => {
+    // The only case where `target` is already unambiguous. The field must stay
+    // absent there so an existing report is byte-identical.
+    expect(reportableWorkspace(CWD)).toBeUndefined();
+  });
+
+  it('names a workspace outside the working directory', () => {
+    // With a second project in reach via CHAOS_ALLOWED_ROOTS, two projects both
+    // report `target: "src/policy.rs"` and nothing distinguishes them.
+    expect(reportableWorkspace(OUTSIDE)).toBe(OUTSIDE);
+  });
+
+  it('names a monorepo package root, which is INSIDE the working directory', () => {
+    // The case a containment test silently excluded, and the commoner of the
+    // two: the marker walk stops at `packages/api/package.json`, so a caller who
+    // asked for `packages/api/src/math.ts` is told `target: "src/math.ts"` — a
+    // path that does not resolve from the working directory, and one that every
+    // package with a `src/math.ts` reports identically. Verified against a real
+    // fixture before the test was written: the field was absent there.
+    const pkg = join(CWD, 'packages', 'api');
+    expect(reportableWorkspace(pkg)).toBe(pkg);
+  });
+
+  it('answers with an absolute path even when handed a relative one', () => {
+    // A relative root would reproduce the ambiguity it is meant to remove: a
+    // reader who does not know the cwd cannot place `../some-other-project`.
+    expect(reportableWorkspace(join('..', 'some-other-project'))).toBe(OUTSIDE);
   });
 });
 

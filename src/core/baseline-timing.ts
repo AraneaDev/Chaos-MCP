@@ -24,6 +24,34 @@ export interface BaselineCommand {
  *   Measuring against `env.testRunner` when config overrode it made the
  *   baseline the wrong command for the run being estimated.
  */
+/**
+ * A build-only command to run BEFORE the timed baseline, for languages whose
+ * test command compiles first. `undefined` when there is nothing to warm.
+ *
+ * Rust is the case this exists for. `cargo test` in a fresh sandbox compiles the
+ * whole dependency graph and then runs the suite, and timing that gave a
+ * `baselineMs` of 15s for a crate whose suite runs in under a second. The
+ * projection multiplies the baseline BY THE MUTANT COUNT, so the one-time build
+ * was charged to all 91 mutants: 14 minutes projected against a real 2. The
+ * estimate then reported `fitsBudget: false` for a run that finishes inside the
+ * default budget with time to spare — the estimate advising against an audit
+ * that would have worked.
+ *
+ * Splitting the two measurements fixes the unit: this call's duration is the
+ * one-time cost (passed to {@link projectTimingRange} as `startupMsOverride`),
+ * and the timed run that follows it is the per-mutant cost, which is what the
+ * multiplication actually wants.
+ */
+export function resolveBaselineWarmupCommand(
+  projectType: SupportedProjectType,
+): BaselineCommand | undefined {
+  // `--no-run` builds the test binaries and stops. Only Rust: TypeScript and
+  // Python are interpreted, and PHP's autoloader work is per-run rather than a
+  // separable build step.
+  if (projectType === 'rust') return { command: 'cargo', args: ['test', '--no-run'] };
+  return undefined;
+}
+
 export function resolveBaselineTestCommand(
   env: EnvironmentInfo,
   projectType: SupportedProjectType,
@@ -97,16 +125,42 @@ const TIMING = {
    * Per-mutant cost beyond the test run itself. The command runner re-launches
    * the whole test process per mutant and gets no per-test coverage
    * optimisation, so it pays a full framework bootstrap; a native runner keeps
-   * a warm worker and pays only mutant activation.
+   * a warm worker and pays only mutant activation. A compiled language pays an
+   * INCREMENTAL REBUILD of the mutated crate before each mutant's suite can run
+   * — measured at roughly two seconds on a small crate, and the single largest
+   * per-mutant cost cargo-mutants has.
    */
-  perMutantOverheadMs: { commandRunner: 1_500, native: 250 },
-  /** One-time cost before the first mutant runs: Stryker init, instrumentation, dry run. */
-  startupMs: { commandRunner: 10_000, native: 5_000 },
+  perMutantOverheadMs: { commandRunner: 1_500, native: 250, compiled: 2_000 },
+  /**
+   * One-time cost before the first mutant runs: Stryker init, instrumentation,
+   * dry run. For `compiled` this is the cold build of the sandbox's workspace,
+   * and the fallback below is only used when the warm-up could not be measured
+   * — {@link projectTimingRange}'s `startupMsOverride` supplies the real figure.
+   */
+  startupMs: { commandRunner: 10_000, native: 5_000, compiled: 20_000 },
   /** Central-estimate multiplier over the adjusted work total. */
-  estimateFactor: { commandRunner: 1.5, native: 1.2 },
+  estimateFactor: { commandRunner: 1.5, native: 1.2, compiled: 1.2 },
   /** Upper-bound multiplier: how far a slow machine or noisy suite can stretch it. */
-  upperBoundFactor: { commandRunner: 2.5, native: 1.75 },
+  upperBoundFactor: { commandRunner: 2.5, native: 1.75, compiled: 1.75 },
 } as const;
+
+/**
+ * Which cost profile a target runs under.
+ *
+ * - `commandRunner` — StrykerJS driving an external test command per mutant.
+ * - `native` — an in-process runner reusing a warm worker.
+ * - `compiled` — the engine rebuilds before each mutant (cargo-mutants), so the
+ *   one-time build and the per-mutant cost are DIFFERENT numbers and the
+ *   baseline must be measured warm. See {@link resolveBaselineWarmupCommand}.
+ */
+export type TimingMode = keyof (typeof TIMING)['perMutantOverheadMs'];
+
+/** The cost profile for a language + runner pair. */
+export function timingModeFor(projectType: SupportedProjectType, testRunner: string): TimingMode {
+  if (projectType === 'rust') return 'compiled';
+  if (projectType === 'typescript' && testRunner === 'command') return 'commandRunner';
+  return 'native';
+}
 
 /**
  * Project a deliberately conservative wall-clock range.
@@ -122,11 +176,22 @@ export function projectTimingRange(
   mutants: number,
   baselineMs: number,
   concurrency: number,
-  commandRunner: boolean,
+  mode: TimingMode,
+  startupMsOverride?: number,
 ): TimingProjection {
   const workers = Math.max(1, concurrency);
-  const mode = commandRunner ? 'commandRunner' : 'native';
-  const startupMs = TIMING.startupMs[mode];
+  // A MEASURED one-time cost beats the table's guess whenever the caller has
+  // one. Only the compiled path produces it today (the warm-up build), and it
+  // is the whole reason that path stopped over-projecting by a factor of seven.
+  //
+  // Clamped at zero because the override reaches here as a `Date.now()` delta
+  // (`applyTiming` in core/estimate.ts), and a wall clock that steps backwards
+  // mid-build makes that delta negative. This function documents the invariant
+  // `optimisticMs <= estimatedMs <= upperBoundMs` for EVERY input, and a
+  // negative startup breaks it: the two upper figures shrink below the work
+  // total, and a large enough step makes them negative outright.
+  const startupMs =
+    startupMsOverride === undefined ? TIMING.startupMs[mode] : Math.max(0, startupMsOverride);
   const optimisticMs = projectEstimatedMs(mutants, baselineMs, workers);
   const adjustedWorkMs = Math.ceil(
     (mutants * (baselineMs + TIMING.perMutantOverheadMs[mode])) / workers,
@@ -135,6 +200,6 @@ export function projectTimingRange(
     optimisticMs,
     estimatedMs: startupMs + Math.ceil(adjustedWorkMs * TIMING.estimateFactor[mode]),
     upperBoundMs: startupMs * 2 + Math.ceil(adjustedWorkMs * TIMING.upperBoundFactor[mode]),
-    confidence: commandRunner ? 'low' : 'medium',
+    confidence: mode === 'commandRunner' ? 'low' : 'medium',
   };
 }
