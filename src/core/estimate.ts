@@ -310,6 +310,12 @@ async function applyTiming(result: EstimateResult, opts: EstimateOptions): Promi
   // before this is set was the one-time build, not the suite, and the two lead
   // to opposite conclusions about whether an audit can fit the budget.
   let startupMsOverride: number | undefined;
+  // The cap the SUITE actually ran under. Equal to `baselineCapMs` until a
+  // warm-up spends part of it, and the catch below reasons about the limit the
+  // suite HIT: quoting the full cap after a warm-up overstates it, and — worse —
+  // compares the wrong number against the budget. Before the warm-up existed the
+  // two were always the same, which is why the catch could read `baselineCapMs`.
+  let suiteCapMs = baselineCapMs;
   try {
     const run = async (c: BaselineCommand, timeoutMs: number): Promise<void> => {
       const execOptions = { cwd: opts.workDir, timeoutMs, signal: opts.signal, killTree: true };
@@ -337,6 +343,7 @@ async function applyTiming(result: EstimateResult, opts: EstimateOptions): Promi
       startupMsOverride === undefined
         ? baselineCapMs
         : Math.max(1_000, baselineCapMs - startupMsOverride);
+    suiteCapMs = remainingCapMs;
 
     const t0 = Date.now();
     await run(cmd, remainingCapMs);
@@ -398,15 +405,21 @@ async function applyTiming(result: EstimateResult, opts: EstimateOptions): Promi
           `timeoutMs and re-estimate.`;
         return;
       }
-      if (baselineCapMs >= budgetMs) {
+      // `suiteCapMs`, not `baselineCapMs`: the verdict below says one unmutated
+      // run of the suite costs more than the whole budget, and only the limit the
+      // suite actually hit is evidence for that. With a 60s cap, a 50s build and
+      // a suite killed at the remaining 10s, the full cap would assert
+      // `fitsBudget: false` against a 60s budget on the strength of a 10s
+      // observation.
+      if (suiteCapMs >= budgetMs) {
         result.fitsBudget = false;
         result.recommendation =
-          `The baseline test run alone exceeded ${baselineCapMs}ms, so a mutation audit — which runs ` +
+          `The baseline test run alone exceeded ${suiteCapMs}ms, so a mutation audit — which runs ` +
           `the suite once per mutant — cannot fit this budget. ${scopeDownAdvice(opts.projectType)}.`;
         return;
       }
       result.recommendation =
-        `The baseline test run alone exceeded the ${baselineCapMs}ms estimation cap, so its duration ` +
+        `The baseline test run alone exceeded the ${suiteCapMs}ms estimation cap, so its duration ` +
         `could not be measured and no timing estimate was produced. A suite that slow makes a mutation ` +
         `audit — which runs it once per mutant — expensive against the ${budgetMs}ms budget; ` +
         `${scopeDownAdvice(opts.projectType)} before committing to a full run.`;

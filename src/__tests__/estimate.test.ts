@@ -239,6 +239,47 @@ describe('estimateAudit', () => {
     expect(r.recommendation).toMatch(/paid ONCE per audit/);
   });
 
+  it('judges a suite timeout by the cap the SUITE got, not the whole estimation cap', async () => {
+    // The warm-up spends part of the cap, so the suite runs under the remainder.
+    // Reasoning from the full cap made the verdict unsupported: with a 60s cap,
+    // a 50s build and a suite killed at the remaining 10s, `baselineCapMs >=
+    // budgetMs` held and the result asserted "the suite alone cannot fit this
+    // 60s budget" on the strength of a 10s observation.
+    mockInvoke.mockResolvedValueOnce({
+      stdout: 'src/lib.rs:1:1: replace foo with ()\n',
+      stderr: '',
+    } as never);
+    vi.spyOn(Date, 'now')
+      .mockReturnValueOnce(0) // warm-up start
+      .mockReturnValueOnce(50_000) // warm-up end: 50s of the 60s cap gone
+      .mockReturnValue(50_000);
+    mockRunShell
+      .mockResolvedValueOnce({ stdout: '', stderr: '', exit: 0, signal: null } as never)
+      .mockRejectedValueOnce(
+        new ExecFailureError(
+          { stdout: '', stderr: '', exit: null, signal: 'SIGKILL', code: 'TIMEOUT' },
+          'cargo test timed out',
+        ),
+      );
+
+    const r = await estimateAudit({
+      absFile: '/ws/src/lib.rs',
+      relFile: 'src/lib.rs',
+      projectType: 'rust',
+      workDir: '/sandbox',
+      withTiming: true,
+      env: { ...baseEnv(), projectType: 'rust' },
+      concurrency: 1,
+      timeoutMs: 60_000,
+    });
+
+    // 10s of remaining cap is no evidence about a 60s budget, so no verdict.
+    expect(r.fitsBudget).toBeUndefined();
+    // And the sentence must quote the limit the suite actually hit.
+    expect(r.recommendation).toContain('10000ms');
+    expect(r.recommendation).not.toContain('60000ms estimation cap');
+  });
+
   it('recommends what a whole-file engine can actually do about an overrun', async () => {
     // The old sentence offered lineScope/diffBase to every language. Only
     // StrykerJS honours either; a Rust audit returns `ignoredOptions:
