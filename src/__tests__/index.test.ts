@@ -1,3 +1,9 @@
+// @momus-ignore-file:MOCK-001
+// `startServer` is the composition root: its whole job is wiring the MCP SDK server to the
+// tool schemas, handlers, resources and prompts. Every collaborator is mocked because what is
+// under test IS the wiring — which handler gets registered for which schema, and what each one
+// is called with. Swapping any mock for the real dependency would turn this into an end-to-end
+// server test and stop it from isolating a wiring regression.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { MockInstance } from 'vitest';
 import { mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';

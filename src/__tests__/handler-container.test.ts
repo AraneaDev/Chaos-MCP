@@ -1,3 +1,8 @@
+// @momus-ignore-file:MOCK-001
+// `auditFile`'s container path is pure wiring: the assertions are about the arguments it hands
+// `createExecutionSession` and the engine, and about disposing the session on both the success
+// and the failure path. Running a real container session here would trade that precision for a
+// slow test that cannot pin the argument contract.
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BaseEngine, MutationResult } from '../engines/base.js';
 import type { ExecutionSession } from '../utils/execution.js';

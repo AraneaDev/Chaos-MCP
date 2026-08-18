@@ -1,3 +1,8 @@
+// @momus-ignore-file:MOCK-001
+// Only the interpreter probe's CALL COUNT can observe the memo (the probe is deterministic for
+// a fixed environment, so every visible output is identical whether it ran once or twice). That
+// makes mocking the probe the measurement itself, and the surrounding exec/fs/logger mocks keep
+// the engine from shelling out. See the file docblock below.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 /**
