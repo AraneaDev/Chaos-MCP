@@ -1,33 +1,51 @@
+<div align="center">
+
 # Chaos-MCP
 
-> On-demand micro-mutation sandbox for AI test verification — maps holes in unit tests by running isolated mutation testing via the Model Context Protocol.
+**Break your code on purpose, and find out what your tests never noticed.**
 
 [![Release](https://img.shields.io/github/v/release/AraneaDev/Chaos-MCP)](https://github.com/AraneaDev/Chaos-MCP/releases)
-[![MCP Observatory risk grade](https://mcpobservatory.com/servers/github:AraneaDev/Chaos-MCP/badge.svg)](https://mcpobservatory.com/servers/github:AraneaDev/Chaos-MCP/security)
+[![CI](https://github.com/AraneaDev/Chaos-MCP/actions/workflows/ci.yml/badge.svg)](https://github.com/AraneaDev/Chaos-MCP/actions/workflows/ci.yml)
+[![Coverage](https://img.shields.io/codecov/c/github/AraneaDev/Chaos-MCP)](https://codecov.io/gh/AraneaDev/Chaos-MCP)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
-[![tests](https://img.shields.io/badge/tests-passing-brightgreen.svg)](./.github/workflows/ci.yml)
-[![coverage](https://img.shields.io/badge/coverage-98%25-brightgreen.svg)](#development)
-[![status: in development](https://img.shields.io/badge/status-in%20development-orange.svg)](#)
+[![MCP Observatory risk grade](https://mcpobservatory.com/servers/github:AraneaDev/Chaos-MCP/badge.svg)](https://mcpobservatory.com/servers/github:AraneaDev/Chaos-MCP/security)
+[![status: in development](https://img.shields.io/badge/status-in%20development-orange.svg)](#quick-start)
 
-> **Pre-release / in active development.** Chaos-MCP is **not yet published to npm**. The source is public on [GitHub](https://github.com/AraneaDev/Chaos-MCP) — install from source (see [Installation](#installation)). Any `npm install -g` / `npx` commands in this README describe the planned published experience and do not work yet.
+</div>
 
-Chaos-MCP is an [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server that exposes three tools — `audit_code_resilience` (audit a single file), `triage_test_coverage` (rank a whole tree weakest-first), and `estimate_audit` (cheap pre-flight mutant count / timing estimate) — which run isolated mutation testing against your source to find weaknesses in the local test suite. It intentionally injects logical faults (like changing `>` to `>=`) and checks whether your tests catch them. Surviving mutants indicate test coverage holes.
+> **Chaos** (Χάος) is the first thing that existed in Greek cosmogony, the yawning void Hesiod
+> puts before everything else in the *Theogony*. Order came out of it, not the other way round.
+> The name means "gap" or "chasm", which is also what this tool is looking for.
+
+Chaos-MCP is an [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server that
+exposes three tools: `audit_code_resilience` (audit a single file), `triage_test_coverage`
+(rank a whole tree weakest-first), and `estimate_audit` (a cheap pre-flight mutant count and
+timing estimate). They run isolated mutation testing against your source to find weaknesses in
+the local test suite. It deliberately injects logical faults, such as changing `>` to `>=`, and
+checks whether your tests catch them. Surviving mutants mark the gaps.
+
+> **Status:** pre-release. Chaos-MCP is **not yet published to npm**. The source is public on
+> [GitHub](https://github.com/AraneaDev/Chaos-MCP), so install from source (see
+> [Installation](#installation)). Any `npm install -g` or `npx` command in this README
+> describes the planned published experience and does not work yet.
+
+---
 
 ## Features
 
-- **4 Languages Supported** — TypeScript/JavaScript (StrykerJS), Python (cosmic-ray), Rust (cargo-mutants), PHP (Infection)
-- **Sandbox Isolation** — all mutation runs execute in temporary directories, and the target's real path is verified to live inside the sandbox before any engine runs, so a symlinked source file (or one under a symlinked directory) is refused rather than mutated in place through the link. Dependency directories are shared cheaply by default — entry-linked, so a write to a new path stays sandboxed while a write through an existing package entry still reaches the host — except PHP's `vendor/`, which is always copied because Composer's autoloader resolves `__DIR__` through symlinks back to the real workspace; see `sandbox.dependencies` in `chaos://config-schema` for the `copy`/`share` alternatives
-- **Pinned Container Runners** — release-matched OCI images provide all four mutation engines without installing them on the host
-- **Auto-Detection** — automatically detects project type, test runner, and workspace root
-- **Async Subprocesses** — all mutation-tool execution uses async `execFile`/`exec`, and the sandbox's workspace copy uses async `fs.cp`, so neither blocks the event loop; the entry-linking pass that follows runs synchronously afterward and scales with the number of installed packages, not workspace size
-- **Rich Tool Schema** — supports line scoping, mutator denylists, concurrency control, dry-run mode, incremental runs, and output format selection
-- **Pre-flight Estimation** — `estimate_audit` gives a fast mutant count and an optional timing estimate before you commit to a full run. For Rust it is an exact count of the mutants `cargo-mutants --list` **generates**; the audit itself scores fewer, because mutants that fail to compile leave its denominator and are reported as `incompetent`. The other three languages use a source heuristic
-- **Gate Mode** — pass `minScore` to `audit_code_resilience` or `triage_test_coverage` to get a machine-readable pass/fail field for CI pipelines
-- **Cross-Platform** — works on macOS, Linux, and Windows (with junction fallback for symlinks)
+- **4 Languages Supported**: TypeScript/JavaScript (StrykerJS), Python (cosmic-ray), Rust (cargo-mutants), PHP (Infection)
+- **Sandbox Isolation**: all mutation runs execute in temporary directories, and the target's real path is verified to live inside the sandbox before any engine runs, so a symlinked source file (or one under a symlinked directory) is refused rather than mutated in place through the link. Dependency directories are shared cheaply by default and entry-linked, so a write to a new path stays sandboxed while a write through an existing package entry still reaches the host. The exception is PHP's `vendor/`, which is always copied because Composer's autoloader resolves `__DIR__` through symlinks back to the real workspace; see `sandbox.dependencies` in `chaos://config-schema` for the `copy`/`share` alternatives
+- **Pinned Container Runners**: release-matched OCI images provide all four mutation engines without installing them on the host
+- **Auto-Detection**: automatically detects project type, test runner, and workspace root
+- **Async Subprocesses**: all mutation-tool execution uses async `execFile`/`exec`, and the sandbox's workspace copy uses async `fs.cp`, so neither blocks the event loop; the entry-linking pass that follows runs synchronously afterward and scales with the number of installed packages, not workspace size
+- **Rich Tool Schema**: supports line scoping, mutator denylists, concurrency control, dry-run mode, incremental runs, and output format selection
+- **Pre-flight Estimation**: `estimate_audit` gives a fast mutant count and an optional timing estimate before you commit to a full run. For Rust it is an exact count of the mutants `cargo-mutants --list` **generates**; the audit itself scores fewer, because mutants that fail to compile leave its denominator and are reported as `incompetent`. The other three languages use a source heuristic
+- **Gate Mode**: pass `minScore` to `audit_code_resilience` or `triage_test_coverage` to get a machine-readable pass/fail field for CI pipelines
+- **Cross-Platform**: works on macOS, Linux, and Windows (with junction fallback for symlinks)
 
 ## Installation
 
-While in development, the only supported install path is **from source** — clone the repo, build, and register the built entrypoint with your MCP client.
+While in development, the only supported install path is **from source**: clone the repo, build, and register the built entrypoint with your MCP client.
 
 ```bash
 git clone https://github.com/AraneaDev/Chaos-MCP.git
@@ -44,7 +62,7 @@ claude mcp add chaos-mcp -- node /absolute/path/to/ChaosMCP/build/index.js
 
 > **Planned (not available yet):** once published, install will be `npm install -g chaos-mcp` or run on demand via `npx chaos-mcp`. These do not work until the package ships to npm.
 
-### Prerequisites — language mutation tools
+### Prerequisites: language mutation tools
 
 Native mode (the default) shells out to mutation engines installed on the host.
 Install only the engine(s) for the languages you audit. Alternatively, enable
@@ -54,15 +72,15 @@ a clear error naming the exact install command.
 
 | Language                | Engine                                                       | Install                                                                                                                                                                                                                                                                             |
 | ----------------------- | ------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| TypeScript / JavaScript | [StrykerJS](https://stryker-mutator.io/)                     | `npm install --save-dev @stryker-mutator/core` (in the target project) — note: StrykerJS 9.x's vitest-runner is not compatible with vitest 3.x's dropped `--related` API. If the target uses vitest 3.x, downgrade it to `vitest@^2.1.x` for the audit, or wait for StrykerJS 10.x. |
-| Python                  | [cosmic-ray](https://github.com/sixty-north/cosmic-ray)      | `pipx install cosmic-ray` — or `pip install cosmic-ray` inside a virtualenv                                                                                                                                                                                                         |
+| TypeScript / JavaScript | [StrykerJS](https://stryker-mutator.io/)                     | `npm install --save-dev @stryker-mutator/core` (in the target project). Note: StrykerJS 9.x's vitest-runner is not compatible with vitest 3.x's dropped `--related` API. If the target uses vitest 3.x, downgrade it to `vitest@^2.1.x` for the audit, or wait for StrykerJS 10.x. |
+| Python                  | [cosmic-ray](https://github.com/sixty-north/cosmic-ray)      | `pipx install cosmic-ray`, or `pip install cosmic-ray` inside a virtualenv                                                                                                                                                                                                         |
 | Rust                    | [cargo-mutants](https://github.com/sourcefrog/cargo-mutants) | `cargo install cargo-mutants`                                                                                                                                                                                                                                                       |
-| PHP                     | [Infection](https://infection.github.io/)                    | `composer require --dev infection/infection` — also enable a coverage driver (Xdebug or PCOV)                                                                                                                                                                                       |
+| PHP                     | [Infection](https://infection.github.io/)                    | `composer require --dev infection/infection`, and enable a coverage driver (Xdebug or PCOV)                                                                                                                                                                                       |
 
 Notes:
 
 - In native mode, the tool must be on `PATH` (or, for StrykerJS, resolvable from the target project's `node_modules`), and its language toolchain must be installed.
-- **PHP / Infection:** set `failOnWarning="true"` in your `phpunit.xml`. Infection writes a PHPUnit config per mutant with `stopOnDefect="true"`, so the suite stops as soon as a mutant looks killed — but a PHP warning is a _defect_ without being a _failure_, so under `failOnWarning="false"` a mutant that makes an earlier test warn stops the run with exit 0 and is reported as **survived** before the asserting test runs. Scores are only ever depressed by this, never inflated. Chaos-MCP reads your PHPUnit config and attaches a `fidelityNote` to any PHP result that reports survivors while the setting is off.
+- **PHP / Infection:** set `failOnWarning="true"` in your `phpunit.xml`. Infection writes a PHPUnit config per mutant with `stopOnDefect="true"`, so the suite stops as soon as a mutant looks killed. But a PHP warning is a _defect_ without being a _failure_, so under `failOnWarning="false"` a mutant that makes an earlier test warn stops the run with exit 0 and is reported as **survived** before the asserting test runs. Scores are only ever depressed by this, never inflated. Chaos-MCP reads your PHPUnit config and attaches a `fidelityNote` to any PHP result that reports survivors while the setting is off.
 - **Python / cosmic-ray (native mode):** on modern distros a bare `pip install cosmic-ray` is blocked by [PEP 668](https://peps.python.org/pep-0668/) ("externally-managed-environment"); use `pipx install cosmic-ray` or an activated virtualenv. Chaos-MCP generates cosmic-ray's config and runs `baseline → init → exec → dump` in the sandbox. Use `testSelection` and `excludeOperators` to keep large audits tractable.
 - These engines run **inside the sandbox** against a copy of your workspace; Chaos-MCP never installs or modifies anything in your real project.
 
@@ -84,7 +102,7 @@ node build/index.js --container-doctor
 Use `podman pull` instead when `"runtime": "podman"` is configured. Each
 Chaos-MCP release selects its matching `vX.Y.Z` image tags automatically.
 
-## Quick Start
+## Quick start
 
 ### 1. Start the Server
 
@@ -180,9 +198,9 @@ Re-runs only the baseline lines and reports which previously-uncaught mutants ar
 
 ### 3. Interpret the Results
 
-The output is **bundled and deduplicated** to stay token-efficient: mutants are grouped by line (with a per-line count of each mutator type), `survivors` (tests ran but didn't catch) and `noCoverage` (no test reached the mutant) are reported separately at line+mutator granularity, and the explanatory note appears once instead of being repeated for every mutant. Because the split is per-mutator, the same line can appear in both lists (e.g. a live expression that survived next to an unreachable fallback that no test reached). Survivors and no-coverage entries also include a `changes` sample — a capped, deduped list of per-mutant edits — for all four languages (best-effort). TypeScript (StrykerJS) and Python (cosmic-ray, read from each mutant's diff) report the full `original → mutated` form; Rust (cargo-mutants) and PHP (Infection) expose only the mutated side, so their entries carry just that. When `diffBase` is used, the output may include a `scopeNote` (a top-level JSON field / a `Scope:` text line) reporting scoping decisions — e.g. a skipped run when nothing changed, or a whole-file fallback for Python/Rust targets.
+The output is **bundled and deduplicated** to stay token-efficient: mutants are grouped by line (with a per-line count of each mutator type), `survivors` (tests ran but didn't catch) and `noCoverage` (no test reached the mutant) are reported separately at line+mutator granularity, and the explanatory note appears once instead of being repeated for every mutant. Because the split is per-mutator, the same line can appear in both lists (e.g. a live expression that survived next to an unreachable fallback that no test reached). Survivors and no-coverage entries also include a `changes` sample, a capped and deduped list of per-mutant edits, for all four languages (best-effort). TypeScript (StrykerJS) and Python (cosmic-ray, read from each mutant's diff) report the full `original → mutated` form; Rust (cargo-mutants) and PHP (Infection) expose only the mutated side, so their entries carry just that. When `diffBase` is used, the output may include a `scopeNote` (a top-level JSON field / a `Scope:` text line) reporting scoping decisions, for example a skipped run when nothing changed, or a whole-file fallback for Python/Rust targets.
 
-**JSON output (default — emitted as a single compact line):**
+**JSON output (default, emitted as a single compact line):**
 
 ```json
 {
@@ -220,7 +238,7 @@ Survivors (line: mutators):
 Add or strengthen tests targeting these lines to kill the survivors.
 ```
 
-## Tool Parameters
+## Tool parameters
 
 | Parameter          | Type                              | Required | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | ------------------ | --------------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -228,15 +246,15 @@ Add or strengthen tests targeting these lines to kill the survivors.
 | `timeoutMs`        | `number`                          | No       | Max run time in ms (default: 300000 / 5 min)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `lineScope`        | `{ start, end }`                  | No       | 1-based line range (StrykerJS only)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `diffBase`         | `string`                          | No       | Auto-scope mutation to git-changed lines. `"HEAD"` (uncommitted), `"staged"`, or a git ref (e.g. `"main"`, via merge-base). Mutually exclusive with `lineScope`. Line-level scoping is StrykerJS-only; other languages run whole-file with a note. No changes vs base → run skipped.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `baseline`         | `object`                          | No       | Verify mode. Pass back a prior run's `{ survivors, noCoverage }` to re-test only those mutants and get a delta (`nowKilled` / `stillSurviving` / `newSurvivors`). Re-run auto-scopes to the baseline lines (StrykerJS) or whole-file (other languages). Mutually exclusive with `diffBase`/`lineScope`. Verify mode keys on line numbers, so run it after **adding tests** — not after editing the source under test, since edits shift line numbers and would misreport which mutants were killed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| `mutatorAllowlist` | `string[]`                        | No       | Not supported in StrykerJS v9 — ignored (use `mutatorDenylist`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `baseline`         | `object`                          | No       | Verify mode. Pass back a prior run's `{ survivors, noCoverage }` to re-test only those mutants and get a delta (`nowKilled` / `stillSurviving` / `newSurvivors`). Re-run auto-scopes to the baseline lines (StrykerJS) or whole-file (other languages). Mutually exclusive with `diffBase`/`lineScope`. Verify mode keys on line numbers, so run it after **adding tests**, not after editing the source under test, since edits shift line numbers and would misreport which mutants were killed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `mutatorAllowlist` | `string[]`                        | No       | Not supported in StrykerJS v9, ignored (use `mutatorDenylist`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `mutatorDenylist`  | `string[]`                        | No       | Stryker mutator names to exclude                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `concurrency`      | `number`                          | No       | Parallel mutation workers (StrykerJS only)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `dryRun`           | `boolean`                         | No       | Validate test suite only, no mutations (StrykerJS only)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `outputFormat`     | `"json"` \| `"text"`              | No       | Output format (default: `"json"`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `incremental`      | `boolean`                         | No       | Reuse previous run results (StrykerJS only). State is cached per (workspace, file) OUTSIDE the sandbox — the sandbox is deleted after each run, so without that the option would have nothing to reuse                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `ignorePatterns`   | `string[]`                        | No       | Path segments to exclude from the sandbox, in addition to the built-in exclusions. A path is skipped when any of its segments **equals** the pattern exactly — not a substring match, so `"dist"` excludes `dist/` but not `src/dist-utils.js`. One trailing path separator is stripped (`"fixtures/"` works; on Windows that is a trailing `\`); empty patterns are ignored. Naming a dependency directory (`node_modules`, `.venv`/`venv`, `vendor`) also suppresses the dependency link, so the sandbox is left without it and the run will usually fail — Chaos-MCP warns when an exclusion does that to a directory that exists, except under `sandbox.dependencies: "copy"`, which links nothing to warn about and drops the directory silently.                                                                                                                                                                                                                                                                                 |
-| `enrich`           | `boolean`                         | No       | Annotate each survivor with severity, why-it-matters, a test hint, and source context — and rank severity-first. **Default: `true`** (pass `false` to disable and return plain unranked output). Richest for TypeScript; Python degrades to `severity: "unknown"`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `incremental`      | `boolean`                         | No       | Reuse previous run results (StrykerJS only). State is cached per (workspace, file) OUTSIDE the sandbox, because the sandbox is deleted after each run and without that the option would have nothing to reuse                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `ignorePatterns`   | `string[]`                        | No       | Path segments to exclude from the sandbox, in addition to the built-in exclusions. A path is skipped when any of its segments **equals** the pattern exactly, not a substring match, so `"dist"` excludes `dist/` but not `src/dist-utils.js`. One trailing path separator is stripped (`"fixtures/"` works; on Windows that is a trailing `\`); empty patterns are ignored. Naming a dependency directory (`node_modules`, `.venv`/`venv`, `vendor`) also suppresses the dependency link, so the sandbox is left without it and the run will usually fail. Chaos-MCP warns when an exclusion does that to a directory that exists, except under `sandbox.dependencies: "copy"`, which links nothing to warn about and drops the directory silently.                                                                                                                                                                                                                                                                                 |
+| `enrich`           | `boolean`                         | No       | Annotate each survivor with severity, why-it-matters, a test hint, and source context, and ranks severity-first. **Default: `true`** (pass `false` to disable and return plain unranked output). Richest for TypeScript; Python degrades to `severity: "unknown"`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `maxSurvivors`     | `integer ≥ 1`                     | No       | Cap on how many survivor (and no-coverage) line groups are returned after severity ranking. Hidden groups counted in `survivorsTruncated`/`noCoverageTruncated`. Precedence: arg > `defaultMaxSurvivors` config > 10.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `severityFloor`    | `"high"` \| `"medium"` \| `"low"` | No       | Drop survivor groups below this severity (requires enrichment, on by default). Dropped groups counted in `survivorsFiltered`/`noCoverageFiltered`. `"unknown"`-severity groups are below `"low"` and are dropped by any floor.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | `runId`            | `string`                          | No       | Verify mode by cached id: re-run against the survivor baseline saved from a prior audit (the `runId` it returned). Mutually exclusive with `baseline`, `diffBase`, and `lineScope`. Unknown or expired ids (cache TTL: ~24 h) return an error.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
@@ -256,13 +274,13 @@ Every successful, non-verify `audit_code_resilience` call returns a `runId` (an 
 2. **Fix or add tests.**
 3. **Verify:** `{ "filePath": "src/utils/math.ts", "runId": "a1b2c3d4" }` → reports which previously-surviving mutants are now killed.
 
-`runId` is mutually exclusive with `baseline`, `diffBase`, and `lineScope`. The baseline cache lives in `os.tmpdir()/chaos-mcp-runs/<hash-of-server-cwd>/` — partitioned per server working directory, so two checkouts served by two servers never read each other's entries — and is ephemeral (default TTL: 24 h; default max: 200 entries). Passing an unknown or expired `runId` returns an error.
+`runId` is mutually exclusive with `baseline`, `diffBase`, and `lineScope`. The baseline cache lives in `os.tmpdir()/chaos-mcp-runs/<hash-of-server-cwd>/`, partitioned per server working directory so two checkouts served by two servers never read each other's entries, and is ephemeral (default TTL: 24 h; default max: 200 entries). Passing an unknown or expired `runId` returns an error.
 
 `triage_test_coverage` also mints and returns a `runId` per ranking row, so you can drill into a weak file and immediately verify after fixing its tests.
 
 ### Suppressing equivalent mutants
 
-Some mutants are _equivalent_ — logically identical to the original under all possible inputs — and cannot be killed by any test. Suppress them so they stop appearing in the output and stop dragging down the score:
+Some mutants are _equivalent_, logically identical to the original under all possible inputs, and cannot be killed by any test. Suppress them so they stop appearing in the output and stop dragging down the score:
 
 ```json
 {
@@ -276,10 +294,10 @@ Some mutants are _equivalent_ — logically identical to the original under all 
 Suppressed mutants are:
 
 - **Persisted** to `<workspaceRoot>/.chaos-mcp/suppressions.json` (keyed by workspace-relative file path).
-- **Identified by content** — an entry names the mutator _and the change the mutant makes_, not the line it sits on, so it follows the code when an edit moves it.
-- **Auto-excluded** from every future `audit` and `triage` call for that file — no flag needed.
-- **Removed from the score denominator** — `mutationScore` rises and the output field `suppressedCount` tells you how many were excluded.
-- **Excluded from verify mode** — suppressed mutants won't appear as "still surviving".
+- **Identified by content**: an entry names the mutator _and the change the mutant makes_, not the line it sits on, so it follows the code when an edit moves it.
+- **Auto-excluded** from every future `audit` and `triage` call for that file, with no flag needed.
+- **Removed from the score denominator**: `mutationScore` rises and the output field `suppressedCount` tells you how many were excluded.
+- **Excluded from verify mode**: suppressed mutants won't appear as "still surviving".
 
 To undo a wrong suppression:
 
@@ -300,7 +318,7 @@ One line can carry several mutants of the same mutator. This single line emits *
 if (typeof g !== 'object' || g === null || Array.isArray(g)) return false;
 ```
 
-A `{ line, mutator }` pair cannot say which of them you mean, so an entry identifies its mutant by the **change** it makes — the `"original → mutated"` string, the same form the report's `changes` field uses:
+A `{ line, mutator }` pair cannot say which of them you mean, so an entry identifies its mutant by the **change** it makes: the `"original → mutated"` string, the same form the report's `changes` field uses:
 
 ```json
 {
@@ -315,34 +333,34 @@ A `{ line, mutator }` pair cannot say which of them you mean, so an entry identi
 }
 ```
 
-`change` is **optional**. Omit it and Chaos-MCP resolves it from that run's survivors, so the ordinary two-field call still works. When several distinct mutants match, the entry is **refused** rather than suppressing all of them, and the response lists the candidate `change` values to choose from — the report's own `changes` field is capped at three per line and aggregated across mutators, so on exactly these lines it cannot show them all.
+`change` is **optional**. Omit it and Chaos-MCP resolves it from that run's survivors, so the ordinary two-field call still works. When several distinct mutants match, the entry is **refused** rather than suppressing all of them, and the response lists the candidate `change` values to choose from. The report's own `changes` field is capped at three per line and aggregated across mutators, so on exactly these lines it cannot show them all.
 
 Replacement text alone is not enough to identify a mutant: several `ConditionalExpression` mutants on one line can all replace their span with `true`, and only the _original_ span tells them apart. That is why the change carries both halves.
 
 #### Staleness is detected, and usually repaired
 
-Each entry also stores a `fingerprint`: a digest of the normalized source line (trimmed, internal whitespace collapsed) it was recorded against. Every run resolves each stored entry through a ladder, and **ambiguity at any step is a refusal — nothing is ever guessed**:
+Each entry also stores a `fingerprint`: a digest of the normalized source line (trimmed, internal whitespace collapsed) it was recorded against. Every run resolves each stored entry through a ladder, and **ambiguity at any step is a refusal, nothing is ever guessed**:
 
 | Outcome    | Meaning                                                                            | Applied?                                      |
 | ---------- | ---------------------------------------------------------------------------------- | --------------------------------------------- |
-| applied    | the stored line still matches the stored fingerprint                               | yes — counted in `suppressedCount`            |
-| relocated  | the line moved, or was edited and the mutant found by its change; entry re-pointed | yes — also counted in `relocatedSuppressions` |
-| drifted    | the mutant could not be placed, or more than one candidate matched                 | **no** — counted in `driftedSuppressions`     |
-| unverified | the entry has no fingerprint (written before v2)                                   | **no** — counted in `unverifiedSuppressions`  |
-| orphaned   | the entry was placed but matched no surviving mutant — inert                       | n/a — counted in `orphanedSuppressions`       |
+| applied    | the stored line still matches the stored fingerprint                               | yes, counted in `suppressedCount`            |
+| relocated  | the line moved, or was edited and the mutant found by its change; entry re-pointed | yes, also counted in `relocatedSuppressions` |
+| drifted    | the mutant could not be placed, or more than one candidate matched                 | **no**, counted in `driftedSuppressions`     |
+| unverified | the entry has no fingerprint (written before v2)                                   | **no**, counted in `unverifiedSuppressions`  |
+| orphaned   | the entry was placed but matched no surviving mutant, inert                       | n/a, counted in `orphanedSuppressions`       |
 
-A **relocation is written back** to `suppressions.json`, so the repair happens once rather than on every run — expect the file to show up in `git status` after an edit that moved a suppressed line.
+A **relocation is written back** to `suppressions.json`, so the repair happens once rather than on every run. Expect the file to show up in `git status` after an edit that moved a suppressed line.
 
-An entry relocates in one of two ways. If the **line's content is unchanged** and simply moved, the match is exact and the move is reported as a bare count. If the **line itself was edited** — reflowed, a variable renamed, a comment appended — the mutant is found by its change instead, and that one can be wrong: if the original site was _deleted_ and an unrelated site happens to produce the same change, the entry lands on code its `reason` was never written about. Those moves are reported individually, with the reason quoted, so you can confirm or drop them.
+An entry relocates in one of two ways. If the **line's content is unchanged** and simply moved, the match is exact and the move is reported as a bare count. If the **line itself was edited**, reflowed or a variable renamed or a comment appended, the mutant is found by its change instead, and that one can be wrong: if the original site was _deleted_ and an unrelated site happens to produce the same change, the entry lands on code its `reason` was never written about. Those moves are reported individually, with the reason quoted, so you can confirm or drop them.
 
-The bias throughout is deliberate: a suppression that is not applied lowers your score _visibly_, while one applied to the wrong code hides a real coverage gap _invisibly_. To restore a drifted or unverified entry, re-issue the same `suppress` argument — that re-stamps the fingerprint and keeps the existing `reason` and `addedAt` (a new `reason`, if you pass one, replaces the old).
+The bias throughout is deliberate: a suppression that is not applied lowers your score _visibly_, while one applied to the wrong code hides a real coverage gap _invisibly_. To restore a drifted or unverified entry, re-issue the same `suppress` argument, which re-stamps the fingerprint and keeps the existing `reason` and `addedAt` (a new `reason`, if you pass one, replaces the old).
 
 An `orphaned` entry means one of three things and Chaos-MCP cannot tell which: the mutant is now killed, its identity no longer exists, or a `mutatorDenylist` entry stopped it being generated. It is inert either way, so drop it with `unsuppress` unless you know the mutant still exists.
 
 **Migrating an older file.** `version: 1` and `version: 2` files load unchanged; every entry keeps its `line`, `mutator`, `reason` and `addedAt`, and nothing is deleted or back-filled.
 
 - **v1** entries have no fingerprint and report as `unverified` until re-confirmed.
-- **v2** entries have no `change`, so they fall back to mutator-only identity — _broader_ than the mutant they were filed against, since one entry then covers every mutant of that mutator on its line, including ones added later.
+- **v2** entries have no `change`, so they fall back to mutator-only identity, _broader_ than the mutant they were filed against, since one entry then covers every mutant of that mutator on its line, including ones added later.
 
 To migrate a v2 corpus, run `node scripts/migrate-suppressions-v3.mjs --write`. It re-points entries whose line moved but whose content is unchanged, refuses to guess at anything ambiguous, and writes a replay payload; feeding those entries back through `audit_code_resilience` resolves each `change` from that run's survivors.
 
@@ -354,7 +372,7 @@ To migrate a v2 corpus, run `node scripts/migrate-suppressions-v3.mjs --write`. 
 | `runCacheTtlMs`    | `86400000` (24 h)              | Run-cache entry TTL in milliseconds                           |
 | `runCacheMax`      | `200`                          | Max cached run entries; oldest are evicted when exceeded      |
 
-## Batch Triage — `triage_test_coverage`
+## Batch triage: `triage_test_coverage`
 
 A second tool ranks where your test suite is weakest across many files in one call.
 
@@ -387,7 +405,7 @@ The tool response carries a `structuredContent` field (in addition to the text b
 
 Drill into a weak file with `audit_code_resilience` for per-mutant survivor detail.
 
-**PR-diff scan — `diffBase`:**
+**PR-diff scan (`diffBase`):**
 
 Pass `diffBase` to limit the triage to files changed in a PR or branch. `paths` becomes optional in this mode:
 
@@ -403,7 +421,7 @@ Pass `diffBase` to limit the triage to files changed in a PR or branch. `paths` 
 
 TypeScript files are mutated only on the changed lines; Python and Rust files run whole-file (a per-file `scopeNote` is included in the ranking row).
 
-**Inline survivor detail — `survivorsPerFile`:**
+**Inline survivor detail (`survivorsPerFile`):**
 
 ```json
 { "paths": ["src"], "survivorsPerFile": 3 }
@@ -411,7 +429,7 @@ TypeScript files are mutated only on the changed lines; Python and Rust files ru
 
 `survivorsPerFile` (default `0`, scores-only) inlines the top-N severity-ranked, enriched survivor groups into each ranking row so you can triage and inspect in one call. Set it to `0` for the compact leaderboard; raise it when you want to see the worst gaps immediately.
 
-**Parallel file auditing — `fileConcurrency`:**
+**Parallel file auditing (`fileConcurrency`):**
 
 ```json
 { "paths": ["src"], "fileConcurrency": 8 }
@@ -434,7 +452,7 @@ TypeScript files are mutated only on the changed lines; Python and Rust files ru
 | `fileConcurrency`  | `integer 1–64`       | Files audited in parallel (default `max(1, min(4, cpus-1))`). Per-file StrykerJS worker count is automatically capped (TypeScript/StrykerJS only; other engines ignore the worker-count cap).                                 |
 | `minScore`         | `number 0–100`       | Gate threshold. Per-row `passed` field + top-level `gate: { minScore, passed, failingFiles }` in output. Never an error. A row whose audit was cut short (`complete: false`) fails the gate regardless of its score.          |
 
-## Pre-flight Estimate — `estimate_audit`
+## Pre-flight estimate: `estimate_audit`
 
 Before committing to a full mutation run, use `estimate_audit` to check how many mutants a file will produce and (optionally) how long the run will take. It never runs the mutation test cycle by default.
 
@@ -455,7 +473,7 @@ Before committing to a full mutation run, use `estimate_audit` to check how many
 }
 ```
 
-**With timing** (`withTiming: true`): runs the test suite once to measure a baseline, then estimates total wall-clock time as `mutants × baseline / concurrency`. This provisions a sandbox and counts against your machine's resources — use it when you want a time budget before a large audit.
+**With timing** (`withTiming: true`): runs the test suite once to measure a baseline, then estimates total wall-clock time as `mutants × baseline / concurrency`. This provisions a sandbox and counts against your machine's resources, so use it when you want a time budget before a large audit.
 
 ```json
 { "filePath": "src/utils/math.ts", "withTiming": true }
@@ -479,7 +497,7 @@ Additional output fields when `withTiming: true`:
 | TypeScript / JavaScript | `approx` | source-parse heuristic                                   |
 | Python                  | `approx` | source-parse heuristic                                   |
 
-For Rust, the estimate is exact for the mutants `cargo mutants --list` _generates_ without running tests — the audit itself scores fewer, since mutants that fail to compile are excluded from its denominator and reported as `incompetent`. For all other languages the count is approximate — a lightweight heuristic over the source AST; the actual audit may differ. Run `audit_code_resilience` for exact results.
+For Rust, the estimate is exact for the mutants `cargo mutants --list` _generates_ without running tests. The audit itself scores fewer, since mutants that fail to compile are excluded from its denominator and reported as `incompetent`. For all other languages the count is approximate, a lightweight heuristic over the source AST, and the actual audit may differ. Run `audit_code_resilience` for exact results.
 
 If `cargo-mutants` is not installed, the Rust path falls back to the heuristic and reports `fidelity: "approx"` with a note.
 
@@ -498,9 +516,9 @@ Call `estimate_audit` first when you are unsure whether a file is too large to a
 2. Consider scoping with `lineScope` or `diffBase`, or scheduling the full run with a longer `timeoutMs`.
 3. `audit_code_resilience { "filePath": "src/big.ts", "diffBase": "HEAD" }` → audits only your changed lines.
 
-## Gate Mode — `minScore`
+## Gate mode: `minScore`
 
-Both `audit_code_resilience` and `triage_test_coverage` accept a `minScore` parameter (0–100). When the mutation score falls below the threshold, the result reports the gate as failed. **A failing gate is never an error** — it is a data field for an agent or CI pipeline to read and act on.
+Both `audit_code_resilience` and `triage_test_coverage` accept a `minScore` parameter (0–100). When the mutation score falls below the threshold, the result reports the gate as failed. **A failing gate is never an error**. It is a data field for an agent or CI pipeline to read and act on.
 
 ### Gate on a single file
 
@@ -538,15 +556,15 @@ Each ranking row gains a `passed` field. The top-level output includes:
 }
 ```
 
-**The triage gate fails closed.** `gate.passed` is `false` if any file's score is below `minScore` **or if any requested file was never measured** — one that errored during the sweep (also listed in `errors[]`) or that the `totalTimeoutMs` budget never reached (also listed in `unaudited[]`). Grading a sweep on whichever subset happened to finish would let a CI step keyed on `gate.passed` go green over ungraded code, so an incomplete sweep never passes. A file audited only partially (its `complete` is `false`) fails on the same basis.
+**The triage gate fails closed.** `gate.passed` is `false` if any file's score is below `minScore` **or if any requested file was never measured**: one that errored during the sweep (also listed in `errors[]`) or that the `totalTimeoutMs` budget never reached (also listed in `unaudited[]`). Grading a sweep on whichever subset happened to finish would let a CI step keyed on `gate.passed` go green over ungraded code, so an incomplete sweep never passes. A file audited only partially (its `complete` is `false`) fails on the same basis.
 
 The gate object always carries `minScore`, `passed`, `failingFiles`, and `notGraded` whenever `minScore` was supplied:
 
-- `failingFiles` — workspace-relative paths that were measured and scored below `minScore`.
-- `notGraded` — `{ "errored": <count>, "unaudited": <count> }`, the files that produced no score at all.
-- `reason` — present only on a failure, and the only machine-readable way to tell the two causes apart:
-  - `"below_threshold"` — at least one file was measured and scored too low (`failingFiles` is non-empty).
-  - `"files_not_graded"` — every measured file passed, but something was never measured (`failingFiles` is empty and `notGraded` is non-zero).
+- `failingFiles`: workspace-relative paths that were measured and scored below `minScore`.
+- `notGraded`: `{ "errored": <count>, "unaudited": <count> }`, the files that produced no score at all.
+- `reason`: present only on a failure, and the only machine-readable way to tell the two causes apart:
+  - `"below_threshold"`: at least one file was measured and scored too low (`failingFiles` is non-empty).
+  - `"files_not_graded"`: every measured file passed, but something was never measured (`failingFiles` is empty and `notGraded` is non-zero).
 
 A `passed: false` with an empty `failingFiles` is therefore expected, not a bug: check `reason` and `notGraded` before assuming a score problem.
 
@@ -591,10 +609,10 @@ Tool call arguments override config defaults.
 | `concurrency`            | `number`                          | `4`                                  | Parallel mutation workers                                                                                                               |
 | `defaultMaxFiles`        | `number`                          | `25`                                 | Default triage file cap (integer ≥ 1); overridden by the `maxFiles` argument                                                            |
 | `defaultMaxSurvivors`    | `number`                          | `10`                                 | Default cap on survivor/no-coverage groups returned by `audit_code_resilience` (integer ≥ 1); overridden by the `maxSurvivors` argument |
-| `defaultSeverityFloor`   | `"high"` \| `"medium"` \| `"low"` | —                                    | Default severity floor for survivor reporting; overridden by the `severityFloor` argument                                               |
+| `defaultSeverityFloor`   | `"high"` \| `"medium"` \| `"low"` | –                                    | Default severity floor for survivor reporting; overridden by the `severityFloor` argument                                               |
 | `defaultFileConcurrency` | `number`                          | `max(1, min(4, cpus-1))`             | Default parallel file count for `triage_test_coverage` (integer 1–64); overridden by the `fileConcurrency` argument                     |
 | `container`              | `object`                          | `{ "mode": "native" }`               | Optional shared OCI execution backend for TypeScript, Python, Rust, and PHP                                                             |
-| `sandbox`                | `object`                          | `{ "dependencies": "link-entries" }` | Sandbox provisioning. `dependencies` chooses how `node_modules`, `.venv`/`venv` and `vendor` are materialised — see below               |
+| `sandbox`                | `object`                          | `{ "dependencies": "link-entries" }` | Sandbox provisioning. `dependencies` chooses how `node_modules`, `.venv`/`venv` and `vendor` are materialised , see below               |
 
 ### Sandbox dependencies
 
@@ -605,7 +623,7 @@ Tool call arguments override config defaults.
 | `dependencies` | What the sandbox gets                                                   | A write under it                                                                                                                    |
 | -------------- | ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
 | `link-entries` | **Default.** A real directory holding one symlink per installed package | To a **new** path (`.vite-temp`, a lockfile, a cache) stays in the sandbox; **through** an existing package still reaches your tree |
-| `copy`         | A full copy of the tree                                                 | Always stays in the sandbox. The only mode that fully contains a suite which writes through its own dependencies — and the slowest  |
+| `copy`         | A full copy of the tree                                                 | Always stays in the sandbox. The only mode that fully contains a suite which writes through its own dependencies , and the slowest  |
 | `share`        | One symlink for the whole directory (the pre-1.8 behaviour)             | Always reaches your real workspace. Opt in knowingly                                                                                |
 
 PHP's `vendor/` is always copied regardless of this setting, because Composer's
@@ -676,7 +694,7 @@ still supplies its own test dependencies. Which dependency trees get mounted
 follows `sandbox.dependencies`: under `link-entries` (the default) and `share`
 the **host** trees (`node_modules`, `.venv`/`venv`, and `vendor`) are
 bind-mounted read-only at their own absolute paths, which is what makes the
-sandbox's symlinks into them resolve inside the container — with one exception:
+sandbox's symlinks into them resolve inside the container, with one exception:
 `node_modules/.vite-temp` gets a small writable tmpfs, because Vite writes a
 bundled copy of the config it is loading there and a read-only tree would fail
 the config load of every vitest project. The scratch is discarded with the
@@ -737,7 +755,7 @@ The `prebuildCommand` tool argument runs an arbitrary shell command inside the s
 
 ### Python test commands declared by the audited project
 
-Mutation testing runs the audited project's test suite — that is the job. But
+Mutation testing runs the audited project's test suite. That is the job, but
 the Python engine resolves its test command partly from the **audited
 project's own** `pyproject.toml`, via the `[tool.mutmut] runner` key, and
 cosmic-ray executes that string through a shell once per mutant. Accepting an
@@ -745,7 +763,7 @@ arbitrary command line from repository content is the same hazard
 `prebuildCommand` is gated for, so it is bounded the same way:
 
 - A **bare executable name** (`nose2`, `ward`, `green`) is accepted. It can name
-  a program to run and nothing else — no arguments, no `;`, `|`, `&&`, `$(...)`,
+  a program to run and nothing else: no arguments, no `;`, `|`, `&&`, `$(...)`,
   or redirects.
 - Anything else is **refused with an explanation** rather than silently replaced
   with pytest, which would quietly change which tests can kill a mutant.
@@ -764,8 +782,8 @@ in this workspace.
 
 By default Chaos-MCP only audits files beneath the directory the process was
 launched in: the workspace-root walk stops at `process.cwd()`, and the sandbox
-refuses to copy anything that escapes it. For an MCP server — which is launched
-once with a fixed cwd — that means a server started in project A cannot audit
+refuses to copy anything that escapes it. For an MCP server, which is launched
+once with a fixed cwd, that means a server started in project A cannot audit
 project B at all.
 
 Set `CHAOS_ALLOWED_ROOTS` to name additional roots, separated by the platform
@@ -789,7 +807,7 @@ root are included, siblings and parents are not. When roots nest (a monorepo and
 one of its packages), the innermost match bounds the root walk. Leaving the
 variable unset keeps the cwd-only behaviour exactly as before.
 
-## Supported Test Runners (Auto-Detected)
+## Supported test runners (auto-detected)
 
 | Language      | Mutation Tool | Detected Runners                             |
 | ------------- | ------------- | -------------------------------------------- |
@@ -798,7 +816,7 @@ variable unset keeps the cwd-only behaviour exactly as before.
 | Rust          | cargo-mutants | cargo test, cargo-nextest                    |
 | PHP           | Infection     | phpunit                                      |
 
-## CLI Flags
+## CLI flags
 
 ```
 chaos-mcp [flags]
@@ -816,7 +834,7 @@ chaos-mcp [flags]
 
 ### Progress notifications
 
-When an MCP client includes a `progressToken` in a tool call's `_meta` field, Chaos-MCP emits `notifications/progress` events during the run. Clients that omit `progressToken` receive no notifications — there is zero overhead for clients that do not opt in.
+When an MCP client includes a `progressToken` in a tool call's `_meta` field, Chaos-MCP emits `notifications/progress` events during the run. Clients that omit `progressToken` receive no notifications , there is zero overhead for clients that do not opt in.
 
 **Triage** emits one notification per file as it completes:
 
@@ -874,13 +892,13 @@ npm run test:watch    # Watch mode for iterative development
 npm run test:coverage # Tests with coverage report
 ```
 
-The suite runs on every push/PR to `main` via [CI](./.github/workflows/ci.yml) (Node 22/24). v8 line/statement coverage of `src/` sits at **~99%**, and the source is additionally hardened by running Chaos-MCP against its own code — so the suite is graded by mutation score, not just line coverage.
+The suite runs on every push/PR to `main` via [CI](./.github/workflows/ci.yml) (Node 22/24). v8 line/statement coverage of `src/` sits at **~99%**, and the source is additionally hardened by running Chaos-MCP against its own code, so the suite is graded by mutation score rather than by line coverage alone.
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for detailed development setup and contribution guidelines.
 
 ## License
 
-MIT — See [LICENSE](LICENSE) for details.
+MIT. See [LICENSE](LICENSE) for details.
 
 ## Links
 
