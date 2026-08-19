@@ -35,8 +35,8 @@ export default defineConfig({
       // Only measure first-party source — never the compiled build/ output or tests.
       include: ['src/**/*.ts'],
       exclude: ['src/__tests__/**'],
-      // lcov is what the Codecov upload in CI consumes; text/html are for humans.
-      reporter: ['text', 'html', 'lcov'],
+      // json-summary feeds scripts/coverage-badge.mjs; text/html are for humans.
+      reporter: ['text', 'html', 'json-summary'],
     },
   },
 });
