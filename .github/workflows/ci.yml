@@ -64,6 +64,8 @@ jobs:
   test:
     name: Test with coverage
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # publishes the coverage badge to the gh-pages branch
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -80,12 +82,27 @@ jobs:
       - name: Test with coverage
         run: npm run test:coverage
 
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v5
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          files: ./coverage/lcov.info
-          fail_ci_if_error: false
+      # Self-hosted coverage badge: the percentage is published as a shields endpoint on an
+      # orphan `gh-pages` branch, force-pushed so it stays a single commit and never grows
+      # history. Only on main, because a pull request must not be able to move the badge.
+      - name: Publish coverage badge
+        if: github.ref == 'refs/heads/main'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/badge
+          node scripts/coverage-badge.mjs > /tmp/badge/coverage.json
+          cat /tmp/badge/coverage.json
+          cd /tmp/badge
+          git init -q
+          git checkout -q -b gh-pages
+          git add coverage.json
+          git -c user.name='github-actions[bot]' \
+              -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+              commit -q -m 'chore: publish coverage badge'
+          git push -q --force \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" gh-pages
 
   container-build:
     name: Container Build (${{ matrix.language }})
