@@ -34,6 +34,7 @@ import { resolve, sep } from 'path';
 function descendantPids(root: number): number[] {
   const children = new Map<number, number[]>();
   try {
+    // Stryker disable next-line StringLiteral: the fallback only has to be a string with no pid/ppid line in it; every non-table value produces the same empty tree.
     const listing = spawnSync('ps', ['-eo', 'pid=,ppid='], { encoding: 'utf-8' }).stdout ?? '';
     for (const line of listing.split('\n')) {
       const match = /^\s*(\d+)\s+(\d+)\s*$/.exec(line);
@@ -44,14 +45,28 @@ function descendantPids(root: number): number[] {
     }
   } catch {
     // No `ps` (or it failed): fall back to direct-child termination only.
+    //
+    // Mutation note: emptying this catch is an EQUIVALENT mutant, the walk
+    // below would then run over an empty `children` map and return the same
+    // empty array. It is left as a live survivor rather than suppressed: a
+    // `Stryker disable next-line` comment cannot be attached here (the only
+    // place to put it is inside the `try`, where Stryker does not resolve it to
+    // the catch block), and a region-level disable would also hide the loop
+    // above. The explicit return is kept because it states the intent.
     return [];
   }
 
   const out: number[] = [];
   const seen = new Set<number>([root]);
   const stack = [root];
+  // The loop guard and the `undefined` check below are individually equivalent
+  // but NOT jointly so: each covers for the other. `stack.length > 0` is what
+  // actually bounds the loop; the check exists because `Array.pop()` is typed
+  // `T | undefined` and TypeScript cannot see that the guard rules it out.
+  // Stryker disable next-line EqualityOperator: `>= 0` still terminates, the `undefined` check below breaks on the empty pop.
   while (stack.length > 0) {
     const current = stack.pop();
+    // Stryker disable next-line ConditionalExpression: unreachable while the loop guard holds; it is a type narrowing, not a runtime branch.
     if (current === undefined) break;
     for (const child of children.get(current) ?? []) {
       // A cycle is impossible in a real process table, but a malformed `ps`
