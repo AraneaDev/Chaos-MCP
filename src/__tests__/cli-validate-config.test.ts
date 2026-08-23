@@ -200,7 +200,7 @@ describe('CLI --validate-config flag', () => {
 
   it('warns and exits 0 for a mutatorAllowlist, then exits 2 with --strict (Task 14 / M1)', async () => {
     // mutatorAllowlist is accepted by the parser and stored on StrykerConfig,
-    // but buildRunOptions deliberately never sources it (StrykerJS v9 cannot
+    // but buildRunOptions deliberately never sources it (StrykerJS cannot
     // express an allowlist), so it silently does nothing. --validate-config
     // must say so instead of reporting a clean config.
     const allowlistConfigPath = join(tmpdir(), `chaos-mcp-allowlist-${randomUUID()}.json`);

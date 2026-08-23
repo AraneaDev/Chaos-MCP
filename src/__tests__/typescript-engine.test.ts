@@ -12,7 +12,7 @@ vi.mock('../utils/logger.js', () => ({
   isVerbose: vi.fn(() => false),
 }));
 
-// Mock fs for report parsing and config-file writes (StrykerJS v9)
+// Mock fs for report parsing and config-file writes
 vi.mock('fs', () => ({
   existsSync: vi.fn(),
   readFileSync: vi.fn(),
@@ -1108,7 +1108,7 @@ describe('TypeScriptEngine', () => {
     );
   });
 
-  it('passes mutatorDenylist via the overlay config, never as a CLI flag (StrykerJS v9)', async () => {
+  it('passes mutatorDenylist via the overlay config, never as a CLI flag', async () => {
     const { writeFileSync } = await import('fs');
     const mockWrite = vi.mocked(writeFileSync);
 
@@ -1289,13 +1289,13 @@ describe('TypeScriptEngine', () => {
     await expect(engine.run('src/app.ts', { mutatorAllowlist: [] })).resolves.toBeDefined();
   });
 
-  it('throws when mutatorAllowlist is provided (unsupported in StrykerJS v9)', async () => {
+  it('throws when mutatorAllowlist is provided (unsupported by StrykerJS)', async () => {
     mockRunShell.mockResolvedValue(makeExecResult());
     mockReadFileSync.mockReturnValue(makeJsonReport([]));
 
     await expect(
       engine.run('src/app.ts', { mutatorAllowlist: ['ConditionalExpression'] }),
-    ).rejects.toThrow(/mutatorAllowlist is not supported in StrykerJS v9/);
+    ).rejects.toThrow(/mutatorAllowlist is not supported by StrykerJS/);
   });
 
   it('omits mutator denylist args when none provided', async () => {
@@ -1308,7 +1308,7 @@ describe('TypeScriptEngine', () => {
     expect(argList.filter((a) => a.startsWith('--mutators.'))).toHaveLength(0);
   });
 
-  it('passes --dryRunOnly for dryRun mode (StrykerJS v9)', async () => {
+  it('passes --dryRunOnly for dryRun mode', async () => {
     mockRunShell.mockResolvedValue(makeExecResult());
     mockReadFileSync.mockReturnValue(makeJsonReport([]));
 
@@ -2410,7 +2410,7 @@ describe('prepareStrykerConfig', () => {
 
   it('rejects a mutator allowlist, listing what was requested', () => {
     expect(() => prepareStrykerConfig('/sb', { mutatorAllowlist: ['ArithmeticOperator'] })).toThrow(
-      'mutatorAllowlist is not supported in StrykerJS v9. ' +
+      'mutatorAllowlist is not supported by StrykerJS. ' +
         'Use mutatorDenylist instead, or create a stryker.config.json with explicit mutator settings. ' +
         'Requested allowlist: ArithmeticOperator',
     );

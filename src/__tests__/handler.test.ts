@@ -307,7 +307,7 @@ describe('handleToolCall', () => {
     );
   });
 
-  it('rejects a non-empty mutatorAllowlist (audit L1: StrykerJS v9 has no allowlist)', async () => {
+  it('rejects a non-empty mutatorAllowlist (audit L1: StrykerJS has no allowlist)', async () => {
     const mockRun = vi.fn();
     MockTSEngine.mockImplementation(function () {
       return { run: mockRun } as unknown as TypeScriptEngine;
@@ -329,7 +329,7 @@ describe('handleToolCall', () => {
     // Silent drop used to mask a real config error. Now rejected up-front.
     expect(response.isError).toBe(true);
     expect((response.content[0] as { text: string }).text).toContain(
-      'is not supported in StrykerJS v9',
+      'is not supported by StrykerJS',
     );
     expect(mockRun).not.toHaveBeenCalled();
   });
@@ -2943,7 +2943,7 @@ describe('handleToolCall', () => {
     );
   });
 
-  // ─── mutatorAllowlist (unsupported in StrykerJS v9 — always dropped) ────
+  // ─── mutatorAllowlist (unsupported by StrykerJS — always dropped) ────
 
   it('drops a config-provided mutatorAllowlist so it never reaches the engine', async () => {
     const mockRun = vi.fn().mockResolvedValue({

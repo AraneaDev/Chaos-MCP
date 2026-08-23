@@ -183,15 +183,15 @@ function validateBaselineArg(args: ToolArgs): string | null {
   return null;
 }
 
-/** mutatorAllowlist: StrykerJS v9 cannot express an allowlist. Reject up-front so
+/** mutatorAllowlist: StrykerJS cannot express an allowlist. Reject up-front so
  *  the caller gets a clear error instead of a silent no-op (L1). */
 function validateMutatorAllowlistArg(args: ToolArgs): string | null {
   if (args.mutatorAllowlist === undefined) return null;
   if (!Array.isArray(args.mutatorAllowlist)) {
-    return 'mutatorAllowlist must be an array of strings. (StrykerJS v9 has no allowlist — use mutatorDenylist.)';
+    return 'mutatorAllowlist must be an array of strings. (StrykerJS has no allowlist — use mutatorDenylist.)';
   }
   if (args.mutatorAllowlist.length === 0) {
-    return 'mutatorAllowlist is not supported in StrykerJS v9 — pass mutatorDenylist instead.';
+    return 'mutatorAllowlist is not supported by StrykerJS — pass mutatorDenylist instead.';
   }
   if (!args.mutatorAllowlist.every((v) => typeof v === 'string' && v.trim().length > 0)) {
     return 'mutatorAllowlist entries must be non-empty strings.';
@@ -200,7 +200,7 @@ function validateMutatorAllowlistArg(args: ToolArgs): string | null {
   // Names the engine the option BELONGS to, not the one the target runs on: the
   // argument is StrykerJS-specific, and on a .rs or .py target the old wording
   // read as a claim about the engine that file would actually have used.
-  return 'mutatorAllowlist is a StrykerJS option and is not supported in StrykerJS v9 — use mutatorDenylist instead, or supply your own stryker.config.json with explicit mutator settings. Non-TypeScript targets do not accept it at all.';
+  return 'mutatorAllowlist is a StrykerJS option and is not supported by StrykerJS — use mutatorDenylist instead, or supply your own stryker.config.json with explicit mutator settings. Non-TypeScript targets do not accept it at all.';
 }
 
 /** enrich: must be a boolean when present. */

@@ -106,7 +106,7 @@ Tool: audit_code_resilience
     filePath (required)  — Workspace-relative path to the file to audit (.ts/.js/.py/.rs/.php).
     timeoutMs            — Max run time in ms (default: 300000 / 5 min).
     lineScope            — { start, end } 1-based line range (StrykerJS only).
-    mutatorAllowlist     — NOT SUPPORTED (StrykerJS v9 has no allowlist): REJECTED with an error
+    mutatorAllowlist     — NOT SUPPORTED (StrykerJS has no allowlist): REJECTED with an error
                            when passed as a tool argument. Use mutatorDenylist instead, or supply
                            your own stryker.config.json.
     mutatorDenylist      — string[] of Stryker mutator names to exclude.

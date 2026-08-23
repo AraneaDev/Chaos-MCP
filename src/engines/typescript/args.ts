@@ -74,7 +74,7 @@ export function buildMutateArg(
  *   isolation.
  *
  * NOTE there is deliberately no `--jsonReporter.fileName` here even though the
- * report path must be pinned: StrykerJS 9.6.1 declares no such CLI option
+ * report path must be pinned: StrykerJS declares no such CLI option
  * (stryker-cli.js special-cases only `--dashboard.*`) and Commander aborts the
  * run with `error: unknown option '--jsonReporter.fileName'`. It is pinned in
  * the overlay config instead — see `STRIKER_JSON_REPORT`.
@@ -126,7 +126,7 @@ export function buildStrykerArgs(
 
   // No denylist args to add — denylist is now expressed via stryker.config.json
 
-  // dryRun mode (StrykerJS v9: renamed --dryRun to --dryRunOnly)
+  // dryRun mode (StrykerJS renamed --dryRun to --dryRunOnly)
   if (options?.dryRun) {
     args.push('--dryRunOnly');
   }

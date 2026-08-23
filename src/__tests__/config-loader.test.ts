@@ -1790,7 +1790,7 @@ describe('silently-dropped global fields now warn', () => {
   it('warns that a non-array mutatorAllowlist is NOT SUPPORTED (same phrase as any other shape)', () => {
     setConfig({ mutatorAllowlist: 'ConditionalExpression' });
     expect(validateConfig('/tmp/config.json').warnings).toEqual([
-      'mutatorAllowlist is NOT SUPPORTED (StrykerJS v9 has no allowlist) and is ignored — use mutatorDenylist instead.',
+      'mutatorAllowlist is NOT SUPPORTED (StrykerJS has no allowlist) and is ignored — use mutatorDenylist instead.',
     ]);
     expect(loadConfig('/tmp/config.json').mutatorAllowlist).toBeUndefined();
   });
@@ -1798,7 +1798,7 @@ describe('silently-dropped global fields now warn', () => {
   it('warns about mutatorAllowlist with non-string entries, and still keeps the strings', () => {
     setConfig({ mutatorAllowlist: ['ConditionalExpression', 42, null] });
     expect(validateConfig('/tmp/config.json').warnings).toEqual([
-      'mutatorAllowlist is NOT SUPPORTED (StrykerJS v9 has no allowlist) and is ignored — use mutatorDenylist instead.',
+      'mutatorAllowlist is NOT SUPPORTED (StrykerJS has no allowlist) and is ignored — use mutatorDenylist instead.',
     ]);
     // The parser is unchanged: the valid entries still survive the filter.
     expect(loadConfig('/tmp/config.json').mutatorAllowlist).toEqual(['ConditionalExpression']);
@@ -1825,7 +1825,7 @@ describe('silently-dropped global fields now warn', () => {
     });
     const { config, warnings } = validateConfig('/tmp/config.json');
     expect(warnings).toEqual([
-      'mutatorAllowlist is NOT SUPPORTED (StrykerJS v9 has no allowlist) and is ignored — use mutatorDenylist instead.',
+      'mutatorAllowlist is NOT SUPPORTED (StrykerJS has no allowlist) and is ignored — use mutatorDenylist instead.',
     ]);
     expect(config.mutatorAllowlist).toEqual(['ConditionalExpression', 'ArithmeticOperator']);
     expect(config.mutatorDenylist).toEqual(['StringLiteral']);
@@ -1843,7 +1843,7 @@ describe('silently-dropped global fields now warn', () => {
     setConfig({ mutatorAllowlist: [] });
     const { config, warnings } = validateConfig('/tmp/config.json');
     expect(warnings).toEqual([
-      'mutatorAllowlist is NOT SUPPORTED (StrykerJS v9 has no allowlist) and is ignored — use mutatorDenylist instead.',
+      'mutatorAllowlist is NOT SUPPORTED (StrykerJS has no allowlist) and is ignored — use mutatorDenylist instead.',
     ]);
     expect(config.mutatorAllowlist).toEqual([]);
   });

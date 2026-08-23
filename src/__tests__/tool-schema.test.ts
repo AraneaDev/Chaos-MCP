@@ -967,7 +967,7 @@ describe('parameter documentation facts', () => {
   it('warns, in the parameter itself, where an option is ignored or unsupported', () => {
     // A caller who passes one of these gets no error — the only signal that it
     // did nothing is this text.
-    expect(AUDIT.mutatorAllowlist.description).toContain('NOT SUPPORTED in StrykerJS v9');
+    expect(AUDIT.mutatorAllowlist.description).toContain('NOT SUPPORTED by StrykerJS');
     expect(AUDIT.mutatorAllowlist.description).toContain('Use mutatorDenylist');
     expect(AUDIT.lineScope.description).toContain('ignored for Python, Rust, and PHP targets');
     expect(AUDIT.prebuildCommand.description).toContain('DISABLED BY DEFAULT');

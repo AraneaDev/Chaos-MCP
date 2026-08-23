@@ -80,7 +80,7 @@ function configSchemaJson(): string {
     // led callers into a hard error for a key this server recommended. Wording
     // matches cli.ts's `--mutator-allowlist` help text.
     mutatorAllowlist:
-      'string[] — NOT SUPPORTED (StrykerJS v9 has no allowlist): ignored here, and rejected with an ' +
+      'string[] — NOT SUPPORTED (StrykerJS has no allowlist): ignored here, and rejected with an ' +
       'error when passed as a tool argument. Use mutatorDenylist.',
     mutatorDenylist: 'string[] — mutator names to skip.',
     defaultMaxSurvivors: 'integer ≥ 1 — cap on reported survivor groups (default 10).',

@@ -187,7 +187,7 @@ export const TOOL_DEFINITION = {
         // schema, the description is the only place a caller can learn that the
         // call FAILS. Wording now matches `resources.ts` and `cli.ts` (F11).
         description:
-          'NOT SUPPORTED in StrykerJS v9 — REJECTED: passing this fails the call with an error. ' +
+          'NOT SUPPORTED by StrykerJS — REJECTED: passing this fails the call with an error. ' +
           'v9 has no way to express "only these mutators" without the full mutator list. ' +
           'Use mutatorDenylist to exclude noisy mutators instead, or supply your own stryker.config.json.',
       },
