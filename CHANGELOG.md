@@ -2,6 +2,25 @@
 
 All notable changes to Chaos-MCP are documented in this file.
 
+## [4.0.0](https://github.com/AraneaDev/Chaos-MCP/compare/v3.0.1...v4.0.0) (2026-08-23)
+
+
+### ⚠ BREAKING CHANGES
+
+* Node 22 is no longer supported. Chaos-MCP now requires Node 24.11.0 or later. Node 22 remains in upstream maintenance until 2027-04-30, so this drops a line that is still receiving security fixes.
+
+### Features
+
+* **containers:** ship StrykerJS 10 in the TypeScript runner image ([7f72451](https://github.com/AraneaDev/Chaos-MCP/commit/7f72451c5f01de73bae6e91efc360c4651fc1023))
+* **detectors:** use the native vitest runner for vitest 2 and up ([68306aa](https://github.com/AraneaDev/Chaos-MCP/commit/68306aa0a32230846a7e6d60a5f65a48635f33a3))
+* require Node 24.11.0 and drop Node 22 ([aade0e8](https://github.com/AraneaDev/Chaos-MCP/commit/aade0e84d6cac9f3597b2afa2b22103b90a7036a))
+
+
+### Bug Fixes
+
+* address CodeRabbit review on the mutation-testing PR ([1e26293](https://github.com/AraneaDev/Chaos-MCP/commit/1e26293a5add1d47bd92fb4fa79c71ddb815592b))
+* **engines:** fall back to the command runner when the native vitest dry run fails ([f5ce47d](https://github.com/AraneaDev/Chaos-MCP/commit/f5ce47d8fd35a9e9f604ce38758fde7030c8413f))
+
 ## [3.0.1](https://github.com/AraneaDev/Chaos-MCP/compare/v3.0.0...v3.0.1) (2026-08-14)
 
 
