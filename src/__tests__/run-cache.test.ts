@@ -679,7 +679,7 @@ describe('run-cache — workspace binding', () => {
 
       // Pin WHERE it landed, not just that it round-trips. A round-trip passes
       // for any self-consistent directory, so the `chaos-mcp-runs` segment
-      // could be renamed or dropped without a single test noticing — and the
+      // could be renamed or dropped without a single test noticing, and the
       // cleanup in the `finally` below would then quietly stop deleting
       // anything. This is a user-visible location: entries in it survive
       // between runs and are what a `verify` resumes from.

@@ -8,7 +8,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
  * is a genuine filesystem error (NFS root_squash, for one) and must propagate.
  *
  * `isWindows()` is `sep === '\\'`, so the entire branch is dead on this
- * platform — three mutants in it were reported as NoCoverage by the mutation
+ * platform. Three mutants in it were reported as NoCoverage by the mutation
  * sweep, meaning nothing executed them at all. `sandbox.test.ts` pins the Linux
  * half; this file pins the Windows half by mocking `path.sep`. It lives apart
  * from that suite on purpose: a `path` mock is process-wide for the module

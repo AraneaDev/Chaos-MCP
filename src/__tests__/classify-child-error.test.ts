@@ -57,7 +57,7 @@ const shellCtx = (over: Partial<ChildErrorContext> = {}): ChildErrorContext => (
 describe('classifyChildError', () => {
   it('does NOT classify ENOENT specially when classifyEnoent is omitted', () => {
     // Every other case in this file passes `classifyEnoent` explicitly, so the
-    // DEFAULT was never exercised — the mutation sweep reported it as having no
+    // DEFAULT was never exercised. The mutation sweep reported it as having no
     // coverage at all. The default is `false` on purpose: through a shell, an
     // ENOENT is the SHELL reporting that something inside the command line is
     // missing, not that the command itself could not be spawned, so reporting

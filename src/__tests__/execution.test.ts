@@ -1359,7 +1359,7 @@ describe('container dispose: concurrent teardown', () => {
     // `dispose()` loops at most twice: once to wait out a teardown already
     // running (so two callers never `rm` the same container concurrently), once
     // to re-issue it if that teardown did not actually succeed. The second
-    // iteration — and so the loop's increment — was reported by the mutation
+    // iteration, and so the loop's increment, was reported by the mutation
     // sweep as having NO coverage: every existing test disposes once, or
     // disposes twice sequentially after `removed` has already latched.
     //

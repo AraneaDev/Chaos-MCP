@@ -1429,7 +1429,7 @@ describe('container execution config', () => {
 
   it('warns that a non-object container.modes will be ignored', () => {
     // The describe() for `modes` only ever ran on valid objects, so the message
-    // a user gets for `"modes": "native"` (a plausible mistake — `mode` takes a
+    // a user gets for `"modes": "native"` (a plausible mistake, since `mode` takes a
     // string) was never exercised.
     setContainer({ mode: 'container', modes: 'native' });
     expect(
