@@ -183,6 +183,7 @@ export function buildCopyPolicy({
       }
 
       const segments = src.split(sep);
+      // Stryker disable next-line StringLiteral: unreachable. `split` always yields at least one element, so the last index is never undefined; the fallback exists only to satisfy `noUncheckedIndexedAccess`.
       const basename = segments[segments.length - 1] ?? '';
 
       // Symlinked heavyweight dirs (node_modules, .venv, venv, and — except
