@@ -91,19 +91,18 @@ function makeRequest(args: Record<string, unknown>): CallToolRequest {
 
 /** Stub engine whose run() resolves to a clean 100% result. */
 function stubCleanRun(): void {
-  MockTSEngine.mockImplementation(
-    () =>
-      ({
-        run: vi.fn().mockResolvedValue({
-          target: 'src/math.ts',
-          totalMutants: 2,
-          killed: 2,
-          survived: 0,
-          mutationScore: '100.00%',
-          vulnerabilities: [],
-        }),
-      }) as unknown as TypeScriptEngine,
-  );
+  MockTSEngine.mockImplementation(function () {
+    return {
+      run: vi.fn().mockResolvedValue({
+        target: 'src/math.ts',
+        totalMutants: 2,
+        killed: 2,
+        survived: 0,
+        mutationScore: '100.00%',
+        vulnerabilities: [],
+      }),
+    } as unknown as TypeScriptEngine;
+  });
 }
 
 /** Default detectEnvironment stub pointing at /workspace. */
@@ -247,17 +246,16 @@ describe('handleToolCall — Phase 5: progress milestones + cancellation', () =>
     // aborts and the engine rejects (as an aborted child would surface). The
     // handler must map this to the cancellation shape, not a phantom tool bug.
     const controller = new AbortController();
-    MockTSEngine.mockImplementation(
-      () =>
-        ({
-          run: vi.fn().mockImplementation(async () => {
-            controller.abort();
-            throw new Error(
-              'cargo-mutants failed (exit null): the baseline test suite itself failed',
-            );
-          }),
-        }) as unknown as TypeScriptEngine,
-    );
+    MockTSEngine.mockImplementation(function () {
+      return {
+        run: vi.fn().mockImplementation(async () => {
+          controller.abort();
+          throw new Error(
+            'cargo-mutants failed (exit null): the baseline test suite itself failed',
+          );
+        }),
+      } as unknown as TypeScriptEngine;
+    });
 
     const ctx: ToolContext = { signal: controller.signal };
     const request = makeRequest({ filePath: 'src/math.ts' });

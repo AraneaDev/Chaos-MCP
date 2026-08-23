@@ -88,7 +88,9 @@ function makeRequest(args: Record<string, unknown>): CallToolRequest {
 
 function stubEngine(result: MutationResult): ReturnType<typeof vi.fn> {
   const run = vi.fn().mockResolvedValue(result);
-  MockTSEngine.mockImplementation(() => ({ run }) as unknown as TypeScriptEngine);
+  MockTSEngine.mockImplementation(function () {
+    return { run } as unknown as TypeScriptEngine;
+  });
   return run;
 }
 

@@ -39,7 +39,9 @@ vi.mock('@modelcontextprotocol/sdk/server/index.js', () => ({
 }));
 
 vi.mock('@modelcontextprotocol/sdk/server/stdio.js', () => ({
-  StdioServerTransport: vi.fn(() => {
+  // `function`, not an arrow: vitest 4 invokes a `new`-ed mock through
+  // `Reflect.construct`, and arrow functions are not constructible.
+  StdioServerTransport: vi.fn(function () {
     sdk.transportCtor();
   }),
 }));

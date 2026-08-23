@@ -1,23 +1,25 @@
 #!/usr/bin/env node
-// scripts/mutate.mjs — scoped INTERNAL mutation testing via StrykerJS's command runner.
+// scripts/mutate.mjs — scoped INTERNAL mutation testing via StrykerJS.
 //
-// Why a wrapper: the command runner runs ONE test command per mutant and can't
-// per-mutant scope. A whole-repo run would therefore execute the FULL suite for
-// every mutant (thousands of suite runs — it will peg the machine). This wrapper
-// keeps every run bounded by scoping BOTH the mutated files AND the test command
-// to an explicit target:
+// Why a wrapper: `mutate` is an empty no-op in stryker.internal.mjs so that a
+// bare `npx stryker run` cannot start an unbounded whole-repo sweep on a
+// developer machine. This wrapper is the supported entry point — it passes an
+// explicit `--mutate` scope so every run is bounded by a target you named:
 //
-//   npm run mutation -- src/gate.ts                    # one file
-//   npm run mutation -- src/utils                      # a directory (recursed)
-//   npm run mutation -- src/gate.ts src/format.ts      # several files
-//   npm run mutation -- src/gate.ts --concurrency 4    # more workers
-//   npm run mutation -- src/gate.ts --tests src/__tests__/gate.test.ts
+//   npm run mutation -- src/core/gate.ts                     # one file
+//   npm run mutation -- src/utils                            # a directory (recursed)
+//   npm run mutation -- src/core/gate.ts src/core/format.ts  # several files
+//   npm run mutation -- src/core/gate.ts --concurrency 4     # more workers
 //
-// By default the test command is `vitest related <targets> --run`, which runs
-// exactly the tests whose module graph includes the mutated files — the correct
-// superset for mutation testing (a mutant is only killable by a test that
-// actually exercises it). Pass --tests to run explicit test file(s) instead
-// (individual-test targeting). Extra flags after `--` pass through to Stryker.
+// Extra flags after `--` pass through to Stryker.
+//
+// Test selection is NOT this script's job any more. Under the old command
+// runner it was: that runner grades a black-box process on its exit code, so
+// the wrapper had to build a `vitest related <targets> --run` command and hand
+// it over through STRYKER_TEST_COMMAND. The native vitest runner instruments
+// coverage instead, so `coverageAnalysis: 'perTest'` picks the covering tests
+// per mutant by itself — strictly narrower than a related-file set, and
+// without a hand-built command to keep in sync.
 
 import { existsSync, statSync, readdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
@@ -28,15 +30,18 @@ function fail(message) {
   process.exit(1);
 }
 
+// Non-default filename, so Stryker must be told where it is. See the header of
+// stryker.internal.mjs for why it is not called `stryker.config.mjs`.
+const CONFIG_FILE = 'stryker.internal.mjs';
+
 const USAGE =
-  'Usage: npm run mutation -- <source-file-or-dir>... [--tests <test-file>...] ' +
+  'Usage: npm run mutation -- <source-file-or-dir>... ' +
   '[--concurrency N] [-- <extra stryker args>]\n' +
-  'Example: npm run mutation -- src/gate.ts';
+  'Example: npm run mutation -- src/core/gate.ts';
 
 // ── Parse args ──
 const argv = process.argv.slice(2);
 const targets = [];
-let tests = null;
 let concurrency = '2';
 const passthrough = [];
 for (let i = 0; i < argv.length; i++) {
@@ -44,9 +49,6 @@ for (let i = 0; i < argv.length; i++) {
   if (arg === '--') {
     passthrough.push(...argv.slice(i + 1));
     break;
-  } else if (arg === '--tests') {
-    tests = tests ?? [];
-    while (argv[i + 1] !== undefined && !argv[i + 1].startsWith('--')) tests.push(argv[++i]);
   } else if (arg === '--concurrency') {
     concurrency = argv[++i];
   } else if (arg.startsWith('--')) {
@@ -78,25 +80,27 @@ function expand(target) {
 const sources = [...new Set(targets.flatMap(expand))];
 if (sources.length === 0) fail('no .ts source files under the given target(s).');
 
-// ── Build the scoped test command ──
-const testCommand =
-  tests && tests.length > 0
-    ? `npx vitest run ${tests.join(' ')}`
-    : `npx vitest related ${sources.join(' ')} --run`;
+console.error(`mutate: mutating ${sources.length} file(s); per-mutant tests selected by coverage.`);
 
-console.error(`mutate: mutating ${sources.length} file(s); per-mutant tests: ${testCommand}`);
-
-// ── Run Stryker with the scope wired into both --mutate and the command ──
+// ── Run Stryker with the scope wired into --mutate ──
 // Windows installs npx as npx.cmd, which spawnSync cannot exec directly without
 // a shell (same handling as tests/global-setup.ts).
 const isWindows = process.platform === 'win32';
 const result = spawnSync(
   isWindows ? 'npx.cmd' : 'npx',
-  ['stryker', 'run', '--mutate', sources.join(','), '--concurrency', concurrency, ...passthrough],
+  [
+    'stryker',
+    'run',
+    CONFIG_FILE,
+    '--mutate',
+    sources.join(','),
+    '--concurrency',
+    concurrency,
+    ...passthrough,
+  ],
   {
     stdio: 'inherit',
     shell: isWindows,
-    env: { ...process.env, STRYKER_TEST_COMMAND: testCommand },
   },
 );
 process.exit(result.status ?? 1);

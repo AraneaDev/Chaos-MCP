@@ -7,8 +7,9 @@
  *
  * Run: node scripts/meta-test.js    (from the project root)
  *
- * This check is intentionally non-skippable once invoked: Chaos-MCP uses
- * Stryker's built-in command runner for Vitest 3, so only core is required.
+ * This check is intentionally non-skippable once invoked: the audited project
+ * here is Chaos-MCP itself, so the sandbox resolves Stryker from this repo's
+ * own node_modules (vitest runner + core).
  * A missing engine/build or a timeout is a failed dogfood check, not success.
  *
  * Implementation note: the early-return guard runs synchronously inside
@@ -48,7 +49,7 @@ async function main() {
     params: {
       name: 'audit_code_resilience',
       arguments: {
-        filePath: 'src/gate.ts',
+        filePath: 'src/core/gate.ts',
         timeoutMs: 180000,
         mutatorDenylist: ['StringLiteral'],
         concurrency: 2,
@@ -56,7 +57,7 @@ async function main() {
     },
   };
 
-  console.log('Running chaos-mcp against its own source: src/gate.ts');
+  console.log('Running chaos-mcp against its own source: src/core/gate.ts');
   console.log('   (tests the full pipeline: handler → sandbox → StrykerJS → parse)');
   console.log('');
 

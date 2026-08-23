@@ -170,12 +170,11 @@ describe('handleToolCall', () => {
       vulnerabilities: [],
     });
 
-    MockTSEngine.mockImplementation(
-      () =>
-        ({
-          run: mockRun,
-        }) as unknown as TypeScriptEngine,
-    );
+    MockTSEngine.mockImplementation(function () {
+      return {
+        run: mockRun,
+      } as unknown as TypeScriptEngine;
+    });
 
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
@@ -210,7 +209,9 @@ describe('handleToolCall', () => {
       mutationScore: '100.00%',
       vulnerabilities: [],
     });
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
 
     const nestedRoot = `${process.cwd()}/packages/app`;
     mockDetectEnv.mockReturnValue({
@@ -246,7 +247,9 @@ describe('handleToolCall', () => {
       vulnerabilities: [],
     });
 
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
 
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
@@ -280,7 +283,9 @@ describe('handleToolCall', () => {
       vulnerabilities: [],
     });
 
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
 
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
@@ -304,7 +309,9 @@ describe('handleToolCall', () => {
 
   it('rejects a non-empty mutatorAllowlist (audit L1: StrykerJS v9 has no allowlist)', async () => {
     const mockRun = vi.fn();
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',
@@ -337,7 +344,9 @@ describe('handleToolCall', () => {
       vulnerabilities: [],
     });
 
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
 
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
@@ -397,12 +406,11 @@ describe('handleToolCall', () => {
       cleanup: mockCleanup,
     });
 
-    MockTSEngine.mockImplementation(
-      () =>
-        ({
-          run: vi.fn().mockRejectedValue(new Error('Stryker crashed')),
-        }) as unknown as TypeScriptEngine,
-    );
+    MockTSEngine.mockImplementation(function () {
+      return {
+        run: vi.fn().mockRejectedValue(new Error('Stryker crashed')),
+      } as unknown as TypeScriptEngine;
+    });
 
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
@@ -435,9 +443,9 @@ describe('handleToolCall', () => {
       vulnerabilities: [],
     });
 
-    MockRustEngine.mockImplementation(
-      () => ({ run: mockRun }) as unknown as typeof RustEngine.prototype,
-    );
+    MockRustEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as typeof RustEngine.prototype;
+    });
 
     mockDetectEnv.mockReturnValue({
       projectType: 'rust',
@@ -470,7 +478,9 @@ describe('handleToolCall', () => {
       vulnerabilities: [],
     });
 
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
 
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
@@ -513,7 +523,9 @@ describe('handleToolCall', () => {
       vulnerabilities: [],
     });
 
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
 
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
@@ -555,7 +567,9 @@ describe('handleToolCall', () => {
       vulnerabilities: [],
     });
 
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
 
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
@@ -584,7 +598,9 @@ describe('handleToolCall', () => {
       vulnerabilities: [],
     });
 
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
 
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
@@ -616,7 +632,9 @@ describe('handleToolCall', () => {
       vulnerabilities: [],
     });
 
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
 
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
@@ -648,7 +666,9 @@ describe('handleToolCall', () => {
       vulnerabilities: [],
     });
 
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
 
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
@@ -692,7 +712,9 @@ describe('handleToolCall', () => {
       mutationScore: '100.00%',
       vulnerabilities: [],
     });
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',
@@ -722,7 +744,9 @@ describe('handleToolCall', () => {
       mutationScore: '100.00%',
       vulnerabilities: [],
     });
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',
@@ -753,7 +777,9 @@ describe('handleToolCall', () => {
       vulnerabilities: [],
     });
 
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
 
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
@@ -785,7 +811,9 @@ describe('handleToolCall', () => {
       ],
     });
 
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
 
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
@@ -812,7 +840,9 @@ describe('handleToolCall', () => {
 
   it('returns error when concurrency is not an integer (H5 regression)', async () => {
     const mockRun = vi.fn();
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',
@@ -836,7 +866,9 @@ describe('handleToolCall', () => {
 
   it('returns error when concurrency is above the cap of 64 (H5 regression)', async () => {
     const mockRun = vi.fn();
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',
@@ -857,7 +889,9 @@ describe('handleToolCall', () => {
 
   it('returns error when lineScope has start > end (M5 regression)', async () => {
     const mockRun = vi.fn();
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',
@@ -881,7 +915,9 @@ describe('handleToolCall', () => {
 
   it('returns error when ignorePatterns contains non-string elements (M7 regression)', async () => {
     const mockRun = vi.fn();
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',
@@ -912,7 +948,9 @@ describe('handleToolCall', () => {
       vulnerabilities: [],
     });
 
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
 
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
@@ -952,9 +990,9 @@ describe('handleToolCall', () => {
   };
 
   function mockSurvivorRun() {
-    MockTSEngine.mockImplementation(
-      () => ({ run: vi.fn().mockResolvedValue(survivorResult) }) as unknown as TypeScriptEngine,
-    );
+    MockTSEngine.mockImplementation(function () {
+      return { run: vi.fn().mockResolvedValue(survivorResult) } as unknown as TypeScriptEngine;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',
@@ -1051,30 +1089,29 @@ describe('handleToolCall', () => {
     // Real case (go.ts/rust.ts): an unreachable `|| []` ArrayDeclaration is
     // NoCoverage while a live `.filter` MethodExpression on the same line is a
     // survivor. The line must NOT be reported as wholly uncovered.
-    MockTSEngine.mockImplementation(
-      () =>
-        ({
-          run: vi.fn().mockResolvedValue({
-            target: 'src/x.ts',
-            totalMutants: 5,
-            killed: 3,
-            survived: 2,
-            mutationScore: '60.00%',
-            vulnerabilities: [
-              {
-                line: 113,
-                mutator: 'MethodExpression',
-                description: 'Logical mutation survived.',
-              },
-              {
-                line: 113,
-                mutator: 'ArrayDeclaration',
-                description: 'No test reached this line (NoCoverage). Consider adding tests.',
-              },
-            ],
-          }),
-        }) as unknown as TypeScriptEngine,
-    );
+    MockTSEngine.mockImplementation(function () {
+      return {
+        run: vi.fn().mockResolvedValue({
+          target: 'src/x.ts',
+          totalMutants: 5,
+          killed: 3,
+          survived: 2,
+          mutationScore: '60.00%',
+          vulnerabilities: [
+            {
+              line: 113,
+              mutator: 'MethodExpression',
+              description: 'Logical mutation survived.',
+            },
+            {
+              line: 113,
+              mutator: 'ArrayDeclaration',
+              description: 'No test reached this line (NoCoverage). Consider adding tests.',
+            },
+          ],
+        }),
+      } as unknown as TypeScriptEngine;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',
@@ -1105,7 +1142,9 @@ describe('handleToolCall', () => {
 
   it('returns error when prebuildCommand is not a string', async () => {
     const mockRun = vi.fn();
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',
@@ -1129,7 +1168,9 @@ describe('handleToolCall', () => {
 
   it('returns error when prebuildCommand is an empty string', async () => {
     const mockRun = vi.fn();
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',
@@ -1161,7 +1202,9 @@ describe('handleToolCall', () => {
       vulnerabilities: [],
     });
 
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
 
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
@@ -1211,7 +1254,9 @@ describe('handleToolCall', () => {
       cleanup: mockCleanup,
     });
     const mockRun = vi.fn();
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',
@@ -1243,7 +1288,9 @@ describe('handleToolCall', () => {
       mutationScore: '100.00%',
       vulnerabilities: [],
     });
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',
@@ -1274,7 +1321,9 @@ describe('handleToolCall', () => {
 
   it('validates tool args before provisioning the sandbox', async () => {
     const mockRun = vi.fn();
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',
@@ -1299,9 +1348,9 @@ describe('handleToolCall', () => {
     const { PythonEngine } = await import('../engines/python.js');
     const MockPyEngine = vi.mocked(PythonEngine);
     const mockRun = vi.fn();
-    MockPyEngine.mockImplementation(
-      () => ({ run: mockRun }) as unknown as typeof PythonEngine.prototype,
-    );
+    MockPyEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as typeof PythonEngine.prototype;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'python',
       testRunner: 'pytest',
@@ -1336,9 +1385,9 @@ describe('handleToolCall', () => {
       mutationScore: '100.00%',
       vulnerabilities: [],
     });
-    MockPyEngine.mockImplementation(
-      () => ({ run: mockRun }) as unknown as typeof PythonEngine.prototype,
-    );
+    MockPyEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as typeof PythonEngine.prototype;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'python',
       testRunner: 'pytest',
@@ -1369,9 +1418,9 @@ describe('handleToolCall', () => {
       mutationScore: '100.00%',
       vulnerabilities: [],
     });
-    MockPyEngine.mockImplementation(
-      () => ({ run: mockRun }) as unknown as typeof PythonEngine.prototype,
-    );
+    MockPyEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as typeof PythonEngine.prototype;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'python',
       testRunner: 'pytest',
@@ -1406,7 +1455,9 @@ describe('handleToolCall', () => {
       mutationScore: '100.00%',
       vulnerabilities: [],
     });
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',
@@ -1434,7 +1485,9 @@ describe('handleToolCall', () => {
     });
 
     const mockRun = vi.fn();
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
 
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
@@ -1467,7 +1520,9 @@ describe('handleToolCall', () => {
 
   it('short-circuits a no-change diff with a synthetic empty result (JSON)', async () => {
     const mockRun = vi.fn();
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',
@@ -1509,7 +1564,9 @@ describe('handleToolCall', () => {
   // branch rather than JSON, report header, and that no engine ran) is kept.
   it('renders the no-change short-circuit in text format with an honest "n/a" score', async () => {
     const mockRun = vi.fn();
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',
@@ -1550,7 +1607,9 @@ describe('handleToolCall', () => {
       mutationScore: '100.00%',
       vulnerabilities: [],
     });
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',
@@ -1581,7 +1640,9 @@ describe('handleToolCall', () => {
       mutationScore: '100.00%',
       vulnerabilities: [],
     });
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',
@@ -1607,7 +1668,9 @@ describe('handleToolCall', () => {
       cleanup: vi.fn(),
     });
     const mockRun = vi.fn();
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',
@@ -1646,9 +1709,9 @@ describe('handleToolCall', () => {
       mutationScore: '100.00%',
       vulnerabilities: [],
     });
-    MockPyEngine.mockImplementation(
-      () => ({ run: mockRun }) as unknown as typeof PythonEngine.prototype,
-    );
+    MockPyEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as typeof PythonEngine.prototype;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'python',
       testRunner: 'pytest',
@@ -1684,9 +1747,9 @@ describe('handleToolCall', () => {
       mutationScore: '100.00%',
       vulnerabilities: [],
     });
-    MockRustEngine.mockImplementation(
-      () => ({ run: mockRun }) as unknown as typeof RustEngine.prototype,
-    );
+    MockRustEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as typeof RustEngine.prototype;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'rust',
       testRunner: 'cargo',
@@ -1713,9 +1776,9 @@ describe('handleToolCall', () => {
       mutationScore: '100.00%',
       vulnerabilities: [],
     });
-    MockPyEngine.mockImplementation(
-      () => ({ run: mockRun }) as unknown as typeof PythonEngine.prototype,
-    );
+    MockPyEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as typeof PythonEngine.prototype;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'python',
       testRunner: 'pytest',
@@ -1743,7 +1806,9 @@ describe('handleToolCall', () => {
       vulnerabilities: [],
     });
 
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
 
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
@@ -1767,7 +1832,9 @@ describe('handleToolCall', () => {
 
   it('returns error when perMutantTimeoutMs is not a positive number', async () => {
     const mockRun = vi.fn();
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',
@@ -1799,7 +1866,9 @@ describe('handleToolCall', () => {
       vulnerabilities: [],
     });
 
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
 
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
@@ -1832,7 +1901,9 @@ describe('handleToolCall', () => {
       vulnerabilities: [],
     });
 
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',
@@ -1870,7 +1941,9 @@ describe('handleToolCall', () => {
       vulnerabilities: [],
     });
 
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',
@@ -1903,7 +1976,9 @@ describe('handleToolCall', () => {
       vulnerabilities: [],
     });
 
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',
@@ -1948,9 +2023,9 @@ describe('handleToolCall', () => {
       vulnerabilities: [],
     });
 
-    MockRustEngine.mockImplementation(
-      () => ({ run: mockRun }) as unknown as typeof RustEngine.prototype,
-    );
+    MockRustEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as typeof RustEngine.prototype;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'rust',
       testRunner: 'cargo test',
@@ -1996,9 +2071,9 @@ describe('handleToolCall', () => {
       vulnerabilities: [],
     });
 
-    MockPyEngine.mockImplementation(
-      () => ({ run: mockRun }) as unknown as typeof PythonEngine.prototype,
-    );
+    MockPyEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as typeof PythonEngine.prototype;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'python',
       testRunner: 'pytest',
@@ -2037,9 +2112,9 @@ describe('handleToolCall', () => {
       vulnerabilities: [],
     });
 
-    MockPyEngine.mockImplementation(
-      () => ({ run: mockRun }) as unknown as typeof PythonEngine.prototype,
-    );
+    MockPyEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as typeof PythonEngine.prototype;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'python',
       testRunner: 'pytest',
@@ -2076,9 +2151,9 @@ describe('handleToolCall', () => {
       vulnerabilities: [],
     });
 
-    MockPyEngine.mockImplementation(
-      () => ({ run: mockRun }) as unknown as typeof PythonEngine.prototype,
-    );
+    MockPyEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as typeof PythonEngine.prototype;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'python',
       testRunner: 'pytest',
@@ -2110,7 +2185,9 @@ describe('handleToolCall', () => {
       vulnerabilities: [],
     });
 
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',
@@ -2137,7 +2214,9 @@ describe('handleToolCall', () => {
       vulnerabilities: [],
     });
 
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',
@@ -2167,7 +2246,9 @@ describe('handleToolCall', () => {
       vulnerabilities: [],
     });
 
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',
@@ -2203,7 +2284,9 @@ describe('handleToolCall', () => {
       vulnerabilities: [],
     });
 
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',
@@ -2234,7 +2317,9 @@ describe('handleToolCall', () => {
       vulnerabilities: [],
     });
 
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',
@@ -2265,7 +2350,9 @@ describe('handleToolCall', () => {
       vulnerabilities: [],
     });
 
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',
@@ -2297,7 +2384,9 @@ describe('handleToolCall', () => {
       vulnerabilities: [],
     });
 
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',
@@ -2328,7 +2417,9 @@ describe('handleToolCall', () => {
       vulnerabilities: [],
     });
 
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',
@@ -2359,7 +2450,9 @@ describe('handleToolCall', () => {
       vulnerabilities: [],
     });
 
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',
@@ -2390,7 +2483,9 @@ describe('handleToolCall', () => {
       vulnerabilities: [],
     });
 
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',
@@ -2420,7 +2515,9 @@ describe('handleToolCall', () => {
       vulnerabilities: [],
     });
 
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',
@@ -2450,7 +2547,9 @@ describe('handleToolCall', () => {
       vulnerabilities: [],
     });
 
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',
@@ -2483,9 +2582,9 @@ describe('handleToolCall', () => {
       vulnerabilities: [],
     });
 
-    MockPyEngine.mockImplementation(
-      () => ({ run: mockRun }) as unknown as typeof PythonEngine.prototype,
-    );
+    MockPyEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as typeof PythonEngine.prototype;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'python',
       testRunner: 'pytest',
@@ -2514,9 +2613,9 @@ describe('handleToolCall', () => {
       vulnerabilities: [],
     });
 
-    MockPyEngine.mockImplementation(
-      () => ({ run: mockRun }) as unknown as typeof PythonEngine.prototype,
-    );
+    MockPyEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as typeof PythonEngine.prototype;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'python',
       testRunner: 'pytest',
@@ -2545,9 +2644,9 @@ describe('handleToolCall', () => {
       vulnerabilities: [],
     });
 
-    MockPyEngine.mockImplementation(
-      () => ({ run: mockRun }) as unknown as typeof PythonEngine.prototype,
-    );
+    MockPyEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as typeof PythonEngine.prototype;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'python',
       testRunner: 'pytest',
@@ -2594,9 +2693,9 @@ describe('handleToolCall', () => {
       vulnerabilities: [],
     });
 
-    MockPyEngine.mockImplementation(
-      () => ({ run: mockRun }) as unknown as typeof PythonEngine.prototype,
-    );
+    MockPyEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as typeof PythonEngine.prototype;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'python',
       testRunner: 'pytest',
@@ -2628,9 +2727,9 @@ describe('handleToolCall', () => {
       vulnerabilities: [],
     });
 
-    MockRustEngine.mockImplementation(
-      () => ({ run: mockRun }) as unknown as typeof RustEngine.prototype,
-    );
+    MockRustEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as typeof RustEngine.prototype;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'rust',
       testRunner: 'cargo test',
@@ -2677,9 +2776,9 @@ describe('handleToolCall', () => {
       vulnerabilities: [],
     });
 
-    MockRustEngine.mockImplementation(
-      () => ({ run: mockRun }) as unknown as typeof RustEngine.prototype,
-    );
+    MockRustEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as typeof RustEngine.prototype;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'rust',
       testRunner: 'cargo test',
@@ -2716,9 +2815,9 @@ describe('handleToolCall', () => {
       vulnerabilities: [],
     });
 
-    MockPyEngine.mockImplementation(
-      () => ({ run: mockRun }) as unknown as typeof PythonEngine.prototype,
-    );
+    MockPyEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as typeof PythonEngine.prototype;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'python',
       testRunner: 'pytest',
@@ -2749,9 +2848,9 @@ describe('handleToolCall', () => {
       vulnerabilities: [],
     });
 
-    MockPyEngine.mockImplementation(
-      () => ({ run: mockRun }) as unknown as typeof PythonEngine.prototype,
-    );
+    MockPyEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as typeof PythonEngine.prototype;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'python',
       testRunner: 'pytest',
@@ -2790,7 +2889,9 @@ describe('handleToolCall', () => {
       vulnerabilities: [],
     });
 
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',
@@ -2854,7 +2955,9 @@ describe('handleToolCall', () => {
       vulnerabilities: [],
     });
 
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',
@@ -2876,7 +2979,9 @@ describe('handleToolCall', () => {
 
   it('returns error when lineScope is null', async () => {
     const mockRun = vi.fn();
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',
@@ -2898,7 +3003,9 @@ describe('handleToolCall', () => {
 
   it('returns error when lineScope is an array', async () => {
     const mockRun = vi.fn();
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',
@@ -2920,7 +3027,9 @@ describe('handleToolCall', () => {
 
   it('returns error when lineScope has non-integer start', async () => {
     const mockRun = vi.fn();
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',
@@ -2942,7 +3051,9 @@ describe('handleToolCall', () => {
 
   it('returns error when lineScope has start < 1', async () => {
     const mockRun = vi.fn();
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',
@@ -2969,7 +3080,9 @@ describe('handleToolCall', () => {
 
   it('outputFormat with an invalid value returns a toolError instead of coercing', async () => {
     const mockRun = vi.fn();
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',
@@ -3004,7 +3117,9 @@ describe('handleToolCall', () => {
       vulnerabilities: [],
     });
 
-    MockRustEngine.mockImplementation(() => ({ run: mockRun }) as unknown as RustEngine);
+    MockRustEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as RustEngine;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'rust',
       testRunner: 'cargo test',
@@ -3043,7 +3158,9 @@ describe('handleToolCall', () => {
       vulnerabilities: [],
     });
 
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',
@@ -3072,7 +3189,9 @@ describe('handleToolCall', () => {
       vulnerabilities: [],
     });
 
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',
@@ -3101,7 +3220,9 @@ describe('handleToolCall', () => {
       vulnerabilities: [],
     });
 
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',
@@ -3130,7 +3251,9 @@ describe('handleToolCall', () => {
       vulnerabilities: [],
     });
 
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',
@@ -3166,9 +3289,9 @@ describe('handleToolCall', () => {
       vulnerabilities: [],
     });
 
-    MockPyEngine.mockImplementation(
-      () => ({ run: mockRun }) as unknown as typeof PythonEngine.prototype,
-    );
+    MockPyEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as typeof PythonEngine.prototype;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'python',
       testRunner: 'pytest',
@@ -3203,7 +3326,9 @@ describe('handleToolCall', () => {
       vulnerabilities: [],
     });
 
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',
@@ -3240,7 +3365,9 @@ describe('handleToolCall', () => {
       vulnerabilities: [],
     });
 
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',
@@ -3303,7 +3430,9 @@ describe('handleToolCall', () => {
       mutationScore: '100.00%',
       vulnerabilities: [],
     });
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',
@@ -3350,7 +3479,9 @@ describe('handleToolCall', () => {
 
     it('short-circuits with an empty scoped result when nothing changed (engine not run)', async () => {
       const mockRun = vi.fn();
-      MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+      MockTSEngine.mockImplementation(function () {
+        return { run: mockRun } as unknown as TypeScriptEngine;
+      });
       mockDetectEnv.mockReturnValue(tsEnv);
       mockComputeChangedRanges.mockResolvedValue({ kind: 'no-changes' });
       const res = await handleToolCall(
@@ -3372,7 +3503,9 @@ describe('handleToolCall', () => {
         mutationScore: '100.00%',
         vulnerabilities: [],
       });
-      MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+      MockTSEngine.mockImplementation(function () {
+        return { run: mockRun } as unknown as TypeScriptEngine;
+      });
       mockDetectEnv.mockReturnValue(tsEnv);
       mockComputeChangedRanges.mockResolvedValue({
         kind: 'ranges',
@@ -3397,7 +3530,9 @@ describe('handleToolCall', () => {
         mutationScore: '100.00%',
         vulnerabilities: [],
       });
-      MockRustEngine.mockImplementation(() => ({ run: mockRun }) as unknown as RustEngine);
+      MockRustEngine.mockImplementation(function () {
+        return { run: mockRun } as unknown as RustEngine;
+      });
       mockDetectEnv.mockReturnValue({
         projectType: 'rust',
         testRunner: 'cargo test',
@@ -3431,7 +3566,9 @@ describe('handleToolCall', () => {
         mutationScore: '100.00%',
         vulnerabilities: [],
       });
-      MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+      MockTSEngine.mockImplementation(function () {
+        return { run: mockRun } as unknown as TypeScriptEngine;
+      });
       mockDetectEnv.mockReturnValue(tsEnv);
       mockComputeChangedRanges.mockResolvedValue({ kind: 'untracked' });
 
@@ -3465,7 +3602,9 @@ describe('handleToolCall', () => {
         mutationScore: '75.00%',
         vulnerabilities: [{ line: 88, mutator: 'ArithmeticOperator', description: 'survived' }],
       });
-      MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+      MockTSEngine.mockImplementation(function () {
+        return { run: mockRun } as unknown as TypeScriptEngine;
+      });
       mockDetectEnv.mockReturnValue(tsEnv);
 
       const res = await handleToolCall(
@@ -3503,7 +3642,9 @@ describe('handleToolCall', () => {
         mutationScore: '100.00%',
         vulnerabilities: [],
       });
-      MockRustEngine.mockImplementation(() => ({ run: mockRun }) as unknown as RustEngine);
+      MockRustEngine.mockImplementation(function () {
+        return { run: mockRun } as unknown as RustEngine;
+      });
       mockDetectEnv.mockReturnValue({
         projectType: 'rust',
         testRunner: 'cargo test',
@@ -3546,7 +3687,9 @@ describe('handleToolCall', () => {
         batchesPlanned: 7,
         stoppedReason: 'time_budget_exhausted',
       });
-      MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+      MockTSEngine.mockImplementation(function () {
+        return { run: mockRun } as unknown as TypeScriptEngine;
+      });
       mockDetectEnv.mockReturnValue(tsEnv);
 
       const res = await handleToolCall(
@@ -3589,7 +3732,9 @@ describe('handleToolCall', () => {
         mutationScore: '75.00%',
         vulnerabilities: [{ line: 42, mutator: 'ConditionalExpression', description: 'survived' }],
       });
-      MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+      MockTSEngine.mockImplementation(function () {
+        return { run: mockRun } as unknown as TypeScriptEngine;
+      });
       mockDetectEnv.mockReturnValue(tsEnv);
 
       const res = await handleToolCall(
@@ -3618,7 +3763,9 @@ describe('handleToolCall', () => {
         mutationScore: '100.00%',
         vulnerabilities: [],
       });
-      MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+      MockTSEngine.mockImplementation(function () {
+        return { run: mockRun } as unknown as TypeScriptEngine;
+      });
       mockDetectEnv.mockReturnValue(tsEnv);
 
       const res = await handleToolCall(
@@ -3649,7 +3796,9 @@ describe('handleToolCall', () => {
         batchesPlanned: 6,
         stoppedReason: 'time_budget_exhausted',
       });
-      MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+      MockTSEngine.mockImplementation(function () {
+        return { run: mockRun } as unknown as TypeScriptEngine;
+      });
       mockDetectEnv.mockReturnValue(tsEnv);
 
       const res = await handleToolCall(
@@ -3676,7 +3825,9 @@ describe('handleToolCall', () => {
         mutationScore: '100.00%',
         vulnerabilities: [],
       });
-      MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+      MockTSEngine.mockImplementation(function () {
+        return { run: mockRun } as unknown as TypeScriptEngine;
+      });
       mockDetectEnv.mockReturnValue(tsEnv);
 
       const res = await handleToolCall(
@@ -3766,7 +3917,9 @@ describe('handleToolCall', () => {
       mutationScore: '100.00%',
       vulnerabilities: [],
     });
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
     const now = vi
       .spyOn(Date, 'now')
       .mockReturnValueOnce(0)
@@ -3927,7 +4080,9 @@ describe('handleToolCall cancellation short-circuits', () => {
   it('honours cancellation raised during scope resolution, before provisioning a sandbox', async () => {
     const controller = new AbortController();
     const mockRun = vi.fn();
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
     // detectEnvironment runs after short-circuit #1 and before #2.
     mockDetectEnv.mockImplementation(() => {
       controller.abort();
@@ -3951,7 +4106,9 @@ describe('handleToolCall cancellation short-circuits', () => {
     const controller = new AbortController();
     const mockRun = vi.fn();
     const cleanup = vi.fn();
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
     mockDetectEnv.mockReturnValue(tsEnv);
     // Sandbox provisioning runs after short-circuit #2 and before #3.
     mockCreateSandbox.mockImplementation(async () => {
@@ -4049,7 +4206,9 @@ describe('handleToolCall defensive paths', () => {
     const mockRun = vi
       .fn()
       .mockResolvedValue(cleanResult({ scopeNote: 'Partial audit: completed 3 of 7 batches.' }));
-    MockRustEngine.mockImplementation(() => ({ run: mockRun }) as unknown as RustEngine);
+    MockRustEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as RustEngine;
+    });
     mockDetectEnv.mockReturnValue({ ...tsEnv, projectType: 'rust', testRunner: 'cargo' });
     mockComputeChangedRanges.mockResolvedValue({
       kind: 'ranges',
@@ -4071,7 +4230,9 @@ describe('handleToolCall defensive paths', () => {
     const mockRun = vi
       .fn()
       .mockResolvedValue(cleanResult({ scopeNote: 'Partial audit: completed 3 of 7 batches.' }));
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
     mockDetectEnv.mockReturnValue(tsEnv);
 
     const response = await handleToolCall(
@@ -4092,7 +4253,9 @@ describe('handleToolCall defensive paths', () => {
       controller.abort();
       return Promise.resolve(cleanResult());
     });
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
     mockDetectEnv.mockReturnValue(tsEnv);
 
     const response = await handleToolCall(
@@ -4169,7 +4332,9 @@ describe('handleToolCall returns a suppression write failure verbatim', () => {
       mutationScore: '100.00%',
       vulnerabilities: [],
     });
-    MockTSEngine.mockImplementation(() => ({ run: mockRun }) as unknown as TypeScriptEngine);
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
     mockDetectEnv.mockReturnValue({
       projectType: 'typescript',
       testRunner: 'vitest',
@@ -4226,19 +4391,18 @@ describe('handleToolCall forwards cancellation and budget to scope resolution', 
       cleanup: vi.fn(),
     });
     mockDetectEnv.mockReturnValue(tsEnv);
-    MockTSEngine.mockImplementation(
-      () =>
-        ({
-          run: vi.fn().mockResolvedValue({
-            target: 'src/math.ts',
-            totalMutants: 2,
-            killed: 2,
-            survived: 0,
-            mutationScore: '100.00%',
-            vulnerabilities: [],
-          }),
-        }) as unknown as TypeScriptEngine,
-    );
+    MockTSEngine.mockImplementation(function () {
+      return {
+        run: vi.fn().mockResolvedValue({
+          target: 'src/math.ts',
+          totalMutants: 2,
+          killed: 2,
+          survived: 0,
+          mutationScore: '100.00%',
+          vulnerabilities: [],
+        }),
+      } as unknown as TypeScriptEngine;
+    });
   });
 
   afterEach(() => cwdSpy3.mockRestore());
