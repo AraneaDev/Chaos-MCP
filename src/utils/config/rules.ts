@@ -101,7 +101,7 @@ const describeStringList = (value: unknown): string | undefined =>
  * the tool-argument rejection and the `chaos://config-schema` resource.
  */
 const ALLOWLIST_UNSUPPORTED_PHRASE =
-  'is NOT SUPPORTED (StrykerJS v9 has no allowlist) and is ignored — use mutatorDenylist instead';
+  'is NOT SUPPORTED (StrykerJS has no allowlist) and is ignored — use mutatorDenylist instead';
 
 /** Phrase shared by every over-the-cap timeout warning. */
 const overCapPhrase = (value: unknown): string =>

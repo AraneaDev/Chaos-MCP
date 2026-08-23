@@ -309,16 +309,16 @@ describe('validateToolArgs — mutatorAllowlist', () => {
     // Without this guard the very next line calls `.length`/`.every` on a
     // non-array and the validator throws instead of returning a message.
     expect(message({ mutatorAllowlist: 'ConditionalExpression' })).toBe(
-      'mutatorAllowlist must be an array of strings. (StrykerJS v9 has no allowlist — use mutatorDenylist.)',
+      'mutatorAllowlist must be an array of strings. (StrykerJS has no allowlist — use mutatorDenylist.)',
     );
     expect(message({ mutatorAllowlist: {} })).toBe(
-      'mutatorAllowlist must be an array of strings. (StrykerJS v9 has no allowlist — use mutatorDenylist.)',
+      'mutatorAllowlist must be an array of strings. (StrykerJS has no allowlist — use mutatorDenylist.)',
     );
   });
 
   it('reports an EMPTY allowlist distinctly from a populated one', () => {
     expect(message({ mutatorAllowlist: [] })).toBe(
-      'mutatorAllowlist is not supported in StrykerJS v9 — pass mutatorDenylist instead.',
+      'mutatorAllowlist is not supported by StrykerJS — pass mutatorDenylist instead.',
     );
   });
 
@@ -338,7 +338,7 @@ describe('validateToolArgs — mutatorAllowlist', () => {
     // Names the engine the OPTION belongs to. On a .rs or .py target the old
     // wording read as a claim about the engine that file would actually run on.
     expect(message({ mutatorAllowlist: ['ConditionalExpression'] })).toBe(
-      'mutatorAllowlist is a StrykerJS option and is not supported in StrykerJS v9 — use mutatorDenylist instead, or supply your own stryker.config.json with explicit mutator settings. Non-TypeScript targets do not accept it at all.',
+      'mutatorAllowlist is a StrykerJS option and is not supported by StrykerJS — use mutatorDenylist instead, or supply your own stryker.config.json with explicit mutator settings. Non-TypeScript targets do not accept it at all.',
     );
   });
 });

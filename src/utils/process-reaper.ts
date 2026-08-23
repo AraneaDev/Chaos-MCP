@@ -34,7 +34,13 @@ import { resolve, sep } from 'path';
 function descendantPids(root: number): number[] {
   const children = new Map<number, number[]>();
   try {
-    const listing = spawnSync('ps', ['-eo', 'pid=,ppid='], { encoding: 'utf-8' }).stdout ?? '';
+    const stdout = spawnSync('ps', ['-eo', 'pid=,ppid='], { encoding: 'utf-8' }).stdout;
+    // Split from the call above on purpose. A `disable next-line` covers the
+    // WHOLE line, so keeping these together suppressed the `'ps'`, `'-eo'` and
+    // `'pid=,ppid='` mutants as well — the exact argv this parser depends on,
+    // and the argv a test in process-reaper-tree.test.ts pins.
+    // Stryker disable next-line StringLiteral: the fallback only has to be a string containing no pid/ppid line; every non-table value yields the same empty tree.
+    const listing = stdout ?? '';
     for (const line of listing.split('\n')) {
       const match = /^\s*(\d+)\s+(\d+)\s*$/.exec(line);
       if (!match) continue;
@@ -44,14 +50,28 @@ function descendantPids(root: number): number[] {
     }
   } catch {
     // No `ps` (or it failed): fall back to direct-child termination only.
+    //
+    // Mutation note: emptying this catch is an EQUIVALENT mutant, the walk
+    // below would then run over an empty `children` map and return the same
+    // empty array. It is left as a live survivor rather than suppressed: a
+    // `Stryker disable next-line` comment cannot be attached here (the only
+    // place to put it is inside the `try`, where Stryker does not resolve it to
+    // the catch block), and a region-level disable would also hide the loop
+    // above. The explicit return is kept because it states the intent.
     return [];
   }
 
   const out: number[] = [];
   const seen = new Set<number>([root]);
   const stack = [root];
+  // The loop guard and the `undefined` check below are individually equivalent
+  // but NOT jointly so: each covers for the other. `stack.length > 0` is what
+  // actually bounds the loop; the check exists because `Array.pop()` is typed
+  // `T | undefined` and TypeScript cannot see that the guard rules it out.
+  // Stryker disable next-line EqualityOperator: `>= 0` still terminates, the `undefined` check below breaks on the empty pop.
   while (stack.length > 0) {
     const current = stack.pop();
+    // Stryker disable next-line ConditionalExpression: unreachable while the loop guard holds; it is a type narrowing, not a runtime branch.
     if (current === undefined) break;
     for (const child of children.get(current) ?? []) {
       // A cycle is impossible in a real process table, but a malformed `ps`

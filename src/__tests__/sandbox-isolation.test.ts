@@ -11,6 +11,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createSandbox } from '../utils/sandbox.js';
+import { ALLOWED_ROOTS_ENV } from '../utils/path-safety.js';
 import { isSymlink } from '../utils/sandbox/dependency-link.js';
 
 /**
@@ -23,21 +24,33 @@ import { isSymlink } from '../utils/sandbox/dependency-link.js';
  */
 describe('sandbox isolation: dependency directories', () => {
   let workspace: string;
-  let cwd: string;
+  let originalAllowedRoots: string | undefined;
 
+  // `createSandbox` refuses a workspace outside the process working directory
+  // unless CHAOS_ALLOWED_ROOTS names it. Naming it is deliberate here rather
+  // than `process.chdir(workspace)`: StrykerJS's vitest runner pins
+  // `pool: 'threads'` unconditionally, and `process.chdir()` throws
+  // "not supported in workers" under worker_threads, so a chdir here takes the
+  // whole file — and every mutation run whose covering tests include it — down
+  // in the dry run. `allowedWorkspaceRoots()` reads the variable fresh on every
+  // call precisely so tests can set it per case.
   beforeEach(() => {
-    cwd = process.cwd();
+    originalAllowedRoots = process.env[ALLOWED_ROOTS_ENV];
     workspace = mkdtempSync(join(tmpdir(), 'chaos-isolation-'));
     mkdirSync(join(workspace, 'src'));
     mkdirSync(join(workspace, 'node_modules', 'somepkg'), { recursive: true });
     writeFileSync(join(workspace, 'package.json'), '{}');
     writeFileSync(join(workspace, 'src', 'a.ts'), 'export const a = 1;\n');
     writeFileSync(join(workspace, 'node_modules', 'somepkg', 'index.js'), 'original\n');
-    process.chdir(workspace);
+    process.env[ALLOWED_ROOTS_ENV] = workspace;
   });
 
   afterEach(() => {
-    process.chdir(cwd);
+    if (originalAllowedRoots === undefined) {
+      Reflect.deleteProperty(process.env, ALLOWED_ROOTS_ENV);
+    } else {
+      process.env[ALLOWED_ROOTS_ENV] = originalAllowedRoots;
+    }
     rmSync(workspace, { recursive: true, force: true });
   });
 

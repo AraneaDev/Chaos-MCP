@@ -236,7 +236,7 @@ export function buildRunOptions(
     workDir,
     timeoutMs: resolveAuditTimeoutMs(args, cfg, projectType),
     lineScope: normalizeLineScope(args.lineScope),
-    // mutatorAllowlist is intentionally NOT propagated. StrykerJS v9 cannot
+    // mutatorAllowlist is intentionally NOT propagated. StrykerJS cannot
     // express an allowlist, so the TS engine rejects it; sourcing it here (from
     // args OR config) would make every TS run throw (High#3). Left undefined so
     // the engine's defensive guard never trips. mutatorDenylist is the supported

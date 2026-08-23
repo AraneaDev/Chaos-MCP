@@ -21,7 +21,7 @@ import type { RunOptions } from '../base.js';
  * the pin a project shipping `jsonReporter: { fileName: 'artifacts/…' }` made a
  * fully successful run report "Stryker JSON report not found at …" (audit E).
  *
- * It cannot be pinned on the CLI: StrykerJS 9.6.1 declares no
+ * It cannot be pinned on the CLI: StrykerJS declares no
  * `--jsonReporter.fileName` option (only `--dashboard.*` is special-cased in
  * stryker-cli.js), and Commander rejects the run outright with
  * `error: unknown option '--jsonReporter.fileName'`. The config overlay is the
@@ -80,7 +80,7 @@ const STRYKER_CONFIG_NAMES = [
  * ordered list.
  *
  * ── Mutator denylist semantics ──
- * StrykerJS v9 removed the v8 `--mutators` CLI flag; exclusions are expressed
+ * StrykerJS removed the old `--mutators` CLI flag; exclusions are expressed
  * only as `mutator.excludedMutations` (an array of PascalCase mutator names,
  * validated by Stryker at runtime). There is NO top-level `mutators` option —
  * earlier Chaos-MCP versions wrote a `mutators: { Name: false }` map that Stryker
@@ -187,7 +187,7 @@ export function prepareStrykerConfig(cwd: string, options?: RunOptions): string 
   // loudly rather than running an unrestricted mutation set the caller did not ask for.
   if (options?.mutatorAllowlist && options.mutatorAllowlist.length > 0) {
     throw new Error(
-      'mutatorAllowlist is not supported in StrykerJS v9. ' +
+      'mutatorAllowlist is not supported by StrykerJS. ' +
         'Use mutatorDenylist instead, or create a stryker.config.json with explicit mutator settings. ' +
         `Requested allowlist: ${options.mutatorAllowlist.join(', ')}`,
     );

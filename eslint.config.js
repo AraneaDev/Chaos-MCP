@@ -1,15 +1,17 @@
 import eslint from '@eslint/js';
 import tseslint from 'typescript-eslint';
 import prettierConfig from 'eslint-config-prettier';
-import vitest from 'eslint-plugin-vitest';
+import vitest from '@vitest/eslint-plugin';
 
 export default tseslint.config(
   eslint.configs.recommended,
   ...tseslint.configs.strict,
   ...tseslint.configs.stylistic,
   // ─── Test conventions ───────────────────────────────────────────────────
-  // eslint-plugin-vitest registered with its recommended rules plus the
-  // two tightening rules we explicitly want to enforce going forward.
+  // @vitest/eslint-plugin registered with its recommended rules plus the two
+  // tightening rules we explicitly want to enforce going forward. (This is the
+  // maintained successor to eslint-plugin-vitest, which stopped at 0.5.4 and
+  // predates vitest 4; the rule namespace stays `vitest/`.)
   vitest.configs.recommended,
   prettierConfig,
   {
@@ -33,6 +35,16 @@ export default tseslint.config(
       // to be unambiguous: either always assert or split into two explicit cases.
       // (Existing tests that violate this rule are fixed in this round.)
       'vitest/no-conditional-expect': 'error',
+
+      // The e2e suites gate heavy cases behind an env flag by aliasing the test
+      // function (`const it_heavy = enabled ? it : it.skip`), which is how they
+      // skip loudly instead of silently. The rule cannot see through an alias,
+      // so it has to be told these are test blocks — otherwise every assertion
+      // inside one reads as a standalone expect.
+      'vitest/no-standalone-expect': [
+        'error',
+        { additionalTestBlockFunctions: ['it_heavy', 'it_canary', 'it_e2e'] },
+      ],
     },
   },
   {

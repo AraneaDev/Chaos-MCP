@@ -122,23 +122,43 @@ function installedVitestMajor(workspaceRoot: string): number | null {
 }
 
 /**
+ * Minimum vitest major that `@stryker-mutator/vitest-runner` can drive.
+ *
+ * The runner declares `vitest: >=2.0.0` as a peer. Below that, the native
+ * runner is not supported and the command runner is the compatible path.
+ */
+const MIN_NATIVE_VITEST_MAJOR = 2;
+
+/**
  * Map a raw runner name to a Stryker-compatible value.
  * Runners without native Stryker plugins (bun, node:test) map to 'command'.
  *
- * vitest 3.x fallback: StrykerJS 9's `@stryker-mutator/vitest-runner` is
- * incompatible with vitest 3 (it relies on vitest 2's removed `--related`
- * API), so the native runner aborts the run. When the installed vitest is
- * major >= 3 we fall back to Stryker's built-in command runner (`npm test`),
- * which drives any framework as a black box — mutation testing still works,
- * at the cost of no per-mutant coverage optimization (the full suite runs per
- * mutant). vitest <= 2 (or an undeterminable version) keeps the faster native
- * vitest-runner, so behavior is unchanged for those projects.
+ * HISTORY, because the previous rule here was built on a false premise and the
+ * correction matters more than the rule: this used to force vitest projects on
+ * major >= 3 onto Stryker's command runner, on the stated grounds that vitest 3
+ * removed the `--related` / `config.related` API `@stryker-mutator/vitest-runner`
+ * depends on. It did not. vitest 3 and 4 both still ship `related`; the real
+ * blocker was vitest-runner 9.x itself.
+ *
+ * That fallback cost every modern vitest project per-mutant coverage: the
+ * command runner grades a black-box exit code, which forces
+ * `coverageAnalysis: 'off'` and re-runs the whole related-test set for every
+ * single mutant.
+ *
+ * StrykerJS 10 resolves it, and the fallback is lifted on measured evidence
+ * rather than on the same kind of assumption that created it. Both majors the
+ * old rule excluded were exercised against `@stryker-mutator/vitest-runner@10`
+ * with `coverageAnalysis: 'perTest'`:
+ *   - vitest 4.1.11 — this repo's own suite, plus src/__tests__/e2e-stryker.test.ts
+ *   - vitest 3.2.7  — a standalone fixture: 4 killed, 1 survived, 80% score
+ *
+ * The floor that remains is the runner's own declared peer range, not a guess.
  */
 function toStrykerRunner(raw: string, workspaceRoot: string): string {
   if (raw === 'bun' || raw === 'node:test') return 'command';
   if (raw === 'vitest') {
     const major = installedVitestMajor(workspaceRoot);
-    if (major !== null && major >= 3) return 'command';
+    if (major !== null && major < MIN_NATIVE_VITEST_MAJOR) return 'command';
   }
   return raw;
 }

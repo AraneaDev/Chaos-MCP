@@ -12,7 +12,7 @@ vi.mock('../utils/logger.js', () => ({
   isVerbose: vi.fn(() => false),
 }));
 
-// Mock fs for report parsing and config-file writes (StrykerJS v9)
+// Mock fs for report parsing and config-file writes
 vi.mock('fs', () => ({
   existsSync: vi.fn(),
   readFileSync: vi.fn(),
@@ -1108,7 +1108,7 @@ describe('TypeScriptEngine', () => {
     );
   });
 
-  it('passes mutatorDenylist via the overlay config, never as a CLI flag (StrykerJS v9)', async () => {
+  it('passes mutatorDenylist via the overlay config, never as a CLI flag', async () => {
     const { writeFileSync } = await import('fs');
     const mockWrite = vi.mocked(writeFileSync);
 
@@ -1289,13 +1289,13 @@ describe('TypeScriptEngine', () => {
     await expect(engine.run('src/app.ts', { mutatorAllowlist: [] })).resolves.toBeDefined();
   });
 
-  it('throws when mutatorAllowlist is provided (unsupported in StrykerJS v9)', async () => {
+  it('throws when mutatorAllowlist is provided (unsupported by StrykerJS)', async () => {
     mockRunShell.mockResolvedValue(makeExecResult());
     mockReadFileSync.mockReturnValue(makeJsonReport([]));
 
     await expect(
       engine.run('src/app.ts', { mutatorAllowlist: ['ConditionalExpression'] }),
-    ).rejects.toThrow(/mutatorAllowlist is not supported in StrykerJS v9/);
+    ).rejects.toThrow(/mutatorAllowlist is not supported by StrykerJS/);
   });
 
   it('omits mutator denylist args when none provided', async () => {
@@ -1308,7 +1308,7 @@ describe('TypeScriptEngine', () => {
     expect(argList.filter((a) => a.startsWith('--mutators.'))).toHaveLength(0);
   });
 
-  it('passes --dryRunOnly for dryRun mode (StrykerJS v9)', async () => {
+  it('passes --dryRunOnly for dryRun mode', async () => {
     mockRunShell.mockResolvedValue(makeExecResult());
     mockReadFileSync.mockReturnValue(makeJsonReport([]));
 
@@ -2410,7 +2410,7 @@ describe('prepareStrykerConfig', () => {
 
   it('rejects a mutator allowlist, listing what was requested', () => {
     expect(() => prepareStrykerConfig('/sb', { mutatorAllowlist: ['ArithmeticOperator'] })).toThrow(
-      'mutatorAllowlist is not supported in StrykerJS v9. ' +
+      'mutatorAllowlist is not supported by StrykerJS. ' +
         'Use mutatorDenylist instead, or create a stryker.config.json with explicit mutator settings. ' +
         'Requested allowlist: ArithmeticOperator',
     );
@@ -2710,3 +2710,76 @@ function argPairPresent(args: string[], flag: string, value: string): boolean {
   }
   return false;
 }
+
+describe('native vitest runner → command runner fallback', () => {
+  const DRY_RUN_STDERR = 'ConfigError: There were failed tests in the initial test run.';
+
+  function runnerArgOf(callIndex: number): string | undefined {
+    const argv = mockRunShell.mock.calls[callIndex]?.[1] as string[] | undefined;
+    if (!argv) return undefined;
+    const at = argv.indexOf('--testRunner');
+    return at === -1 ? undefined : argv[at + 1];
+  }
+
+  beforeEach(() => {
+    // No report on disk → classifyStrykerFailure treats exit 1 as a real
+    // failure rather than a threshold break.
+    mockExistsSync.mockImplementation((p: PathLike) => !String(p).endsWith('mutation.json'));
+  });
+
+  it('retries on the command runner when the native runner fails its dry run', async () => {
+    mockRunShell.mockRejectedValue(makeExecFailure({ exit: 1, stderr: DRY_RUN_STDERR }));
+    const engine = new TypeScriptEngine();
+
+    // Both attempts fail here; what is asserted is that a SECOND attempt was
+    // made and that it switched runners.
+    await expect(engine.run('src/a.ts', { workDir: '/sb', testRunner: 'vitest' })).rejects.toThrow(
+      /initial test run/,
+    );
+
+    expect(mockRunShell).toHaveBeenCalledTimes(2);
+    expect(runnerArgOf(0)).toBe('vitest');
+    expect(runnerArgOf(1)).toBe('command');
+    expect(vi.mocked(warn)).toHaveBeenCalledWith(expect.stringContaining('command runner'));
+  });
+
+  it('does NOT retry when the operator pinned the runner themselves', async () => {
+    // testRunnerTrusted marks a runner named in the operator's own config.
+    // Silently switching it would be overriding an explicit instruction.
+    mockRunShell.mockRejectedValue(makeExecFailure({ exit: 1, stderr: DRY_RUN_STDERR }));
+    const engine = new TypeScriptEngine();
+
+    await expect(
+      engine.run('src/a.ts', { workDir: '/sb', testRunner: 'vitest', testRunnerTrusted: true }),
+    ).rejects.toThrow(/initial test run/);
+
+    expect(mockRunShell).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(warn)).not.toHaveBeenCalledWith(expect.stringContaining('command runner'));
+  });
+
+  it('does NOT retry a failure from a phase other than the dry run', async () => {
+    // Retrying an ordinary failure would double the cost of every genuinely
+    // broken run for no benefit.
+    mockRunShell.mockRejectedValue(
+      makeExecFailure({ exit: 1, stderr: 'Error: something else entirely' }),
+    );
+    const engine = new TypeScriptEngine();
+
+    await expect(engine.run('src/a.ts', { workDir: '/sb', testRunner: 'vitest' })).rejects.toThrow(
+      /configuration or internal error/,
+    );
+
+    expect(mockRunShell).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT retry when the resolved runner is not the native vitest one', async () => {
+    mockRunShell.mockRejectedValue(makeExecFailure({ exit: 1, stderr: DRY_RUN_STDERR }));
+    const engine = new TypeScriptEngine();
+
+    await expect(engine.run('src/a.ts', { workDir: '/sb', testRunner: 'command' })).rejects.toThrow(
+      /initial test run/,
+    );
+
+    expect(mockRunShell).toHaveBeenCalledTimes(1);
+  });
+});

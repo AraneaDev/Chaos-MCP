@@ -6,6 +6,13 @@ on:
   pull_request:
     branches: [main]
 
+# Least privilege by default: the jobs below only read the repo. The one job
+# that needs more (publishing the coverage badge to gh-pages) raises it for
+# itself. Without this, every job on a PR ran with whatever the repository
+# default grants.
+permissions:
+  contents: read
+
 jobs:
   check:
     name: Full Check Pipeline (Node ${{ matrix.node-version }})
@@ -13,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node-version: [22.x, 24.x]
+        node-version: [24.x, 26.x]
 
     steps:
       - name: Checkout
@@ -73,7 +80,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22.x
+          node-version: 24.x
           cache: npm
 
       - name: Install dependencies

@@ -408,7 +408,7 @@ describe('buildRunOptions', () => {
     );
     expect(o.lineScope).toEqual({ start: 3, end: 9 });
     expect(o.mutatorDenylist).toEqual(['C']);
-    // High#3: mutatorAllowlist is unsupported in StrykerJS v9. It must never be
+    // High#3: mutatorAllowlist is unsupported by StrykerJS. It must never be
     // propagated into RunOptions (it would make the TS engine throw on every run).
     expect(o.mutatorAllowlist).toBeUndefined();
   });
