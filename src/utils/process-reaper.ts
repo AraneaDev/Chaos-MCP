@@ -34,8 +34,13 @@ import { resolve, sep } from 'path';
 function descendantPids(root: number): number[] {
   const children = new Map<number, number[]>();
   try {
-    // Stryker disable next-line StringLiteral: the fallback only has to be a string with no pid/ppid line in it; every non-table value produces the same empty tree.
-    const listing = spawnSync('ps', ['-eo', 'pid=,ppid='], { encoding: 'utf-8' }).stdout ?? '';
+    const stdout = spawnSync('ps', ['-eo', 'pid=,ppid='], { encoding: 'utf-8' }).stdout;
+    // Split from the call above on purpose. A `disable next-line` covers the
+    // WHOLE line, so keeping these together suppressed the `'ps'`, `'-eo'` and
+    // `'pid=,ppid='` mutants as well — the exact argv this parser depends on,
+    // and the argv a test in process-reaper-tree.test.ts pins.
+    // Stryker disable next-line StringLiteral: the fallback only has to be a string containing no pid/ppid line; every non-table value yields the same empty tree.
+    const listing = stdout ?? '';
     for (const line of listing.split('\n')) {
       const match = /^\s*(\d+)\s+(\d+)\s*$/.exec(line);
       if (!match) continue;
