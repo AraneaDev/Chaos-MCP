@@ -23,15 +23,24 @@ const __dirname = dirname(__filename);
 const ENTRY = join(__dirname, '..', '..', 'build', 'index.js');
 
 /** Spawn the binary with flags and collect exit code, stderr, and elapsed time. */
-function spawnValidate(flags: string[]): Promise<{
+function spawnValidate(
+  flags: string[],
+  cwd?: string,
+): Promise<{
   code: number | null;
   stderr: string;
   elapsedMs: number;
 }> {
   const start = performance.now();
   return new Promise((resolve, reject) => {
+    // `cwd` is handed to the CHILD rather than applied with `process.chdir()`
+    // in the test: StrykerJS's vitest runner pins `pool: 'threads'`, and
+    // `process.chdir()` throws "not supported in workers" there, which would
+    // fail the dry run of every mutation run whose covering tests include this
+    // file. ENTRY is absolute, so moving the child's cwd is safe.
     const child = spawn('node', [ENTRY, ...flags], {
       stdio: ['ignore', 'pipe', 'pipe'],
+      ...(cwd === undefined ? {} : { cwd }),
     });
     let stderr = '';
     child.stderr?.on('data', (chunk: Buffer) => {
@@ -224,19 +233,16 @@ describe('CLI --validate-config flag', () => {
   it('exits 0 when --config has no value (falls back to the default path)', async () => {
     // When --config is the last argument, the value is undefined and
     // loadConfig/validateConfig use the default path (cwd/chaos-mcp.config.json).
-    // To guarantee this file doesn't exist, we chdir into a fresh temp directory
-    // before running the command, then restore the original cwd.
+    // To guarantee this file doesn't exist, the CHILD is spawned in a fresh
+    // temp directory. The test process itself never moves.
     const tempDir = mkdtempSync(join(tmpdir(), 'chaos-mcp-noconfig-'));
-    const originalCwd = process.cwd();
     try {
-      process.chdir(tempDir);
-      const { code, stderr } = await spawnValidate(['--validate-config', '--config']);
+      const { code, stderr } = await spawnValidate(['--validate-config', '--config'], tempDir);
       // No file at the DEFAULT path just means "running on defaults" — the
       // flag was dropped with a warning, so no explicit path was named.
       expect(code).toBe(0);
       expect(stderr).toContain('Config not found');
     } finally {
-      process.chdir(originalCwd);
       try {
         rmSync(tempDir, { recursive: true, force: true });
       } catch {
