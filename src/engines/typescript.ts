@@ -21,7 +21,8 @@ import { existsSync, readFileSync, rmSync } from 'fs';
 import { join } from 'path';
 import { BaseEngine, RunOptions, MutationResult } from './base.js';
 import { invokeMutationTool } from '../utils/exec-classify.js';
-import { log, isVerbose } from '../utils/logger.js';
+import { log, warn, isVerbose } from '../utils/logger.js';
+import { buildVitestRelatedCommand } from '../utils/shell-quote.js';
 import { DEFAULT_TIMEOUT_MS } from '../utils/constants.js';
 import { harvestIncrementalFile, seedIncrementalFile } from '../utils/incremental-cache.js';
 import { MIN_BATCH_BUDGET_MS, planLineBatches, mergeBatchResults } from './typescript/batches.js';
@@ -49,8 +50,78 @@ export {
  * Invokes the StrykerJS CLI (via `npx stryker run`) inside the sandbox
  * working directory so the real workspace tree is never touched.
  */
+/**
+ * Substrings identifying a StrykerJS failure in its INITIAL (dry) test run,
+ * i.e. before a single mutant was introduced.
+ *
+ * A dry run fails because the runner could not execute the project's existing,
+ * passing suite — not because the code under test is weak. That distinction is
+ * what makes an automatic retry on a different runner safe: nothing about the
+ * mutation result is being papered over, because no mutant ran.
+ *
+ * Sourced from the two messages {@link classifyStrykerFailure} raises for that
+ * phase.
+ */
+const DRY_RUN_FAILURE_MARKERS = [
+  'There were failed tests in the initial test run',
+  'ran zero tests in its dry run',
+] as const;
+
+/**
+ * Whether a failed run should be retried on Stryker's built-in command runner.
+ *
+ * The native `@stryker-mutator/vitest-runner` pins `pool: 'threads'`
+ * unconditionally, so a suite that is perfectly healthy under `npm test` can
+ * still fail its dry run there — `process.chdir()`, for one, throws
+ * "not supported in workers" under `worker_threads`. Without this retry the
+ * whole audit aborts on a confusing "failed tests in the initial test run",
+ * which is a poor default for a runner we chose on the project's behalf.
+ *
+ * Deliberately narrow:
+ *   - Only when the runner was DETECTED. `testRunnerTrusted` marks a runner the
+ *     operator named in their own config; overriding that would be ignoring an
+ *     explicit instruction.
+ *   - Only from the native vitest runner. Nothing else has a cheaper fallback.
+ *   - Only on a DRY-RUN failure. Retrying an ordinary failure would double the
+ *     cost of every genuinely broken run.
+ */
+function shouldFallBackToCommandRunner(error: unknown, options?: RunOptions): boolean {
+  if (resolveRunner(options) !== 'vitest') return false;
+  if (options?.testRunnerTrusted === true) return false;
+  const message = error instanceof Error ? error.message : String(error);
+  return DRY_RUN_FAILURE_MARKERS.some((marker) => message.includes(marker));
+}
+
 export class TypeScriptEngine extends BaseEngine {
+  /**
+   * Runs the audit, retrying once on the command runner when the native vitest
+   * runner fails the dry run. See {@link shouldFallBackToCommandRunner}.
+   */
   async run(filePath: string, options?: RunOptions): Promise<MutationResult> {
+    try {
+      return await this.dispatch(filePath, options);
+    } catch (error: unknown) {
+      if (!shouldFallBackToCommandRunner(error, options)) throw error;
+      // `commandRunnerCommand` is populated upstream only when the runner
+      // already resolved to 'command', so it is absent on this path and has to
+      // be built here. An unsafe Windows path yields undefined, in which case
+      // there is no command to fall back TO and the original error stands.
+      const command = options?.commandRunnerCommand ?? buildVitestRelatedCommand(filePath);
+      if (command === undefined) throw error;
+      warn(
+        `StrykerJS's native vitest runner could not complete its initial test run for ${filePath}; ` +
+          'retrying once with the built-in command runner. Pin a runner with ' +
+          '{"stryker": {"testRunner": "vitest" | "command"}} to skip this retry.',
+      );
+      return await this.dispatch(filePath, {
+        ...options,
+        testRunner: 'command',
+        commandRunnerCommand: command,
+      });
+    }
+  }
+
+  private async dispatch(filePath: string, options?: RunOptions): Promise<MutationResult> {
     const resolvedRunner = resolveRunner(options);
     if (resolvedRunner === 'command' && !options?.dryRun) {
       let totalLines = 0;
