@@ -125,14 +125,25 @@ function installedVitestMajor(workspaceRoot: string): number | null {
  * Map a raw runner name to a Stryker-compatible value.
  * Runners without native Stryker plugins (bun, node:test) map to 'command'.
  *
- * vitest 3.x fallback: StrykerJS 9's `@stryker-mutator/vitest-runner` is
- * incompatible with vitest 3 (it relies on vitest 2's removed `--related`
- * API), so the native runner aborts the run. When the installed vitest is
- * major >= 3 we fall back to Stryker's built-in command runner (`npm test`),
- * which drives any framework as a black box — mutation testing still works,
- * at the cost of no per-mutant coverage optimization (the full suite runs per
- * mutant). vitest <= 2 (or an undeterminable version) keeps the faster native
- * vitest-runner, so behavior is unchanged for those projects.
+ * vitest 3.x+ fallback: when the installed vitest is major >= 3 we fall back to
+ * Stryker's built-in command runner, which drives any framework as a black box
+ * — mutation testing still works, at the cost of no per-mutant coverage
+ * optimization. vitest <= 2 (or an undeterminable version) keeps the native
+ * vitest-runner.
+ *
+ * The ORIGINAL reason recorded here was wrong and is corrected rather than
+ * repeated: it claimed vitest 3 removed the `--related` / `config.related` API
+ * that `@stryker-mutator/vitest-runner` depends on. It did not. vitest 3 and 4
+ * both still ship `related`, and this repo's own internal mutation setup runs
+ * the NATIVE vitest-runner (v10) against vitest 4 with `coverageAnalysis:
+ * 'perTest'` — see stryker.internal.mjs.
+ *
+ * The fallback is kept anyway, deliberately and conservatively: the container
+ * image now pins `@stryker-mutator/vitest-runner@10`, but "works for THIS repo
+ * on vitest 4" is not evidence for "works for an arbitrary audited project",
+ * and a native-runner failure surfaces as a confusing dry-run abort rather than
+ * a graceful degradation. Lifting it should be its own change, gated on
+ * exercising the native runner against real vitest 3 and vitest 4 fixtures.
  */
 function toStrykerRunner(raw: string, workspaceRoot: string): string {
   if (raw === 'bun' || raw === 'node:test') return 'command';
