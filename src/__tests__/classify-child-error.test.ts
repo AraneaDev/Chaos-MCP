@@ -55,6 +55,26 @@ const shellCtx = (over: Partial<ChildErrorContext> = {}): ChildErrorContext => (
 });
 
 describe('classifyChildError', () => {
+  it('does NOT classify ENOENT specially when classifyEnoent is omitted', () => {
+    // Every other case in this file passes `classifyEnoent` explicitly, so the
+    // DEFAULT was never exercised — the mutation sweep reported it as having no
+    // coverage at all. The default is `false` on purpose: through a shell, an
+    // ENOENT is the SHELL reporting that something inside the command line is
+    // missing, not that the command itself could not be spawned, so reporting
+    // "not found: <command>" would name the wrong thing.
+    const ctx = {
+      label: 'Shell command',
+      command: 'npm run build',
+      timeoutMs: 1234,
+      aborted: false,
+    } as ChildErrorContext;
+
+    const failure = classifyChildError(childError({ code: 'ENOENT' }), '', '', ctx);
+
+    expect(failure.code).not.toBe('ENOENT');
+    expect(failure.message).not.toContain('not found');
+  });
+
   it('classifies ABORT_ERR as ABORTED', () => {
     const failure = classifyChildError(childError({ code: 'ABORT_ERR' }), '', '', execFileCtx());
     expect(failure.code).toBe('ABORTED');

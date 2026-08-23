@@ -1353,3 +1353,40 @@ describe('execution sessions', () => {
     );
   });
 });
+
+describe('container dispose: concurrent teardown', () => {
+  it('re-issues the removal when a teardown already in flight did not remove it', async () => {
+    // `dispose()` loops at most twice: once to wait out a teardown already
+    // running (so two callers never `rm` the same container concurrently), once
+    // to re-issue it if that teardown did not actually succeed. The second
+    // iteration — and so the loop's increment — was reported by the mutation
+    // sweep as having NO coverage: every existing test disposes once, or
+    // disposes twice sequentially after `removed` has already latched.
+    //
+    // `removed` only latches on a SUCCESSFUL rm, so a failing rm is what keeps
+    // the second pass reachable. Docker removing the container daemon-side
+    // after a failure is exactly the case this retry exists for.
+    // Keyed on the ARGV rather than call order: container provisioning issues a
+    // variable number of shell calls, so positional sequencing silently fed the
+    // rejection to the wrong one.
+    let removalAttempts = 0;
+    vi.mocked(runShell).mockImplementation(((_bin: string, argv: string[]) => {
+      if (argv[0] === 'rm') {
+        removalAttempts++;
+        if (removalAttempts === 1) return Promise.reject(new Error('rm failed'));
+        return Promise.resolve(ok());
+      }
+      return Promise.resolve(ok('cid'));
+    }) as never);
+
+    const session = await createTestSession('typescript', '/tmp/work', {
+      mode: 'container',
+    });
+
+    // Both start before either settles, so the second observes the first as
+    // in-flight rather than as already-finished.
+    await Promise.all([session.dispose(), session.dispose()]);
+
+    expect(removalAttempts).toBe(2);
+  });
+});

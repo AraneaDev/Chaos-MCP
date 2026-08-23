@@ -1427,6 +1427,18 @@ describe('container execution config', () => {
     ).toBe(false);
   });
 
+  it('warns that a non-object container.modes will be ignored', () => {
+    // The describe() for `modes` only ever ran on valid objects, so the message
+    // a user gets for `"modes": "native"` (a plausible mistake — `mode` takes a
+    // string) was never exercised.
+    setContainer({ mode: 'container', modes: 'native' });
+    expect(
+      validateConfig('/tmp/config.json').warnings.some(
+        (warning) => warning.includes('container.modes') && warning.includes('must be an object'),
+      ),
+    ).toBe(true);
+  });
+
   it('drops an unrecognised per-language mode rather than the whole section', () => {
     setContainer({ mode: 'container', modes: { php: 'sometimes', python: 'native' } });
     expect(loadConfig('/tmp/config.json').container).toEqual({
@@ -1681,6 +1693,23 @@ describe('config timeout ceiling', () => {
     expect(loadConfig('/tmp/config.json').stryker).toBeUndefined();
     expect(validateConfig('/tmp/config.json').warnings).toContain(
       `"stryker.perMutantTimeoutMs" must be <= ${MAX_TIMEOUT_MS} ${capNote}, got ${overCap} — will be ignored.`,
+    );
+  });
+
+  it('warns that a non-positive stryker.perMutantTimeoutMs will be ignored', () => {
+    // The over-cap branch of this describe() was covered; the `v <= 0` branch
+    // never was, so the message a user sees for `perMutantTimeoutMs: 0` was
+    // unexercised.
+    setConfig({ stryker: { perMutantTimeoutMs: 0 } });
+    expect(validateConfig('/tmp/config.json').warnings).toContain(
+      '"stryker.perMutantTimeoutMs" must be positive, got 0 — will be ignored.',
+    );
+  });
+
+  it('warns that a non-numeric stryker.concurrency will be ignored', () => {
+    setConfig({ stryker: { concurrency: 'four' } });
+    expect(validateConfig('/tmp/config.json').warnings).toContain(
+      '"stryker.concurrency" must be a number, got string — will be ignored.',
     );
   });
 
