@@ -305,10 +305,13 @@ describe('detectJsTestRunner', () => {
       expect(detectJsTestRunner('/workspace')).toBe('vitest');
     });
 
-    describe('vitest 3.x → command runner fallback', () => {
-      it('maps vitest to the command runner when the installed vitest major is >= 3', () => {
-        // StrykerJS 9's vitest-runner cannot drive vitest 3; the built-in
-        // command runner (npm test) is the compatible fallback.
+    describe('native vitest runner gating', () => {
+      // StrykerJS 10's vitest-runner drives vitest 3 and 4, both verified
+      // against `coverageAnalysis: 'perTest'` (see the HISTORY note on
+      // toStrykerRunner). The only floor left is the runner's declared peer
+      // range, `vitest: >=2.0.0`.
+
+      it('keeps the native vitest runner on vitest 3', () => {
         mockReadFileSync.mockImplementation((p) => {
           const s = String(p);
           if (s === join('/workspace', 'node_modules', 'vitest', 'package.json')) {
@@ -320,7 +323,22 @@ describe('detectJsTestRunner', () => {
           throw new Error('ENOENT');
         });
 
-        expect(detectJsTestRunner('/workspace')).toBe('command');
+        expect(detectJsTestRunner('/workspace')).toBe('vitest');
+      });
+
+      it('keeps the native vitest runner on vitest 4', () => {
+        mockReadFileSync.mockImplementation((p) => {
+          const s = String(p);
+          if (s === join('/workspace', 'node_modules', 'vitest', 'package.json')) {
+            return JSON.stringify({ version: '4.1.11' });
+          }
+          if (s === join('/workspace', 'package.json')) {
+            return JSON.stringify({ devDependencies: { vitest: '^4.0.0' } });
+          }
+          throw new Error('ENOENT');
+        });
+
+        expect(detectJsTestRunner('/workspace')).toBe('vitest');
       });
 
       it('keeps the native vitest runner when the installed vitest major is 2', () => {
@@ -338,9 +356,26 @@ describe('detectJsTestRunner', () => {
         expect(detectJsTestRunner('/workspace')).toBe('vitest');
       });
 
+      it('falls back to the command runner below the runner peer range (vitest 1)', () => {
+        // `@stryker-mutator/vitest-runner` declares `vitest: >=2.0.0`, so a
+        // vitest 1 project has no supported native runner.
+        mockReadFileSync.mockImplementation((p) => {
+          const s = String(p);
+          if (s === join('/workspace', 'node_modules', 'vitest', 'package.json')) {
+            return JSON.stringify({ version: '1.6.0' });
+          }
+          if (s === join('/workspace', 'package.json')) {
+            return JSON.stringify({ devDependencies: { vitest: '^1.6.0' } });
+          }
+          throw new Error('ENOENT');
+        });
+
+        expect(detectJsTestRunner('/workspace')).toBe('command');
+      });
+
       it('keeps vitest when the installed version cannot be determined (not installed)', () => {
         // vitest is declared but node_modules/vitest is absent → we cannot
-        // confirm major >= 3, so preserve current (native-runner) behavior.
+        // confirm anything about the major, so prefer the native runner.
         mockReadFileSync.mockImplementation((p) => {
           if (String(p) === join('/workspace', 'package.json')) {
             return JSON.stringify({ devDependencies: { vitest: '^3.0.0' } });
@@ -351,16 +386,15 @@ describe('detectJsTestRunner', () => {
         expect(detectJsTestRunner('/workspace')).toBe('vitest');
       });
 
-      it('does not apply the vitest-3 command-runner switch to a jest project', () => {
-        // The switch exists because vitest 3 removed the API StrykerJS's native
-        // runner needs. Forced on for every runner, a Jest project that merely
-        // has vitest 3 somewhere in its tree is silently moved onto the slower
-        // command runner.
+      it('does not apply the vitest version gate to a jest project', () => {
+        // The gate is runner-specific. Applied to every runner, a Jest project
+        // that merely has an old vitest somewhere in its tree would be silently
+        // moved onto the command runner.
         mockExistsSync.mockImplementation((p) => String(p).endsWith('jest.config.js'));
         mockReadFileSync.mockImplementation((p) => {
           const s = String(p);
           if (s === join('/workspace', 'node_modules', 'vitest', 'package.json')) {
-            return JSON.stringify({ version: '3.1.0' });
+            return JSON.stringify({ version: '1.6.0' });
           }
           if (s === join('/workspace', 'package.json')) {
             return JSON.stringify({ devDependencies: { jest: '^29.0.0' } });
@@ -373,8 +407,8 @@ describe('detectJsTestRunner', () => {
 
       it('reads a multi-digit vitest major, not just its first character', () => {
         // `version.split('.')` — split on the empty string instead and version
-        // "12.0.0" reads as major 1, putting a modern vitest back on the native
-        // runner that cannot drive it.
+        // "12.0.0" reads as major 1, dropping a modern vitest onto the command
+        // runner it does not need.
         mockReadFileSync.mockImplementation((p) => {
           const s = String(p);
           if (s === join('/workspace', 'node_modules', 'vitest', 'package.json')) {
@@ -386,19 +420,22 @@ describe('detectJsTestRunner', () => {
           throw new Error('ENOENT');
         });
 
-        expect(detectJsTestRunner('/workspace')).toBe('command');
+        expect(detectJsTestRunner('/workspace')).toBe('vitest');
       });
 
       it('finds a vitest hoisted to a monorepo root (ancestor node_modules)', () => {
-        // vitest 3 is installed at the repo root, not under the package dir —
-        // installedVitestMajor must walk up ancestor node_modules to find it.
+        // Deliberately a SUB-PEER-RANGE version: with the gate now keyed on
+        // `major < 2`, an in-range version would return 'vitest' whether or not
+        // the ancestor walk found anything, so the assertion would prove
+        // nothing. A vitest 1 at the repo root can only produce 'command' if
+        // installedVitestMajor actually walked up to it.
         mockReadFileSync.mockImplementation((p) => {
           const s = String(p);
           if (s === join('/repo', 'node_modules', 'vitest', 'package.json')) {
-            return JSON.stringify({ version: '3.1.0' });
+            return JSON.stringify({ version: '1.6.0' });
           }
           if (s === join('/repo/packages/app', 'package.json')) {
-            return JSON.stringify({ devDependencies: { vitest: '^3.0.0' } });
+            return JSON.stringify({ devDependencies: { vitest: '^1.6.0' } });
           }
           throw new Error('ENOENT');
         });
