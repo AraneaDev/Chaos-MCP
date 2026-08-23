@@ -681,6 +681,15 @@ sandbox may be mounted separately and read-only, as described below.
 }
 ```
 
+> **On Windows, the container process runs as root.** On Linux and macOS
+> Chaos-MCP passes `--user <your uid>:<your gid>`, so the audited suite runs as
+> you. Windows has no POSIX uid/gid to pass, and hardcoding one risks making the
+> `/workspace` bind mount unwritable under Docker Desktop, so no user is set and
+> the container falls back to its image default. The container is still
+> short-lived, resource-capped and network-scoped, and the audited code was
+> already going to execute either way, but it is worth knowing that on Windows
+> it executes as uid 0 inside that container.
+
 Modes:
 
 - `native` (default) preserves the existing host-subprocess behavior.
