@@ -1370,11 +1370,18 @@ describe('container dispose: concurrent teardown', () => {
     // variable number of shell calls, so positional sequencing silently fed the
     // rejection to the wrong one.
     let removalAttempts = 0;
+    let activeRemovals = 0;
+    let peakConcurrentRemovals = 0;
     vi.mocked(runShell).mockImplementation(((_bin: string, argv: string[]) => {
       if (argv[0] === 'rm') {
         removalAttempts++;
-        if (removalAttempts === 1) return Promise.reject(new Error('rm failed'));
-        return Promise.resolve(ok());
+        activeRemovals++;
+        peakConcurrentRemovals = Math.max(peakConcurrentRemovals, activeRemovals);
+        const settled =
+          removalAttempts === 1 ? Promise.reject(new Error('rm failed')) : Promise.resolve(ok());
+        return settled.finally(() => {
+          activeRemovals--;
+        });
       }
       return Promise.resolve(ok('cid'));
     }) as never);
@@ -1388,5 +1395,10 @@ describe('container dispose: concurrent teardown', () => {
     await Promise.all([session.dispose(), session.dispose()]);
 
     expect(removalAttempts).toBe(2);
+    // Sequential, not merely twice. The loop exists so two callers never `rm`
+    // the same container at once; an implementation that fired both removals
+    // concurrently would still reach a count of two, so the count alone does
+    // not pin the behaviour this test is named for.
+    expect(peakConcurrentRemovals).toBe(1);
   });
 });

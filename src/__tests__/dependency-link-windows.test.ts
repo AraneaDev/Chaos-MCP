@@ -61,21 +61,31 @@ describe('safeSymlink on Windows', () => {
     );
   });
 
-  it('rethrows the ORIGINAL error when the junction retry also fails', () => {
+  it('rethrows the ORIGINAL error object when the junction retry also fails', () => {
     // Junctions are directories-only, so a file target fails both ways. The
     // error that surfaces must be the first one, which explains the actual
     // problem (EPERM), not the junction attempt's secondary failure.
+    //
+    // Identity, not message. Matching on `'EPERM'` alone would also pass for a
+    // freshly constructed error carrying the same text, which would lose the
+    // original's `code` property and stack.
+    const original = eperm();
     mockSymlinkSync
       .mockImplementationOnce(() => {
-        throw eperm();
+        throw original;
       })
       .mockImplementationOnce(() => {
         throw new Error('EINVAL: junctions are directories-only');
       });
 
-    expect(() => safeSymlink('C:\\host\\file.txt', 'C:\\sandbox\\file.txt', 'file')).toThrow(
-      'EPERM',
-    );
+    let caught: unknown;
+    try {
+      safeSymlink('C:\\host\\file.txt', 'C:\\sandbox\\file.txt', 'file');
+    } catch (error: unknown) {
+      caught = error;
+    }
+
+    expect(caught).toBe(original);
     expect(mockSymlinkSync).toHaveBeenCalledTimes(2);
   });
 
