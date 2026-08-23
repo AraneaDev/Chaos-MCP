@@ -189,7 +189,7 @@ Two trigger paths for the same workflow:
 1. **Manual dispatch** — GitHub Actions tab → "E2E" workflow → "Run workflow" button.
 2. **Label-triggered** — add the `run-e2e` label to any PR. The `if:` condition gates on `github.event.action == 'labeled'` (not just label presence) so re-edits or removal of the label don't cause spurious re-runs.
 
-Both trigger paths run the E2E workflow on Node 22.x with a 15-minute timeout.
+Both trigger paths run the E2E workflow on Node 24.x with a 15-minute timeout.
 
 ### When to trigger an E2E run
 

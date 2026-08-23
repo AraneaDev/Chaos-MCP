@@ -13,13 +13,16 @@ import { inspectContainerRuntime } from './utils/container/doctor.js';
  * and then hit an obscure runtime failure instead of the clear upgrade message
  * this function exists to print.
  *
- * 22.11.0 is the first 22.x LTS ("Jod") release. The floor deliberately carries
- * a NON-ZERO minor: with `22.0.0` the minor half of the comparison below was
- * unreachable — `currentMinor < 0` can never hold — so half of the check was
- * dead code that no test could reach, and a 22.10 runtime was accepted by a
- * package that claims to require LTS.
+ * 24.11.0 is the first 24.x LTS ("Krypton") release. Chaos-MCP tracks the
+ * ACTIVE LTS line and newer: Node 22 ("Jod") left active support on 2025-10-21
+ * and is maintenance-only until 2027-04-30, so it is no longer a target.
+ *
+ * The floor deliberately carries a NON-ZERO minor: with `24.0.0` the minor half
+ * of the comparison below was unreachable — `currentMinor < 0` can never hold —
+ * so half of the check was dead code that no test could reach, and a 24.10
+ * runtime was accepted by a package that claims to require LTS.
  */
-export const MIN_NODE_VERSION = '22.11.0';
+export const MIN_NODE_VERSION = '24.11.0';
 
 /**
  * Check that the current Node.js runtime meets the minimum version requirement.

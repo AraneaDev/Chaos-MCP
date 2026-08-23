@@ -130,7 +130,7 @@ describe('cli', () => {
     }
 
     it('passes on a supported runtime (no exit)', () => {
-      setNode('24.0.0');
+      setNode('26.0.0');
       expect(() => checkNodeVersion()).not.toThrow();
       expect(exitSpy).not.toHaveBeenCalled();
     });
@@ -167,25 +167,25 @@ describe('cli', () => {
 
     // ── The same-major arm ──
     //
-    // `currentMajor === minMajor && currentMinor < minMinor` was unreachable
-    // while the floor was 22.0.0: no minor is below zero, so the whole second
-    // clause was dead and a 22.10 runtime passed a check that claims to require
-    // 22.11. The floor now carries a non-zero minor, which is what makes these
-    // two cases exist at all — and what makes the boundary meaningful.
+    // `currentMajor === minMajor && currentMinor < minMinor` would be
+    // unreachable with a floor of 24.0.0: no minor is below zero, so the whole
+    // second clause would be dead and a 24.10 runtime would pass a check that
+    // claims to require 24.11. The floor carries a non-zero minor, which is what
+    // makes these two cases exist at all — and what makes the boundary meaningful.
 
     it('exits 1 on a runtime whose MINOR is below the floor', () => {
-      setNode('22.10.9');
+      setNode('24.10.9');
       expect(() => checkNodeVersion()).toThrow(ExitError);
       expect(errSpy).toHaveBeenCalledWith(
         expect.stringContaining(`requires Node.js >= ${MIN_NODE_VERSION}`),
       );
-      expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('you are running 22.10.9'));
+      expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('you are running 24.10.9'));
     });
 
     it('accepts the minor directly AT the floor, and the one above it', () => {
       // The `<` boundary: equal is supported, one higher is supported. A `<=`
       // here would reject the very version the package declares it requires.
-      for (const version of ['22.11.0', '22.12.0']) {
+      for (const version of ['24.11.0', '24.12.0']) {
         setNode(version);
         expect(() => checkNodeVersion()).not.toThrow();
       }
@@ -193,15 +193,15 @@ describe('cli', () => {
     });
 
     it('accepts a HIGHER major even when its minor is below the floor minor', () => {
-      // 24.0 is newer than 22.11 despite `0 < 11`; the minor comparison must stay
+      // 26.0 is newer than 24.11 despite `0 < 11`; the minor comparison must stay
       // gated on the majors being equal, or every early x.0 release is rejected.
-      setNode('24.0.0');
+      setNode('26.0.0');
       expect(() => checkNodeVersion()).not.toThrow();
       expect(exitSpy).not.toHaveBeenCalled();
     });
 
     it('accepts a runtime above the floor in both major and minor', () => {
-      setNode('24.5.1');
+      setNode('26.5.1');
       expect(() => checkNodeVersion()).not.toThrow();
       expect(exitSpy).not.toHaveBeenCalled();
     });

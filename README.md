@@ -48,6 +48,8 @@ checks whether your tests catch them. Surviving mutants mark the gaps.
 
 ## Installation
 
+Chaos-MCP tracks the active Node LTS line and newer. You need **Node 24.11.0 or later**; CI runs 24.x and 26.x.
+
 While in development, the only supported install path is **from source**: clone the repo, build, and register the built entrypoint with your MCP client.
 
 ```bash
@@ -895,7 +897,7 @@ npm run test:watch    # Watch mode for iterative development
 npm run test:coverage # Tests with coverage report
 ```
 
-The suite runs on every push/PR to `main` via [CI](./.github/workflows/ci.yml) (Node 22/24). v8 line/statement coverage of `src/` sits at **~99%**, and the source is additionally hardened by running Chaos-MCP against its own code, so the suite is graded by mutation score rather than by line coverage alone.
+The suite runs on every push/PR to `main` via [CI](./.github/workflows/ci.yml) (Node 24/26). v8 line/statement coverage of `src/` sits at **~99%**, and the source is additionally hardened by running Chaos-MCP against its own code, so the suite is graded by mutation score rather than by line coverage alone.
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for detailed development setup and contribution guidelines.
 
