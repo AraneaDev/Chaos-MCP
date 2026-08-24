@@ -20,7 +20,7 @@
 import { existsSync, readFileSync, rmSync } from 'fs';
 import { join } from 'path';
 import { BaseEngine, RunOptions, MutationResult } from './base.js';
-import { invokeMutationTool } from '../utils/exec-classify.js';
+import { invokeMutationTool, MutationToolStartupError } from '../utils/exec-classify.js';
 import { log, warn, isVerbose } from '../utils/logger.js';
 import { buildVitestRelatedCommand } from '../utils/shell-quote.js';
 import { DEFAULT_TIMEOUT_MS } from '../utils/constants.js';
@@ -92,12 +92,52 @@ function shouldFallBackToCommandRunner(error: unknown, options?: RunOptions): bo
   return DRY_RUN_FAILURE_MARKERS.some((marker) => message.includes(marker));
 }
 
+/**
+ * Fail fast when StrykerJS is not installed in the workspace being audited.
+ *
+ * `npx --no-install stryker` does NOT fail when StrykerJS is absent, because
+ * `stryker` is frequently on PATH as stryker-cli — a bootstrapper that asks
+ * whether to install Stryker and then waits for an answer:
+ *
+ *     Stryker is currently not installed.
+ *     ? Do you want to install Stryker locally? (Use arrow keys)
+ *
+ * A sandbox has no one to answer it. The prompt blocks until the audit
+ * deadline, and the run is then reported as a TIMEOUT with advice to narrow
+ * the target file — advice that cannot possibly help, because no scope is
+ * small enough to make an interactive prompt answer itself. Every audit of one
+ * real workspace failed this way, at five minutes each, before the cause was
+ * found.
+ *
+ * There is no ENOENT to classify here, so this has to be checked before the
+ * process is spawned rather than recovered from afterwards.
+ *
+ * Container runs are exempt: the image supplies StrykerJS, and the workspace
+ * copy is not where it lives.
+ *
+ * @internal Exported for testing only.
+ */
+export function assertStrykerInstalled(options?: RunOptions): void {
+  if (options?.executor?.kind === 'container') return;
+  const workDir = options?.workDir ?? process.cwd();
+  if (existsSync(join(workDir, 'node_modules', '@stryker-mutator', 'core', 'package.json'))) return;
+  throw new MutationToolStartupError(
+    'StrykerJS',
+    'StrykerJS is not installed in this workspace. Install it with: ' +
+      'npm install --save-dev @stryker-mutator/core (or the equivalent for your package ' +
+      'manager). A global `stryker` on PATH is stryker-cli, which prompts for an install ' +
+      'and hangs where nothing can answer it.',
+    'NOT_INSTALLED',
+  );
+}
+
 export class TypeScriptEngine extends BaseEngine {
   /**
    * Runs the audit, retrying once on the command runner when the native vitest
    * runner fails the dry run. See {@link shouldFallBackToCommandRunner}.
    */
   async run(filePath: string, options?: RunOptions): Promise<MutationResult> {
+    assertStrykerInstalled(options);
     try {
       return await this.dispatch(filePath, options);
     } catch (error: unknown) {

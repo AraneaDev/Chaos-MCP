@@ -20,7 +20,8 @@ import type { ChaosConfig } from '../utils/config-loader.js';
 import type { ToolArgs } from '../core/tool-args-validation.js';
 import type { Severity } from '../core/enrich.js';
 import { incrementalCachePath } from '../utils/incremental-cache.js';
-import { buildVitestRelatedCommand } from '../utils/shell-quote.js';
+import { buildBunRelatedCommand, buildVitestRelatedCommand } from '../utils/shell-quote.js';
+import { findBunTestSelection } from '../core/related-tests.js';
 import { DEFAULT_TIMEOUT_MS } from '../utils/constants.js';
 
 /** The project types `detectProjectType` can report, including `'unsupported'`. */
@@ -192,6 +193,25 @@ export function resolveAuditTimeoutMs(
  * Assemble {@link RunOptions} from tool-call arguments merged with config
  * defaults. Tool-call arguments always take precedence over config values.
  */
+/**
+ * The per-file test command for a TypeScript workspace whose runner has no
+ * Stryker plugin, or undefined to let Stryker use the project's own command.
+ *
+ * Vitest answers "which tests cover this file" itself. Bun cannot, so the
+ * import graph answers it here — and an empty selection means the graph could
+ * not tell, never that nothing covers the file, so it falls back too.
+ */
+function resolveTypeScriptCommandRunner(
+  detectedRunner: string,
+  targetFile: string,
+  workDir: string,
+): string | undefined {
+  if (detectedRunner === 'vitest') return buildVitestRelatedCommand(targetFile);
+  if (detectedRunner === 'bun')
+    return buildBunRelatedCommand(findBunTestSelection(targetFile, workDir));
+  return undefined;
+}
+
 export function buildRunOptions(
   args: ToolArgs,
   cfg: ChaosConfig,
@@ -227,11 +247,8 @@ export function buildRunOptions(
     testRunner,
     testRunnerTrusted,
     commandRunnerCommand:
-      projectType === 'typescript' &&
-      testRunner === 'command' &&
-      env.detectedRunner === 'vitest' &&
-      targetFile
-        ? buildVitestRelatedCommand(targetFile)
+      projectType === 'typescript' && testRunner === 'command' && targetFile
+        ? resolveTypeScriptCommandRunner(env.detectedRunner, targetFile, workDir)
         : undefined,
     workDir,
     timeoutMs: resolveAuditTimeoutMs(args, cfg, projectType),
