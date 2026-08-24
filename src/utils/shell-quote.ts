@@ -70,3 +70,35 @@ export function buildVitestRelatedCommand(targetFile: string): string | undefine
   }
   return `npx vitest related ${quoteCommandArg(targetFile)} --run ${VITEST_SINGLE_WORKER}`;
 }
+
+/**
+ * Cap on how many test paths are interpolated into one command string.
+ *
+ * A selection this wide has stopped being a selection: the saving is gone, and
+ * a command string long enough to approach the platform's argument limit fails
+ * in a way that looks like a test failure. Falling back to the project's own
+ * command is both faster and honest.
+ */
+const BUN_MAX_SELECTED_TESTS = 64;
+
+/**
+ * Build the Stryker command-runner string for a bun workspace, given the test
+ * files that reach the mutated file.
+ *
+ * Returns undefined whenever the selection cannot be trusted or expressed, so
+ * Stryker falls back to the project's configured command and runs everything.
+ * That fallback is the safe direction: running too few tests reports killed
+ * mutants as survivors.
+ *
+ * Unlike the vitest path there are no worker caps to add. `bun test` runs in a
+ * single process, so the inner fan-out that made {@link VITEST_SINGLE_WORKER}
+ * necessary does not exist here.
+ */
+export function buildBunRelatedCommand(testFiles: string[]): string | undefined {
+  if (testFiles.length === 0 || testFiles.length > BUN_MAX_SELECTED_TESTS) return undefined;
+  if (process.platform === 'win32') {
+    if (!testFiles.every((file) => /^[A-Za-z0-9_./\\:-]+$/.test(file))) return undefined;
+    return `bun test ${testFiles.join(' ')}`;
+  }
+  return `bun test ${testFiles.map(quoteCommandArg).join(' ')}`;
+}
