@@ -2,6 +2,19 @@
 
 All notable changes to Chaos-MCP are documented in this file.
 
+## [4.1.0](https://github.com/AraneaDev/Chaos-MCP/compare/v4.0.0...v4.1.0) (2026-08-24)
+
+
+### Features
+
+* scope bun mutation runs to the tests that reach the file ([60fe022](https://github.com/AraneaDev/Chaos-MCP/commit/60fe0220d6ccf3666725fa3790c455cd9a6dd599))
+* scope bun mutation runs to the tests that reach the file ([7510c73](https://github.com/AraneaDev/Chaos-MCP/commit/7510c730660208644222abe9ace46c995a10100a))
+
+
+### Bug Fixes
+
+* fail fast when StrykerJS is missing instead of hanging on its installer ([70c4116](https://github.com/AraneaDev/Chaos-MCP/commit/70c4116b633e095cc772b9d20174cafac7540752))
+
 ## [4.0.0](https://github.com/AraneaDev/Chaos-MCP/compare/v3.0.1...v4.0.0) (2026-08-23)
 
 
