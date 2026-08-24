@@ -40,6 +40,17 @@ import {
 
 const mockRunShell = vi.mocked(runShell);
 const mockExistsSync = vi.mocked(existsSync);
+
+/**
+ * Every engine run now asserts StrykerJS is installed in the workspace, so a
+ * mocked filesystem has to say so. Tests that narrow `existsSync` to one path
+ * are narrowing it for a different reason (a config file, a missing report),
+ * and would otherwise fail the precondition instead of exercising their case.
+ */
+const withStryker =
+  (predicate: (p: PathLike) => boolean) =>
+  (p: PathLike): boolean =>
+    String(p).includes('@stryker-mutator') || predicate(p);
 const mockReadFileSync = vi.mocked(readFileSync);
 
 function makeExecResult(
@@ -208,7 +219,9 @@ describe('TypeScriptEngine', () => {
   it('builds command-runner overlays for JSON, invalid, and absent project configs', () => {
     const mockWrite = vi.mocked(writeFileSync);
 
-    mockExistsSync.mockImplementation((p: PathLike) => p === '/json/stryker.config.json');
+    mockExistsSync.mockImplementation(
+      withStryker((p: PathLike) => p === '/json/stryker.config.json'),
+    );
     mockReadFileSync.mockReturnValueOnce(
       JSON.stringify({ commandRunner: { timeout: 5 }, mutator: { excludedMutations: ['A'] } }),
     );
@@ -219,7 +232,9 @@ describe('TypeScriptEngine', () => {
       'const base = {"commandRunner":{"timeout":5},"mutator":{"excludedMutations":["A"]}};',
     );
 
-    mockExistsSync.mockImplementation((p: PathLike) => p === '/invalid/stryker.config.json');
+    mockExistsSync.mockImplementation(
+      withStryker((p: PathLike) => p === '/invalid/stryker.config.json'),
+    );
     mockReadFileSync.mockReturnValueOnce('{');
     writeStrykerRuntimeConfig('/invalid', 'npm test', []);
     expect(String(mockWrite.mock.calls.at(-1)?.[1])).toContain('const base = {};');
@@ -240,7 +255,9 @@ describe('TypeScriptEngine', () => {
     ['string', '"bad"'],
   ])('rejects a parsed %s JSON config as an overlay base', (_label, json) => {
     const mockWrite = vi.mocked(writeFileSync);
-    mockExistsSync.mockImplementation((p: PathLike) => p === '/bad/stryker.config.json');
+    mockExistsSync.mockImplementation(
+      withStryker((p: PathLike) => p === '/bad/stryker.config.json'),
+    );
     mockReadFileSync.mockReturnValueOnce(json);
     writeStrykerRuntimeConfig('/bad', 'npm test', []);
     expect(String(mockWrite.mock.calls.at(-1)?.[1])).toContain('const base = {};');
@@ -248,7 +265,7 @@ describe('TypeScriptEngine', () => {
 
   it('imports an existing JavaScript config with the exact fallback declaration', () => {
     const mockWrite = vi.mocked(writeFileSync);
-    mockExistsSync.mockImplementation((p: PathLike) => p === '/js/stryker.config.mjs');
+    mockExistsSync.mockImplementation(withStryker((p: PathLike) => p === '/js/stryker.config.mjs'));
     writeStrykerRuntimeConfig('/js', 'npm test', []);
     expect(String(mockWrite.mock.calls.at(-1)?.[1])).toContain(
       'import importedConfig from "./stryker.config.mjs";\nconst base = importedConfig ?? {};',
@@ -438,7 +455,9 @@ describe('TypeScriptEngine', () => {
   it('rethrows a Stryker exit-1 config error whose stderr merely mentions a timeout', async () => {
     // No report on disk — exit 1 without one is a genuine failure. (With one it
     // means "score under thresholds.break"; see the recoverable-exit-1 tests.)
-    mockExistsSync.mockImplementation((p: PathLike) => !String(p).endsWith('mutation.json'));
+    mockExistsSync.mockImplementation(
+      withStryker((p: PathLike) => !String(p).endsWith('mutation.json')),
+    );
     mockReadFileSync.mockImplementation((p: PathOrFileDescriptor) =>
       p === '/sb/src/large.ts'
         ? Array.from({ length: 121 }, () => 'const x = 1;').join('\n')
@@ -461,7 +480,9 @@ describe('TypeScriptEngine', () => {
 
   it('does not report time_budget_exhausted when a later batch fails to configure', async () => {
     const now = vi.spyOn(Date, 'now').mockReturnValue(0);
-    mockExistsSync.mockImplementation((p: PathLike) => !String(p).endsWith('mutation.json'));
+    mockExistsSync.mockImplementation(
+      withStryker((p: PathLike) => !String(p).endsWith('mutation.json')),
+    );
     mockReadFileSync.mockImplementation((p: PathOrFileDescriptor) =>
       p === '/sb/src/large.ts'
         ? Array.from({ length: 121 }, () => 'const x = 1;').join('\n')
@@ -734,7 +755,9 @@ describe('TypeScriptEngine', () => {
   });
 
   it('throws on Stryker exit 1 when NO report was written (config/internal error)', async () => {
-    mockExistsSync.mockImplementation((p: PathLike) => !String(p).endsWith('mutation.json'));
+    mockExistsSync.mockImplementation(
+      withStryker((p: PathLike) => !String(p).endsWith('mutation.json')),
+    );
     mockRunShell.mockRejectedValue(
       makeExecFailure({ exit: 1, stderr: 'stryker.config.js not found' }),
     );
@@ -835,7 +858,9 @@ describe('TypeScriptEngine', () => {
     // stderr — and fall out the bottom as a "recoverable" exit, so the engine
     // went on to parseReport and reported `Stryker JSON report not found at …`
     // for a run the caller had deliberately stopped.
-    mockExistsSync.mockImplementation((p: PathLike) => !String(p).endsWith('mutation.json'));
+    mockExistsSync.mockImplementation(
+      withStryker((p: PathLike) => !String(p).endsWith('mutation.json')),
+    );
     const aborted = makeExecFailure({ code: 'ABORTED', signal: 'SIGKILL', exit: null });
     mockRunShell.mockRejectedValue(aborted);
 
@@ -866,7 +891,10 @@ describe('TypeScriptEngine', () => {
     const { writeFileSync } = await import('fs');
     const mockWrite = vi.mocked(writeFileSync);
     mockExistsSync.mockImplementation(
-      (p: PathLike) => p === '/sb/stryker.config.mjs' || p === '/sb/reports/mutation/mutation.json',
+      withStryker(
+        (p: PathLike) =>
+          p === '/sb/stryker.config.mjs' || p === '/sb/reports/mutation/mutation.json',
+      ),
     );
     mockRunShell.mockResolvedValue(makeExecResult());
     mockReadFileSync.mockReturnValue(makeJsonReport([]));
@@ -899,7 +927,9 @@ describe('TypeScriptEngine', () => {
 
   it('writes an empty denylist into a command-runner overlay when none is configured', async () => {
     const mockWrite = vi.mocked(writeFileSync);
-    mockExistsSync.mockImplementation((p: PathLike) => p === '/sb/reports/mutation/mutation.json');
+    mockExistsSync.mockImplementation(
+      withStryker((p: PathLike) => p === '/sb/reports/mutation/mutation.json'),
+    );
     mockRunShell.mockResolvedValue(makeExecResult());
     mockReadFileSync.mockReturnValue(makeJsonReport([]));
 
@@ -1113,7 +1143,9 @@ describe('TypeScriptEngine', () => {
     const mockWrite = vi.mocked(writeFileSync);
 
     // Nothing in the sandbox but the report — no project Stryker config at all.
-    mockExistsSync.mockImplementation((p: PathLike) => String(p).endsWith('mutation.json'));
+    mockExistsSync.mockImplementation(
+      withStryker((p: PathLike) => String(p).endsWith('mutation.json')),
+    );
     mockRunShell.mockResolvedValue(makeExecResult());
     mockReadFileSync.mockReturnValue(makeJsonReport([]));
 
@@ -1152,7 +1184,10 @@ describe('TypeScriptEngine', () => {
 
     // Both exist; stryker.conf.json wins because it comes first in Stryker's order.
     mockExistsSync.mockImplementation(
-      (p: PathLike) => p === loadedPath || p === ignoredPath || String(p).endsWith('mutation.json'),
+      withStryker(
+        (p: PathLike) =>
+          p === loadedPath || p === ignoredPath || String(p).endsWith('mutation.json'),
+      ),
     );
     mockReadFileSync.mockImplementation((p: PathOrFileDescriptor) => {
       if (p === loadedPath) return JSON.stringify({ mutator: { excludedMutations: ['FromConf'] } });
@@ -1186,8 +1221,10 @@ describe('TypeScriptEngine', () => {
     // stryker.conf.mjs is 3rd in Stryker's order and is not textually mergeable —
     // the overlay imports it and layers the exclusions on the imported object.
     mockExistsSync.mockImplementation(
-      (p: PathLike) =>
-        p === '/tmp/test-sandbox/stryker.conf.mjs' || String(p).endsWith('mutation.json'),
+      withStryker(
+        (p: PathLike) =>
+          p === '/tmp/test-sandbox/stryker.conf.mjs' || String(p).endsWith('mutation.json'),
+      ),
     );
     mockReadFileSync.mockReturnValue(makeJsonReport([]));
     mockRunShell.mockResolvedValue(makeExecResult());
@@ -1209,7 +1246,7 @@ describe('TypeScriptEngine', () => {
 
   it('unions the denylist with the project exclusions and migrates a legacy `mutators` map', () => {
     const mockWrite = vi.mocked(writeFileSync);
-    mockExistsSync.mockImplementation((p: PathLike) => p === '/sb/stryker.conf.json');
+    mockExistsSync.mockImplementation(withStryker((p: PathLike) => p === '/sb/stryker.conf.json'));
     mockReadFileSync.mockReturnValue(
       JSON.stringify({
         testRunner: 'vitest',
@@ -1246,7 +1283,7 @@ describe('TypeScriptEngine', () => {
     // looks and the engine reports "Stryker JSON report not found".
     // It cannot be pinned on the CLI: 9.6.1 declares no --jsonReporter.fileName
     // and Commander aborts with "unknown option".
-    mockExistsSync.mockImplementation((p: PathLike) => p === '/sb/stryker.conf.json');
+    mockExistsSync.mockImplementation(withStryker((p: PathLike) => p === '/sb/stryker.conf.json'));
     mockReadFileSync.mockReturnValue(
       JSON.stringify({ jsonReporter: { fileName: 'artifacts/mutation.json' } }),
     );
@@ -1324,7 +1361,7 @@ describe('TypeScriptEngine', () => {
     // only the initial test pass and never writes reports/mutation/mutation.json.
     // The engine must NOT throw "report not found" — it should report success.
     mockRunShell.mockResolvedValue(makeExecResult());
-    mockExistsSync.mockReturnValue(false); // report genuinely absent
+    mockExistsSync.mockImplementation(withStryker(() => false)); // report genuinely absent
 
     const result = await engine.run('src/app.ts', { dryRun: true });
 
@@ -1395,7 +1432,7 @@ describe('TypeScriptEngine', () => {
 
   it('throws when Stryker JSON report file is missing', async () => {
     mockRunShell.mockResolvedValue(makeExecResult());
-    mockExistsSync.mockReturnValue(false);
+    mockExistsSync.mockImplementation(withStryker(() => false));
 
     await expect(engine.run('src/test.ts')).rejects.toThrow(/Stryker JSON report not found/);
   });
@@ -2724,7 +2761,9 @@ describe('native vitest runner → command runner fallback', () => {
   beforeEach(() => {
     // No report on disk → classifyStrykerFailure treats exit 1 as a real
     // failure rather than a threshold break.
-    mockExistsSync.mockImplementation((p: PathLike) => !String(p).endsWith('mutation.json'));
+    mockExistsSync.mockImplementation(
+      withStryker((p: PathLike) => !String(p).endsWith('mutation.json')),
+    );
   });
 
   it('retries on the command runner when the native runner fails its dry run', async () => {
