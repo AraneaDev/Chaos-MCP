@@ -21,7 +21,7 @@ jobs:
       # PR, creates the vX.Y.Z tag + GitHub Release and sets release_created=true.
       - name: Run release-please
         id: release
-        uses: googleapis/release-please-action@v4
+        uses: googleapis/release-please-action@v5
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -30,11 +30,11 @@ jobs:
       # workflow would fire — so build/verify/publish live here instead.
       - name: Checkout
         if: ${{ steps.release.outputs.release_created }}
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Node.js
         if: ${{ steps.release.outputs.release_created }}
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 24.x
           cache: 'npm'
