@@ -945,3 +945,7 @@ MIT. See [LICENSE](LICENSE) for details.
 - [cargo-mutants](https://github.com/sourcefrog/cargo-mutants)
 - [Infection](https://infection.github.io/)
 - [Changelog](CHANGELOG.md)
+
+---
+
+Built by [Aranea Development](https://aranea-development.nl).
