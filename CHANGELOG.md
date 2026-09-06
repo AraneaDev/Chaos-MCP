@@ -2,6 +2,13 @@
 
 All notable changes to Chaos-MCP are documented in this file.
 
+## [4.2.0](https://github.com/AraneaDev/Chaos-MCP/compare/v4.1.0...v4.2.0) (2026-09-06)
+
+
+### Features
+
+* warn when a mutation run kills nothing at all ([#54](https://github.com/AraneaDev/Chaos-MCP/issues/54)) ([a66db2a](https://github.com/AraneaDev/Chaos-MCP/commit/a66db2aa6a4fec3b0968c8bbd33b75f234381596))
+
 ## [4.1.0](https://github.com/AraneaDev/Chaos-MCP/compare/v4.0.0...v4.1.0) (2026-08-24)
 
 
