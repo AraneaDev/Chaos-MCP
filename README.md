@@ -45,6 +45,7 @@ checks whether your tests catch them. Surviving mutants mark the gaps.
 - **Rich Tool Schema**: supports line scoping, mutator denylists, concurrency control, dry-run mode, incremental runs, and output format selection
 - **Pre-flight Estimation**: `estimate_audit` gives a fast mutant count and an optional timing estimate before you commit to a full run. For Rust it is an exact count of the mutants `cargo-mutants --list` **generates**; the audit itself scores fewer, because mutants that fail to compile leave its denominator and are reported as `incompetent`. The other three languages use a source heuristic
 - **Gate Mode**: pass `minScore` to `audit_code_resilience` or `triage_test_coverage` to get a machine-readable pass/fail field for CI pipelines
+- **Dead-Harness Detection**: a run that generates mutants but kills none of them carries a `fidelityNote` naming both causes that produce that shape, a suite that asserts nothing or a mutation harness that never applied the mutants, plus the one-minute check that tells them apart. A test runner your mutation tool cannot drive otherwise reports a silent `0.00%` that looks exactly like a real score regression
 - **Cross-Platform**: works on macOS, Linux, and Windows (with junction fallback for symlinks)
 
 ## Installation
@@ -243,6 +244,34 @@ Survivors (line: mutators):
   42: ConditionalExpression  (a > b → a >= b)
 Add or strengthen tests targeting these lines to kill the survivors.
 ```
+
+#### When the score is not measuring your tests
+
+A run that generates mutants but kills none of them carries a `fidelityNote`, because that
+shape has two very different causes and the number alone cannot separate them. Either the
+suite genuinely asserts nothing about the file, or the mutation harness never applied the
+mutants at all.
+
+The second case is the dangerous one, because nothing else about the run looks wrong. A
+test-runner version your mutation tool cannot drive makes every mutant report as survived,
+the score reads `0.00%`, the suite still passes normally, and the tool exits on its own
+break threshold. That is indistinguishable from an ordinary score regression, and it invites
+the worst possible repair: writing tests to raise a number that is not measuring tests.
+
+The advisory fires when at least 10 **covered** mutants survived and not one was killed.
+Counting covered survivors only is what keeps it quiet for a file no test imports, where
+every mutant is reported as no-coverage and a zero score is correct. A single kill anywhere
+in the file proves the harness is alive and suppresses the warning, so an ordinary weak spot
+is still reported as the plain finding it is.
+
+To tell the two causes apart, edit the file by hand to break a branch, inverting an `if` for
+example, and run the suite. If it goes red your tests are fine and the score is not measuring
+them, so check whether your mutation tool supports the installed test-runner version. If it
+stays green, the survivors are real.
+
+This applies to every language and to both execution modes. The container images pin the
+mutation engines but deliberately not your project's test runner, which comes from your own
+`node_modules`, so a version mismatch reaches the containerised path too.
 
 ## Tool parameters
 
