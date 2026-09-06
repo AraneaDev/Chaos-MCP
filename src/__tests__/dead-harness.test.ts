@@ -152,7 +152,9 @@ describe('auditFile dead-harness advisory', () => {
     // the two apart instead of asserting one.
     const run = vi
       .fn()
-      .mockResolvedValue(result({ totalMutants: 26, survived: 26, vulnerabilities: survivors(26) }));
+      .mockResolvedValue(
+        result({ totalMutants: 26, survived: 26, vulnerabilities: survivors(26) }),
+      );
     const out = await auditFile({ ...base, engine: { run } as never });
     expect(out.fidelityNote).toMatch(/hand-edit/i);
     expect(out.fidelityNote).toMatch(/version/i);
