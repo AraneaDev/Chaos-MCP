@@ -11,6 +11,7 @@ import type { BaseEngine, MutationResult } from '../engines/base.js';
 import type { EnvironmentInfo } from '../utils/project-detector.js';
 import type { ChaosConfig } from '../utils/config-loader.js';
 import type { ToolArgs } from '../core/tool-args-validation.js';
+import { DEAD_HARNESS_NOTE, looksLikeDeadHarness } from '../core/score-semantics.js';
 import { createExecutionSession } from '../utils/execution.js';
 import { runShellCommand } from '../utils/exec.js';
 import { log, isVerbose } from '../utils/logger.js';
@@ -171,7 +172,20 @@ export async function auditFile(input: AuditFileInput): Promise<MutationResult> 
       }
     }
 
-    return await engine.run(targetFile, runOptions);
+    const result = await engine.run(targetFile, runOptions);
+    // Applied HERE, after the engine and once, rather than in each engine: the
+    // silent-harness failure is a property of the numbers every engine already
+    // reports, not of any one tool's output format, and four copies of the rule
+    // is how they drift apart. Composed rather than assigned, so an engine that
+    // set its own advisory (PHP's WARNING_FIDELITY_NOTE) keeps it — both facts
+    // are true at once and the caller needs both.
+    if (looksLikeDeadHarness(result)) {
+      result.fidelityNote =
+        result.fidelityNote === undefined
+          ? DEAD_HARNESS_NOTE
+          : `${result.fidelityNote} ${DEAD_HARNESS_NOTE}`;
+    }
+    return result;
   } finally {
     await executor?.dispose();
   }

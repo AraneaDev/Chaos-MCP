@@ -115,6 +115,75 @@ export function displayMutationScore(result: MutationResult): string {
   return result.mutationScore;
 }
 
+/**
+ * How many COVERED survivors it takes before a zero-kill run is worth doubting.
+ *
+ * Low enough to catch a small file, high enough that an ordinary weak spot does
+ * not trip it: a handful of survivors on a lightly-tested file is the normal
+ * finding this server exists to report, and calling that a broken harness would
+ * cry wolf on exactly the result the caller asked for.
+ */
+export const DEAD_HARNESS_THRESHOLD = 10;
+
+/**
+ * Advisory for a run where the suite killed NOTHING — see {@link looksLikeDeadHarness}.
+ *
+ * Deliberately does not assert which cause it is; it names both and gives the
+ * one-minute experiment that separates them. A confident "your tests are weak"
+ * here is how a caller ends up writing tests against a harness that cannot run
+ * them, and a confident "your harness is broken" would excuse a genuinely
+ * assertion-free suite.
+ */
+export const DEAD_HARNESS_NOTE =
+  'HARNESS CHECK: not one covered mutant was killed. Either this suite asserts ' +
+  'nothing about the file, or the mutation harness never applied the mutants — a ' +
+  'test-runner/tool version mismatch does exactly this and reports every mutant as ' +
+  'survived, with the suite still passing normally. Separate the two BEFORE writing ' +
+  'tests: hand-edit the file to break a branch (invert an `if`, say) and run the suite. ' +
+  'If it goes red, the tests are fine and this score is not measuring them — check that ' +
+  'your mutation tool supports the installed test-runner version. If it stays green, ' +
+  'the survivors below are real.';
+
+/**
+ * Does this result look like the mutation harness never actually ran a mutant?
+ *
+ * The failure this catches is SILENT, which is what makes it worth a dedicated
+ * predicate. When the mutation tool cannot activate mutants — a runner that does
+ * not support the installed test-runner version is the common cause — every
+ * mutant is reported `Survived`, the score reads `0.00%`, and the run is
+ * indistinguishable from a real one against a codebase with no assertions. The
+ * tool exits on its own break threshold, so even the exit code looks like an
+ * ordinary score regression. Nothing warns, and the honest-looking output invites
+ * precisely the wrong repair: writing tests to fix a number that is not measuring
+ * tests. Observed in the wild with `@stryker-mutator/vitest-runner` against
+ * vitest 5, where every file in a repo dropped to 0.00% with `Ran 0.00 tests per
+ * mutant on average` while the unit suites stayed green, and no runner version
+ * fixed it.
+ *
+ * The predicate is `killed === 0` over COVERED survivors, and each half matters:
+ *
+ * - `killed === 0` — not a low score, a zero one. Any single kill proves mutants
+ *   are being applied and the suite can react to them, which is the whole
+ *   question here; a 3% score is a real (bad) measurement, not a broken one.
+ *
+ * - `survived >= DEAD_HARNESS_THRESHOLD` — counted over `survived`, which by
+ *   construction EXCLUDES `NoCoverage` (see `engines/typescript/report.ts`).
+ *   That exclusion is the point: a file no test imports legitimately reports
+ *   every mutant as uncovered and zero killed, and there is nothing wrong with
+ *   the harness. Only a mutant the tool believes a test DID reach, that still
+ *   survived, is evidence about whether mutants are being applied at all.
+ *
+ * Advisory, never a verdict: a suite that truly asserts nothing produces this
+ * same shape, so {@link DEAD_HARNESS_NOTE} names both causes rather than picking
+ * one. Engines that report survivors only (cargo-mutants, Infection) have no
+ * `NoCoverage` concept, so every survivor counts — correct for them, since an
+ * unreached mutant is not separable there.
+ */
+export function looksLikeDeadHarness(result: MutationResult): boolean {
+  if (result.killed !== 0) return false;
+  return result.survived >= DEAD_HARNESS_THRESHOLD;
+}
+
 export interface LineGroup {
   line: number;
   mutators: Record<string, number>;
