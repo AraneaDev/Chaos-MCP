@@ -2,6 +2,13 @@
 
 All notable changes to Chaos-MCP are documented in this file.
 
+## [4.2.1](https://github.com/AraneaDev/Chaos-MCP/compare/v4.2.0...v4.2.1) (2026-09-06)
+
+
+### Bug Fixes
+
+* carry the dead-harness advisory onto triage rows ([#56](https://github.com/AraneaDev/Chaos-MCP/issues/56)) ([18162f5](https://github.com/AraneaDev/Chaos-MCP/commit/18162f5ee31ef69724511c394bc5c49f872eed45))
+
 ## [4.2.0](https://github.com/AraneaDev/Chaos-MCP/compare/v4.1.0...v4.2.0) (2026-09-06)
 
 
