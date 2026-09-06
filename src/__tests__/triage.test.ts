@@ -1123,3 +1123,78 @@ describe('triage note — what the summary line claims', () => {
     expect(payload.gate?.passed).toBe(false);
   });
 });
+
+describe('the dead-harness advisory reaches the leaderboard', () => {
+  /**
+   * The gap this closes: `audit_code_resilience` surfaced `fidelityNote` while
+   * `triage_test_coverage` dropped it, so a sweep whose harness never applied
+   * a mutant presented a table of confident 0.00% rows with nothing to say the
+   * numbers were not measurements. Triage is the surface a caller reaches for
+   * first, which makes it the worst place to omit the warning.
+   */
+  const NOTE = 'HARNESS CHECK: not one covered mutant was killed.';
+
+  it('carries the advisory into the structured payload', () => {
+    const payload = buildTriagePayload(
+      [
+        triageRow({
+          file: 'a.ts',
+          mutationScore: '0.00%',
+          killed: 0,
+          survived: 10,
+          fidelityNote: NOTE,
+        }),
+      ],
+      [],
+      1,
+      0,
+    );
+    expect(payload.note).toContain(NOTE);
+  });
+
+  it('renders it in the text projection', () => {
+    const text = textOf([
+      triageRow({
+        file: 'a.ts',
+        mutationScore: '0.00%',
+        killed: 0,
+        survived: 10,
+        fidelityNote: NOTE,
+      }),
+    ]);
+    expect(text).toContain('Warning:');
+    expect(text).toContain(NOTE);
+  });
+
+  it('says it once for a sweep where every row carries the same advisory', () => {
+    // The realistic shape of the failure: a version mismatch trips every file.
+    // Repeating one warning per row would bury the table it is warning about.
+    const rows = ['a.ts', 'b.ts', 'c.ts'].map((file) =>
+      triageRow({ file, mutationScore: '0.00%', killed: 0, survived: 10, fidelityNote: NOTE }),
+    );
+
+    const text = textOf(rows);
+    expect(text.split(NOTE).length - 1).toBe(1);
+
+    const payload = buildTriagePayload(rows, [], 3, 0);
+    expect(payload.note.split(NOTE).length - 1).toBe(1);
+  });
+
+  it('keeps distinct advisories distinct', () => {
+    const other = 'Infection may misreport under this config.';
+    const text = textOf([
+      triageRow({ file: 'a.ts', fidelityNote: NOTE }),
+      triageRow({ file: 'b.php', fidelityNote: other }),
+    ]);
+    expect(text).toContain(NOTE);
+    expect(text).toContain(other);
+  });
+
+  it('stays silent for an ordinary sweep', () => {
+    const text = textOf([triageRow({ file: 'a.ts' }), triageRow({ file: 'b.ts' })]);
+    expect(text).not.toContain('Warning:');
+
+    const payload = buildTriagePayload([triageRow({ file: 'a.ts' })], [], 1, 0);
+    expect(payload.note).not.toContain('HARNESS CHECK');
+  });
+});

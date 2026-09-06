@@ -228,6 +228,9 @@ function buildTriageRow(input: RowInput, deps: TriageFileDeps): TriageRow {
     noCoverage: Math.max(0, result.vulnerabilities.length - result.survived),
   };
   if (hasNoMutableLogic(result)) row.noMutableLogic = true;
+  // Set by auditFile for every engine, so nothing engine-specific is needed
+  // here: the row simply must not drop what the single-file audit reports.
+  if (result.fidelityNote) row.fidelityNote = result.fidelityNote;
   if (input.scopeNote) row.scopeNote = input.scopeNote;
   // Carry partial-audit state onto the row so the leaderboard and the gate
   // can tell "scored 92% over the whole file" from "scored 92% over the

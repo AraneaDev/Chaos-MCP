@@ -144,6 +144,18 @@ describe('buildTriageRow — optional keys are absent, not undefined', () => {
     ]);
   });
 
+  it('carries a dead-harness advisory from the engine result onto the row', async () => {
+    // auditFile attaches fidelityNote for every language; the row's only job is
+    // not to drop it. Dropping it is what let a sweep of zeroes look like a
+    // finished measurement.
+    const note = 'HARNESS CHECK: not one covered mutant was killed.';
+    auditFileMock.mockResolvedValue(cleanResult({ fidelityNote: note }));
+
+    const row = await rowFor(sourceFile('z.ts'));
+
+    expect(row.fidelityNote).toBe(note);
+  });
+
   it('labels the row when the sweep could not line-scope this language', async () => {
     // The other arm of the scopeNote guard, reached without git: a diff-scoped
     // sweep over a language whose engine cannot take a line scope says so on the
