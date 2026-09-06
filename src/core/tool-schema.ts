@@ -608,6 +608,11 @@ export const TRIAGE_TOOL_DEFINITION = {
             noCoverage: { type: 'integer' },
             // Optional per-row fields.
             scopeNote: { type: 'string' },
+            // Declared so a client binding fields off this schema can SEE the
+            // advisory: an undeclared field is one a generated type drops, and
+            // this is the one that says the score beside it may not be a
+            // measurement at all.
+            fidelityNote: { type: 'string' },
             worstSeverity: { type: 'string', enum: ['high', 'medium', 'low', 'unknown'] },
             survivors: { type: 'array', items: { type: 'object' } },
             noCoverageGroups: { type: 'array', items: { type: 'object' } },

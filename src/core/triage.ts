@@ -10,6 +10,15 @@ export interface TriageRow {
   survived: number;
   noCoverage: number;
   scopeNote?: string;
+  /**
+   * Advisory that this row's own numbers may not be a measurement, carried
+   * from {@link MutationResult.fidelityNote}. Per ROW, not per sweep: one
+   * file's harness can be dead while the rest of the sweep is fine, and a
+   * leaderboard is exactly where a 0.00% reads as a finding rather than a
+   * fault. Its absence here is what let a dead-harness sweep present twelve
+   * confident zeroes with no warning attached to any of them.
+   */
+  fidelityNote?: string;
   worstSeverity?: Severity;
   survivors?: LineGroup[];
   noCoverageGroups?: LineGroup[];
@@ -173,6 +182,12 @@ export function buildTriagePayload(
   )) {
     payload.note += ` ${note}`;
   }
+  // Once for the whole sweep, not once per row: a dead harness usually trips
+  // every file, and the point is that the SCORES are suspect, which is a
+  // property of the run rather than of any one row.
+  for (const advisory of [...new Set(rows.map((r) => r.fidelityNote).filter(Boolean))]) {
+    payload.note += ` ${advisory}`;
+  }
   if (minScore !== undefined) {
     // `r.complete !== false` forwards partial-audit state: a row scored from
     // only some of its mutation batches describes a fraction of the file, so it
@@ -308,6 +323,11 @@ export function formatTriageAsText(payload: TriagePayload): string {
         ? 'No changed supported source files found vs the diff base.'
         : 'No supported source files found under the given paths.',
     );
+  }
+  // Deduplicated: a dead harness usually trips every row in the sweep, and one
+  // warning repeated twenty-five times buries the table it is about.
+  for (const advisory of [...new Set(rows.map((r) => r.fidelityNote).filter(Boolean))]) {
+    lines.push(`Warning: ${advisory}`);
   }
   for (const note of suppressionDriftNotes(
     rows.reduce((sum, r) => sum + (r.driftedSuppressions ?? 0), 0),
