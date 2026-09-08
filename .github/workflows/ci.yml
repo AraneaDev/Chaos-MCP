@@ -47,13 +47,13 @@ jobs:
       # so it can't be fooled by a same-named branch carrying real changes.
       - name: Setup Node.js ${{ matrix.node-version }}
         uses: actions/setup-node@v7
-        if: github.head_ref != 'release-please--branches--main'
+        if: ${{ !startsWith(github.head_ref, 'release-please--branches--') }}
         with:
           node-version: ${{ matrix.node-version }}
           cache: 'npm'
 
       - name: Install dependencies
-        if: github.head_ref != 'release-please--branches--main'
+        if: ${{ !startsWith(github.head_ref, 'release-please--branches--') }}
         run: npm ci
 
       # The `npm run check` script runs all four stages sequentially:
@@ -62,14 +62,14 @@ jobs:
       # and locally. If any stage fails, subsequent stages are skipped
       # and the job fails — which becomes a required status check.
       - name: Run full check pipeline
-        if: github.head_ref != 'release-please--branches--main'
+        if: ${{ !startsWith(github.head_ref, 'release-please--branches--') }}
         run: npm run check
 
       # Separate typecheck step — runs even if `npm run check` fails,
       # so type errors are surfaced in CI logs regardless of which
       # pipeline stage failed first.
       - name: Typecheck
-        if: always() && github.head_ref != 'release-please--branches--main'
+        if: ${{ always() && !startsWith(github.head_ref, 'release-please--branches--') }}
         run: npx tsc --noEmit
 
       # `tsc --noEmit` above uses tsconfig.json, which EXCLUDES src/__tests__ so
@@ -78,14 +78,14 @@ jobs:
       # discards types), and 271 errors accumulated unnoticed. Those are now all
       # fixed, so this step is a hard gate: any type error in a test fails CI.
       - name: Typecheck tests
-        if: always() && github.head_ref != 'release-please--branches--main'
+        if: ${{ always() && !startsWith(github.head_ref, 'release-please--branches--') }}
         run: npm run typecheck:tests
 
       # Smoke test the CLI binary: verify --validate-config and
       # --validate-config --strict exit with the expected codes and
       # report warnings correctly to stderr.
       - name: 'CLI: validate-config smoke tests'
-        if: always() && github.head_ref != 'release-please--branches--main'
+        if: ${{ always() && !startsWith(github.head_ref, 'release-please--branches--') }}
         run: npx vitest run src/__tests__/cli-validate-config.test.ts
 
   # Coverage runs once, not per matrix entry: the numbers do not differ by Node version, and
@@ -98,7 +98,7 @@ jobs:
     # skipped outright rather than merely having its steps guarded: a release
     # PR changes no source, so coverage cannot have moved and there is
     # nothing new to badge. Keyed on the branch release-please owns.
-    if: github.head_ref != 'release-please--branches--main'
+    if: ${{ !startsWith(github.head_ref, 'release-please--branches--') }}
     permissions:
       contents: write # publishes the coverage badge to the gh-pages branch
     steps:
@@ -148,7 +148,7 @@ jobs:
     # or the code they package, so building four images here would only
     # reconfirm images that already built on main. Keyed on the branch
     # release-please owns.
-    if: github.head_ref != 'release-please--branches--main'
+    if: ${{ !startsWith(github.head_ref, 'release-please--branches--') }}
     strategy:
       fail-fast: false
       max-parallel: 2
