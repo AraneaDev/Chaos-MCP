@@ -22,12 +22,18 @@ permissions:
   packages: write
   id-token: write
 
-# One run per branch. A second push cancels the first, because whoever pushed
-# again has already answered the question the running job was asked. The runs
-# long enough to be overtaken are the expensive ones, so this is worth more
-# than the share of runs it cancels suggests.
+# One run per ref, never cancelled: an image push that is already underway is
+# finished rather than abandoned half-written.
+#
+# The group name is hardcoded instead of interpolating `github.workflow`. Called
+# through `workflow_call`, this workflow sees the CALLER's github context, so
+# `github.workflow` would read `Release Please` and the group would come out
+# identical to the caller's own. The callee would then queue for a group its
+# caller holds, and the caller cannot finish until the callee does. That
+# deadlock is what silently dropped the v4.2.2 images: the release run failed
+# with no job, no log and no annotation.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  group: container-images-${{ github.head_ref || github.ref }}
   cancel-in-progress: false
 
 jobs:
