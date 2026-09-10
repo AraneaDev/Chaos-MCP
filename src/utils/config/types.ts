@@ -75,6 +75,19 @@ export interface InfectionConfig {
   threads?: number | 'max';
   /** Extra options forwarded to the PHP test framework (e.g. "--testsuite=unit"). */
   testFrameworkOptions?: string;
+  /**
+   * Whether to pass Infection's `--only-covering-test-cases`, which runs only
+   * the test CASES covering a mutated line instead of every covering test FILE.
+   * Defaults to `true`: the whole-file behaviour re-runs unrelated tests for
+   * every mutant, and on a suite whose covering files are large that dominates
+   * the run. Set `false` to restore Infection's own default.
+   *
+   * The flag is implemented through PHPUnit's `--filter`, so a suite whose test
+   * names defeat that filter can see a mutant escape that the whole-file run
+   * would have killed. Turn it off if a score moves in a way the code does not
+   * explain.
+   */
+  onlyCoveringTestCases?: boolean;
 }
 
 export interface ContainerConfig {

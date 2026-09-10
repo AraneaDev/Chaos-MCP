@@ -1234,6 +1234,47 @@ describe('PhpEngine.run', () => {
     expect(args.some((a) => a.startsWith('--test-framework-options='))).toBe(false);
   });
 
+  it('passes --only-covering-test-cases by default', async () => {
+    // The speed fix: Infection's default re-runs every covering test FILE per
+    // mutant. Without this arg a file with expensive covering tests pays for
+    // all of them on every mutant, which is what made large classes time out.
+    mockExists.mockImplementation((p) => String(p).endsWith('chaos-infection-log.json'));
+    mockRead.mockReturnValue(SAMPLE_LOG);
+    mockInvoke.mockResolvedValue({ stdout: '', stderr: '', exit: 0, signal: null });
+
+    const engine = new PhpEngine();
+    await engine.run('src/Calculator.php', { workDir: '/sb' });
+    const args = mockInvoke.mock.calls[0][2] as string[];
+    expect(args).toContain('--only-covering-test-cases');
+  });
+
+  it('omits --only-covering-test-cases when phpOnlyCoveringTestCases is false', async () => {
+    // The opt-out is `false` specifically, not merely falsy: the flag runs via
+    // PHPUnit's --filter, so a suite whose test names defeat that filter needs
+    // Infection's whole-file default back.
+    mockExists.mockImplementation((p) => String(p).endsWith('chaos-infection-log.json'));
+    mockRead.mockReturnValue(SAMPLE_LOG);
+    mockInvoke.mockResolvedValue({ stdout: '', stderr: '', exit: 0, signal: null });
+
+    const engine = new PhpEngine();
+    await engine.run('src/Calculator.php', { workDir: '/sb', phpOnlyCoveringTestCases: false });
+    const args = mockInvoke.mock.calls[0][2] as string[];
+    expect(args).not.toContain('--only-covering-test-cases');
+  });
+
+  it('passes --only-covering-test-cases when phpOnlyCoveringTestCases is true', async () => {
+    // Explicit opt-in behaves as the default does. Kills a mutant that inverts
+    // the `!== false` guard into an `=== true` one and drops the default.
+    mockExists.mockImplementation((p) => String(p).endsWith('chaos-infection-log.json'));
+    mockRead.mockReturnValue(SAMPLE_LOG);
+    mockInvoke.mockResolvedValue({ stdout: '', stderr: '', exit: 0, signal: null });
+
+    const engine = new PhpEngine();
+    await engine.run('src/Calculator.php', { workDir: '/sb', phpOnlyCoveringTestCases: true });
+    const args = mockInvoke.mock.calls[0][2] as string[];
+    expect(args).toContain('--only-covering-test-cases');
+  });
+
   it('throws a coverage-driver hint when the JSON log exists but is unreadable', async () => {
     // Infection succeeds and the log path passes existsSync, but readFileSync
     // throws (permissions / truncation). Covers the readFileSync catch (line

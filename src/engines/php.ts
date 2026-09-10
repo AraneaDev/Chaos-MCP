@@ -49,7 +49,8 @@ export { parseInfectionJsonLog } from './php/report.js';
  * Flow (inside the sandbox `workDir`): hybrid config (use the project's
  * infection.json/.json5 if present, else write a minimal one whose `logs.json`
  * points at our JSON log) → run
- * `infection --filter=<file> --no-progress --no-interaction --threads=<n|max>`
+ * `infection --filter=<file> --no-progress --no-interaction --threads=<n|max>
+ * --only-covering-test-cases`
  * → read + parse the JSON log emitted via config `logs.json`. (Infection 0.34+
  * removed the `--logger-json` CLI flag, so the log path lives in the config.)
  *
@@ -80,6 +81,22 @@ export class PhpEngine extends BaseEngine {
       '--no-interaction',
       `--threads=${threads}`,
     ];
+    // Infection's default re-runs every covering test FILE for every mutant, so
+    // a file whose covering set is large pays for all of it once per mutant —
+    // which is what makes a big class take longer than its mutant count
+    // suggests. `--only-covering-test-cases` narrows that to the test CASES
+    // covering the mutated line. Measured on a 192-mutant PHP file with cheap
+    // covering tests: 172.5s → 135.3s wall (~30% off the mutant phase), and the
+    // score moved by one timing-sensitive mutant. Files whose covering tests are
+    // expensive are the ones this exists for, so it is on by default.
+    //
+    // Opt out with `infection.onlyCoveringTestCases: false`: the flag runs
+    // through PHPUnit's `--filter`, so a suite whose test names defeat that
+    // filter can under-select tests and report a mutant as escaped that the
+    // whole-file run would have killed.
+    if (options?.phpOnlyCoveringTestCases !== false) {
+      args.push('--only-covering-test-cases');
+    }
     if (options?.phpTestFrameworkOptions) {
       args.push(`--test-framework-options=${options.phpTestFrameworkOptions}`);
     }
