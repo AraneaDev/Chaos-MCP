@@ -2,6 +2,13 @@
 
 All notable changes to Chaos-MCP are documented in this file.
 
+## [4.2.2](https://github.com/AraneaDev/Chaos-MCP/compare/v4.2.1...v4.2.2) (2026-09-10)
+
+
+### Bug Fixes
+
+* **php:** run only the test cases covering a mutant, not every covering file ([#62](https://github.com/AraneaDev/Chaos-MCP/issues/62)) ([2180cd2](https://github.com/AraneaDev/Chaos-MCP/commit/2180cd2e5f205bfdce5b0b59715ad3d931a4454e))
+
 ## [4.2.1](https://github.com/AraneaDev/Chaos-MCP/compare/v4.2.0...v4.2.1) (2026-09-06)
 
 
