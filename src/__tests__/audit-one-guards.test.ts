@@ -79,14 +79,28 @@ describe('auditTriageFile — refuses to start when already cancelled', () => {
   it('proceeds past the guard when the signal is not aborted', async () => {
     // The other arm. Without it, a guard forced true refuses every file in the sweep
     // and the whole run reports as cancelled.
+    //
+    // The file is one no engine claims, so the call stops at the very next decision it
+    // makes (target resolution) and provisions nothing. Reaching that decision is what
+    // proves the guard let the file through, and it costs no disk.
+    //
+    // A supported extension is what makes this expensive. `src/x.ts` under a marker-less
+    // temp dir resolves its workspace root to the boundary, which is the server's own
+    // cwd, so the call went on to copy this whole repository into a sandbox before
+    // failing to find the file in it. That copy is the test's runtime, and it took 274ms,
+    // 1576ms and 5013ms on three CI runners of one commit. The third exceeded vitest's
+    // 5s default and failed the build.
     const controller = new AbortController();
 
     const outcome = await auditTriageFile(
-      'src/missing.ts',
+      'src/notes.txt',
       deps({ ctx: { signal: controller.signal } }),
     );
 
-    expect(arms(outcome).error?.error).not.toBe('Operation cancelled.');
+    expect(arms(outcome).error).toEqual({
+      file: 'src/notes.txt',
+      error: 'Unsupported file type for src/notes.txt',
+    });
   });
 });
 
