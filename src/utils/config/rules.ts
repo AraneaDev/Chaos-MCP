@@ -345,6 +345,11 @@ export const SECTION_FIELD_RULES: Readonly<Record<string, FieldRule>> = {
     // HISTORICAL GAP: `""` is dropped by the parser but reported as valid.
     describe: (v) => (typeof v !== 'string' ? `must be a string, got ${typeof v}` : undefined),
   },
+  onlyCoveringTestCases: {
+    key: 'onlyCoveringTestCases',
+    check: (v) => typeof v === 'boolean',
+    describe: (v) => (typeof v !== 'boolean' ? `must be a boolean, got ${typeof v}` : undefined),
+  },
   testSelection: {
     key: 'testSelection',
     check: (v) => nonEmptyStringArray(v),
@@ -549,7 +554,12 @@ export const KNOWN_COSMICRAY_KEYS = new Set([
 export const KNOWN_RUST_KEYS = new Set(['timeoutMs', 'concurrency']);
 
 /** Valid keys within an InfectionConfig section. */
-export const KNOWN_INFECTION_KEYS = new Set(['timeoutMs', 'threads', 'testFrameworkOptions']);
+export const KNOWN_INFECTION_KEYS = new Set([
+  'timeoutMs',
+  'threads',
+  'testFrameworkOptions',
+  'onlyCoveringTestCases',
+]);
 
 /** Valid keys within a ContainerConfig section — derived from its rule table. */
 export const KNOWN_CONTAINER_KEYS = new Set(CONTAINER_FIELD_RULES.map((rule) => rule.key));

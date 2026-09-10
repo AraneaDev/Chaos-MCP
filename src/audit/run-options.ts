@@ -295,6 +295,7 @@ export function buildRunOptions(
     // from the infection config section; ignored by the other engines.
     phpThreads: cfg.infection?.threads !== undefined ? String(cfg.infection.threads) : undefined,
     phpTestFrameworkOptions: cfg.infection?.testFrameworkOptions,
+    phpOnlyCoveringTestCases: cfg.infection?.onlyCoveringTestCases,
   };
 }
 

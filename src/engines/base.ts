@@ -386,6 +386,16 @@ export interface RunOptions {
    * **PHP (Infection) only.**
    */
   phpTestFrameworkOptions?: string;
+
+  /**
+   * Whether to pass Infection's `--only-covering-test-cases`, which runs only
+   * the test CASES covering a mutated line rather than every covering test
+   * FILE. Defaults to `true` when unset; pass `false` for Infection's own
+   * whole-file default. Sourced from the `infection` config section.
+   *
+   * **PHP (Infection) only.**
+   */
+  phpOnlyCoveringTestCases?: boolean;
 }
 
 /**
