@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from 'vitest';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -35,28 +35,27 @@ const arms = (outcome: TriageAuditOutcome) =>
  */
 
 let ws: string;
-let onProgress: ReturnType<typeof vi.fn>;
+let onProgress: Mock<() => void>;
 
 const deadlineWith = (remaining: number): AuditDeadline =>
   ({ remainingMs: () => remaining, expired: () => remaining <= 0 }) as unknown as AuditDeadline;
 
-const deps = (over: Partial<TriageFileDeps> = {}): TriageFileDeps =>
-  ({
-    rootCwd: ws,
-    cfg: {},
-    args: {},
-    diffBase: undefined,
-    strykerConcurrency: undefined,
-    survivorsPerFile: 0,
-    suppressionCache: new Map(),
-    deadline: deadlineWith(60_000),
-    cleanupReserveMs: 5_000,
-    onProgress,
-    ...over,
-  }) as TriageFileDeps;
+const deps = (over: Partial<TriageFileDeps> = {}): TriageFileDeps => ({
+  rootCwd: ws,
+  cfg: {},
+  args: {},
+  diffBase: undefined,
+  perFileConcurrency: undefined,
+  survivorsPerFile: 0,
+  suppressionCache: new Map(),
+  deadline: deadlineWith(60_000),
+  cleanupReserveMs: 5_000,
+  onProgress,
+  ...over,
+});
 
 beforeEach(() => {
-  onProgress = vi.fn();
+  onProgress = vi.fn<() => void>();
   ws = mkdtempSync(join(tmpdir(), 'chaos-audit-one-'));
 });
 
