@@ -18,7 +18,9 @@ export interface MapPoolOptions<T> {
  * not begin until the previous item has actually started (`fn` invoked), so
  * an admission gate always sees the machine state as it was right after the
  * prior start. The work itself still runs concurrently once admitted; only
- * the start of each item is staggered.
+ * the start of each item is staggered. Without `options.admit` this
+ * serialization is skipped entirely, so every existing caller keeps the
+ * original, cheaper bare loop.
  */
 export async function mapPool<T, R>(
   items: T[],
@@ -29,10 +31,31 @@ export async function mapPool<T, R>(
   const results = new Array<R>(items.length);
   let next = 0;
   const limit = Math.max(1, Math.min(concurrency, items.length || 1));
+  const admit = options?.admit;
+
+  const runOne = async (i: number): Promise<void> => {
+    try {
+      results[i] = await fn(items[i], i);
+    } catch (e) {
+      results[i] = (e instanceof Error ? e : new Error(String(e))) as unknown as R;
+    }
+  };
+
+  if (!admit) {
+    const worker = async (): Promise<void> => {
+      for (;;) {
+        const i = next++;
+        if (i >= items.length) return;
+        await runOne(i);
+      }
+    };
+    await Promise.all(Array.from({ length: limit }, () => worker()));
+    return results;
+  }
 
   let turn: Promise<void> = Promise.resolve();
 
-  const worker = async (): Promise<void> => {
+  const gatedWorker = async (): Promise<void> => {
     for (;;) {
       const myTurn = turn;
       let releaseTurn!: () => void;
@@ -49,7 +72,7 @@ export async function mapPool<T, R>(
 
       let pending: Promise<R> | undefined;
       try {
-        if (options?.admit && (await options.admit(items[i], i)) === 'cancelled') {
+        if ((await admit(items[i], i)) === 'cancelled') {
           releaseTurn();
           continue;
         }
@@ -69,6 +92,6 @@ export async function mapPool<T, R>(
     }
   };
 
-  await Promise.all(Array.from({ length: limit }, () => worker()));
+  await Promise.all(Array.from({ length: limit }, () => gatedWorker()));
   return results;
 }

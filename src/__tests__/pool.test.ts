@@ -129,4 +129,19 @@ describe('mapPool', () => {
     expect(ran.sort()).toEqual([1, 3]);
     expect(out[1]).toBeUndefined();
   });
+
+  it('returns results in input order on the gated (admit) path too', async () => {
+    // Completion order is scrambled on purpose (item 1 finishes last), so this
+    // only passes if results are written by index rather than by completion.
+    const out = await mapPool(
+      [1, 2, 3, 4],
+      2,
+      async (n) => {
+        if (n === 1) await tick();
+        return n * 10;
+      },
+      { admit: async () => 'admitted' },
+    );
+    expect(out).toEqual([10, 20, 30, 40]);
+  });
 });
