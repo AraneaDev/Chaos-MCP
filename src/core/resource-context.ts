@@ -40,6 +40,14 @@ export interface ResourceContext {
   watchdog: Watchdog;
   innerEnv: NodeJS.ProcessEnv;
   workerCostBytes: number;
+  /**
+   * The admission charge for ONE file at the resolved budget:
+   * `fileFixedCostBytes + perFileWorkers * workerCostBytes`. This is what the
+   * triage admission gate and the watchdog registration on both the triage
+   * and single-file paths charge, per the 2026-09-12 cost-model amendment,
+   * rather than the pre-amendment workers-only figure.
+   */
+  perFileCostBytes: number;
   report(): ResourcesPayload;
   dispose(): void;
 }
@@ -48,10 +56,11 @@ export function createResourceContext(input: ResourceContextInput): ResourceCont
   const deps = defaultProbeDeps();
   const probe = input.probe ?? (() => probeMemory(deps));
   const snapshot = probe();
-  const workerCostBytes = ENGINE_REGISTRY[input.projectType].workerCostBytes;
+  const { workerCostBytes, fileFixedCostBytes } = ENGINE_REGISTRY[input.projectType];
 
   const budget = resolveBudget({
     snapshot,
+    fileFixedCostBytes,
     workerCostBytes,
     cpuFileConcurrency: input.cpuFileConcurrency,
     cpuPerFileWorkers: input.cpuPerFileWorkers,
@@ -83,6 +92,7 @@ export function createResourceContext(input: ResourceContextInput): ResourceCont
     watchdog,
     innerEnv: buildInnerEnv(input.projectType, budget.perFileWorkers, jobs),
     workerCostBytes,
+    perFileCostBytes: fileFixedCostBytes + budget.perFileWorkers * workerCostBytes,
     report: () => ({
       availableAtStartBytes: snapshot.availableBytes,
       limitBytes: snapshot.limitBytes,

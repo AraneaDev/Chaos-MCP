@@ -237,6 +237,21 @@ export interface EngineDescriptor {
    * run cosmic-ray on.
    */
   workerCostBytes: number;
+
+  /**
+   * What one FILE costs before any mutant worker runs at all, in bytes: for
+   * StrykerJS this is the parent process plus its dry run. Added by the
+   * 2026-09-12 amendment because a per-worker-only cost cannot express that
+   * fewer workers spread over more files can cost MORE than more workers over
+   * fewer files, since file count then carries no cost of its own.
+   *
+   * Only TypeScript has a two-point measurement (see the field below), so
+   * only TypeScript declares a nonzero figure here. Every other engine
+   * declares `0`, which folds this term out of `budget.ts`'s sizing and
+   * leaves that engine's existing `workerCostBytes` doing exactly what it did
+   * before this amendment.
+   */
+  fileFixedCostBytes: number;
 }
 
 /**
@@ -263,15 +278,18 @@ export const ENGINE_REGISTRY: Record<SupportedProjectType, EngineDescriptor> = {
     // The caller still rejects a name that is not in `MUTATOR_SEMANTICS`, which
     // is what keeps a custom Stryker plugin's mutator out of the table.
     canonicalizeMutator: (rawMutator) => rawMutator,
-    // Measured on an 8-core / 8 GB box: single-file audit against
-    // src/core/baseline-timing.ts (138 mutants, 7 workers), observed peak
-    // 2974 MB, about 425 MB per worker. Two-file sweep (2026-09-12) measured
-    // higher: peak 3547 MB across 6 workers, about 591 MB per worker. The
-    // higher figure is used because the model charges per worker only and
-    // carries no term for the fixed per-file cost of a Stryker parent and
-    // its dry run. This gap grows with file concurrency, which matters most
-    // since under-reserving crashes the machine.
-    workerCostBytes: 600 * 1024 ** 2,
+    // Amendment, 2026-09-12: two real sweeps on the 8-core / 8 GB box gave a
+    // pair of equations solvable for a fixed-plus-per-worker split instead of
+    // the earlier per-worker-only guess:
+    //   2 files x 3 workers (6 workers total): peak tree RSS 3547 MB
+    //   4 files x 1 worker  (4 workers total): peak tree RSS 4665 MB
+    // Solving the pair gives about 860 MB fixed per file plus about 304 MB
+    // per worker; rounded up to 900 MB and 320 MB, which predicts 3720 MB and
+    // 4880 MB for those same two sweeps, both slightly above what was
+    // observed, which is the safe direction for a figure that only ever
+    // lowers concurrency.
+    fileFixedCostBytes: 900 * 1024 ** 2,
+    workerCostBytes: 320 * 1024 ** 2,
   },
   python: {
     make: () => new PythonEngine(),
@@ -289,6 +307,10 @@ export const ENGINE_REGISTRY: Record<SupportedProjectType, EngineDescriptor> = {
     // tests), so Task 10's measurement pass had nothing to run cosmic-ray on.
     // cosmic-ray itself is installed on this machine; the gap is the fixture.
     workerCostBytes: 200 * 1024 ** 2,
+    // No two-point measurement exists for this engine yet, so the per-worker
+    // figure above still absorbs the fixed per-file cost, same as before the
+    // 2026-09-12 amendment.
+    fileFixedCostBytes: 0,
   },
   rust: {
     make: () => new RustEngine(),
@@ -324,6 +346,10 @@ export const ENGINE_REGISTRY: Record<SupportedProjectType, EngineDescriptor> = {
     // Caveat: a single measurement of one small file, and it moved DOWN from
     // the previous placeholder, which permits MORE concurrent workers.
     workerCostBytes: 850 * 1024 ** 2,
+    // No two-point measurement exists for this engine yet, so the per-worker
+    // figure above still absorbs the fixed per-file cost, same as before the
+    // 2026-09-12 amendment.
+    fileFixedCostBytes: 0,
   },
   php: {
     make: () => new PhpEngine(),
@@ -344,6 +370,10 @@ export const ENGINE_REGISTRY: Record<SupportedProjectType, EngineDescriptor> = {
     // existing 200 MB figure, which the measurement now confirms rather than
     // guesses.
     workerCostBytes: 200 * 1024 ** 2,
+    // No two-point measurement exists for this engine yet, so the per-worker
+    // figure above still absorbs the fixed per-file cost, same as before the
+    // 2026-09-12 amendment.
+    fileFixedCostBytes: 0,
   },
 };
 

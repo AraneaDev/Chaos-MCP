@@ -295,10 +295,13 @@ export async function handleToolCall(
     const controller = new AbortController();
     const abortRequest = () => controller.abort(ctx?.signal?.reason);
     ctx?.signal?.addEventListener('abort', abortRequest, { once: true });
-    // No cost argument: a single-file audit never admits against this
-    // watchdog (the admission gate exists only on the triage path, IMPORTANT
-    // 4), so there is nothing here for an in-flight reservation to protect.
-    const handle = resources.watchdog.register(controller);
+    // A single-file audit never admits against its OWN watchdog (the
+    // admission gate exists only on the triage path, IMPORTANT 4), but the
+    // registration still charges the real per-file figure
+    // (`resources.perFileCostBytes`, fixed cost plus worker cost per the
+    // 2026-09-12 cost-model amendment) rather than nothing, so the
+    // reservation this run holds is honest about what it costs.
+    const handle = resources.watchdog.register(controller, resources.perFileCostBytes);
 
     try {
       // Milestone 2: sandbox copy is about to be provisioned.

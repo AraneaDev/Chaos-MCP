@@ -87,6 +87,10 @@ function stubResources() {
     },
     innerEnv: {},
     workerCostBytes: 300 * 1024 ** 2,
+    // Deliberately more than workers-only (2 x 300 MB = 600 MB) so a test can
+    // tell whether the registration charged the real per-file figure
+    // (fixed cost plus workers) or fell back to recomputing workers-only.
+    perFileCostBytes: 900 * 1024 ** 2 + 2 * 300 * 1024 ** 2,
     report: () => ({
       availableAtStartBytes: 4 * GIB,
       limitBytes: 8 * GIB,
@@ -115,6 +119,36 @@ describe('audit_code_resilience resource governance', () => {
       packageManager: '',
       workspaceRoot: '/workspace',
     });
+  });
+
+  it('registers the watchdog with the per-file figure including the fixed term, not the workers-only figure', async () => {
+    const resources = stubResources();
+    mockCreateResourceContext.mockReturnValue(
+      resources as unknown as ReturnType<typeof createResourceContext>,
+    );
+    const mockRun = vi.fn().mockResolvedValue({
+      target: 'src/math.ts',
+      totalMutants: 2,
+      killed: 2,
+      survived: 0,
+      mutationScore: '100.00%',
+      vulnerabilities: [],
+    });
+    MockTSEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as TypeScriptEngine;
+    });
+
+    const response = await handleToolCall(makeRequest({ filePath: 'src/math.ts' }));
+
+    expect(response.isError).toBeUndefined();
+    // stubResources sets workerCostBytes x perFileWorkers to 600 MB but
+    // perFileCostBytes (fixed plus workers) to 1500 MB: the registration must
+    // see 1500 MB, proving it reads the exposed per-file figure rather than
+    // recomputing (or ignoring) it.
+    expect(resources.watchdog.register).toHaveBeenCalledWith(
+      expect.anything(),
+      900 * 1024 ** 2 + 2 * 300 * 1024 ** 2,
+    );
   });
 
   it('includes a resources block in the payload', async () => {

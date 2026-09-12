@@ -119,11 +119,14 @@ function makeResources(opts: {
   exhaustOnRegisterCalls?: number[];
   /** 1-based `admit()` calls that decline instead of admitting. */
   declineOnAdmitCalls?: number[];
+  /** Overrides the default workers-only charge, to prove a fixed term reaches admission/registration. */
+  perFileCostBytes?: number;
 } = {}) {
   const fileConcurrency = opts.fileConcurrency ?? 1;
   const perFileWorkers = opts.perFileWorkers ?? 2;
   const exhaustOn = new Set(opts.exhaustOnRegisterCalls ?? []);
   const declineOn = new Set(opts.declineOnAdmitCalls ?? []);
+  const perFileCostBytes = opts.perFileCostBytes ?? 300 * 1024 ** 2 * perFileWorkers;
   let registerCalls = 0;
   let admitCalls = 0;
 
@@ -149,6 +152,7 @@ function makeResources(opts: {
     watchdog,
     innerEnv: {},
     workerCostBytes: 300 * 1024 ** 2,
+    perFileCostBytes,
     report: () => ({
       availableAtStartBytes: 4 * GIB,
       limitBytes: 8 * GIB,
@@ -295,6 +299,26 @@ describe('triage_test_coverage resource governance', () => {
     expect(payload.summary.filesErrored).toBe(1);
   });
 
+  it('charges the admission gate and watchdog registration with the per-file figure including the fixed term, not the workers-only figure', async () => {
+    mockDiscover.mockReturnValue({ files: ['a.ts'], discovered: 1, skipped: 0 });
+    installFakeEngine();
+    // 2 workers at 300 MB each is 600 MB workers-only; the fixed term pushes
+    // the real per-file charge to 1500 MB. If the gate or the registration
+    // fell back to (or recomputed) the workers-only figure, this would catch
+    // it: both must see 1500 MB, not 600 MB.
+    const perFileCostBytes = 900 * 1024 ** 2 + 2 * 300 * 1024 ** 2;
+    const resources = makeResources({ perFileWorkers: 2, perFileCostBytes });
+    mockCreateResourceContext.mockReturnValue(
+      resources as unknown as ReturnType<typeof createResourceContext>,
+    );
+
+    const res = await handleTriageCall(req({ paths: ['src'], fileConcurrency: 1 }));
+
+    expect(res.isError).toBeUndefined();
+    expect(resources.watchdog.admit).toHaveBeenCalledWith(perFileCostBytes, expect.anything());
+    expect(resources.watchdog.register).toHaveBeenCalledWith(expect.anything(), perFileCostBytes);
+  });
+
   it('never starts a file the admission gate declines', async () => {
     mockDiscover.mockReturnValue({ files: ['a.ts', 'b.ts', 'c.ts'], discovered: 3, skipped: 0 });
     installFakeEngine();
@@ -356,6 +380,7 @@ describe('triage_test_coverage resource governance', () => {
       watchdog: realWatchdog,
       innerEnv: {},
       workerCostBytes: 1,
+      perFileCostBytes: 1,
       report: () => ({
         availableAtStartBytes: 0,
         limitBytes: 8 * GIB,

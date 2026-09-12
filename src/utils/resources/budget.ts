@@ -35,6 +35,13 @@ export function resolveFloors(limitBytes: number): Floors {
 
 export interface BudgetInput {
   snapshot: MemorySnapshot;
+  /**
+   * What one FILE costs before any worker runs, in bytes. Paid before any
+   * worker is bought (see `resolveBudget`'s sizing order). `0` for an engine
+   * with no two-point measurement, which folds this term out entirely and
+   * reproduces the pre-amendment, per-worker-only sizing for that engine.
+   */
+  fileFixedCostBytes: number;
   workerCostBytes: number;
   /** What the existing CPU-only math chose. Never raised, only lowered. */
   cpuFileConcurrency: number;
@@ -50,26 +57,52 @@ export interface Budget {
   overBudget: boolean;
 }
 
+/**
+ * Sizing per the 2026-09-12 amendment: the cost of running `f` files at `w`
+ * workers each is `f * (fixed + w * worker)`, so the fixed term is paid
+ * BEFORE any worker is bought, in this order:
+ *
+ *   1. spendable = available - admissionFloor
+ *   2. fileConcurrency = max(1, min(cpuFileConcurrency, floor(spendable / fixed)))
+ *   3. perFileWorkers = max(1, min(cpuPerFileWorkers,
+ *        floor((spendable - fileConcurrency * fixed) / (fileConcurrency * worker))))
+ *
+ * A `fileFixedCostBytes` of `0` (every engine but TypeScript today) falls
+ * back, for step 2 only, to bounding file concurrency by `workerCostBytes`
+ * instead of a fixed cost of zero. This is deliberate, not an approximation:
+ * it makes step 2 and step 3 together reproduce the pre-amendment,
+ * per-worker-only formula (`floor(floor(spendable / worker) / files)` is the
+ * same number as `floor(spendable / (files * worker))` for positive integer
+ * `files`, by the standard floor-division identity), so an engine with no
+ * fixed-cost measurement gets EXACTLY today's behaviour, not a weaker one
+ * where a zero fixed cost stops memory from bounding file concurrency at all.
+ */
 export function resolveBudget(input: BudgetInput): Budget {
-  const { snapshot, workerCostBytes, cpuFileConcurrency, cpuPerFileWorkers, requested } = input;
+  const { snapshot, fileFixedCostBytes, workerCostBytes, cpuFileConcurrency, cpuPerFileWorkers, requested } =
+    input;
 
-  const cpuTotal = Math.max(1, cpuFileConcurrency) * Math.max(1, cpuPerFileWorkers);
-  let affordableWorkers = cpuTotal;
+  let fileConcurrency = Math.max(1, cpuFileConcurrency);
+  let perFileWorkers = Math.max(1, cpuPerFileWorkers);
 
   if (snapshot.source !== 'unavailable') {
     const { admissionBytes } = resolveFloors(snapshot.limitBytes);
     const spendable = Math.max(0, snapshot.availableBytes - admissionBytes);
-    affordableWorkers = Math.max(1, Math.min(cpuTotal, Math.floor(spendable / workerCostBytes)));
-  }
 
-  // Spend the budget on files first, then on workers within a file: a second
-  // file buys parallel progress, a second worker inside one file only shortens
-  // that file.
-  const fileConcurrency = Math.max(1, Math.min(cpuFileConcurrency, affordableWorkers));
-  const perFileWorkers = Math.max(
-    1,
-    Math.min(cpuPerFileWorkers, Math.floor(affordableWorkers / fileConcurrency)),
-  );
+    // Step 2: pay the fixed per-file cost first, one file at a time. No
+    // measured fixed cost falls back to the worker cost for this step alone
+    // (see the docblock above for why that reproduces, rather than weakens,
+    // the pre-amendment sizing).
+    const fileConcurrencyLimit = Math.floor(
+      spendable / (fileFixedCostBytes > 0 ? fileFixedCostBytes : workerCostBytes),
+    );
+    fileConcurrency = Math.max(1, Math.min(cpuFileConcurrency, fileConcurrencyLimit));
+
+    // Step 3: spend whatever the fixed cost left on workers, split evenly
+    // across the files just bought.
+    const remaining = Math.max(0, spendable - fileConcurrency * fileFixedCostBytes);
+    const workerLimit = Math.floor(remaining / (fileConcurrency * workerCostBytes));
+    perFileWorkers = Math.max(1, Math.min(cpuPerFileWorkers, workerLimit));
+  }
 
   const resolvedFiles = requested?.fileConcurrency ?? fileConcurrency;
   const resolvedWorkers = requested?.perFileWorkers ?? perFileWorkers;

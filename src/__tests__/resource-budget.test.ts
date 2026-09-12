@@ -25,6 +25,7 @@ describe('resolveBudget', () => {
   it('lowers the cpu figure when memory is tight', () => {
     const budget = resolveBudget({
       snapshot: snapshot(2 * GIB),
+      fileFixedCostBytes: 0,
       workerCostBytes: 300 * 1024 ** 2,
       cpuFileConcurrency: 4,
       cpuPerFileWorkers: 2,
@@ -37,6 +38,7 @@ describe('resolveBudget', () => {
   it('never raises the cpu figure when memory is plentiful', () => {
     const budget = resolveBudget({
       snapshot: snapshot(64 * GIB, 64 * GIB),
+      fileFixedCostBytes: 0,
       workerCostBytes: 300 * 1024 ** 2,
       cpuFileConcurrency: 4,
       cpuPerFileWorkers: 2,
@@ -47,6 +49,7 @@ describe('resolveBudget', () => {
   it('keeps at least one file and one worker even under pressure', () => {
     const budget = resolveBudget({
       snapshot: snapshot(0),
+      fileFixedCostBytes: 0,
       workerCostBytes: 1024 ** 3,
       cpuFileConcurrency: 4,
       cpuPerFileWorkers: 2,
@@ -57,6 +60,7 @@ describe('resolveBudget', () => {
   it('reproduces the cpu figures exactly when the probe is unavailable', () => {
     const budget = resolveBudget({
       snapshot: { availableBytes: 0, limitBytes: 0, source: 'unavailable' },
+      fileFixedCostBytes: 0,
       workerCostBytes: 1024 ** 3,
       cpuFileConcurrency: 4,
       cpuPerFileWorkers: 2,
@@ -67,6 +71,7 @@ describe('resolveBudget', () => {
   it('honours an explicit request and flags it when it exceeds the budget', () => {
     const budget = resolveBudget({
       snapshot: snapshot(1 * GIB),
+      fileFixedCostBytes: 0,
       workerCostBytes: 300 * 1024 ** 2,
       cpuFileConcurrency: 4,
       cpuPerFileWorkers: 2,
@@ -82,6 +87,7 @@ describe('resolveBudget', () => {
     // a verdict no probe actually produced.
     const budget = resolveBudget({
       snapshot: { availableBytes: 0, limitBytes: 0, source: 'unavailable' },
+      fileFixedCostBytes: 0,
       workerCostBytes: 300 * 1024 ** 2,
       cpuFileConcurrency: 4,
       cpuPerFileWorkers: 2,
@@ -93,10 +99,73 @@ describe('resolveBudget', () => {
   });
 });
 
-describe('engine worker costs', () => {
-  it('declares a positive cost for every engine', () => {
+describe('resolveBudget: the 2026-09-12 fixed-per-file-cost amendment', () => {
+  const FIXED = 900 * 1024 ** 2;
+  const WORKER = 320 * 1024 ** 2;
+
+  it('buys the fixed cost before workers: a budget for two files fixed plus one worker beyond it lands on two files at one worker each, not one file at many workers', () => {
+    // spendable = 2 * FIXED (both files' fixed cost) + 2 * WORKER (exactly
+    // one worker each, split across the two files bought).
+    const spendable = 2 * FIXED + 2 * WORKER;
+    const budget = resolveBudget({
+      snapshot: snapshot(spendable + 1.2 * GIB, 8 * GIB), // + the 8 GiB admission floor
+      fileFixedCostBytes: FIXED,
+      workerCostBytes: WORKER,
+      cpuFileConcurrency: 4,
+      cpuPerFileWorkers: 8,
+    });
+    expect(budget).toMatchObject({ fileConcurrency: 2, perFileWorkers: 1 });
+  });
+
+  it('costs fewer workers over more files as MORE than more workers over fewer files, the property a per-worker-only model gets backwards', () => {
+    // The two real acceptance-ramp sweeps from the amendment: 2 files x 3
+    // workers measured 3547 MB, 4 files x 1 worker measured 4665 MB, i.e.
+    // the SAME engine cost MORE with fewer workers spread over more files.
+    // A per-worker-only model (the pre-amendment `workerCostBytes: 600 MB`)
+    // gets the ORDER backwards: 6 workers x 600 MB (3600 MB) look pricier
+    // than 4 workers x 600 MB (2400 MB), the opposite of what was measured.
+    const oldWorkerOnly = 600 * 1024 ** 2;
+    const oldTwoFilesThreeWorkers = 6 * oldWorkerOnly;
+    const oldFourFilesOneWorker = 4 * oldWorkerOnly;
+    expect(oldFourFilesOneWorker).toBeLessThan(oldTwoFilesThreeWorkers);
+
+    // The new fixed-plus-per-worker split gets the order right.
+    const newTwoFilesThreeWorkers = 2 * (FIXED + 3 * WORKER);
+    const newFourFilesOneWorker = 4 * (FIXED + 1 * WORKER);
+    expect(newFourFilesOneWorker).toBeGreaterThan(newTwoFilesThreeWorkers);
+    // And both predictions sit slightly above what was actually measured,
+    // the safe direction for a figure that only ever lowers concurrency.
+    expect(newTwoFilesThreeWorkers).toBeGreaterThanOrEqual(3547 * 1024 ** 2);
+    expect(newFourFilesOneWorker).toBeGreaterThanOrEqual(4665 * 1024 ** 2);
+  });
+
+  it('an unavailable probe still reproduces the cpu figures exactly with a nonzero fixed cost, and overBudget stays false', () => {
+    const budget = resolveBudget({
+      snapshot: { availableBytes: 0, limitBytes: 0, source: 'unavailable' },
+      fileFixedCostBytes: FIXED,
+      workerCostBytes: WORKER,
+      cpuFileConcurrency: 4,
+      cpuPerFileWorkers: 2,
+    });
+    expect(budget).toMatchObject({ fileConcurrency: 4, perFileWorkers: 2, overBudget: false });
+  });
+});
+
+describe('engine worker and fixed costs', () => {
+  it('declares a positive worker cost for every engine', () => {
     for (const descriptor of Object.values(ENGINE_REGISTRY)) {
       expect(descriptor.workerCostBytes).toBeGreaterThan(0);
+    }
+  });
+
+  it('declares a nonnegative fixed cost for every engine, positive only where measured (TypeScript)', () => {
+    expect(ENGINE_REGISTRY.typescript.fileFixedCostBytes).toBeGreaterThan(0);
+    for (const descriptor of Object.values(ENGINE_REGISTRY)) {
+      expect(descriptor.fileFixedCostBytes).toBeGreaterThanOrEqual(0);
+    }
+    const nonTypescript = Object.entries(ENGINE_REGISTRY).filter(([projectType]) => projectType !== 'typescript');
+    for (const [, descriptor] of nonTypescript) {
+      expect(descriptor.fileFixedCostBytes).toBe(0);
     }
   });
 });

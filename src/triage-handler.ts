@@ -271,16 +271,19 @@ export async function handleTriageCall(
     });
 
     try {
-      // Estimated memory one file's engine run will hold: one worker's cost
-      // times how many workers that file gets. Same formula the single-file
-      // audit uses for its own admission (Task 7); the watchdog's real-time
-      // trip, not this estimate, is what actually protects the machine.
+      // Estimated memory one file's engine run will hold: the engine's fixed
+      // per-file cost (parent process plus dry run) plus its worker cost
+      // times how many workers that file gets (`resources.perFileCostBytes`,
+      // per the 2026-09-12 cost-model amendment). Same figure the
+      // single-file audit charges its own watchdog registration with
+      // (Task 7 / handler.ts); the watchdog's real-time trip, not this
+      // estimate, is what actually protects the machine.
       // Computed before `deps` so it can be handed to BOTH the admission gate
       // below and `watchdog.register` (via `deps.perFileCostBytes`), which
       // charges it against admission for every other file from the moment
       // this one starts (IMPORTANT 4), rather than leaving the gate to rely
       // on the OS probe catching up with what the run actually allocates.
-      const perFileCost = resources.workerCostBytes * resources.budget.perFileWorkers;
+      const perFileCost = resources.perFileCostBytes;
       const deps: TriageFileDeps = {
         rootCwd,
         cfg,

@@ -2392,6 +2392,7 @@ describe('handleToolCall', () => {
       },
       innerEnv: {},
       workerCostBytes: 300 * 1024 ** 2,
+      perFileCostBytes: 300 * 1024 ** 2 * perFileWorkers,
       report: () => ({
         availableAtStartBytes: 4 * 1024 ** 3,
         limitBytes: 8 * 1024 ** 3,

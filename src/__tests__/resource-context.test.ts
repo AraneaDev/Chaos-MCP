@@ -30,6 +30,23 @@ describe('createResourceContext', () => {
     ctx.dispose();
   });
 
+  it('exposes the per-file admission charge as fixed cost plus workers times worker cost', () => {
+    // Plentiful memory keeps the budget at the cpu figures, so the resolved
+    // worker count is deterministic (3): the TypeScript registry entry's
+    // fixed cost (900 MB) plus 3 workers at its worker cost (320 MB) should
+    // be exactly what `perFileCostBytes` reports.
+    const ctx = createResourceContext({
+      projectType: 'typescript',
+      cpuCount: 8,
+      cpuFileConcurrency: 1,
+      cpuPerFileWorkers: 3,
+      probe: () => ({ availableBytes: 64 * GIB, limitBytes: 64 * GIB, source: 'host' }),
+    });
+    expect(ctx.budget.perFileWorkers).toBe(3);
+    expect(ctx.perFileCostBytes).toBe(900 * 1024 ** 2 + 3 * 320 * 1024 ** 2);
+    ctx.dispose();
+  });
+
   it('builds the engine inner-pool env from the budget', () => {
     const ctx = createResourceContext({
       projectType: 'rust',
