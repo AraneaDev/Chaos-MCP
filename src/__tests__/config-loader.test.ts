@@ -1973,3 +1973,40 @@ describe('sandbox section', () => {
     expect(KNOWN_TOP_LEVEL_KEYS.has('sandbox')).toBe(true);
   });
 });
+
+describe('resources section', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockExistsSync.mockReturnValue(true);
+  });
+
+  function buildConfig(raw: Record<string, unknown>) {
+    mockReadFileSync.mockReturnValue(JSON.stringify(raw));
+    return loadConfig('/tmp/config.json');
+  }
+
+  it('parses the resources section', () => {
+    const cfg = buildConfig({
+      resources: { watchdog: false, admissionFloorBytes: 2147483648, criticalFloorBytes: 1073741824 },
+    });
+    expect(cfg.resources).toEqual({
+      watchdog: false,
+      admissionFloorBytes: 2147483648,
+      criticalFloorBytes: 1073741824,
+    });
+  });
+
+  it('drops a non-boolean watchdog value', () => {
+    expect(buildConfig({ resources: { watchdog: 'yes' } }).resources?.watchdog).toBeUndefined();
+  });
+
+  it('drops a negative floor', () => {
+    expect(
+      buildConfig({ resources: { criticalFloorBytes: -1 } }).resources?.criticalFloorBytes,
+    ).toBeUndefined();
+  });
+
+  it('does not report the resources section as an unknown top-level key', () => {
+    expect(KNOWN_TOP_LEVEL_KEYS.has('resources')).toBe(true);
+  });
+});

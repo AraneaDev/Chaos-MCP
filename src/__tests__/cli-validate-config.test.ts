@@ -230,6 +230,27 @@ describe('CLI --validate-config flag', () => {
     }
   });
 
+  it('reports an unusable resources value with the key name', async () => {
+    const resourcesConfigPath = join(tmpdir(), `chaos-mcp-resources-${randomUUID()}.json`);
+    writeFileSync(resourcesConfigPath, JSON.stringify({ resources: { watchdog: 'yes' } }));
+    try {
+      const { code, stderr } = await spawnValidate([
+        '--validate-config',
+        '--config',
+        resourcesConfigPath,
+      ]);
+      expect(code).toBe(0);
+      expect(stderr).toContain('resources.watchdog');
+      expect(stderr).toContain('must be a boolean');
+    } finally {
+      try {
+        unlinkSync(resourcesConfigPath);
+      } catch {
+        /* best-effort */
+      }
+    }
+  });
+
   it('exits 0 when --config has no value (falls back to the default path)', async () => {
     // When --config is the last argument, the value is undefined and
     // loadConfig/validateConfig use the default path (cwd/chaos-mcp.config.json).

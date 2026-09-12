@@ -220,6 +220,23 @@ export interface ChaosConfig {
 
   /** Sandbox provisioning overrides (dependency-directory strategy). */
   sandbox?: SandboxConfig;
+
+  /**
+   * Memory governance. Defaults are computed from the machine; set these only
+   * to override.
+   *
+   * - `watchdog`: false disables the sampler that stops the newest run near
+   *   memory exhaustion. Sizing and the admission gate still apply.
+   * - `admissionFloorBytes`: memory that must stay free before another file
+   *   starts. Default: max(1 GiB, 15% of the effective limit).
+   * - `criticalFloorBytes`: memory below which the newest run is stopped.
+   *   Default: max(512 MiB, 7% of the effective limit).
+   */
+  resources?: {
+    watchdog?: boolean;
+    admissionFloorBytes?: number;
+    criticalFloorBytes?: number;
+  };
 }
 
 /**

@@ -253,6 +253,33 @@ const dependenciesRule: FieldRule = {
 };
 
 /**
+ * The `resources.watchdog` / `resources.admissionFloorBytes` /
+ * `resources.criticalFloorBytes` rules, shared verbatim by
+ * {@link RESOURCES_FIELD_RULES} (the parser, via `parseResourcesConfig`) and
+ * {@link SECTION_FIELD_RULES} (the validator, via
+ * `sectionRule`/`validateEngineSection`) — same reason `dependencies` is
+ * declared once and reused by both: the two cannot drift on what counts as a
+ * valid value.
+ */
+const watchdogRule: FieldRule = {
+  key: 'watchdog',
+  check: (v) => typeof v === 'boolean',
+  describe: (v) => (typeof v !== 'boolean' ? `must be a boolean, got ${typeof v}` : undefined),
+};
+
+const admissionFloorBytesRule: FieldRule = {
+  key: 'admissionFloorBytes',
+  check: intAtLeast1,
+  describe: (v) => (intAtLeast1(v) ? undefined : `must be an integer > 0, got ${numberOrType(v)}`),
+};
+
+const criticalFloorBytesRule: FieldRule = {
+  key: 'criticalFloorBytes',
+  check: intAtLeast1,
+  describe: (v) => (intAtLeast1(v) ? undefined : `must be an integer > 0, got ${numberOrType(v)}`),
+};
+
+/**
  * Field rules shared by every engine section, keyed by field name. A section
  * declares which of these it accepts through its `knownKeys` set, so the same
  * `timeoutMs` rule serves Stryker, cosmic-ray, cargo-mutants and Infection —
@@ -261,10 +288,14 @@ const dependenciesRule: FieldRule = {
  * `dependencies` also lives here (rather than only in {@link SANDBOX_FIELD_RULES})
  * so `validateEngineSection`, which looks up per-key rules through
  * {@link sectionRule} against this table, has something to find for the sandbox
- * section too.
+ * section too. `watchdog`, `admissionFloorBytes` and `criticalFloorBytes` are
+ * here for the same reason, for the resources section.
  */
 export const SECTION_FIELD_RULES: Readonly<Record<string, FieldRule>> = {
   dependencies: dependenciesRule,
+  watchdog: watchdogRule,
+  admissionFloorBytes: admissionFloorBytesRule,
+  criticalFloorBytes: criticalFloorBytesRule,
   timeoutMs: {
     key: 'timeoutMs',
     check: timeoutValue,
@@ -488,6 +519,26 @@ export const KNOWN_SANDBOX_KEYS = new Set(['dependencies']);
  */
 export const SANDBOX_FIELD_RULES: readonly FieldRule[] = [dependenciesRule];
 
+// ─── Resources section fields ────────────────────────────────────────────────
+
+/** Valid keys within a resources config section. */
+export const KNOWN_RESOURCES_KEYS = new Set([
+  'watchdog',
+  'admissionFloorBytes',
+  'criticalFloorBytes',
+]);
+
+/**
+ * The resources section. Same shape as {@link SANDBOX_FIELD_RULES}: its
+ * warnings read `"resources.${key}" ${phrase} — will be ignored.`, the
+ * engine-section house style.
+ */
+export const RESOURCES_FIELD_RULES: readonly FieldRule[] = [
+  watchdogRule,
+  admissionFloorBytesRule,
+  criticalFloorBytesRule,
+];
+
 // ─── Rule engine ─────────────────────────────────────────────────────────────
 
 /**
@@ -613,4 +664,5 @@ export const KNOWN_TOP_LEVEL_KEYS = new Set<string>([
   ...ENGINE_CONFIG_SECTIONS.map((section) => section.key),
   'container',
   'sandbox',
+  'resources',
 ]);
