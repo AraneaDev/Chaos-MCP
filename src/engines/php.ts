@@ -106,6 +106,12 @@ export class PhpEngine extends BaseEngine {
     if (options?.phpTestFrameworkOptions) {
       args.push(`--test-framework-options=${options.phpTestFrameworkOptions}`);
     }
+    // Confine mutation to the lines a diff touched. Only 'git-base' applies
+    // here; 'patch' and 'ranges' are the other engines' scoping shapes and are
+    // silently ignored, since only one engine ever sees a given RunOptions.
+    if (options?.diffScope?.kind === 'git-base') {
+      args.push('--git-diff-lines', `--git-diff-base=${options.diffScope.ref}`);
+    }
 
     if (isVerbose()) log(`PhpEngine: ${bin} ${args.join(' ')}`);
 

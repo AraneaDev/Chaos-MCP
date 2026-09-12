@@ -1262,6 +1262,58 @@ describe('PhpEngine.run', () => {
     expect(args).not.toContain('--only-covering-test-cases');
   });
 
+  it('passes --git-diff-lines and --git-diff-base when diffScope is git-base', async () => {
+    // The audit layer builds a throwaway single-commit git repo in the sandbox
+    // with the ref name it hands us; Infection needs both flags to confine
+    // mutants to what that diff changed.
+    mockExists.mockImplementation((p) => String(p).endsWith('chaos-infection-log.json'));
+    mockRead.mockReturnValue(SAMPLE_LOG);
+    mockInvoke.mockResolvedValue({ stdout: '', stderr: '', exit: 0, signal: null });
+
+    const engine = new PhpEngine();
+    await engine.run('src/Calculator.php', {
+      workDir: '/sb',
+      diffScope: { kind: 'git-base', ref: 'chaos-base' },
+    });
+    const args = mockInvoke.mock.calls[0][2] as string[];
+    expect(args).toContain('--git-diff-lines');
+    expect(args).toContain('--git-diff-base=chaos-base');
+    expect(args).toContain('--filter=src/Calculator.php');
+  });
+
+  it('omits the git-diff flags when diffScope is absent', async () => {
+    // An unscoped run must stay byte-identical to today: neither flag appears,
+    // but --filter for the target file is still there.
+    mockExists.mockImplementation((p) => String(p).endsWith('chaos-infection-log.json'));
+    mockRead.mockReturnValue(SAMPLE_LOG);
+    mockInvoke.mockResolvedValue({ stdout: '', stderr: '', exit: 0, signal: null });
+
+    const engine = new PhpEngine();
+    await engine.run('src/Calculator.php', { workDir: '/sb' });
+    const args = mockInvoke.mock.calls[0][2] as string[];
+    expect(args).not.toContain('--git-diff-lines');
+    expect(args.some((a) => a.startsWith('--git-diff-base='))).toBe(false);
+    expect(args).toContain('--filter=src/Calculator.php');
+  });
+
+  it('ignores a diffScope of a kind other engines use', async () => {
+    // 'patch' and 'ranges' belong to cargo-mutants and cosmic-ray respectively;
+    // Infection must not react to them just because diffScope is present.
+    mockExists.mockImplementation((p) => String(p).endsWith('chaos-infection-log.json'));
+    mockRead.mockReturnValue(SAMPLE_LOG);
+    mockInvoke.mockResolvedValue({ stdout: '', stderr: '', exit: 0, signal: null });
+
+    const engine = new PhpEngine();
+    await engine.run('src/Calculator.php', {
+      workDir: '/sb',
+      diffScope: { kind: 'ranges', ranges: [{ start: 1, end: 5 }] },
+    });
+    const args = mockInvoke.mock.calls[0][2] as string[];
+    expect(args).not.toContain('--git-diff-lines');
+    expect(args.some((a) => a.startsWith('--git-diff-base='))).toBe(false);
+    expect(args).toContain('--filter=src/Calculator.php');
+  });
+
   it('passes --only-covering-test-cases when phpOnlyCoveringTestCases is true', async () => {
     // Explicit opt-in behaves as the default does. Kills a mutant that inverts
     // the `!== false` guard into an `=== true` one and drops the default.
