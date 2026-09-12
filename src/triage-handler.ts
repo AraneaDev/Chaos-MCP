@@ -271,6 +271,16 @@ export async function handleTriageCall(
     });
 
     try {
+      // Estimated memory one file's engine run will hold: one worker's cost
+      // times how many workers that file gets. Same formula the single-file
+      // audit uses for its own admission (Task 7); the watchdog's real-time
+      // trip, not this estimate, is what actually protects the machine.
+      // Computed before `deps` so it can be handed to BOTH the admission gate
+      // below and `watchdog.register` (via `deps.perFileCostBytes`), which
+      // charges it against admission for every other file from the moment
+      // this one starts (IMPORTANT 4), rather than leaving the gate to rely
+      // on the OS probe catching up with what the run actually allocates.
+      const perFileCost = resources.workerCostBytes * resources.budget.perFileWorkers;
       const deps: TriageFileDeps = {
         rootCwd,
         cfg,
@@ -284,6 +294,7 @@ export async function handleTriageCall(
         ctx,
         watchdog: resources.watchdog,
         innerEnv: resources.innerEnv,
+        perFileCostBytes: perFileCost,
         // Progress stops the moment the request is abandoned. A cancelled sweep
         // still runs one `onProgress` per file — `auditTriageFile` reports in a
         // `finally`, and the files it skips on the abort check report too — so
@@ -298,12 +309,6 @@ export async function handleTriageCall(
       // Second abort check: skip the pool entirely if already cancelled before we start.
       // (Task 6 — mirrors the pre-discovery check above.)
       if (ctx?.signal?.aborted) return toolError('Operation cancelled.');
-
-      // Estimated memory one file's engine run will hold: one worker's cost
-      // times how many workers that file gets. Same formula the single-file
-      // audit uses for its own admission (Task 7); the watchdog's real-time
-      // trip, not this estimate, is what actually protects the machine.
-      const perFileCost = resources.workerCostBytes * resources.budget.perFileWorkers;
       // `watchdog.admit` only ever resolves from a `tick()` (memory freed up)
       // or a `stop()` (the sweep is over) — both of which happen downstream of
       // the very `mapPool` call this feeds. Under sustained external memory

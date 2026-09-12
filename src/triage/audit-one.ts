@@ -111,6 +111,18 @@ export interface TriageFileDeps {
    * engine verbatim via `buildPerFileArgs`; absent means "no cap".
    */
   innerEnv?: NodeJS.ProcessEnv;
+  /**
+   * Estimated memory this file's run will hold (IMPORTANT 4), the same figure
+   * `handleTriageCall` hands its admission gate. Passed to `watchdog.register`
+   * so the run is CHARGED against admission for every OTHER file from the
+   * moment it starts, not just from whenever the OS probe catches up with
+   * what it actually allocated — closing the gap `utils/pool.ts` documents
+   * (admission is only serialized against the previous item's `fn` being
+   * INVOKED, not against it having consumed anything yet). Optional for the
+   * same reason `watchdog` is: a caller with no resource context behind it
+   * gets today's un-charged registration.
+   */
+  perFileCostBytes?: number;
 }
 
 /** The line scope for one file, plus the note explaining it on the row. */
@@ -515,7 +527,7 @@ export async function auditTriageFile(
       engineController = new AbortController();
       abortRequest = () => engineController?.abort(ctx?.signal?.reason);
       ctx?.signal?.addEventListener('abort', abortRequest, { once: true });
-      handle = deps.watchdog?.register(engineController);
+      handle = deps.watchdog?.register(engineController, deps.perFileCostBytes);
       result = await auditFile({
         targetFile,
         env,

@@ -30,7 +30,14 @@ export interface RunHandle {
 }
 
 export interface Watchdog {
-  register(controller: AbortController): RunHandle;
+  /**
+   * `costBytes`, when given, is CHARGED against admission (see `admit`) from
+   * this call until the returned handle's `release()` — the gate's answer to
+   * `mapPool`'s admission checks running well before a run has actually
+   * allocated anything (utils/pool.ts docblock). Optional so a caller with no
+   * cost figure (or a test) gets the pre-existing behaviour unchanged.
+   */
+  register(controller: AbortController, costBytes?: number): RunHandle;
   admit(costBytes: number, signal?: AbortSignal): Promise<'admitted' | 'cancelled'>;
   tick(): void;
   stop(): void;
@@ -52,6 +59,12 @@ export function createWatchdog(options: WatchdogOptions): Watchdog {
   const waiting: WaitingEntry[] = [];
   let trips = 0;
   let lastTripAt = Number.NEGATIVE_INFINITY;
+  // Sum of `costBytes` for runs that have been REGISTERED (started) but not
+  // yet RELEASED (finished). Charged against every admission check in
+  // addition to the probe's own reading, because the probe cannot see memory
+  // a just-started run has not allocated yet — see `admit`'s docblock and
+  // `utils/pool.ts`'s admission-serialization comment for the gap this closes.
+  let reservedBytes = 0;
 
   const timer = setInterval(() => api.tick(), options.intervalMs ?? DEFAULT_INTERVAL_MS);
   // Never hold the process open for a sampler.
@@ -62,12 +75,18 @@ export function createWatchdog(options: WatchdogOptions): Watchdog {
       return trips;
     },
 
-    register(controller) {
+    register(controller, costBytes) {
       live.push(controller);
+      let released = false;
+      if (costBytes) reservedBytes += costBytes;
       return {
         release() {
           const index = live.indexOf(controller);
           if (index >= 0) live.splice(index, 1);
+          if (costBytes && !released) {
+            released = true;
+            reservedBytes = Math.max(0, reservedBytes - costBytes);
+          }
         },
       };
     },
@@ -75,7 +94,7 @@ export function createWatchdog(options: WatchdogOptions): Watchdog {
     admit(costBytes, signal) {
       const snapshot = options.probe();
       if (snapshot.source === 'unavailable') return Promise.resolve('admitted');
-      if (snapshot.availableBytes - costBytes >= options.admissionBytes) {
+      if (snapshot.availableBytes - costBytes - reservedBytes >= options.admissionBytes) {
         return Promise.resolve('admitted');
       }
       if (signal?.aborted) return Promise.resolve('cancelled');
@@ -119,7 +138,9 @@ export function createWatchdog(options: WatchdogOptions): Watchdog {
       // Admit whatever now fits, oldest waiter first.
       while (waiting.length > 0) {
         const next = waiting[0];
-        if (options.probe().availableBytes - next.costBytes < options.admissionBytes) break;
+        if (options.probe().availableBytes - next.costBytes - reservedBytes < options.admissionBytes) {
+          break;
+        }
         waiting.shift();
         next.cleanup?.();
         next.resolve('admitted');

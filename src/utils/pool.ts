@@ -15,11 +15,18 @@ export interface MapPoolOptions<T> {
  *
  * When `options.admit` is given, claiming the next item and running its
  * admission check is serialized across workers: a new item's admission does
- * not begin until the previous item has actually started (`fn` invoked), so
- * an admission gate always sees the machine state as it was right after the
- * prior start. The work itself still runs concurrently once admitted; only
- * the start of each item is staggered. Without `options.admit` this
- * serialization is skipped entirely, so every existing caller keeps the
+ * not begin until the previous item's `fn` has been INVOKED. That only means
+ * the previous item's promise has started running, not that it has done
+ * anything yet — `fn` is released the moment it is called, which for the
+ * mutation-audit callers is well before that file's sandbox copy finishes and
+ * long before its engine actually allocates memory. So several files can be
+ * admitted back-to-back against a memory reading taken before any of them
+ * has consumed a byte of what it asked for; the serialization only bounds how
+ * many admission checks run AT ONCE; it does not make later ones see earlier
+ * ones' real cost (see `Watchdog.admit`'s in-flight reservation for the gate
+ * that actually charges for it). The work itself still runs concurrently once
+ * admitted; only the start of each item is staggered. Without `options.admit`
+ * this serialization is skipped entirely, so every existing caller keeps the
  * original, cheaper bare loop.
  */
 export async function mapPool<T, R>(

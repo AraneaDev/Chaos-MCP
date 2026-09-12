@@ -133,6 +133,44 @@ describe('watchdog', () => {
     expect(run.signal.aborted).toBe(false);
   });
 
+  it('charges the in-flight cost of a registered-but-not-released run against admission', async () => {
+    // IMPORTANT 4: admission must not be near-inert against a run that has
+    // already started but whose memory the probe has not caught up with yet.
+    // Available memory alone would admit a second 2 GiB request against 4
+    // GiB free, but a 3 GiB run already registered (and not yet released)
+    // must be charged too, leaving only 1 GiB — below the 2 GiB floor.
+    const dog = createWatchdog({
+      probe: () => snap(4 * GIB),
+      criticalBytes: 1 * GIB,
+      admissionBytes: 2 * GIB,
+      now: () => 0,
+    });
+    const handle = dog.register(new AbortController(), 3 * GIB);
+
+    // Declined rather than admitted immediately: aborting right after proves
+    // `admit` took the waiting branch instead of resolving synchronously.
+    const controller = new AbortController();
+    const pending = dog.admit(2 * GIB, controller.signal);
+    controller.abort();
+    await expect(pending).resolves.toBe('cancelled');
+
+    // Releasing the reservation frees the charge, so the same request now
+    // clears immediately.
+    handle.release();
+    await expect(dog.admit(2 * GIB)).resolves.toBe('admitted');
+  });
+
+  it('does not charge anything when register is called with no cost', async () => {
+    const dog = createWatchdog({
+      probe: () => snap(4 * GIB),
+      criticalBytes: 1 * GIB,
+      admissionBytes: 2 * GIB,
+      now: () => 0,
+    });
+    dog.register(new AbortController());
+    await expect(dog.admit(2 * GIB)).resolves.toBe('admitted');
+  });
+
   it('cancels pending waiters on stop, not admits them', async () => {
     const dog = createWatchdog({
       probe: () => snap(0),

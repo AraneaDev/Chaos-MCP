@@ -308,6 +308,9 @@ export async function handleToolCall(
     const controller = new AbortController();
     const abortRequest = () => controller.abort(ctx?.signal?.reason);
     ctx?.signal?.addEventListener('abort', abortRequest, { once: true });
+    // No cost argument: a single-file audit never admits against this
+    // watchdog (the admission gate exists only on the triage path, IMPORTANT
+    // 4), so there is nothing here for an in-flight reservation to protect.
     const handle = resources.watchdog.register(controller);
 
     try {
