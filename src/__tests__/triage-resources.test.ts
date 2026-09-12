@@ -484,4 +484,131 @@ describe('triage_test_coverage resource governance', () => {
     expect(payload.resources?.source).toBe('host');
     expect(resources.dispose).toHaveBeenCalledTimes(1);
   });
+
+  describe('baseline (initial test run) failure retry', () => {
+    /** The exact wording reported on the real 4-file sweep this feature fixes. */
+    const BASELINE_FAILURE_MESSAGE =
+      'StrykerJS configuration or internal error (exit 1): Error: Something went wrong in the initial test run';
+
+    it('retries a baseline failure once in a PARALLEL sweep and ranks it after a clean retry', async () => {
+      mockDiscover.mockReturnValue({ files: ['a.ts', 'b.ts'], discovered: 2, skipped: 0 });
+      let bCalls = 0;
+      mockAuditFile.mockImplementation(async (input) => {
+        if (input.targetFile === 'b.ts') {
+          bCalls++;
+          if (bCalls === 1) throw new Error(BASELINE_FAILURE_MESSAGE);
+          return mrOf({});
+        }
+        return mrOf({});
+      });
+      // fileConcurrency 2 resolves the first pass to more than one file at a
+      // time, which is what makes a baseline failure eligible for the retry.
+      const resources = makeResources({ fileConcurrency: 2 });
+      mockCreateResourceContext.mockReturnValue(
+        resources as unknown as ReturnType<typeof createResourceContext>,
+      );
+
+      const res = await handleTriageCall(req({ paths: ['src'], fileConcurrency: 2 }));
+      const payload = JSON.parse(txt(res)) as {
+        ranking: { file: string }[];
+        errors: unknown[];
+      };
+
+      expect(res.isError).toBeUndefined();
+      expect(payload.ranking.map((r) => r.file).sort()).toEqual(['a.ts', 'b.ts']);
+      expect(payload.errors).toEqual([]);
+      expect(bCalls).toBe(2);
+      // a.ts once, b.ts twice.
+      expect(mockAuditFile).toHaveBeenCalledTimes(3);
+    });
+
+    it('reports a baseline failure that fails TWICE as an error row with the original message and a retried note, and does not queue a third attempt', async () => {
+      mockDiscover.mockReturnValue({ files: ['b.ts'], discovered: 1, skipped: 0 });
+      let bCalls = 0;
+      mockAuditFile.mockImplementation(async () => {
+        bCalls++;
+        // A different message on the retry proves the reported row keeps the
+        // FIRST message rather than whatever the second attempt produced.
+        throw new Error(bCalls === 1 ? BASELINE_FAILURE_MESSAGE : 'a different failure entirely');
+      });
+      const resources = makeResources({ fileConcurrency: 2 });
+      mockCreateResourceContext.mockReturnValue(
+        resources as unknown as ReturnType<typeof createResourceContext>,
+      );
+
+      const res = await handleTriageCall(req({ paths: ['src'], fileConcurrency: 2 }));
+      const payload = JSON.parse(txt(res)) as {
+        ranking: unknown[];
+        errors: { file: string; error: string }[];
+      };
+
+      expect(res.isError).toBeUndefined();
+      expect(payload.ranking).toEqual([]);
+      expect(payload.errors).toHaveLength(1);
+      expect(payload.errors[0].file).toBe('b.ts');
+      // The original message survives verbatim...
+      expect(payload.errors[0].error).toContain(BASELINE_FAILURE_MESSAGE);
+      // ...the retry's own (different) message never replaces it...
+      expect(payload.errors[0].error).not.toContain('a different failure entirely');
+      // ...plus a short note that a retry happened.
+      expect(payload.errors[0].error).toMatch(/retried once/i);
+      // Retried exactly once: a second failure must not queue a third attempt.
+      expect(bCalls).toBe(2);
+    });
+
+    it('does not retry the same baseline failure in a SERIAL sweep', async () => {
+      mockDiscover.mockReturnValue({ files: ['b.ts'], discovered: 1, skipped: 0 });
+      let bCalls = 0;
+      mockAuditFile.mockImplementation(async () => {
+        bCalls++;
+        throw new Error(BASELINE_FAILURE_MESSAGE);
+      });
+      const resources = makeResources({ fileConcurrency: 1 });
+      mockCreateResourceContext.mockReturnValue(
+        resources as unknown as ReturnType<typeof createResourceContext>,
+      );
+
+      const res = await handleTriageCall(req({ paths: ['src'], fileConcurrency: 1 }));
+      const payload = JSON.parse(txt(res)) as {
+        ranking: unknown[];
+        errors: { file: string; error: string }[];
+      };
+
+      expect(res.isError).toBeUndefined();
+      expect(payload.errors).toHaveLength(1);
+      expect(payload.errors[0].file).toBe('b.ts');
+      // Reported exactly once, with no "retried" note, contention was never a
+      // plausible cause for a sweep that was already serial.
+      expect(payload.errors[0].error).toBe(BASELINE_FAILURE_MESSAGE);
+      expect(bCalls).toBe(1);
+    });
+
+    it('does not retry an ordinary engine failure that is not a baseline failure', async () => {
+      mockDiscover.mockReturnValue({ files: ['b.ts'], discovered: 1, skipped: 0 });
+      let bCalls = 0;
+      const ORDINARY_MESSAGE = 'StrykerJS configuration or internal error (exit 1): malformed stryker.conf.js';
+      mockAuditFile.mockImplementation(async () => {
+        bCalls++;
+        throw new Error(ORDINARY_MESSAGE);
+      });
+      // Parallel, so only the failure-shape predicate (not concurrency) is
+      // under test here.
+      const resources = makeResources({ fileConcurrency: 2 });
+      mockCreateResourceContext.mockReturnValue(
+        resources as unknown as ReturnType<typeof createResourceContext>,
+      );
+
+      const res = await handleTriageCall(req({ paths: ['src'], fileConcurrency: 2 }));
+      const payload = JSON.parse(txt(res)) as {
+        ranking: unknown[];
+        errors: { file: string; error: string }[];
+      };
+
+      expect(res.isError).toBeUndefined();
+      expect(payload.errors).toHaveLength(1);
+      expect(payload.errors[0].file).toBe('b.ts');
+      expect(payload.errors[0].error).toBe(ORDINARY_MESSAGE);
+      expect(bCalls).toBe(1);
+    });
+  });
 });

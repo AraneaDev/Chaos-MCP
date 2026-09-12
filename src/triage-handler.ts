@@ -38,6 +38,7 @@ import {
 import { AuditDeadline } from './utils/deadline.js';
 import { createResourceContext, type ResourcesPayload } from './core/resource-context.js';
 import { resolveAuditTargetIn } from './audit/target.js';
+import { isBaselineFailureMessage } from './utils/baseline-failure.js';
 
 const DEFAULT_MAX_FILES = 25;
 
@@ -74,6 +75,26 @@ const MIN_RETRY_BUDGET_MS = 1_000;
 const RESOURCE_EXHAUSTED_ROW_MESSAGE =
   'Stopped to avoid exhausting memory and could not be completed on the ' +
   'single requeue. Lower fileConcurrency or concurrency, or raise the machine memory.';
+
+/**
+ * Appended to a file's ORIGINAL failure message when a baseline/initial-run
+ * failure (see `utils/baseline-failure.ts`) is still a failure on its single
+ * requeue. The original message is preserved verbatim rather than replaced by
+ * whatever the retry itself produced, so the caller sees the real cause once,
+ * plus the fact that contention was already ruled out by a clean retry.
+ */
+const RETRIED_BASELINE_FAILURE_NOTE = '(Retried once at file concurrency 1; failed again.)';
+
+/**
+ * One file queued for the single requeue pass, and why: the watchdog stopped
+ * it for memory, or its failure looked like a baseline/initial-run failure in
+ * a sweep that ran more than one file at a time. `originalMessage` is only
+ * carried for the latter, so a second baseline failure can report the first
+ * one's real message rather than whatever the retry itself produced.
+ */
+type RetryTarget =
+  | { file: string; index: number; reason: 'exhausted' }
+  | { file: string; index: number; reason: 'baseline-failure'; originalMessage: string };
 
 /**
  * Validate the tool arguments, returning the FIRST failure as an error result
@@ -373,14 +394,42 @@ export async function handleTriageCall(
       if (ctx?.signal?.aborted) return toolError('Operation cancelled.');
 
       // Requeue once, at fileConcurrency 1, every file the watchdog stopped for
-      // memory. Skipped when the request is cancelled or the sweep's own
-      // wall-clock budget is already spent: starting a fresh engine run at
-      // either point would spend time or work nobody can use. A file that
-      // exhausts again (or whose requeue never got the chance to run) becomes
-      // an error row rather than vanishing (`partitionOutcomes` below).
-      const retryTargets = outcomes.flatMap((outcome, index) =>
-        'exhausted' in outcome ? [{ file: files[index], index }] : [],
-      );
+      // memory, PLUS (new) every file whose failure was specifically its
+      // baseline/initial-run failing (`utils/baseline-failure.ts`) in a sweep
+      // that actually ran more than one file at a time. Both share this one
+      // pass and the same "at most once" contract: a file lands here for
+      // whichever reason first applied to it, and nothing re-queues it a
+      // second time (the loop below never runs again after this pass).
+      //
+      // The concurrency check reads the sweep's RESOLVED `fileConcurrency`
+      // (`resources.budget.fileConcurrency`, already clamped by memory
+      // governance), not the caller's requested value: a request for 4 that
+      // governance dropped to 1 is exactly as serial as an explicit request
+      // for 1, and contention between files that never overlapped is not a
+      // plausible cause for either. A serial sweep still requeues its
+      // memory-stopped files (unrelated to this check) but never a baseline
+      // failure, so a genuinely broken suite is reported once, immediately.
+      const firstPassWasParallel = resources.budget.fileConcurrency > 1;
+      const retryTargets: RetryTarget[] = outcomes.flatMap((outcome, index): RetryTarget[] => {
+        if ('exhausted' in outcome) {
+          return [{ file: files[index], index, reason: 'exhausted' }];
+        }
+        if (
+          firstPassWasParallel &&
+          'error' in outcome &&
+          isBaselineFailureMessage(outcome.error.error)
+        ) {
+          return [
+            {
+              file: files[index],
+              index,
+              reason: 'baseline-failure',
+              originalMessage: outcome.error.error,
+            },
+          ];
+        }
+        return [];
+      });
       if (
         retryTargets.length > 0 &&
         !ctx?.signal?.aborted &&
@@ -402,10 +451,27 @@ export async function handleTriageCall(
         retryTargets.forEach((target, i) => {
           const outcome = retried[i];
           // A declined admission on the retry itself leaves this slot
-          // undefined too; keep the original `{ exhausted }` marker rather
-          // than overwrite it with nothing, so it still becomes an error row
-          // below instead of disappearing.
-          if (outcome !== undefined) outcomes[target.index] = outcome;
+          // undefined too; keep the original marker (`{ exhausted }` or the
+          // first `{ error }`) rather than overwrite it with nothing, so it
+          // still becomes an error row below instead of disappearing.
+          if (outcome === undefined) return;
+          // A baseline-failure retry that fails again reports the ORIGINAL
+          // message (requirement: nothing silently swallowed, the real cause
+          // stays visible) plus a short note that it was retried, rather than
+          // whatever text the second attempt happened to produce. A retry
+          // that instead exhausts memory or runs unaudited falls through to
+          // the generic assignment below and reports as that outcome, and a
+          // retry that SUCCEEDS falls through too and is scored normally.
+          if (target.reason === 'baseline-failure' && 'error' in outcome) {
+            outcomes[target.index] = {
+              error: {
+                file: target.file,
+                error: `${target.originalMessage} ${RETRIED_BASELINE_FAILURE_NOTE}`,
+              },
+            };
+            return;
+          }
+          outcomes[target.index] = outcome;
         });
 
         if (ctx?.signal?.aborted) return toolError('Operation cancelled.');
