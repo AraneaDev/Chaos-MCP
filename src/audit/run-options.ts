@@ -296,6 +296,13 @@ export function buildRunOptions(
     phpThreads: cfg.infection?.threads !== undefined ? String(cfg.infection.threads) : undefined,
     phpTestFrameworkOptions: cfg.infection?.testFrameworkOptions,
     phpOnlyCoveringTestCases: cfg.infection?.onlyCoveringTestCases,
+    // Memory-budget caps for the mutation tool's OWN inner worker pool, built by
+    // engines/inner-pool.ts (buildInnerEnv) from the resolved Budget and handed
+    // in on the tool-args bag. Forwarded verbatim; absent means "no cap".
+    innerEnv:
+      typeof args.innerEnv === 'object' && args.innerEnv !== null
+        ? (args.innerEnv as NodeJS.ProcessEnv)
+        : undefined,
   };
 }
 

@@ -1506,6 +1506,21 @@ describe('PhpEngine.run', () => {
     await engine.run('src/Calculator.php', { workDir: '/sb' });
     expect(argsOf()).toContain('--threads=max');
   });
+
+  it('bounds --threads with the inner-pool cap instead of max', async () => {
+    mockExists.mockImplementation((p) => String(p).endsWith('chaos-infection-log.json'));
+    mockRead.mockReturnValue(SAMPLE_LOG);
+    mockInvoke.mockResolvedValue({ stdout: '', stderr: '', exit: 0, signal: null });
+
+    const engine = new PhpEngine();
+    const argsOf = () => mockInvoke.mock.calls[0][2] as string[];
+
+    await engine.run('src/Calculator.php', {
+      workDir: '/sb',
+      innerEnv: { CHAOS_PHP_THREADS: '3' },
+    });
+    expect(argsOf()).toContain('--threads=3');
+  });
 });
 
 describe('infectionDiagnostics', () => {

@@ -95,6 +95,7 @@ export class RustEngine extends BaseEngine {
       const result = await invokeMutationTool('cargo-mutants', 'cargo', args, {
         cwd,
         timeoutMs,
+        env: options?.innerEnv,
         signal: options?.signal,
         executor: options?.executor,
       });

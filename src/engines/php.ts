@@ -67,8 +67,14 @@ export class PhpEngine extends BaseEngine {
     const vendored = join(cwd, 'vendor', 'bin', 'infection');
     const bin = existsSync(vendored) ? './vendor/bin/infection' : 'infection';
 
+    const capped = Number(options?.innerEnv?.CHAOS_PHP_THREADS);
     const threads =
-      options?.phpThreads ?? (options?.concurrency ? String(options.concurrency) : 'max');
+      options?.phpThreads ??
+      (Number.isInteger(capped) && capped > 0
+        ? String(capped)
+        : options?.concurrency
+          ? String(options.concurrency)
+          : 'max');
     // NOTE: the detailed JSON log is configured via the config file's `logs.json`
     // (see buildInfectionConfig), NOT a CLI flag. Infection 0.34 removed the
     // `--logger-json` option — passing it aborts the run with
