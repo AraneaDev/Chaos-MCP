@@ -665,6 +665,33 @@ export const TRIAGE_TOOL_DEFINITION = {
       stoppedReason: { type: 'string', enum: ['time_budget_exhausted'] },
       scopeNote: { type: 'string' },
       note: { type: 'string' },
+      // How this sweep sized itself to the machine's memory (Task 8), the same
+      // shape audit_code_resilience reports (Task 7): `availableAtStartBytes`/
+      // `limitBytes`/`source` describe the probe, `fileConcurrency`/
+      // `perFileWorkers` the resolved budget, `overBudget` whether an explicit
+      // request exceeded it, and `watchdogTrips` how many times the sampler
+      // stopped the newest run.
+      resources: {
+        type: 'object',
+        properties: {
+          availableAtStartBytes: { type: 'integer' },
+          limitBytes: { type: 'integer' },
+          source: { type: 'string', enum: ['host', 'cgroup', 'unavailable'] },
+          fileConcurrency: { type: 'integer' },
+          perFileWorkers: { type: 'integer' },
+          overBudget: { type: 'boolean' },
+          watchdogTrips: { type: 'integer' },
+        },
+        required: [
+          'availableAtStartBytes',
+          'limitBytes',
+          'source',
+          'fileConcurrency',
+          'perFileWorkers',
+          'overBudget',
+          'watchdogTrips',
+        ],
+      },
       gate: {
         type: 'object',
         properties: {

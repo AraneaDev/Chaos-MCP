@@ -36,6 +36,8 @@ import {
   type TriageAuditOutcome,
 } from './triage/audit-one.js';
 import { AuditDeadline } from './utils/deadline.js';
+import { createResourceContext, type ResourcesPayload } from './core/resource-context.js';
+import { resolveAuditTargetIn } from './audit/target.js';
 
 const DEFAULT_MAX_FILES = 25;
 
@@ -53,6 +55,25 @@ const DEFAULT_TOTAL_TIMEOUT_MS = 900_000;
  * after the last file finishes.
  */
 const TRIAGE_CLEANUP_RESERVE_MS = 2_000;
+
+/**
+ * The smallest slice of the sweep's budget worth starting the retry pass with
+ * (Task 8). Mirrors `MIN_ENGINE_BUDGET_MS` in `triage/audit-one.ts`, restated
+ * here because that constant is private to a module this one does not import
+ * for it alone.
+ */
+const MIN_RETRY_BUDGET_MS = 1_000;
+
+/**
+ * The wording for a file that never produced a score after the watchdog
+ * stopped its run for memory (Task 8): either the single requeue also
+ * exhausted, or the sweep was cancelled or ran out of time before the requeue
+ * could start. Reported as an error row rather than dropped, so nothing a
+ * sweep selects ever goes unaccounted for.
+ */
+const RESOURCE_EXHAUSTED_ROW_MESSAGE =
+  'Stopped to avoid exhausting memory and could not be completed on the ' +
+  'single requeue. Lower fileConcurrency or concurrency, or raise the machine memory.';
 
 /**
  * Validate the tool arguments, returning the FIRST failure as an error result
@@ -136,9 +157,13 @@ interface TriageOutcomes {
 /**
  * Demultiplex the per-file audit outcomes into rows, errors and unaudited files.
  *
- * `mapPool` yields one of four things per file: the `Error` safety-net slot, an
+ * `mapPool` yields one of five things per file: the `Error` safety-net slot, an
  * `{ unaudited }` marker for a file the sweep never reached, an `{ error }`
- * record for one that failed, or the `{ row }` of a successful audit.
+ * record for one that failed, the `{ row }` of a successful audit, or an
+ * `{ exhausted }` marker (Task 8) that reaches here only when the file's single
+ * requeue also could not complete, or never ran because the sweep was
+ * cancelled or out of time. That marker is reported as an error row rather
+ * than dropped.
  */
 export function partitionOutcomes(outcomes: TriageAuditOutcome[]): TriageOutcomes {
   const rows: TriageRow[] = [];
@@ -152,6 +177,8 @@ export function partitionOutcomes(outcomes: TriageAuditOutcome[]): TriageOutcome
     }
     if ('unaudited' in o) {
       unaudited.push(o.unaudited);
+    } else if ('exhausted' in o) {
+      errors.push({ file: o.exhausted, error: RESOURCE_EXHAUSTED_ROW_MESSAGE });
     } else if ('error' in o) {
       errors.push(o.error);
     } else {
@@ -215,61 +242,153 @@ export async function handleTriageCall(
     let done = 0;
     const total = files.length;
 
-    const deps: TriageFileDeps = {
-      rootCwd,
-      cfg,
-      args,
-      diffBase,
-      perFileConcurrency: resolvePerFileConcurrency(poolSize, cpuCount),
-      survivorsPerFile,
-      suppressionCache: new Map(),
-      deadline,
-      cleanupReserveMs: TRIAGE_CLEANUP_RESERVE_MS,
-      ctx,
-      // Progress stops the moment the request is abandoned. A cancelled sweep
-      // still runs one `onProgress` per file — `auditTriageFile` reports in a
-      // `finally`, and the files it skips on the abort check report too — so
-      // without this gate a cancelled request keeps receiving `audited N/25`
-      // notifications for work nobody is waiting for, right up to 25/25.
-      onProgress: () => {
-        if (ctx?.signal?.aborted) return;
-        ctx?.reportProgress?.(++done, total, `audited ${done}/${total}`);
-      },
-    };
+    // Size this sweep to the memory the machine actually has (Task 8): never
+    // RAISES what the CPU-only math already chose (poolSize / the per-file
+    // worker cap below), only lowers it, and the watchdog stops the newest
+    // run rather than letting the sweep exhaust memory. `projectType` is read
+    // from the first selected file: a sweep almost always spans one language,
+    // and a mixed one still gets a real (if approximate) per-worker cost
+    // rather than none. `resources.dispose()` in the `finally` below tears
+    // down the sampler once the sweep is done, same as the single-file audit
+    // (Task 7).
+    const primaryProjectType =
+      resolveAuditTargetIn(rootCwd, files[0])?.projectType ?? 'typescript';
+    // The engine-worker cap this sweep would use with no memory pressure at
+    // all. `undefined` when the pool is serial, matching the existing "no cap
+    // needed for one file at a time" rule `buildPerFileArgs` already applies;
+    // preserved here rather than forced to a number so that rule keeps
+    // holding when the probe is unavailable (Budget then reproduces whatever
+    // baseline it was given, unchanged).
+    const cpuPerFileWorkers = resolvePerFileConcurrency(poolSize, cpuCount);
+    const resources = createResourceContext({
+      projectType: primaryProjectType,
+      cpuFileConcurrency: poolSize,
+      cpuPerFileWorkers: cpuPerFileWorkers ?? 1,
+      requested: args.fileConcurrency === undefined ? undefined : { fileConcurrency: poolSize },
+      watchdogEnabled: cfg.resources?.watchdog,
+      admissionFloorBytes: cfg.resources?.admissionFloorBytes,
+      criticalFloorBytes: cfg.resources?.criticalFloorBytes,
+    });
 
-    // Second abort check: skip the pool entirely if already cancelled before we start.
-    // (Task 6 — mirrors the pre-discovery check above.)
-    if (ctx?.signal?.aborted) return toolError('Operation cancelled.');
+    try {
+      const deps: TriageFileDeps = {
+        rootCwd,
+        cfg,
+        args,
+        diffBase,
+        perFileConcurrency: cpuPerFileWorkers === undefined ? undefined : resources.budget.perFileWorkers,
+        survivorsPerFile,
+        suppressionCache: new Map(),
+        deadline,
+        cleanupReserveMs: TRIAGE_CLEANUP_RESERVE_MS,
+        ctx,
+        watchdog: resources.watchdog,
+        innerEnv: resources.innerEnv,
+        // Progress stops the moment the request is abandoned. A cancelled sweep
+        // still runs one `onProgress` per file — `auditTriageFile` reports in a
+        // `finally`, and the files it skips on the abort check report too — so
+        // without this gate a cancelled request keeps receiving `audited N/25`
+        // notifications for work nobody is waiting for, right up to 25/25.
+        onProgress: () => {
+          if (ctx?.signal?.aborted) return;
+          ctx?.reportProgress?.(++done, total, `audited ${done}/${total}`);
+        },
+      };
 
-    const outcomes = await mapPool(files, poolSize, (file) => auditTriageFile(file, deps));
+      // Second abort check: skip the pool entirely if already cancelled before we start.
+      // (Task 6 — mirrors the pre-discovery check above.)
+      if (ctx?.signal?.aborted) return toolError('Operation cancelled.');
 
-    // Defensive post-run cancellation check (Finding 6), the sibling of the one
-    // in estimate-handler.ts.
-    //
-    // The catch below is the ONLY place `isCancel` runs, and a cancel landing
-    // DURING the pool can never enter it: `mapPool` does not reject (it stores a
-    // throw in the result slot, utils/pool.ts) and `auditTriageFile` is
-    // documented never to throw — it turns a per-file cancel into an `{ error }`
-    // outcome. So the sweep fell straight through to the ranking below and
-    // handed the caller a NON-isError leaderboard — gate verdict included —
-    // computed over only the files that happened to finish before the stop.
-    // A partial gate is worse than no gate: `gate.passed` would be read as a
-    // verdict on the whole selection.
-    if (ctx?.signal?.aborted) return toolError('Operation cancelled.');
+      // Estimated memory one file's engine run will hold: one worker's cost
+      // times how many workers that file gets. Same formula the single-file
+      // audit uses for its own admission (Task 7); the watchdog's real-time
+      // trip, not this estimate, is what actually protects the machine.
+      const perFileCost = resources.workerCostBytes * resources.budget.perFileWorkers;
+      const admit = () => resources.watchdog.admit(perFileCost, ctx?.signal);
 
-    const { rows, errors, unaudited } = partitionOutcomes(outcomes);
+      // Governance lowers `poolSize` down to `resources.budget.fileConcurrency`
+      // (never raises it) and gates each file's start on free memory. A file
+      // the gate declines leaves its slot UNSET (utils/pool.ts: `results[i]` is
+      // never assigned, a sparse-array hole rather than an explicit
+      // `undefined`), so it is filled in below as `unaudited`, the same bucket
+      // a deadline miss already uses, rather than silently missing from the
+      // ranking. Read out with `Array.from` rather than `.map`: `.map` skips a
+      // hole entirely (it never invokes the callback for an unassigned
+      // index), which would leave the hole in the result too.
+      const rawOutcomes = await mapPool(
+        files,
+        resources.budget.fileConcurrency,
+        (file) => auditTriageFile(file, deps),
+        { admit },
+      );
+      const outcomes: TriageAuditOutcome[] = Array.from(
+        { length: files.length },
+        (_, i) => rawOutcomes[i] ?? { unaudited: files[i] },
+      );
 
-    const ranking = rows.slice().sort(compareTriageRows);
-    return triageResult(
-      ranking,
-      errors,
-      unaudited.sort(),
-      discovered,
-      skipped,
-      scopeNote,
-      minScore,
-      outputFormat,
-    );
+      // Defensive post-run cancellation check (Finding 6), the sibling of the one
+      // in estimate-handler.ts.
+      //
+      // The catch below is the ONLY place `isCancel` runs, and a cancel landing
+      // DURING the pool can never enter it: `mapPool` does not reject (it stores a
+      // throw in the result slot, utils/pool.ts) and `auditTriageFile` is
+      // documented never to throw — it turns a per-file cancel into an `{ error }`
+      // outcome. So the sweep fell straight through to the ranking below and
+      // handed the caller a NON-isError leaderboard — gate verdict included —
+      // computed over only the files that happened to finish before the stop.
+      // A partial gate is worse than no gate: `gate.passed` would be read as a
+      // verdict on the whole selection.
+      if (ctx?.signal?.aborted) return toolError('Operation cancelled.');
+
+      // Requeue once, at fileConcurrency 1, every file the watchdog stopped for
+      // memory. Skipped when the request is cancelled or the sweep's own
+      // wall-clock budget is already spent: starting a fresh engine run at
+      // either point would spend time or work nobody can use. A file that
+      // exhausts again (or whose requeue never got the chance to run) becomes
+      // an error row rather than vanishing (`partitionOutcomes` below).
+      const retryTargets = outcomes.flatMap((outcome, index) =>
+        'exhausted' in outcome ? [{ file: files[index], index }] : [],
+      );
+      if (
+        retryTargets.length > 0 &&
+        !ctx?.signal?.aborted &&
+        deadline.remainingMs(TRIAGE_CLEANUP_RESERVE_MS) > MIN_RETRY_BUDGET_MS
+      ) {
+        const retried = await mapPool(
+          retryTargets.map((t) => t.file),
+          1,
+          (file) => auditTriageFile(file, deps),
+          { admit },
+        );
+        retryTargets.forEach((target, i) => {
+          const outcome = retried[i];
+          // A declined admission on the retry itself leaves this slot
+          // undefined too; keep the original `{ exhausted }` marker rather
+          // than overwrite it with nothing, so it still becomes an error row
+          // below instead of disappearing.
+          if (outcome !== undefined) outcomes[target.index] = outcome;
+        });
+
+        if (ctx?.signal?.aborted) return toolError('Operation cancelled.');
+      }
+
+      const { rows, errors, unaudited } = partitionOutcomes(outcomes);
+
+      const ranking = rows.slice().sort(compareTriageRows);
+      return triageResult(
+        ranking,
+        errors,
+        unaudited.sort(),
+        discovered,
+        skipped,
+        scopeNote,
+        minScore,
+        outputFormat,
+        resources.report(),
+      );
+    } finally {
+      resources.dispose();
+    }
   } catch (error: unknown) {
     // Nothing inside a sweep is allowed to escape as a raw rejection: the MCP
     // SDK turns a thrown error into a JSON-RPC protocol error, which is a
@@ -318,6 +437,7 @@ function triageResult(
   scopeNote: string | undefined,
   minScore: number | undefined,
   outputFormat: 'text' | 'json',
+  resources?: ResourcesPayload,
 ): CallToolResult {
   const payload = buildTriagePayload(
     ranking,
@@ -327,6 +447,7 @@ function triageResult(
     scopeNote,
     minScore,
     unaudited,
+    resources,
   );
   const text = outputFormat === 'text' ? formatTriageAsText(payload) : JSON.stringify(payload);
   return {

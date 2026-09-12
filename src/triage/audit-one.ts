@@ -27,12 +27,14 @@ import { mintRunId } from '../utils/run-cache.js';
 import { buildResultPayload } from '../core/format.js';
 import { displayMutationScore, hasNoMutableLogic } from '../core/score-semantics.js';
 import { mapCreateSandboxError, failureText } from '../core/tool-result.js';
+import { isResourceExhausted } from '../utils/resources/errors.js';
 import type { MutationResult } from '../engines/base.js';
 import type { ChaosConfig } from '../utils/config-loader.js';
 import type { ToolContext } from '../core/tool-context.js';
 import type { ToolArgs } from '../core/tool-args-validation.js';
 import type { AuditDeadline } from '../utils/deadline.js';
 import type { TriageRow, TriageError } from '../core/triage.js';
+import type { Watchdog } from '../utils/resources/watchdog.js';
 
 /**
  * What one file contributed to the sweep: a ranked row, a per-file failure, or
@@ -46,11 +48,17 @@ import type { TriageRow, TriageError } from '../core/triage.js';
  * file, and after provisioning (diff scoping + the sandbox copy) spent what was
  * left, which is why the budget is re-read once the sandbox exists rather than
  * trusted from before it.
+ *
+ * "Exhausted" (Task 8) is its own third kind of nothing-measured: the watchdog
+ * stopped this file's run to protect the machine's memory. The sweep gets one
+ * chance to requeue it at a lower concurrency before it becomes an error row;
+ * see `handleTriageCall`'s retry pass.
  */
 export type TriageAuditOutcome =
   | { row: TriageRow }
   | { error: TriageError }
-  | { unaudited: string };
+  | { unaudited: string }
+  | { exhausted: string };
 
 /** Everything one file's audit needs from the sweep that owns it. */
 export interface TriageFileDeps {
@@ -89,6 +97,20 @@ export interface TriageFileDeps {
   ctx?: ToolContext;
   /** Advance the sweep's progress counter (called once per file, always). */
   onProgress: () => void;
+  /**
+   * Memory watchdog this sweep is governed by (Task 8), used to register each
+   * file's engine run so a memory stop can abort it without ever touching the
+   * request's own `ctx.signal`. Optional so a unit test can drive
+   * `auditTriageFile` directly, without a full resource context behind it;
+   * every production caller (`handleTriageCall`) supplies one.
+   */
+  watchdog?: Watchdog;
+  /**
+   * Environment for the mutation tool's OWN inner worker pool, sized from the
+   * resolved memory budget (Task 8's `resources.innerEnv`). Forwarded to the
+   * engine verbatim via `buildPerFileArgs`; absent means "no cap".
+   */
+  innerEnv?: NodeJS.ProcessEnv;
 }
 
 /** The line scope for one file, plus the note explaining it on the row. */
@@ -388,6 +410,11 @@ function buildPerFileArgs(
         ? deps.perFileConcurrency
         : Math.min(deps.perFileConcurrency, ownDefault);
   }
+  // Memory-budget cap for the engine's OWN inner worker pool (Task 8), the
+  // same field the single-file audit forwards on `args.innerEnv`. Only set
+  // when the sweep actually has one, so a caller with no resource context
+  // behind it gets today's uncapped behaviour.
+  if (deps.innerEnv !== undefined) perFileArgs.innerEnv = deps.innerEnv;
   return perFileArgs;
 }
 
@@ -400,6 +427,11 @@ export async function auditTriageFile(
   deps: TriageFileDeps,
 ): Promise<TriageAuditOutcome> {
   const ctx = deps.ctx;
+  // The per-file controller the watchdog aborts on a memory stop (Task 8).
+  // Declared here, outside the try that creates it, so the catch below can
+  // still read `.signal.reason` off it; stays `undefined` for a failure that
+  // happened before the engine was ever reached.
+  let engineController: AbortController | undefined;
   try {
     // Skip not-yet-started files quickly when already cancelled. (Task 6)
     if (ctx?.signal?.aborted) {
@@ -454,6 +486,8 @@ export async function auditTriageFile(
       return { error: { file, error: sandboxErrorText(error, file, ctx) } };
     }
     let result: MutationResult;
+    let handle: { release(): void } | undefined;
+    let abortRequest: (() => void) | undefined;
     try {
       // Re-read the budget now that provisioning is done (audit Med#9). The
       // first read happened before up to four git calls (each clamped to
@@ -471,6 +505,17 @@ export async function auditTriageFile(
       const engineBudgetMs = deps.deadline.remainingMs(deps.cleanupReserveMs);
       if (engineBudgetMs < MIN_ENGINE_BUDGET_MS) return { unaudited: file };
       const perFileArgs = buildPerFileArgs(engineBudgetMs, projectType, deps);
+      // Linked to the request's own signal (a user cancel must still stop this
+      // file) but distinct from it, so a watchdog-triggered abort never flips
+      // `ctx.signal.aborted` and is never mistaken for a user cancel in the
+      // catch below. Mirrors the single-file audit's wiring in handler.ts
+      // (Task 7); `deps.watchdog` is undefined only for a caller exercising
+      // this function without a sweep behind it, in which case registration is
+      // a no-op and this file behaves exactly as it did before Task 8.
+      engineController = new AbortController();
+      abortRequest = () => engineController?.abort(ctx?.signal?.reason);
+      ctx?.signal?.addEventListener('abort', abortRequest, { once: true });
+      handle = deps.watchdog?.register(engineController);
       result = await auditFile({
         targetFile,
         env,
@@ -481,10 +526,13 @@ export async function auditTriageFile(
         workDir: sandbox.workDir,
         prebuildCmd,
         lineRanges: scope.lineRanges,
-        signal: ctx?.signal, // Task 6: thread abort signal so in-flight subprocesses are killed
+        // Task 6 abort + Task 8 memory stop share this one signal.
+        signal: engineController.signal,
       });
     } finally {
       sandbox.cleanup();
+      handle?.release();
+      if (abortRequest) ctx?.signal?.removeEventListener('abort', abortRequest);
     }
 
     // Apply equivalent-mutant suppression before building the row. The key is
@@ -536,6 +584,15 @@ export async function auditTriageFile(
       ),
     };
   } catch (error: unknown) {
+    // A memory stop must never read as a user cancel, so this is checked
+    // BEFORE the cancel handling below (Task 8): the killed child process
+    // misreads an aborted run the same way whether the watchdog or the user
+    // caused it, and `isResourceExhausted` is the one thing that tells them
+    // apart. `engineController` is undefined for a failure that happened
+    // before the engine started, in which case this is always false.
+    if (isResourceExhausted(engineController?.signal.reason)) {
+      return { exhausted: file };
+    }
     // An in-flight cancel (subprocess killed by the abort signal →
     // ExecFailureError('ABORTED'), OR the signal flipped JUST as we entered
     // this catch) must surface as 'Operation cancelled.' — NOT as the raw

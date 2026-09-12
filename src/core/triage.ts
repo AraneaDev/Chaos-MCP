@@ -1,6 +1,8 @@
 import type { Severity } from './enrich.js';
 import { suppressionDriftNotes, type LineGroup } from './score-semantics.js';
 import { evaluateGate } from './gate.js';
+import { formatResourcesLine } from './format.js';
+import type { ResourcesPayload } from './resource-context.js';
 
 export interface TriageRow {
   file: string;
@@ -139,6 +141,13 @@ export interface TriagePayload {
      */
     notGraded: { errored: number; unaudited: number };
   };
+  /**
+   * How this sweep sized itself to the machine's memory (Task 8). Mirrors the
+   * single-file audit's `resources` block (Task 7) so the two tools report the
+   * same shape; absent only for the empty-discovery short-circuit, which never
+   * builds a resource context because there is nothing to run.
+   */
+  resources?: ResourcesPayload;
 }
 
 export function buildTriagePayload(
@@ -149,6 +158,7 @@ export function buildTriagePayload(
   scopeNote?: string,
   minScore?: number,
   unaudited: string[] = [],
+  resources?: ResourcesPayload,
 ): TriagePayload {
   const payload: TriagePayload = {
     mode: 'triage',
@@ -162,6 +172,7 @@ export function buildTriagePayload(
     errors,
     note: note(rows, discovered, skipped, !!scopeNote),
   };
+  if (resources) payload.resources = resources;
   if (unaudited.length > 0) {
     payload.summary.filesUnaudited = unaudited.length;
     payload.unaudited = unaudited;
@@ -305,6 +316,7 @@ export function formatTriageAsText(payload: TriagePayload): string {
     `Chaos-MCP Triage: ${rows.length} of ${discovered} files audited` +
       (skipped > 0 ? ` (${skipped} skipped)` : ''),
   );
+  if (payload.resources) lines.push(formatResourcesLine(payload.resources));
   if (scopeNote) lines.push(scopeNote);
   if (rows.length > 0) {
     lines.push('Weakest first (score  survived/total  file):');

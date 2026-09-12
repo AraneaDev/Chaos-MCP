@@ -439,8 +439,11 @@ function formatGateLine(gate: GateResult, displayedScore: string): string {
 /**
  * One-line summary of how this run sized itself to the machine's memory.
  * Example: `Resources: 3 files x 2 workers, 5.9 GB free (host)`.
+ *
+ * Exported so `core/triage.ts` can render the identical line for a sweep
+ * (Task 8) instead of growing its own copy that could drift from this one.
  */
-function formatResourcesLine(resources: ResourcesPayload): string {
+export function formatResourcesLine(resources: ResourcesPayload): string {
   const gbFree = (resources.availableAtStartBytes / 1024 ** 3).toFixed(1);
   return (
     `Resources: ${resources.fileConcurrency} files x ${resources.perFileWorkers} workers, ` +

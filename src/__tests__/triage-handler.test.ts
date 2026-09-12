@@ -1641,17 +1641,29 @@ describe('handleTriageCall ctx: progress + cancellation', () => {
     expect(mockAuditFile).not.toHaveBeenCalled();
   });
 
-  it('threads ctx.signal into each auditFile call as a top-level signal field', async () => {
+  it('threads ctx.signal into each auditFile call, linked through a per-file controller', async () => {
+    // Task 8: `auditTriageFile` now registers a per-file `AbortController` with
+    // the sweep's watchdog and passes ITS signal to `auditFile`, so a memory
+    // stop can abort one file without ever touching `ctx.signal` (and without
+    // ever being mistaken for a user cancel). The object is no longer
+    // `ctx.signal` itself, but a cancel on `ctx.signal` still has to reach the
+    // engine, so that link is what this now asserts instead of reference
+    // identity.
     mockDiscover.mockReturnValue({ files: ['a.ts'], discovered: 1, skipped: 0 });
-    mockAuditFile.mockResolvedValue(mrOf({}));
     const controller = new AbortController();
+    let passedSignal: AbortSignal | undefined;
+    mockAuditFile.mockImplementation(async (input) => {
+      passedSignal = input.signal;
+      controller.abort();
+      return mrOf({});
+    });
     const ctx = { signal: controller.signal };
 
     await handleTriageCall(req({ paths: ['src'] }), undefined, ctx);
 
-    expect(mockAuditFile).toHaveBeenCalledWith(
-      expect.objectContaining({ signal: controller.signal }),
-    );
+    expect(passedSignal).toBeDefined();
+    expect(passedSignal).not.toBe(controller.signal);
+    expect(passedSignal?.aborted).toBe(true);
   });
 });
 
