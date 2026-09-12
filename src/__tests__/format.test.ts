@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { formatResultAsText, buildResultPayload, type ResultPayload } from '../core/format.js';
+import {
+  formatResultAsText,
+  formatResourcesLine,
+  buildResultPayload,
+  type ResultPayload,
+} from '../core/format.js';
+import type { ResourcesPayload } from '../core/resource-context.js';
 import {
   hasNoMutableLogic,
   displayMutationScore,
@@ -1062,5 +1068,34 @@ describe('formatResultAsText — un-applied suppressions', () => {
   it('reports orphaned suppressions with the action to take', () => {
     const text = formatResultAsText(result(), undefined, { orphanedSuppressions: 2 });
     expect(text).toContain('Note: 2 suppression(s) matched no surviving mutant this run');
+  });
+});
+
+describe('formatResourcesLine', () => {
+  const resources = (overrides: Partial<ResourcesPayload> = {}): ResourcesPayload => ({
+    availableAtStartBytes: 0,
+    limitBytes: 0,
+    source: 'unavailable',
+    fileConcurrency: 1,
+    perFileWorkers: 2,
+    overBudget: false,
+    watchdogTrips: 0,
+    ...overrides,
+  });
+
+  it('reports the free-memory figure for a source that could read the machine', () => {
+    const line = formatResourcesLine(
+      resources({ source: 'host', availableAtStartBytes: 4 * 1024 ** 3 }),
+    );
+    expect(line).toBe('Resources: 1 files x 2 workers, 4.0 GB free (host)');
+  });
+
+  it('never reports "0.0 GB free" for an unavailable probe (MINOR 6)', () => {
+    // A probe that could not read the machine reports the availableBytes:0
+    // sentinel (memory-probe.ts), which reads as CONFIRMED exhaustion once
+    // formatted as "0.0 GB free" rather than "the probe could not tell".
+    const line = formatResourcesLine(resources({ source: 'unavailable' }));
+    expect(line).not.toContain('0.0 GB free');
+    expect(line).toBe('Resources: 1 files x 2 workers, free memory unknown (unavailable)');
   });
 });

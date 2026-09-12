@@ -190,6 +190,42 @@ export function resolveAuditTimeoutMs(
 }
 
 /**
+ * The concurrency that would reach the engine WITHOUT resource governance: an
+ * explicit tool argument, else the matching engine config section, else the
+ * global config default. `undefined` when none of those supplied a valid value
+ * (an invalid one, e.g. a float or an out-of-range integer, is rejected here
+ * exactly as {@link buildRunOptions} rejects it, not silently accepted).
+ *
+ * PHP is the one exception to that precedence: `cfg.infection.threads`, when
+ * it is a number, IS what reaches the engine. `PhpEngine` (`options?.phpThreads
+ * ?? …`) prefers it over both the inner-pool cap and `concurrency`, so a
+ * configured `infection.threads` overrides even an explicit tool-call
+ * `concurrency` in the real run, and this must say so too or the budget below
+ * sizes for a worker count Infection never actually uses. `infection.threads`
+ * has no `concurrency` field of its own for {@link sectionConcurrency} to find
+ * (only `threads`), which is why this was missed before. The `'max'` sentinel
+ * is left alone: it asks Infection for ITS OWN CPU-derived default, not a
+ * fixed number governance could size against, same as no setting at all.
+ *
+ * `core/resource-context.ts` treats this value as the EXPLICIT setting that
+ * always wins over its own cpu/memory baseline (only flagging `overBudget`
+ * when it exceeds what memory allows). Only when this is `undefined` does it
+ * fall back to a cpu-derived baseline that memory may still lower.
+ */
+export function resolveConfiguredConcurrency(
+  args: ToolArgs,
+  cfg: ChaosConfig,
+  projectType: ProjectType,
+): number | undefined {
+  if (projectType === 'php' && typeof cfg.infection?.threads === 'number') {
+    return cfg.infection.threads;
+  }
+  const configKey = ENGINE_REGISTRY[projectType as SupportedProjectType]?.configKey;
+  const engCfg = configKey ? cfg[configKey] : undefined;
+  return resolveConcurrency(args.concurrency, sectionConcurrency(engCfg) ?? cfg.concurrency);
+}
+
+/**
  * Assemble {@link RunOptions} from tool-call arguments merged with config
  * defaults. Tool-call arguments always take precedence over config values.
  */
@@ -296,6 +332,13 @@ export function buildRunOptions(
     phpThreads: cfg.infection?.threads !== undefined ? String(cfg.infection.threads) : undefined,
     phpTestFrameworkOptions: cfg.infection?.testFrameworkOptions,
     phpOnlyCoveringTestCases: cfg.infection?.onlyCoveringTestCases,
+    // Memory-budget caps for the mutation tool's OWN inner worker pool, built by
+    // engines/inner-pool.ts (buildInnerEnv) from the resolved Budget and handed
+    // in on the tool-args bag. Forwarded verbatim; absent means "no cap".
+    innerEnv:
+      typeof args.innerEnv === 'object' && args.innerEnv !== null
+        ? (args.innerEnv as NodeJS.ProcessEnv)
+        : undefined,
   };
 }
 

@@ -513,6 +513,19 @@ describe('buildRunOptions', () => {
         .timeoutMs,
     ).toBe(9);
   });
+
+  it('forwards innerEnv from the tool-args bag verbatim, else leaves it undefined', () => {
+    expect(
+      buildRunOptions(
+        { innerEnv: { RUST_TEST_THREADS: '2', CARGO_BUILD_JOBS: '2' } },
+        {},
+        env(),
+        '/sb',
+        'rust',
+      ).innerEnv,
+    ).toEqual({ RUST_TEST_THREADS: '2', CARGO_BUILD_JOBS: '2' });
+    expect(buildRunOptions({}, {}, env(), '/sb', 'typescript').innerEnv).toBeUndefined();
+  });
 });
 
 describe('resolvePrebuildCommand', () => {

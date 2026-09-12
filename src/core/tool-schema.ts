@@ -443,6 +443,32 @@ export const TOOL_DEFINITION = {
       batchesPlanned: { type: 'integer' },
       stoppedReason: { type: 'string', enum: ['time_budget_exhausted'] },
       note: { type: 'string' },
+      // How this run sized itself to the machine's memory (Task 7). Always
+      // populated: `availableAtStartBytes`/`limitBytes`/`source` describe the
+      // probe, `fileConcurrency`/`perFileWorkers` the resolved budget,
+      // `overBudget` whether an explicit request exceeded it, and
+      // `watchdogTrips` how many times the sampler stopped the newest run.
+      resources: {
+        type: 'object',
+        properties: {
+          availableAtStartBytes: { type: 'integer' },
+          limitBytes: { type: 'integer' },
+          source: { type: 'string', enum: ['host', 'cgroup', 'unavailable'] },
+          fileConcurrency: { type: 'integer' },
+          perFileWorkers: { type: 'integer' },
+          overBudget: { type: 'boolean' },
+          watchdogTrips: { type: 'integer' },
+        },
+        required: [
+          'availableAtStartBytes',
+          'limitBytes',
+          'source',
+          'fileConcurrency',
+          'perFileWorkers',
+          'overBudget',
+          'watchdogTrips',
+        ],
+      },
       // ── Verify-mode fields (present only when a baseline/runId was supplied).
       // Verify responses carry a delta shape instead of the audit report; the
       // `oneOf` below discriminates the two required-sets so a strict MCP client
@@ -455,8 +481,21 @@ export const TOOL_DEFINITION = {
       newSurvivors: { type: 'array', items: MUTANT_KEY_SCHEMA },
     },
     oneOf: [
-      // Standard audit report.
-      { required: ['target', 'mutationScore', 'summary', 'survivors', 'noCoverage', 'note'] },
+      // Standard audit report. `resources` is always populated by
+      // `formatStandardOutput` (audit/audit-output.ts: `StandardOutputOptions.
+      // resources` is non-optional), unlike the verify branch below, which
+      // intentionally omits it.
+      {
+        required: [
+          'target',
+          'mutationScore',
+          'summary',
+          'survivors',
+          'noCoverage',
+          'note',
+          'resources',
+        ],
+      },
       // Verify-mode delta.
       {
         required: [
@@ -639,6 +678,33 @@ export const TRIAGE_TOOL_DEFINITION = {
       stoppedReason: { type: 'string', enum: ['time_budget_exhausted'] },
       scopeNote: { type: 'string' },
       note: { type: 'string' },
+      // How this sweep sized itself to the machine's memory (Task 8), the same
+      // shape audit_code_resilience reports (Task 7): `availableAtStartBytes`/
+      // `limitBytes`/`source` describe the probe, `fileConcurrency`/
+      // `perFileWorkers` the resolved budget, `overBudget` whether an explicit
+      // request exceeded it, and `watchdogTrips` how many times the sampler
+      // stopped the newest run.
+      resources: {
+        type: 'object',
+        properties: {
+          availableAtStartBytes: { type: 'integer' },
+          limitBytes: { type: 'integer' },
+          source: { type: 'string', enum: ['host', 'cgroup', 'unavailable'] },
+          fileConcurrency: { type: 'integer' },
+          perFileWorkers: { type: 'integer' },
+          overBudget: { type: 'boolean' },
+          watchdogTrips: { type: 'integer' },
+        },
+        required: [
+          'availableAtStartBytes',
+          'limitBytes',
+          'source',
+          'fileConcurrency',
+          'perFileWorkers',
+          'overBudget',
+          'watchdogTrips',
+        ],
+      },
       gate: {
         type: 'object',
         properties: {

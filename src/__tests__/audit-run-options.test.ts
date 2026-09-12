@@ -5,10 +5,12 @@ import { join } from 'path';
 import {
   isPrebuildAllowed,
   resolveGatedPrebuild,
+  resolveConfiguredConcurrency,
   STRYKER_ONLY_OPTIONS,
 } from '../audit/run-options.js';
 import type { EnvironmentInfo } from '../utils/project-detector.js';
 import type { ToolArgs } from '../core/tool-args-validation.js';
+import type { ChaosConfig } from '../utils/config-loader.js';
 
 /**
  * `audit/run-options.ts` had no test file, and the code it holds includes the gate on
@@ -132,5 +134,40 @@ describe('STRYKER_ONLY_OPTIONS', () => {
     // validateMutatorAllowlistArg rejects the argument unconditionally, before
     // any engine is chosen, so it can never reach ignoredOptionsFor.
     expect(STRYKER_ONLY_OPTIONS).not.toContain('mutatorAllowlist');
+  });
+});
+
+describe('resolveConfiguredConcurrency, Infection threads (MAJOR 5)', () => {
+  it('folds a numeric cfg.infection.threads into the resolved concurrency', () => {
+    // `PhpEngine.run` prefers `phpThreads` (built from `cfg.infection.threads`,
+    // audit/run-options.ts) over both the inner-pool cap and `concurrency`, so
+    // this IS the worker count Infection will actually run with. Before this
+    // fix, `resolveConfiguredConcurrency` never looked at `infection.threads`
+    // (only `sectionConcurrency`, which reads a `.concurrency` field
+    // `InfectionConfig` does not have), so the budget sized for a smaller
+    // number than Infection actually started.
+    const cfg: ChaosConfig = { infection: { threads: 6 } };
+    expect(resolveConfiguredConcurrency({}, cfg, 'php')).toBe(6);
+  });
+
+  it('lets infection.threads win over a tool-call concurrency argument, matching PhpEngine', () => {
+    // php.ts: `options?.phpThreads ?? ... ?? options?.concurrency ?? 'max'`.
+    // The config-file setting beats a tool-call argument in the real run, so
+    // the resolved "what reaches the engine" figure must agree.
+    const cfg: ChaosConfig = { infection: { threads: 6 } };
+    expect(resolveConfiguredConcurrency({ concurrency: 3 }, cfg, 'php')).toBe(6);
+  });
+
+  it('leaves the "max" sentinel to fall through to the normal resolution', () => {
+    // "max" asks Infection for its own CPU-derived default, not a fixed number
+    // governance could size against, same as no setting at all.
+    const cfg: ChaosConfig = { infection: { threads: 'max' } };
+    expect(resolveConfiguredConcurrency({ concurrency: 3 }, cfg, 'php')).toBe(3);
+    expect(resolveConfiguredConcurrency({}, cfg, 'php')).toBeUndefined();
+  });
+
+  it('leaves other engines alone', () => {
+    const cfg: ChaosConfig = { infection: { threads: 6 }, rust: { concurrency: 2 } };
+    expect(resolveConfiguredConcurrency({}, cfg, 'rust')).toBe(2);
   });
 });

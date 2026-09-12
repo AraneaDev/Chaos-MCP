@@ -225,6 +225,33 @@ export interface EngineDescriptor {
    * the exact factually-false note this replaced (see `unclassifiedNote`).
    */
   unclassifiedMutatorNote?: string;
+
+  /**
+   * Rough peak memory ONE worker of this engine holds, in bytes, used to lower
+   * concurrency to fit the machine (utils/resources/budget.ts).
+   *
+   * Placeholder values seeded 2026-09-12. Task 10 of the resource-governance
+   * plan replaced TypeScript, Rust and PHP with a measured figure each,
+   * cited on the field below. Python is still the seeded placeholder: this
+   * repo has no Python fixture to measure against, so there was nothing to
+   * run cosmic-ray on.
+   */
+  workerCostBytes: number;
+
+  /**
+   * What one FILE costs before any mutant worker runs at all, in bytes: for
+   * StrykerJS this is the parent process plus its dry run. Added by the
+   * 2026-09-12 amendment because a per-worker-only cost cannot express that
+   * fewer workers spread over more files can cost MORE than more workers over
+   * fewer files, since file count then carries no cost of its own.
+   *
+   * Only TypeScript has a two-point measurement (see the field below), so
+   * only TypeScript declares a nonzero figure here. Every other engine
+   * declares `0`, which folds this term out of `budget.ts`'s sizing and
+   * leaves that engine's existing `workerCostBytes` doing exactly what it did
+   * before this amendment.
+   */
+  fileFixedCostBytes: number;
 }
 
 /**
@@ -251,6 +278,18 @@ export const ENGINE_REGISTRY: Record<SupportedProjectType, EngineDescriptor> = {
     // The caller still rejects a name that is not in `MUTATOR_SEMANTICS`, which
     // is what keeps a custom Stryker plugin's mutator out of the table.
     canonicalizeMutator: (rawMutator) => rawMutator,
+    // Amendment, 2026-09-12: two real sweeps on the 8-core / 8 GB box gave a
+    // pair of equations solvable for a fixed-plus-per-worker split instead of
+    // the earlier per-worker-only guess:
+    //   2 files x 3 workers (6 workers total): peak tree RSS 3547 MB
+    //   4 files x 1 worker  (4 workers total): peak tree RSS 4665 MB
+    // Solving the pair gives about 860 MB fixed per file plus about 304 MB
+    // per worker; rounded up to 900 MB and 320 MB, which predicts 3720 MB and
+    // 4880 MB for those same two sweeps, both slightly above what was
+    // observed, which is the safe direction for a figure that only ever
+    // lowers concurrency.
+    fileFixedCostBytes: 900 * 1024 ** 2,
+    workerCostBytes: 320 * 1024 ** 2,
   },
   python: {
     make: () => new PythonEngine(),
@@ -263,6 +302,15 @@ export const ENGINE_REGISTRY: Record<SupportedProjectType, EngineDescriptor> = {
     label: 'Python',
     estimateFidelity: 'approx',
     canonicalizeMutator: canonicalizePythonMutator,
+    // Still a placeholder. This repo has no Python fixture to measure
+    // against (no e2e-python test, and no .py file under src/__tests__ or
+    // tests), so Task 10's measurement pass had nothing to run cosmic-ray on.
+    // cosmic-ray itself is installed on this machine; the gap is the fixture.
+    workerCostBytes: 200 * 1024 ** 2,
+    // No two-point measurement exists for this engine yet, so the per-worker
+    // figure above still absorbs the fixed per-file cost, same as before the
+    // 2026-09-12 amendment.
+    fileFixedCostBytes: 0,
   },
   rust: {
     make: () => new RustEngine(),
@@ -290,6 +338,18 @@ export const ENGINE_REGISTRY: Record<SupportedProjectType, EngineDescriptor> = {
     unclassifiedMutatorNote:
       'some mutants could not be classified — cargo-mutants reports a free-text description rather than a per-mutant operator, and those descriptions were not in a shape this server recognises (severity reported as "unknown"). The five shapes it does read are an operator swap, a deleted `!`, a deleted match arm, a match guard forced to a constant, and a whole-body replacement.',
     canonicalizeMutator: canonicalizeRustMutator,
+    // Measured on the same 8-core / 8 GB box against a termaxa fixture file
+    // (src/notify.rs, branch chaos-mcp-testing, 8 mutants). cargo-mutants'
+    // own default capped the job at 2 workers. Observed peak process-tree
+    // RSS was 1693 MB, i.e. ~850 MB per worker; a cargo job carries a full
+    // build, which is why this is the heaviest of the four engines.
+    // Caveat: a single measurement of one small file, and it moved DOWN from
+    // the previous placeholder, which permits MORE concurrent workers.
+    workerCostBytes: 850 * 1024 ** 2,
+    // No two-point measurement exists for this engine yet, so the per-worker
+    // figure above still absorbs the fixed per-file cost, same as before the
+    // 2026-09-12 amendment.
+    fileFixedCostBytes: 0,
   },
   php: {
     make: () => new PhpEngine(),
@@ -302,6 +362,18 @@ export const ENGINE_REGISTRY: Record<SupportedProjectType, EngineDescriptor> = {
     label: 'PHP',
     estimateFidelity: 'approx',
     canonicalizeMutator: canonicalizePhpMutator,
+    // Measured on the same box against the Calculator.php fixture also used
+    // by e2e-php.test.ts (3 mutants). That fixture is too small to keep more
+    // than one real worker busy, so concurrency was forced to 1 rather than
+    // divided out of a larger requested worker count. Observed peak
+    // process-tree RSS was 180 MB for that single worker, rounded up to the
+    // existing 200 MB figure, which the measurement now confirms rather than
+    // guesses.
+    workerCostBytes: 200 * 1024 ** 2,
+    // No two-point measurement exists for this engine yet, so the per-worker
+    // figure above still absorbs the fixed per-file cost, same as before the
+    // 2026-09-12 amendment.
+    fileFixedCostBytes: 0,
   },
 };
 

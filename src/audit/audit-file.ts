@@ -157,6 +157,17 @@ export async function auditFile(input: AuditFileInput): Promise<MutationResult> 
           timeoutMs: runOptions.timeoutMs,
           signal: input.signal,
           killTree: true,
+          // Same inner-pool caps the mutation tool itself receives
+          // (runOptions.innerEnv, built by buildInnerEnv from the resolved
+          // Budget), merged the same way engines/rust.ts merges them: shell
+          // spawning replaces the whole child environment when `env` is set
+          // rather than merging it with process.env, so a bare innerEnv would
+          // strip PATH and the prebuild would fail to launch at all. Without
+          // this, the prebuild (a cold `cargo check` that compiles every
+          // dependency, since the sandbox excludes target/) runs ungoverned
+          // inside the governed window, uncapped by the same watchdog that
+          // may then stop the run it just paid for.
+          env: runOptions.innerEnv ? { ...process.env, ...runOptions.innerEnv } : undefined,
         };
         if (executor) await executor.runCommand(prebuildCmd, prebuildOptions);
         else await runShellCommand(prebuildCmd, prebuildOptions);

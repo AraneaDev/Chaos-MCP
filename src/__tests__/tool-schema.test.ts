@@ -508,6 +508,7 @@ describe('audit outputSchema ↔ ResultPayload parity', () => {
     batchesCompleted: true,
     batchesPlanned: true,
     stoppedReason: true,
+    resources: true,
   };
 
   /**
@@ -560,6 +561,7 @@ describe('audit outputSchema ↔ ResultPayload parity', () => {
       'survivors',
       'noCoverage',
       'note',
+      'resources',
     ]);
     for (const field of oneOf[0].required) {
       expect(PAYLOAD_FIELDS[field as keyof ResultPayload]).toBe(true);
@@ -867,6 +869,7 @@ describe('output schema contracts', () => {
       'survivors',
       'noCoverage',
       'note',
+      'resources',
     ]);
     expect(oneOf[1].required).toEqual([
       'target',

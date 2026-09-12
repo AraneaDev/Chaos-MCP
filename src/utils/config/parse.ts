@@ -7,6 +7,7 @@ import {
   CONTAINER_FIELD_RULES,
   ENGINE_CONFIG_SECTIONS,
   GLOBAL_FIELD_RULES,
+  RESOURCES_FIELD_RULES,
   SANDBOX_FIELD_RULES,
 } from './rules.js';
 
@@ -76,6 +77,14 @@ export function parseSandboxConfig(raw: unknown): SandboxConfig | undefined {
   return accepted > 0 ? (result as SandboxConfig) : undefined;
 }
 
+/** Parse the resources section. Same shape as {@link parseSandboxConfig}. */
+export function parseResourcesConfig(raw: unknown): ChaosConfig['resources'] | undefined {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return undefined;
+  const result: Record<string, unknown> = {};
+  const accepted = applyRules(raw as Record<string, unknown>, RESOURCES_FIELD_RULES, result);
+  return accepted > 0 ? (result as ChaosConfig['resources']) : undefined;
+}
+
 /**
  * Build a ChaosConfig from a raw parsed config object.
  * @internal
@@ -96,6 +105,7 @@ export function buildConfig(raw: Record<string, unknown>): ChaosConfig {
   }
   result.container = parseContainerConfig(raw.container);
   result.sandbox = parseSandboxConfig(raw.sandbox);
+  result.resources = parseResourcesConfig(raw.resources);
 
   return result;
 }

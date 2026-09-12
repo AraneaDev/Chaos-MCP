@@ -396,6 +396,14 @@ export interface RunOptions {
    * **PHP (Infection) only.**
    */
   phpOnlyCoveringTestCases?: boolean;
+
+  /**
+   * Environment for the mutation tool's OWN inner worker pool, built by
+   * engines/inner-pool.ts from the memory budget. Rust receives
+   * RUST_TEST_THREADS and CARGO_BUILD_JOBS; PHP receives CHAOS_PHP_THREADS,
+   * which bounds `--threads`. Absent means "no cap", which is today's behaviour.
+   */
+  innerEnv?: NodeJS.ProcessEnv;
 }
 
 /**

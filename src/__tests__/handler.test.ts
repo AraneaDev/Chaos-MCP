@@ -93,6 +93,17 @@ vi.mock('../utils/logger.js', () => ({
   warn: vi.fn(),
 }));
 
+// Real by default (every other test in this file relies on the real budget
+// math), overridden per-test where a deterministic concurrency figure matters
+// (see the H6 concurrency-rejection tests below): the real probe/cpu count
+// otherwise makes the governed default vary by machine.
+vi.mock('../core/resource-context.js', async () => {
+  const actual = await vi.importActual<typeof import('../core/resource-context.js')>(
+    '../core/resource-context.js',
+  );
+  return { ...actual, createResourceContext: vi.fn(actual.createResourceContext) };
+});
+
 import { handleToolCall } from '../index.js';
 import { validateToolArgs } from '../handler.js';
 import { mapCreateSandboxError } from '../core/tool-result.js';
@@ -108,6 +119,9 @@ import { applyAndCountSuppressions } from '../audit/suppression-io.js';
 import { workspaceHasPythonTests } from '../core/test-file.js';
 import { computeScope } from '../audit/scope.js';
 import { AuditDeadline } from '../utils/deadline.js';
+import { createResourceContext } from '../core/resource-context.js';
+import { resolveCargoJobs } from '../engines/rust/args.js';
+import { cpus } from 'node:os';
 
 const MockTSEngine = vi.mocked(TypeScriptEngine);
 const MockRustEngine = vi.mocked(RustEngine);
@@ -120,6 +134,7 @@ const mockExistsSync = vi.mocked(existsSync);
 const mockComputeChangedRanges = vi.mocked(computeChangedRanges);
 const mockApplySuppressions = vi.mocked(applyAndCountSuppressions);
 const mockComputeScope = vi.mocked(computeScope);
+const mockCreateResourceContext = vi.mocked(createResourceContext);
 
 function makeRequest(name: string, args: Record<string, unknown>): CallToolRequest {
   return {
@@ -229,11 +244,14 @@ describe('handleToolCall', () => {
 
     expect(response.isError).toBeUndefined();
     expect(mockRun).toHaveBeenCalledWith('src/x.ts', expect.objectContaining({}));
+    // `signal` is the governed controller's own signal (IMPORTANT 5: sandbox
+    // creation now happens inside the governed window), not `ctx?.signal`
+    // directly, no `ctx` was passed here, but a controller always exists.
     expect(mockCreateSandbox).toHaveBeenCalledWith(
       'src/x.ts',
       nestedRoot,
       undefined,
-      expect.objectContaining({ signal: undefined }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
   });
 
@@ -396,6 +414,12 @@ describe('handleToolCall', () => {
     expect((response.content[0] as { text: string }).text).toContain(
       'Failed to provision sandbox isolation',
     );
+    // Gap 1: mapCreateSandboxError is called with a resources context already
+    // resolved at this point (it is created before sandbox provisioning), so
+    // the failure must carry the same governance line a success would.
+    expect((response.content[0] as { text: string }).text).toMatch(
+      /Resources: \d+ files? x \d+ workers?/,
+    );
   });
 
   it('cleans up sandbox after engine throws', async () => {
@@ -424,8 +448,14 @@ describe('handleToolCall', () => {
     const response = await handleToolCall(request);
 
     expect(response.isError).toBe(true);
-    expect((response.content[0] as { text: string }).text).toBe(
-      'Chaos Engine Halted: Stryker crashed',
+    // Gap 2: an ordinary engine failure (not a watchdog stop, not a cancel, not
+    // a prebuild failure) is the failure mode a user hits most often, and it
+    // reaches handler.ts's OUTER catch via runEngine's fallthrough rethrow, at
+    // a point where the resources context is already resolved. The governance
+    // block must be reported here too, not just on the branches that catch a
+    // failure closer to its source.
+    expect((response.content[0] as { text: string }).text).toMatch(
+      /^Chaos Engine Halted: Stryker crashed\nResources: \d+ files? x \d+ workers?/,
     );
     expect(mockCleanup).toHaveBeenCalledOnce();
   });
@@ -684,12 +714,14 @@ describe('handleToolCall', () => {
     });
     await handleToolCall(request);
 
-    // createSandbox should receive ignorePatterns as 3rd arg
+    // createSandbox should receive ignorePatterns as 3rd arg. `signal` is the
+    // governed controller's own signal (IMPORTANT 5), not `ctx?.signal`
+    // directly, no `ctx` was passed here, but a controller always exists.
     expect(mockCreateSandbox).toHaveBeenCalledWith(
       'src/math.ts',
       '/workspace',
       ['.test.ts', 'fixtures/'],
-      expect.objectContaining({ signal: undefined }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
     // ...and NOT to the engine. ignorePatterns governs what the sandbox copy
     // excludes; no engine has ever read it, so carrying it on RunOptions only
@@ -698,11 +730,13 @@ describe('handleToolCall', () => {
     expect(runOptions).not.toHaveProperty('ignorePatterns');
   });
 
-  // Regression (C1 follow-up): the AbortSignal from the MCP request context must
-  // be forwarded verbatim into the createSandbox options so a mid-copy MCP
-  // cancel propagates into the sandbox. We pin the exact signal object (===),
-  // not just objectContaining, so the test fails if a future refactor
-  // accidentally closes over the wrong controller.
+  // Regression (C1 follow-up, updated for IMPORTANT 5): a cancel on the MCP
+  // request context must still reach createSandbox. Since sandbox creation
+  // moved inside the governed window, it no longer receives `ctx.signal`
+  // directly, it receives the governed controller's OWN signal, linked to
+  // `ctx.signal` by a listener, so this asserts the LINK (aborting the
+  // request's signal aborts the one createSandbox got) rather than pinning
+  // object identity.
   it('forwards ctx.signal into createSandbox so an MCP client cancel propagates', async () => {
     const mockRun = vi.fn().mockResolvedValue({
       target: 'src/math.ts',
@@ -724,15 +758,22 @@ describe('handleToolCall', () => {
     });
 
     const controller = new AbortController();
+    // Cancel WHILE sandbox creation is in flight (a mid-copy cancel), the
+    // scenario this regression guards: the signal createSandbox was handed
+    // must reflect it immediately, proving the link `abortRequest` sets up is
+    // live at exactly the moment it needs to be, not merely present.
+    let sawAbortedDuringCopy = false;
+    mockCreateSandbox.mockImplementationOnce(
+      async (_file: string, _root: string, _ignore, opts?: { signal?: AbortSignal }) => {
+        controller.abort();
+        sawAbortedDuringCopy = opts?.signal?.aborted === true;
+        return { workDir: '/tmp/chaos-mcp-sandbox', targetFile: '', cleanup: vi.fn() };
+      },
+    );
     const request = makeRequest('audit_code_resilience', { filePath: 'src/math.ts' });
     await handleToolCall(request, undefined, { signal: controller.signal });
 
-    expect(mockCreateSandbox).toHaveBeenCalledWith(
-      'src/math.ts',
-      '/workspace',
-      undefined,
-      expect.objectContaining({ signal: controller.signal }),
-    );
+    expect(sawAbortedDuringCopy).toBe(true);
   });
 
   it('forwards config.sandbox.dependencies into createSandbox options', async () => {
@@ -1510,6 +1551,12 @@ describe('handleToolCall', () => {
       'Prebuild command failed in sandbox',
     );
     expect((response.content[0] as { text: string }).text).toContain('syntax error');
+    // Finding B: a failed audit still reports the governance block, since the
+    // prebuild now runs under the SAME concurrency caps as the mutation tool
+    // (Finding A), and that is exactly the run an operator needs that info for.
+    expect((response.content[0] as { text: string }).text).toMatch(
+      /Resources: \d+ files? x \d+ workers?/,
+    );
     // Engine must NOT be called
     expect(mockRun).not.toHaveBeenCalled();
     // Sandbox must be cleaned up even on prebuild failure
@@ -2340,7 +2387,120 @@ describe('handleToolCall', () => {
     );
   });
 
-  it('config concurrency with float is rejected and falls to undefined (H6 regression)', async () => {
+  /**
+   * A deterministic resource context for the two H6 tests below: real
+   * governance (real cpu count, real memory probe) would make the fallback
+   * concurrency vary by machine, which is exactly what those tests must not
+   * depend on. Fixed at an arbitrary value distinct from both rejected inputs
+   * (2.5, 999) so the assertion proves the STUB's number reached the engine,
+   * not a coincidence.
+   */
+  function stubGovernedResources(
+    perFileWorkers: number,
+    source: 'host' | 'cgroup' | 'unavailable' = 'host',
+  ): ReturnType<typeof createResourceContext> {
+    return {
+      budget: { fileConcurrency: 1, perFileWorkers, overBudget: false },
+      watchdog: {
+        register: vi.fn(() => ({ release: vi.fn() })),
+        admit: vi.fn().mockResolvedValue('admitted'),
+        tick: vi.fn(),
+        stop: vi.fn(),
+        trips: 0,
+      },
+      innerEnv: {},
+      innerEnvFor: () => ({}),
+      workerCostBytes: 300 * 1024 ** 2,
+      perFileCostBytes: 300 * 1024 ** 2 * perFileWorkers,
+      report: () => ({
+        availableAtStartBytes: 4 * 1024 ** 3,
+        limitBytes: 8 * 1024 ** 3,
+        source,
+        fileConcurrency: 1,
+        perFileWorkers,
+        overBudget: false,
+        watchdogTrips: 0,
+      }),
+      dispose: vi.fn(),
+    };
+  }
+
+  /**
+   * CRITICAL 1 regression: a single-file audit must never hand an engine more
+   * concurrency than it would have received before this branch. These assert
+   * the VALUE reaching `engine.run`, not just that a `resources` block exists
+   * in the payload (`handler-resources.test.ts` already covers the payload).
+   */
+  it('passes no concurrency for a Rust audit when the probe is unavailable and none was configured', async () => {
+    const mockRun = vi.fn().mockResolvedValue({
+      target: 'src/main.rs',
+      totalMutants: 3,
+      killed: 3,
+      survived: 0,
+      mutationScore: '100.00%',
+      vulnerabilities: [],
+    });
+    MockRustEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as typeof RustEngine.prototype;
+    });
+    mockDetectEnv.mockReturnValue({
+      projectType: 'rust',
+      testRunner: 'cargo test',
+      detectedRunner: 'cargo test',
+      packageManager: '',
+      workspaceRoot: '/workspace',
+    });
+    // An 'unavailable' source with no explicit concurrency setting must
+    // reproduce pre-governance behaviour byte-for-byte: no `--concurrency`
+    // argument at all, so cargo-mutants falls back to its own low default
+    // (`resolveCargoJobs`) instead of a governance-derived number.
+    mockCreateResourceContext.mockReturnValueOnce(stubGovernedResources(8, 'unavailable'));
+
+    const request = makeRequest('audit_code_resilience', { filePath: 'src/main.rs' });
+    const response = await handleToolCall(request);
+
+    expect(response.isError).toBeUndefined();
+    expect(mockRun).toHaveBeenCalledTimes(1);
+    const runOptions = mockRun.mock.calls[0]?.[1] as { concurrency?: number };
+    expect(runOptions.concurrency).toBeUndefined();
+  });
+
+  it("never exceeds the engine's own default concurrency even when the budget allows more", async () => {
+    const mockRun = vi.fn().mockResolvedValue({
+      target: 'src/main.rs',
+      totalMutants: 3,
+      killed: 3,
+      survived: 0,
+      mutationScore: '100.00%',
+      vulnerabilities: [],
+    });
+    MockRustEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as typeof RustEngine.prototype;
+    });
+    mockDetectEnv.mockReturnValue({
+      projectType: 'rust',
+      testRunner: 'cargo test',
+      detectedRunner: 'cargo test',
+      packageManager: '',
+      workspaceRoot: '/workspace',
+    });
+    // A generous budget (8 workers) must still be clamped to cargo-mutants'
+    // own default (resolveCargoJobs(undefined, cpuCount)), never raised past
+    // it, exactly as the triage path's buildPerFileArgs already guarantees.
+    mockCreateResourceContext.mockReturnValueOnce(stubGovernedResources(8, 'host'));
+
+    const request = makeRequest('audit_code_resilience', { filePath: 'src/main.rs' });
+    const response = await handleToolCall(request);
+
+    expect(response.isError).toBeUndefined();
+    const ownDefault = resolveCargoJobs(undefined, cpus().length);
+    expect(mockRun).toHaveBeenCalledWith(
+      'src/main.rs',
+      expect.objectContaining({ concurrency: Math.min(8, ownDefault) }),
+    );
+  });
+
+  it('config concurrency with float is rejected and falls to the governed baseline (H6 regression)', async () => {
     const mockRun = vi.fn().mockResolvedValue({
       target: 'src/app.ts',
       totalMutants: 0,
@@ -2360,21 +2520,19 @@ describe('handleToolCall', () => {
       packageManager: '',
       workspaceRoot: '/workspace',
     });
+    mockCreateResourceContext.mockReturnValueOnce(stubGovernedResources(4));
 
-    // Config has float concurrency — should be rejected, falling to undefined
+    // Config has float concurrency, which is rejected; it falls back to the
+    // resource-governed baseline (Task 7) rather than the invalid value.
     const config = { concurrency: 2.5 };
 
     const request = makeRequest('audit_code_resilience', { filePath: 'src/app.ts' });
     await handleToolCall(request, config);
 
-    // concurrency should be undefined (float rejected)
-    expect(mockRun).toHaveBeenCalledWith(
-      'src/app.ts',
-      expect.objectContaining({ concurrency: undefined }),
-    );
+    expect(mockRun).toHaveBeenCalledWith('src/app.ts', expect.objectContaining({ concurrency: 4 }));
   });
 
-  it('config concurrency above 64 is rejected and falls to undefined (H6 regression)', async () => {
+  it('config concurrency above 64 is rejected and falls to the governed baseline (H6 regression)', async () => {
     const mockRun = vi.fn().mockResolvedValue({
       target: 'src/app.ts',
       totalMutants: 0,
@@ -2394,17 +2552,16 @@ describe('handleToolCall', () => {
       packageManager: '',
       workspaceRoot: '/workspace',
     });
+    mockCreateResourceContext.mockReturnValueOnce(stubGovernedResources(4));
 
     const config = { concurrency: 999 };
 
     const request = makeRequest('audit_code_resilience', { filePath: 'src/app.ts' });
     await handleToolCall(request, config);
 
-    // concurrency should be undefined (cap exceeded)
-    expect(mockRun).toHaveBeenCalledWith(
-      'src/app.ts',
-      expect.objectContaining({ concurrency: undefined }),
-    );
+    // concurrency should fall back to the resource-governed baseline (Task 7),
+    // not the out-of-range config value.
+    expect(mockRun).toHaveBeenCalledWith('src/app.ts', expect.objectContaining({ concurrency: 4 }));
   });
 
   it('config perMutantTimeoutMs with zero is rejected and falls to undefined (H6 regression)', async () => {
@@ -2760,6 +2917,62 @@ describe('handleToolCall', () => {
       }),
     );
     expect(mockRunShellCommand.mock.calls[0][1]?.timeoutMs).toBeGreaterThanOrEqual(297000);
+    expect(mockRun).toHaveBeenCalled();
+  });
+
+  it('governs the auto Rust prebuild with the same inner-pool caps the mutation tool gets', async () => {
+    // Regression for the finding that the auto-prebuild (`cargo check`) ran
+    // ungoverned: it is a cold compile of every dependency (the sandbox
+    // excludes target/), cargo parallelises it across every core, and it runs
+    // INSIDE the governed window where the watchdog may then stop the run it
+    // just paid for. The prebuild must receive the same CARGO_BUILD_JOBS cap
+    // the mutation invocation gets, merged over (not replacing) the inherited
+    // environment.
+    const { RustEngine } = await import('../engines/rust.js');
+    const MockRustEngine = vi.mocked(RustEngine);
+
+    const mockRun = vi.fn().mockResolvedValue({
+      target: 'src/main.rs',
+      totalMutants: 0,
+      killed: 0,
+      survived: 0,
+      mutationScore: '100.00%',
+      vulnerabilities: [],
+    });
+
+    MockRustEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as typeof RustEngine.prototype;
+    });
+    mockDetectEnv.mockReturnValue({
+      projectType: 'rust',
+      testRunner: 'cargo test',
+      detectedRunner: 'cargo test',
+      packageManager: '',
+      workspaceRoot: '/workspace',
+    });
+
+    // Cargo.toml must exist for smart prebuild to trigger.
+    mockExistsSync.mockImplementation((p) => String(p).endsWith('Cargo.toml'));
+
+    mockRunShellCommand.mockResolvedValue({
+      stdout: '',
+      stderr: '',
+      exit: 0,
+      signal: null,
+    });
+
+    const request = makeRequest('audit_code_resilience', { filePath: 'src/main.rs' });
+    await handleToolCall(request);
+
+    expect(mockRunShellCommand).toHaveBeenCalledWith('cargo check', expect.any(Object));
+    const prebuildEnv = mockRunShellCommand.mock.calls[0][1]?.env;
+    // Today's code hands the prebuild no env at all (undefined): this is the
+    // assertion that fails against that behaviour.
+    expect(prebuildEnv).toBeDefined();
+    expect(prebuildEnv?.CARGO_BUILD_JOBS).toBeDefined();
+    // The merge must be OVER process.env, not a replacement of it: a bare
+    // innerEnv would strip PATH and cargo would fail to launch at all.
+    expect(prebuildEnv?.PATH).toBe(process.env.PATH);
     expect(mockRun).toHaveBeenCalled();
   });
 
@@ -4053,6 +4266,50 @@ describe('mapCreateSandboxError', () => {
     });
     expect(text(result)).toContain('Chaos Engine Halted');
     expect(text(result)).toContain('EACCES');
+  });
+
+  it('appends the resources line to the halted message when a resources context is passed (Gap 1)', () => {
+    const result = mapCreateSandboxError(
+      new Error('ENOSPC: no space left'),
+      'src/math.ts',
+      undefined,
+      {
+        availableAtStartBytes: 4 * 1024 ** 3,
+        limitBytes: 8 * 1024 ** 3,
+        source: 'host',
+        fileConcurrency: 1,
+        perFileWorkers: 2,
+        overBudget: false,
+        watchdogTrips: 0,
+      },
+    );
+    expect(text(result)).toBe(
+      'Chaos Engine Halted: Failed to provision sandbox isolation for src/math.ts: ' +
+        'ENOSPC: no space left. Ensure the file exists and the workspace is accessible.\n' +
+        'Resources: 1 files x 2 workers, 4.0 GB free (host)',
+    );
+  });
+
+  it('appends the resources line to the cancel message too, when passed', () => {
+    const controller = new AbortController();
+    controller.abort();
+    const result = mapCreateSandboxError(
+      new Error('whatever'),
+      'src/math.ts',
+      { signal: controller.signal },
+      {
+        availableAtStartBytes: 4 * 1024 ** 3,
+        limitBytes: 8 * 1024 ** 3,
+        source: 'host',
+        fileConcurrency: 1,
+        perFileWorkers: 2,
+        overBudget: false,
+        watchdogTrips: 0,
+      },
+    );
+    expect(text(result)).toBe(
+      'Operation cancelled.\nResources: 1 files x 2 workers, 4.0 GB free (host)',
+    );
   });
 });
 

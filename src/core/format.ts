@@ -15,6 +15,7 @@ import type { GateResult } from './gate.js';
 import { warn } from '../utils/logger.js';
 import { isNoCoverage } from '../utils/no-coverage.js';
 import { changeOf } from '../utils/mutant-identity.js';
+import type { ResourcesPayload } from './resource-context.js';
 // Score/suppression vocabulary lives in its own leaf module: `triage.ts` renders
 // an independent leaderboard and needs the same meanings without importing this
 // renderer. Import direction is one-way — score-semantics.ts never imports here.
@@ -436,6 +437,28 @@ function formatGateLine(gate: GateResult, displayedScore: string): string {
 }
 
 /**
+ * One-line summary of how this run sized itself to the machine's memory.
+ * Example: `Resources: 3 files x 2 workers, 5.9 GB free (host)`.
+ *
+ * Exported so `core/triage.ts` can render the identical line for a sweep
+ * (Task 8) instead of growing its own copy that could drift from this one.
+ */
+export function formatResourcesLine(resources: ResourcesPayload): string {
+  // A probe that could not read the machine reports the `0` sentinel for
+  // `availableAtStartBytes` (memory-probe.ts), which is not the same claim as
+  // "confirmed zero bytes free". Rendering it as "0.0 GB free" reads as the
+  // latter.
+  const memory =
+    resources.source === 'unavailable'
+      ? 'free memory unknown'
+      : `${(resources.availableAtStartBytes / 1024 ** 3).toFixed(1)} GB free`;
+  return (
+    `Resources: ${resources.fileConcurrency} files x ${resources.perFileWorkers} workers, ` +
+    `${memory} (${resources.source})`
+  );
+}
+
+/**
  * Format a MutationResult as a compact, human-readable text summary.
  * Used when the caller requests `outputFormat: 'text'`.
  */
@@ -471,6 +494,8 @@ export function formatResultAsText(
      * result, do not re-derive one.
      */
     gate?: GateResult;
+    /** How this run sized itself to the machine's memory; rendered as one line. */
+    resources?: ResourcesPayload;
   } = {},
 ): string {
   // The text path ignores `prepared.worstSeverity` (a payload-only field) but
@@ -501,6 +526,7 @@ export function formatResultAsText(
   // Directly under the score, because a FAILED gate reframes every number above
   // and below it. Text output used to omit the verdict entirely.
   if (opts.gate) lines.push(formatGateLine(opts.gate, displayedScore));
+  if (opts.resources) lines.push(formatResourcesLine(opts.resources));
   if (result.scopeNote) lines.push(`Scope: ${result.scopeNote}`);
   if (result.fidelityNote) lines.push(`Warning: ${result.fidelityNote}`);
   // Surface unscoreable mutants in text format too (audit L6) so a caller
@@ -671,6 +697,8 @@ export interface ResultPayload {
   batchesCompleted?: number;
   batchesPlanned?: number;
   stoppedReason?: 'time_budget_exhausted';
+  /** How this run sized itself to the machine's memory; see core/resource-context.ts. */
+  resources?: ResourcesPayload;
 }
 
 export interface ResultPayloadOpts {
@@ -699,6 +727,8 @@ export interface ResultPayloadOpts {
   /** Workspace root to name alongside `target`; see {@link ResultPayload.workspace}. */
   workspace?: string;
   gate?: GateResult;
+  /** How this run sized itself to the machine's memory; see core/resource-context.ts. */
+  resources?: ResourcesPayload;
 }
 
 /**
@@ -786,6 +816,7 @@ export function buildResultPayload(
   if (result.batchesCompleted !== undefined) payload.batchesCompleted = result.batchesCompleted;
   if (result.batchesPlanned !== undefined) payload.batchesPlanned = result.batchesPlanned;
   if (result.stoppedReason) payload.stoppedReason = result.stoppedReason;
+  if (opts.resources) payload.resources = opts.resources;
   if (opts.suggestedTestFile) payload.suggestedTestFile = opts.suggestedTestFile;
   if (opts.ignoredOptions && opts.ignoredOptions.length > 0)
     payload.ignoredOptions = opts.ignoredOptions;

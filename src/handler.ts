@@ -7,6 +7,7 @@
  * cleanup) that make the order load-bearing. Every phase's substance lives in
  * a dedicated module under `src/audit/` (Finding 2).
  */
+import { cpus } from 'node:os';
 import { validateFilePath } from './utils/file-path.js';
 import type { CallToolRequest, CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import type { ToolContext } from './core/tool-context.js';
@@ -17,16 +18,26 @@ import { EnvironmentInfo } from './utils/project-detector.js';
 import { resolveAuditTarget } from './audit/target.js';
 import { createSandbox } from './utils/sandbox.js';
 import { isCancel } from './utils/cancel.js';
+import { isResourceExhausted } from './utils/resources/errors.js';
 import { ChaosConfig } from './utils/config-loader.js';
 import { log, isVerbose } from './utils/logger.js';
 import { ToolArgs, TOOL_ARG_VALIDATORS } from './core/tool-args-validation.js';
 import { mintRunIdSafely } from './audit/run-id.js';
 import { AuditDeadline } from './utils/deadline.js';
-import { resolveAuditTimeoutMs, resolveGatedPrebuild } from './audit/run-options.js';
+import {
+  resolveAuditTimeoutMs,
+  resolveConfiguredConcurrency,
+  resolveGatedPrebuild,
+} from './audit/run-options.js';
 import { auditFile, assertPythonHasTests, type AuditFileInput } from './audit/audit-file.js';
 import { computeScope } from './audit/scope.js';
 import { buildEnrichContext, formatAuditOutput } from './audit/audit-output.js';
 import { applyAndCountSuppressions } from './audit/suppression-io.js';
+import {
+  createResourceContext,
+  type ResourceContext,
+  type ResourcesPayload,
+} from './core/resource-context.js';
 
 /**
  * Validate the optional tool arguments that are not covered by the JSON schema's
@@ -69,6 +80,42 @@ function reserveEngineBudget(
   return { ok: true, remainingMs };
 }
 
+/**
+ * The `concurrency` value to forward to an engine that honours it, or
+ * `undefined` when none should be passed at all.
+ *
+ * Mirrors the clamp `buildPerFileArgs` (triage/audit-one.ts) already applies:
+ * memory governance must never RAISE what the engine's own default already
+ * is, so the budgeted worker count is capped at `defaultWorkers(cpuCount)`
+ * for an engine that declares one. cargo-mutants' own low default answers a
+ * memory question, not a CPU one, so a pool of 8 cores would otherwise raise
+ * it from its own `-j 2` to as much as 7, a ceiling that can raise the thing
+ * it bounds is not a ceiling.
+ *
+ * When the caller configured nothing explicit AND the probe could not read
+ * the machine, this returns `undefined` outright, so a single-file audit never
+ * raises anything above pre-branch behaviour: no `--concurrency` for
+ * StrykerJS (which auto-scales to the core count) and no `-j` for
+ * cargo-mutants (which falls back to its own low default).
+ */
+function resolveSingleFileConcurrency(
+  projectType: SupportedProjectType,
+  perFileWorkers: number,
+  configuredConcurrency: number | undefined,
+  probeSource: ResourcesPayload['source'],
+): number | undefined {
+  // An explicit setting is never clamped to the engine's own default: that
+  // clamp exists only to stop the CPU-derived baseline from raising cargo
+  // above its own default (the docblock above), not to lower a value the
+  // user set deliberately. `perFileWorkers` already IS that explicit value
+  // here (resolveBudget lets `requested.perFileWorkers` win outright), so
+  // returning it unclamped is returning what the user asked for.
+  if (configuredConcurrency !== undefined) return perFileWorkers;
+  if (probeSource === 'unavailable') return undefined;
+  const ownDefault = ENGINE_REGISTRY[projectType].defaultWorkers?.(cpus().length);
+  return ownDefault === undefined ? perFileWorkers : Math.min(perFileWorkers, ownDefault);
+}
+
 /** Dump the resolved run context when verbose logging is on. */
 function logAuditContext(
   filePath: string,
@@ -98,12 +145,33 @@ function logAuditContext(
  */
 async function runEngine(
   input: AuditFileInput,
+  resources: ResourcesPayload,
   ctx?: ToolContext,
 ): Promise<{ ok: true; results: MutationResult } | { ok: false; result: CallToolResult }> {
   try {
     return { ok: true, results: await auditFile(input) };
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
+    // The watchdog's own abort reason must be checked BEFORE isCancel: the
+    // controller it aborts is not the request's ctx.signal, but the killed
+    // child process still misreads as an AbortError/ExecFailureError the same
+    // way a user cancel does, so isCancel would otherwise report a memory stop
+    // as "Operation cancelled." and hide what to lower.
+    const abortReason = input.signal?.reason;
+    if (isResourceExhausted(abortReason)) {
+      // `.message` only (not `String(error)`, which prefixes the class name):
+      // the caller needs "Stopped to avoid exhausting memory: ..." verbatim,
+      // not "ResourceExhaustedError: ...". Carries `resources` (Finding B):
+      // a memory stop is exactly the failure an operator most needs the
+      // chosen concurrency and watchdog trip count for.
+      return {
+        ok: false,
+        result: toolError(
+          abortReason instanceof Error ? abortReason.message : String(abortReason),
+          resources,
+        ),
+      };
+    }
     // A cancel firing DURING the engine run reaches here as a tool-specific
     // failure (each engine misreads the aborted child's null exit as a
     // baseline/report failure). Detect the abort via the shared
@@ -111,12 +179,14 @@ async function runEngine(
     // cancel paths; a deliberate cancel never masquerades as a phantom
     // tool bug (audit M5 / C1 follow-up).
     if (isCancel(error, ctx)) {
-      return { ok: false, result: toolError('Operation cancelled.') };
+      return { ok: false, result: toolError('Operation cancelled.', resources) };
     }
     // Prebuild failures keep their specific tool error; engine errors
-    // propagate to the outer catch (unchanged behavior).
+    // propagate to the outer catch (unchanged behavior). Carries `resources`
+    // too: the auto-prebuild now runs under the same governance the mutation
+    // tool does (Finding A), so a prebuild failure is a governed-run failure.
     if (message.startsWith('Prebuild command failed in sandbox:')) {
-      return { ok: false, result: toolError(message) };
+      return { ok: false, result: toolError(message, resources) };
     }
     throw error;
   }
@@ -158,6 +228,14 @@ export async function handleToolCall(
   if (!filePathResult.ok) return toolError(filePathResult.message);
   const { resolvedFile, raw: filePath } = filePathResult.value;
 
+  // Declared here, OUTSIDE the try below, so the outer catch can still read it.
+  // `const resources = createResourceContext(...)` used to live inside the try,
+  // which block-scopes it away from the catch entirely: a `let` binding
+  // declared before a try/catch is the only way the catch can see a value the
+  // try assigned. `undefined` until that assignment runs, which is exactly the
+  // failures that predate it (e.g. `computeScope`, the reachable path into this
+  // catch) having no resources context to report, correctly.
+  let resources: ResourceContext | undefined;
   try {
     // `validateFilePath` ran outside this try/catch (it reports its own
     // rejections and must not be re-labelled "Chaos Engine Halted"); everything
@@ -214,131 +292,219 @@ export async function handleToolCall(
       if (noTests) return toolError(noTests);
     }
 
-    // Milestone 2: sandbox copy is about to be provisioned.
-    ctx?.reportProgress?.(2, 4, 'provisioning sandbox');
+    // Size this one-file run to the memory the machine actually has: never
+    // RAISES what the CPU-only math already chose (resolveBudget), only
+    // lowers it, and the watchdog stops the newest run rather than letting it
+    // exhaust memory. Created BEFORE sandbox provisioning (IMPORTANT 5) so a
+    // trip during the copy uses the same abort path as a cancel, creating it
+    // only once the sandbox already existed left that whole phase outside the
+    // governed window, unable to be stopped by the watchdog at all. Torn down
+    // in the same finally as the sandbox below so a long-lived server never
+    // accumulates timers or abort listeners across requests.
+    // The value that would reach the engine without governance (explicit tool
+    // argument, else engine config section, else global config default) is
+    // treated as the EXPLICIT setting Budget always honours; only the absence
+    // of one falls back to a cpu-derived baseline that memory may lower.
+    const configuredConcurrency = resolveConfiguredConcurrency(earlyArgs, cfg, projectType);
+    resources = createResourceContext({
+      projectType,
+      cpuFileConcurrency: 1,
+      cpuPerFileWorkers: configuredConcurrency ?? cpus().length - 1,
+      requested:
+        configuredConcurrency === undefined ? undefined : { perFileWorkers: configuredConcurrency },
+      watchdogEnabled: cfg.resources?.watchdog,
+      admissionFloorBytes: cfg.resources?.admissionFloorBytes,
+      criticalFloorBytes: cfg.resources?.criticalFloorBytes,
+    });
+    // Linked to the request's own signal (a user cancel must still stop this
+    // run) but distinct from it, so a watchdog-triggered abort never flips
+    // `ctx.signal.aborted` and is never mistaken for a user cancel downstream.
+    const controller = new AbortController();
+    const abortRequest = () => controller.abort(ctx?.signal?.reason);
+    ctx?.signal?.addEventListener('abort', abortRequest, { once: true });
+    // A single-file audit never admits against its OWN watchdog (the
+    // admission gate exists only on the triage path, IMPORTANT 4), but the
+    // registration still charges the real per-file figure
+    // (`resources.perFileCostBytes`, fixed cost plus worker cost per the
+    // 2026-09-12 cost-model amendment) rather than nothing, so the
+    // reservation this run holds is honest about what it costs.
+    const handle = resources.watchdog.register(controller, resources.perFileCostBytes);
 
-    // Provision a sandbox so mutation runs never touch the real workspace tree.
-    // audit C1: createSandbox is async (event-loop-friendly fs.cp); abort
-    // signal is forwarded so a mid-copy cancel from the MCP client cleans up.
-    let sandbox;
     try {
-      sandbox = await createSandbox(targetFile, env.workspaceRoot, earlyIgnorePatterns, {
-        signal: ctx?.signal,
-        dependencies: cfg.sandbox?.dependencies,
-      });
-    } catch (error: unknown) {
-      return mapCreateSandboxError(error, filePath, ctx);
-    }
+      // Milestone 2: sandbox copy is about to be provisioned.
+      ctx?.reportProgress?.(2, 4, 'provisioning sandbox');
 
-    try {
-      if (deadline.expired()) {
-        return toolError(
-          `Audit time budget exhausted during sandbox provisioning after ${deadline.elapsedMs()}ms.`,
+      // Provision a sandbox so mutation runs never touch the real workspace
+      // tree. audit C1: createSandbox is async (event-loop-friendly fs.cp);
+      // the GOVERNED controller's signal is forwarded (IMPORTANT 5), linked
+      // to the request's own signal via `abortRequest` above, so a mid-copy
+      // cancel OR a watchdog trip during the copy both clean up the same way.
+      let sandbox;
+      try {
+        sandbox = await createSandbox(targetFile, env.workspaceRoot, earlyIgnorePatterns, {
+          signal: controller.signal,
+          dependencies: cfg.sandbox?.dependencies,
+        });
+      } catch (error: unknown) {
+        // Same ordering rule as `runEngine`: a watchdog trip must be reported
+        // as a memory stop, never mistaken for the user cancel `isCancel`
+        // (inside `mapCreateSandboxError`) would otherwise read `ctx.signal`
+        // as unrelated to this run's own controller.
+        if (isResourceExhausted(controller.signal.reason)) {
+          return toolError(
+            controller.signal.reason instanceof Error
+              ? controller.signal.reason.message
+              : String(controller.signal.reason),
+            resources.report(),
+          );
+        }
+        return mapCreateSandboxError(error, filePath, ctx, resources.report());
+      }
+
+      try {
+        if (deadline.expired()) {
+          return toolError(
+            `Audit time budget exhausted during sandbox provisioning after ${deadline.elapsedMs()}ms.`,
+            resources.report(),
+          );
+        }
+        const budget = reserveEngineBudget(deadline);
+        if (!budget.ok) return toolError(budget.message, resources.report());
+        // Only for engines that honour `concurrency` (M1): cosmic-ray has no
+        // worker-count flag, so forcing a value there would misreport as an
+        // ignored option no caller ever asked for (ignoredOptionsFor). Clamped
+        // (and possibly omitted outright) by resolveSingleFileConcurrency so
+        // governance can only ever LOWER what the engine would otherwise do.
+        const singleFileConcurrency = ENGINE_REGISTRY[projectType].honorsConcurrency
+          ? resolveSingleFileConcurrency(
+              projectType,
+              resources.budget.perFileWorkers,
+              configuredConcurrency,
+              resources.report().source,
+            )
+          : undefined;
+        const args: ToolArgs = {
+          ...(request.params.arguments ?? {}),
+          timeoutMs: budget.remainingMs,
+          ...(singleFileConcurrency === undefined ? {} : { concurrency: singleFileConcurrency }),
+          innerEnv: resources.innerEnv,
+        };
+
+        if (isVerbose()) logAuditContext(filePath, projectType, env, sandbox.workDir, cfg);
+
+        // Resolve + gate the prebuild command (explicit prebuild is opt-in).
+        const prebuild = resolveGatedPrebuild(args, env, projectType, cfg);
+        if (!prebuild.ok) return toolError(prebuild.message, resources.report());
+
+        // Abort short-circuit #3, after prebuild gate, before engine run.
+        // The sandbox finally-block still cleans up even when we return here.
+        if (ctx?.signal?.aborted) return toolError('Operation cancelled.', resources.report());
+
+        // Milestone 3: mutation engine is about to start.
+        ctx?.reportProgress?.(3, 4, 'running mutation engine');
+
+        const engineRun = await runEngine(
+          {
+            targetFile,
+            env,
+            projectType,
+            engine,
+            args,
+            config: cfg,
+            workDir: sandbox.workDir,
+            prebuildCmd: prebuild.prebuildCmd,
+            lineRanges: diffRanges,
+            signal: controller.signal,
+          },
+          resources.report(),
+          ctx,
         );
-      }
-      const budget = reserveEngineBudget(deadline);
-      if (!budget.ok) return toolError(budget.message);
-      const args: ToolArgs = {
-        ...(request.params.arguments ?? {}),
-        timeoutMs: budget.remainingMs,
-      };
+        if (!engineRun.ok) return engineRun.result;
+        let auditResults = engineRun.results;
+        // Append rather than replace: the engine may already have set a scope
+        // note of its own (e.g. "Partial audit: completed 3 of 7 batches"), and
+        // overwriting it silently dropped the fact that the run was incomplete
+        // from the text output, which prints only this one field.
+        if (scopeNote) {
+          auditResults.scopeNote = auditResults.scopeNote
+            ? `${auditResults.scopeNote} ${scopeNote}`
+            : scopeNote;
+        }
 
-      if (isVerbose()) logAuditContext(filePath, projectType, env, sandbox.workDir, cfg);
-
-      // Resolve + gate the prebuild command (explicit prebuild is opt-in).
-      const prebuild = resolveGatedPrebuild(args, env, projectType, cfg);
-      if (!prebuild.ok) return toolError(prebuild.message);
-
-      // Abort short-circuit #3 — after prebuild gate, before engine run.
-      // The sandbox finally-block still cleans up even when we return here.
-      if (ctx?.signal?.aborted) return toolError('Operation cancelled.');
-
-      // Milestone 3: mutation engine is about to start.
-      ctx?.reportProgress?.(3, 4, 'running mutation engine');
-
-      const engineRun = await runEngine(
-        {
-          targetFile,
-          env,
-          projectType,
-          engine,
+        // Suppression phase: explicit writes, then the auto-filter (audit/suppression-io.ts).
+        const suppressed = await applyAndCountSuppressions(
           args,
-          config: cfg,
-          workDir: sandbox.workDir,
-          prebuildCmd: prebuild.prebuildCmd,
-          lineRanges: diffRanges,
-          signal: ctx?.signal,
-        },
-        ctx,
-      );
-      if (!engineRun.ok) return engineRun.result;
-      let auditResults = engineRun.results;
-      // Append rather than replace: the engine may already have set a scope
-      // note of its own (e.g. "Partial audit: completed 3 of 7 batches"), and
-      // overwriting it silently dropped the fact that the run was incomplete
-      // from the text output, which prints only this one field.
-      if (scopeNote) {
-        auditResults.scopeNote = auditResults.scopeNote
-          ? `${auditResults.scopeNote} ${scopeNote}`
-          : scopeNote;
+          auditResults,
+          baselineKeys,
+          env.workspaceRoot,
+          relFromRoot,
+          cfg.suppressionsPath,
+          ctx,
+        );
+        if (!suppressed.ok) return suppressed.result;
+        auditResults = suppressed.result;
+        const suppression = suppressed.counts;
+
+        // Mint a runId for non-verify runs so the caller can verify later by id
+        // (audit/run-id.ts owns the swallowed-failure contract).
+        const mintedRunId = mintRunIdSafely(
+          auditResults,
+          baselineKeys,
+          relFromRoot,
+          projectType,
+          env.workspaceRoot,
+          cfg,
+        );
+
+        const enrichCtx =
+          // Skip the synchronous source read for verify-mode re-runs: the
+          // formatAuditOutput verify branch never consumes the enrichment
+          // context, and verify-mode callers pay twice (here AND in
+          // buildEnrichContext) without it producing any output (audit A2).
+          baselineKeys ? undefined : buildEnrichContext(args, resolvedFile, projectType);
+        // Milestone 4: every successful terminal path reports complete.
+        ctx?.reportProgress?.(4, 4, 'complete');
+        return formatAuditOutput(
+          auditResults,
+          args,
+          projectType,
+          baselineKeys,
+          targetFile,
+          enrichCtx,
+          cfg,
+          env,
+          suppression,
+          mintedRunId,
+          relFromRoot,
+          resources.report(),
+        );
+      } finally {
+        // Always clean up the sandbox, even if the engine threw
+        sandbox.cleanup();
       }
-
-      // Suppression phase: explicit writes, then the auto-filter (audit/suppression-io.ts).
-      const suppressed = await applyAndCountSuppressions(
-        args,
-        auditResults,
-        baselineKeys,
-        env.workspaceRoot,
-        relFromRoot,
-        cfg.suppressionsPath,
-        ctx,
-      );
-      if (!suppressed.ok) return suppressed.result;
-      auditResults = suppressed.result;
-      const suppression = suppressed.counts;
-
-      // Mint a runId for non-verify runs so the caller can verify later by id
-      // (audit/run-id.ts owns the swallowed-failure contract).
-      const mintedRunId = mintRunIdSafely(
-        auditResults,
-        baselineKeys,
-        relFromRoot,
-        projectType,
-        env.workspaceRoot,
-        cfg,
-      );
-
-      const enrichCtx =
-        // Skip the synchronous source read for verify-mode re-runs: the
-        // formatAuditOutput verify branch never consumes the enrichment
-        // context, and verify-mode callers pay twice (here AND in
-        // buildEnrichContext) without it producing any output (audit A2).
-        baselineKeys ? undefined : buildEnrichContext(args, resolvedFile, projectType);
-      // Milestone 4: every successful terminal path reports complete.
-      ctx?.reportProgress?.(4, 4, 'complete');
-      return formatAuditOutput(
-        auditResults,
-        args,
-        projectType,
-        baselineKeys,
-        targetFile,
-        enrichCtx,
-        cfg,
-        env,
-        suppression,
-        mintedRunId,
-        relFromRoot,
-      );
     } finally {
-      // Always clean up the sandbox, even if the engine threw
-      sandbox.cleanup();
+      // Same rule for the resource context: release this run's watchdog slot,
+      // stop its sampler, and drop the listener on the request's own signal, so
+      // a long-lived server does not accumulate either across requests.
+      handle.release();
+      resources.dispose();
+      ctx?.signal?.removeEventListener('abort', abortRequest);
     }
   } catch (error: unknown) {
-    // The reachable path is `computeScope`, whose git calls run BEFORE the
-    // sandbox exists and re-throw an abort instead of flattening it into a
-    // `DiffResult`; the engine-run and sandbox cancels are already caught by
-    // `runEngine` and `mapCreateSandboxError` above. `mapHandlerFailure` owns
-    // the cancel-vs-halt branch for all three tools.
-    return mapHandlerFailure(error, ctx);
+    // Two different classes of failure land here, not just one. `computeScope`
+    // runs BEFORE the sandbox exists and its git calls re-throw an abort
+    // instead of flattening it into a `DiffResult`, so a cancel during scope
+    // resolution arrives with `resources` still `undefined`. But an ordinary
+    // engine failure ALSO arrives here: `runEngine`'s catch only intercepts a
+    // watchdog stop, a cancel, and a prebuild failure by message prefix, and
+    // rethrows everything else (audit M5's remit was narrower than that name
+    // suggests), so the "cargo-mutants failed... baseline test suite itself
+    // failed" case a user actually hits reaches this catch too, WITH a
+    // resources context in scope. `mapHandlerFailure` owns the cancel-vs-halt
+    // branch for all three tools; passing `resources` here (rather than
+    // treating this catch as unreachable-with-context) is the fix for the
+    // gap a real end-to-end run exposed: the ordinary failure path is the
+    // most common one and was the one path leaving `resources` off entirely.
+    return mapHandlerFailure(error, ctx, resources?.report());
   }
 }

@@ -19,7 +19,7 @@ import { createSandbox } from '../utils/sandbox.js';
 import type { EnvironmentInfo, SupportedProjectType } from '../utils/project-detector.js';
 import { ENGINE_REGISTRY, makeEngine, resolvePrebuildCommand } from '../engines/registry.js';
 import { computeChangedRanges } from '../utils/git-diff.js';
-import { resolveAuditTargetIn } from '../audit/target.js';
+import { resolveAuditTargetIn, type ResolvedTarget } from '../audit/target.js';
 import { loadSuppressions, verifySuppressions, type StoredEntry } from '../utils/suppression.js';
 import { applySuppressions } from '../audit/apply-suppressions.js';
 import { isWholeFileRun } from '../audit/suppression-io.js';
@@ -27,12 +27,14 @@ import { mintRunId } from '../utils/run-cache.js';
 import { buildResultPayload } from '../core/format.js';
 import { displayMutationScore, hasNoMutableLogic } from '../core/score-semantics.js';
 import { mapCreateSandboxError, failureText } from '../core/tool-result.js';
+import { isResourceExhausted } from '../utils/resources/errors.js';
 import type { MutationResult } from '../engines/base.js';
 import type { ChaosConfig } from '../utils/config-loader.js';
 import type { ToolContext } from '../core/tool-context.js';
 import type { ToolArgs } from '../core/tool-args-validation.js';
 import type { AuditDeadline } from '../utils/deadline.js';
 import type { TriageRow, TriageError } from '../core/triage.js';
+import type { Watchdog } from '../utils/resources/watchdog.js';
 
 /**
  * What one file contributed to the sweep: a ranked row, a per-file failure, or
@@ -46,11 +48,18 @@ import type { TriageRow, TriageError } from '../core/triage.js';
  * file, and after provisioning (diff scoping + the sandbox copy) spent what was
  * left, which is why the budget is re-read once the sandbox exists rather than
  * trusted from before it.
+ *
+ * "Exhausted" (Task 8) is its own third kind of nothing-measured: the watchdog
+ * stopped this file's run to protect the machine's memory. The sweep gets one
+ * chance to requeue it, alone, at file concurrency 1, its own per-file
+ * worker count is unchanged, before it becomes an error row; see
+ * `handleTriageCall`'s retry pass.
  */
 export type TriageAuditOutcome =
   | { row: TriageRow }
   | { error: TriageError }
-  | { unaudited: string };
+  | { unaudited: string }
+  | { exhausted: string };
 
 /** Everything one file's audit needs from the sweep that owns it. */
 export interface TriageFileDeps {
@@ -89,6 +98,44 @@ export interface TriageFileDeps {
   ctx?: ToolContext;
   /** Advance the sweep's progress counter (called once per file, always). */
   onProgress: () => void;
+  /**
+   * Memory watchdog this sweep is governed by (Task 8), used to register each
+   * file's engine run so a memory stop can abort it without ever touching the
+   * request's own `ctx.signal`. Optional so a unit test can drive
+   * `auditTriageFile` directly, without a full resource context behind it;
+   * every production caller (`handleTriageCall`) supplies one.
+   */
+  watchdog?: Watchdog;
+  /**
+   * Builds the environment for the mutation tool's OWN inner worker pool,
+   * sized from the resolved memory budget (Task 8's `resources.innerEnvFor`).
+   * Called with EACH file's own `projectType` rather than handed a single
+   * pre-built env (Finding 2): a sweep spans several languages often enough
+   * that a TypeScript-sized env (`{}`) handed to a Rust file left
+   * cargo-mutants' own worker pool completely uncapped. Absent means "no cap".
+   */
+  innerEnvFor?: (projectType: SupportedProjectType) => NodeJS.ProcessEnv;
+  /**
+   * Estimated memory this file's run will hold (IMPORTANT 4), the same figure
+   * `handleTriageCall` hands its admission gate. Passed to `watchdog.register`
+   * so the run is CHARGED against admission for every OTHER file from the
+   * moment it starts, not just from whenever the OS probe catches up with
+   * what it actually allocated, closing the gap `utils/pool.ts` documents
+   * (admission is only serialized against the previous item's `fn` being
+   * INVOKED, not against it having consumed anything yet). Optional for the
+   * same reason `watchdog` is: a caller with no resource context behind it
+   * gets today's un-charged registration.
+   */
+  perFileCostBytes?: number;
+  /**
+   * The workspace detection `handleTriageCall` already ran for one file
+   * (`files[0]`, to pick the `projectType` its cost estimate is built from)
+   * before this sweep started, so that file's own pass through the pool does
+   * not redo `resolveAuditTargetIn` for the same path. `undefined` for every
+   * other file, and for `files[0]` itself whenever detection found no
+   * supported project type there (nothing to reuse either way).
+   */
+  primaryTarget?: { file: string; target: ResolvedTarget };
 }
 
 /** The line scope for one file, plus the note explaining it on the row. */
@@ -388,6 +435,14 @@ function buildPerFileArgs(
         ? deps.perFileConcurrency
         : Math.min(deps.perFileConcurrency, ownDefault);
   }
+  // Memory-budget cap for the engine's OWN inner worker pool (Task 8), the
+  // same field the single-file audit forwards on `args.innerEnv`. Built from
+  // THIS file's own `projectType` (Finding 2), not a single sweep-wide env,
+  // so each engine gets an inner-pool cap in ITS OWN vocabulary rather than
+  // whichever language the sweep happened to size itself against. Only set
+  // when the sweep actually has a builder, so a caller with no resource
+  // context behind it gets today's uncapped behaviour.
+  if (deps.innerEnvFor) perFileArgs.innerEnv = deps.innerEnvFor(projectType);
   return perFileArgs;
 }
 
@@ -400,6 +455,17 @@ export async function auditTriageFile(
   deps: TriageFileDeps,
 ): Promise<TriageAuditOutcome> {
   const ctx = deps.ctx;
+  // The per-file controller the watchdog aborts on a memory stop (Task 8).
+  // Declared here, outside the try that creates it, so the catch below can
+  // still read `.signal.reason` off it; stays `undefined` for a failure that
+  // happened before the engine was ever reached. `handle`/`abortRequest` live
+  // alongside it (rather than beside the sandbox try, as before IMPORTANT 5)
+  // because registration now happens BEFORE sandbox creation, and both must
+  // still be released/detached from the outermost `finally` regardless of
+  // which phase failed.
+  let engineController: AbortController | undefined;
+  let handle: { release(): void } | undefined;
+  let abortRequest: (() => void) | undefined;
   try {
     // Skip not-yet-started files quickly when already cancelled. (Task 6)
     if (ctx?.signal?.aborted) {
@@ -417,7 +483,13 @@ export async function auditTriageFile(
     // this number does not know about. See the re-read below.
     const fileBudgetMs = deps.deadline.remainingMs(deps.cleanupReserveMs);
     if (fileBudgetMs <= 0) return { unaudited: file };
-    const target = resolveAuditTargetIn(deps.rootCwd, file);
+    // Reuse the sweep's own pre-sweep detection when this is the same file it
+    // already resolved (`primaryTarget`), rather than walking the workspace
+    // again for a path `handleTriageCall` just finished detecting.
+    const target =
+      deps.primaryTarget?.file === file
+        ? deps.primaryTarget.target
+        : resolveAuditTargetIn(deps.rootCwd, file);
     if (!target) {
       return { error: { file, error: `Unsupported file type for ${file}` } };
     }
@@ -434,18 +506,43 @@ export async function auditTriageFile(
     const prebuildCmd = resolvePrebuildCommand(undefined, env, projectType);
     const scope = await resolveDiffScope(targetFile, env, projectType, fileBudgetMs, deps);
 
-    // audit C1: await the async createSandbox; forward the abort signal so
-    // a mid-copy cancel from the MCP client propagates into the file copy.
-    // Wrapped in try/catch so a sandbox-failure row can be returned to the
-    // pooling caller (instead of being thrown to the outer catch and aborting
-    // other in-flight audits via tool-promise rejection).
+    // Linked to the request's own signal (a user cancel must still stop this
+    // file) but distinct from it, so a watchdog-triggered abort never flips
+    // `ctx.signal.aborted` and is never mistaken for a user cancel in the
+    // catch below. Mirrors the single-file audit's wiring in handler.ts
+    // (Task 7); `deps.watchdog` is undefined only for a caller exercising
+    // this function without a sweep behind it, in which case registration is
+    // a no-op and this file behaves exactly as it did before Task 8.
+    //
+    // Registered BEFORE sandbox creation (IMPORTANT 5) so a memory trip
+    // during the copy uses the same abort path as a cancel, registering only
+    // once the sandbox already existed left that whole phase outside the
+    // watchdog's reach.
+    engineController = new AbortController();
+    abortRequest = () => engineController?.abort(ctx?.signal?.reason);
+    ctx?.signal?.addEventListener('abort', abortRequest, { once: true });
+    handle = deps.watchdog?.register(engineController, deps.perFileCostBytes);
+
+    // audit C1: await the async createSandbox; forward the GOVERNED signal
+    // (linked to `ctx.signal` above) so a mid-copy cancel OR a watchdog trip
+    // both propagate into the file copy. Wrapped in try/catch so a
+    // sandbox-failure row can be returned to the pooling caller (instead of
+    // being thrown to the outer catch and aborting other in-flight audits via
+    // tool-promise rejection).
     let sandbox: Awaited<ReturnType<typeof createSandbox>>;
     try {
       sandbox = await createSandbox(targetFile, env.workspaceRoot, undefined, {
-        signal: ctx?.signal,
+        signal: engineController.signal,
         dependencies: deps.cfg.sandbox?.dependencies,
       });
     } catch (error: unknown) {
+      // A memory stop during the copy must become the SAME `exhausted`
+      // outcome a trip during the engine run does (checked before the cancel
+      // classification below, same ordering rule as the catch at the bottom
+      // of this function).
+      if (isResourceExhausted(engineController.signal.reason)) {
+        return { exhausted: file };
+      }
       // Cancellation (mid-CP reject or pre-aborted signal) must surface as a
       // row with `error: 'Operation cancelled.'` so the caller can distinguish
       // it from a real provisioning failure (which surfaces the file's `raw`
@@ -481,7 +578,8 @@ export async function auditTriageFile(
         workDir: sandbox.workDir,
         prebuildCmd,
         lineRanges: scope.lineRanges,
-        signal: ctx?.signal, // Task 6: thread abort signal so in-flight subprocesses are killed
+        // Task 6 abort + Task 8 memory stop share this one signal.
+        signal: engineController.signal,
       });
     } finally {
       sandbox.cleanup();
@@ -536,6 +634,15 @@ export async function auditTriageFile(
       ),
     };
   } catch (error: unknown) {
+    // A memory stop must never read as a user cancel, so this is checked
+    // BEFORE the cancel handling below (Task 8): the killed child process
+    // misreads an aborted run the same way whether the watchdog or the user
+    // caused it, and `isResourceExhausted` is the one thing that tells them
+    // apart. `engineController` is undefined for a failure that happened
+    // before the engine started, in which case this is always false.
+    if (isResourceExhausted(engineController?.signal.reason)) {
+      return { exhausted: file };
+    }
     // An in-flight cancel (subprocess killed by the abort signal →
     // ExecFailureError('ABORTED'), OR the signal flipped JUST as we entered
     // this catch) must surface as 'Operation cancelled.' — NOT as the raw
@@ -545,6 +652,12 @@ export async function auditTriageFile(
     // prefix, so it uses that rule directly rather than `mapHandlerFailure`.
     return { error: { file, error: failureText(error, ctx) } };
   } finally {
+    // Release the watchdog slot and detach the request-signal listener here
+    // (IMPORTANT 5): registration now happens before sandbox creation, so
+    // this is the only point guaranteed to run regardless of which phase
+    // (sandbox, budget re-read, or engine run) returned or threw.
+    handle?.release();
+    if (abortRequest) ctx?.signal?.removeEventListener('abort', abortRequest);
     // Advance progress counter in finally so even errored files are counted. (Task 6)
     deps.onProgress();
   }

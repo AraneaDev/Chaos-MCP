@@ -911,6 +911,37 @@ describe('RustEngine', () => {
     expect(mockRunShell.mock.calls[0][1]).toEqual(['mutants', '--file', 'src/x.rs']);
   });
 
+  it('passes the inner-pool cap to cargo', async () => {
+    mockRunShell.mockResolvedValue(
+      makeExecResult('MISSED src/x.rs:1:1: x\n1 mutant tested in 1s: 1 missed', ''),
+    );
+
+    await engine.run('src/x.rs', {
+      workDir: '/tmp',
+      concurrency: 1,
+      innerEnv: { RUST_TEST_THREADS: '2', CARGO_BUILD_JOBS: '2' },
+    });
+
+    const options = mockRunShell.mock.calls[0][2] as { env?: NodeJS.ProcessEnv };
+    expect(options.env?.RUST_TEST_THREADS).toBe('2');
+    expect(options.env?.CARGO_BUILD_JOBS).toBe('2');
+    // Node's execFile REPLACES the child's env rather than merging it, so a
+    // bare innerEnv would strip PATH and cargo would fail to launch at all.
+    // The caps must be merged over the inherited environment, not stand alone.
+    expect(options.env?.PATH).toBe(process.env.PATH);
+  });
+
+  it('passes no env override to cargo when there is no inner-pool cap', async () => {
+    mockRunShell.mockResolvedValue(
+      makeExecResult('MISSED src/x.rs:1:1: x\n1 mutant tested in 1s: 1 missed', ''),
+    );
+
+    await engine.run('src/x.rs', { workDir: '/tmp', concurrency: 1 });
+
+    const options = mockRunShell.mock.calls[0][2] as { env?: NodeJS.ProcessEnv };
+    expect(options.env).toBeUndefined();
+  });
+
   // ─── cargo-mutants v27 real-world output (summary line is ground truth) ────
   // Reproduces the exact stdout format of cargo-mutants 27.x, where ONLY MISSED
   // lines are printed and the totals live in the trailing summary line. Before

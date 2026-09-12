@@ -92,4 +92,66 @@ describe('mapPool', () => {
     // negative/NaN limit would make Array.from throw.
     await expect(mapPool([], 4, async (n: number) => n)).resolves.toEqual([]);
   });
+
+  it('waits for admit before starting each item', async () => {
+    const order: string[] = [];
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+
+    const run = mapPool(
+      [1, 2],
+      2,
+      async (n) => {
+        order.push(`run:${n}`);
+        return n;
+      },
+      {
+        admit: async (n) => {
+          order.push(`admit:${n}`);
+          if (n === 2) await gate;
+          return 'admitted';
+        },
+      },
+    );
+
+    await tick();
+    expect(order).toEqual(['admit:1', 'run:1', 'admit:2']);
+    release?.();
+    await run;
+    expect(order).toContain('run:2');
+  });
+
+  it('skips an item whose admission is cancelled', async () => {
+    const ran: number[] = [];
+    const out = await mapPool(
+      [1, 2, 3],
+      2,
+      async (n) => {
+        ran.push(n);
+        return n;
+      },
+      {
+        admit: async (n) => (n === 2 ? 'cancelled' : 'admitted'),
+      },
+    );
+    expect(ran.sort()).toEqual([1, 3]);
+    expect(out[1]).toBeUndefined();
+  });
+
+  it('returns results in input order on the gated (admit) path too', async () => {
+    // Completion order is scrambled on purpose (item 1 finishes last), so this
+    // only passes if results are written by index rather than by completion.
+    const out = await mapPool(
+      [1, 2, 3, 4],
+      2,
+      async (n) => {
+        if (n === 1) await tick();
+        return n * 10;
+      },
+      { admit: async () => 'admitted' },
+    );
+    expect(out).toEqual([10, 20, 30, 40]);
+  });
 });

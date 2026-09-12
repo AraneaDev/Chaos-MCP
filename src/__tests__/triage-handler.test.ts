@@ -458,6 +458,31 @@ describe('handleTriageCall', () => {
       expect(mockAuditFile.mock.calls[0][0].args.concurrency).toBeTypeOf('number');
     });
 
+    it('builds each file its own inner-pool env from ITS OWN project type (Finding 2)', async () => {
+      // TypeScript first, Rust second: the exact ordering that hid the bug,
+      // since sizing off only `files[0]`'s engine never notices Rust showing
+      // up later. Serial pool so `mockAuditFile`'s calls line up with `files`.
+      mockDiscover.mockReturnValue({ files: ['a.ts', 'b.rs'], discovered: 2, skipped: 0 });
+      mockDetectEnv.mockImplementation((rawPath: string) =>
+        rawPath.endsWith('.rs') ? { ...tsEnv, projectType: 'rust' } : tsEnv,
+      );
+      mockAuditFile.mockResolvedValue(mrOf({}));
+
+      await handleTriageCall(req({ paths: ['src'], fileConcurrency: 1 }));
+
+      expect(mockAuditFile).toHaveBeenCalledTimes(2);
+      // Before the fix, the WHOLE sweep's inner-pool env was built once from
+      // `files[0]`'s type (TypeScript's own env is `{}`), so the Rust file
+      // would have received the SAME empty env and cargo-mutants' own worker
+      // pool would have run completely uncapped.
+      expect(mockAuditFile.mock.calls[0][0].args.innerEnv).toEqual({});
+      const rustEnv = mockAuditFile.mock.calls[1][0].args.innerEnv as
+        | Record<string, string>
+        | undefined;
+      expect(rustEnv?.CARGO_BUILD_JOBS).toBeDefined();
+      expect(rustEnv?.RUST_TEST_THREADS).toBeDefined();
+    });
+
     it('ignores a non-integer fileConcurrency when sizing the pool', async () => {
       // 2.5 is rejected by validation, but `null` reaches the pool sizer and
       // must fall through to the default rather than becoming the pool size.
@@ -777,7 +802,9 @@ describe('handleTriageCall', () => {
       });
 
       expect(res.isError).toBe(true);
-      expect(txt(res)).toBe('Operation cancelled.');
+      // Finding B: the resources block resolved before the cancel is still
+      // reported, appended after the cancel text.
+      expect(txt(res)).toMatch(/^Operation cancelled\.\nResources: \d+ files? x \d+ workers?/);
       expect(mockAuditFile).toHaveBeenCalledTimes(1);
     });
 
@@ -802,7 +829,7 @@ describe('handleTriageCall', () => {
       // The file WAS audited — the abort landed while the pool was running.
       expect(mockAuditFile).toHaveBeenCalledTimes(1);
       expect(res.isError).toBe(true);
-      expect(txt(res)).toBe('Operation cancelled.');
+      expect(txt(res)).toMatch(/^Operation cancelled\.\nResources: \d+ files? x \d+ workers?/);
       // No ranking, and above all no gate verdict over a partial file set.
       expect(res.structuredContent).toBeUndefined();
       expect(txt(res)).not.toContain('gate');
@@ -882,7 +909,9 @@ describe('handleTriageCall', () => {
       });
 
       expect(res.isError).toBe(true);
-      expect(txt(res)).toBe('Operation cancelled.');
+      // Finding B: the resources block resolved before the cancel is still
+      // reported, appended after the cancel text.
+      expect(txt(res)).toMatch(/^Operation cancelled\.\nResources: \d+ files? x \d+ workers?/);
       expect(mockAuditFile).not.toHaveBeenCalled();
     });
   });
@@ -1641,17 +1670,29 @@ describe('handleTriageCall ctx: progress + cancellation', () => {
     expect(mockAuditFile).not.toHaveBeenCalled();
   });
 
-  it('threads ctx.signal into each auditFile call as a top-level signal field', async () => {
+  it('threads ctx.signal into each auditFile call, linked through a per-file controller', async () => {
+    // Task 8: `auditTriageFile` now registers a per-file `AbortController` with
+    // the sweep's watchdog and passes ITS signal to `auditFile`, so a memory
+    // stop can abort one file without ever touching `ctx.signal` (and without
+    // ever being mistaken for a user cancel). The object is no longer
+    // `ctx.signal` itself, but a cancel on `ctx.signal` still has to reach the
+    // engine, so that link is what this now asserts instead of reference
+    // identity.
     mockDiscover.mockReturnValue({ files: ['a.ts'], discovered: 1, skipped: 0 });
-    mockAuditFile.mockResolvedValue(mrOf({}));
     const controller = new AbortController();
+    let passedSignal: AbortSignal | undefined;
+    mockAuditFile.mockImplementation(async (input) => {
+      passedSignal = input.signal;
+      controller.abort();
+      return mrOf({});
+    });
     const ctx = { signal: controller.signal };
 
     await handleTriageCall(req({ paths: ['src'] }), undefined, ctx);
 
-    expect(mockAuditFile).toHaveBeenCalledWith(
-      expect.objectContaining({ signal: controller.signal }),
-    );
+    expect(passedSignal).toBeDefined();
+    expect(passedSignal).not.toBe(controller.signal);
+    expect(passedSignal?.aborted).toBe(true);
   });
 });
 
