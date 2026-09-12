@@ -95,7 +95,14 @@ export class RustEngine extends BaseEngine {
       const result = await invokeMutationTool('cargo-mutants', 'cargo', args, {
         cwd,
         timeoutMs,
-        env: options?.innerEnv,
+        // Node's execFile REPLACES the child's whole environment when `env` is
+        // set rather than merging it with process.env, so a bare innerEnv would
+        // strip PATH/CARGO_HOME/RUSTUP_HOME and cargo would fail to launch at
+        // all (spawn cargo ENOENT). Merge over the current environment, and
+        // only when there is something to merge, so the no-cap path stays
+        // byte-identical to today (see prepareInfectionWorkspace in
+        // engines/php/config.ts for the same pattern).
+        env: options?.innerEnv ? { ...process.env, ...options.innerEnv } : undefined,
         signal: options?.signal,
         executor: options?.executor,
       });
