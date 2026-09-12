@@ -53,8 +53,10 @@ export {
  * mutant, so survivors get a real location, change, and severity — no
  * per-mutant follow-up calls. It mutates IN PLACE and runs the test-command from
  * the working directory, so real-app conftests resolve (unlike mutmut's
- * copy-to-`mutants/` model). Line scoping and mutator allow/denylists are not
- * supported (whole-file); `operators` can restrict the mutation set via config.
+ * copy-to-`mutants/` model). Arbitrary mutator allow/denylists are not
+ * supported; `excludeOperators` can restrict the mutation set via
+ * `cr-filter-operators`, and `diffScope` of kind 'ranges' restricts it to
+ * diff-changed lines via `cr-filter-lines` (see step 2.6 below).
  */
 export class PythonEngine extends BaseEngine {
   /** Per-instance interpreter probe (audit A5). Empty until first {@link run}. */
@@ -80,11 +82,13 @@ export class PythonEngine extends BaseEngine {
 
     const interpreter = this.interpreter();
     const testCommand = resolveTestCommand(interpreter, options);
+    const diffRanges = options?.diffScope?.kind === 'ranges' ? options.diffScope.ranges : undefined;
     const config = buildCosmicRayConfig({
       modulePath: filePath,
       testCommand,
       timeoutSeconds: DEFAULT_PER_MUTANT_TIMEOUT_S,
       excludeOperators: options?.pythonExcludeOperators,
+      lineRanges: diffRanges,
     });
     try {
       writeFileSync(configPath, config, 'utf8');
@@ -115,10 +119,11 @@ export class PythonEngine extends BaseEngine {
     await this.step('init', ['init', configPath, sessionPath], cwd, budget, options);
 
     // Step 2.5: operator filter — mark mutants matching excludeOperators as
-    // skipped so exec doesn't run them. cosmic-ray has no operator allowlist and
-    // no line-scoping, so this is the lever for bounding the mutant count (hence
-    // wall-clock) on large files. `cr-filter-operators <session> <config>` ships
-    // with cosmic-ray. Only runs when a list is supplied.
+    // skipped so exec doesn't run them. cosmic-ray has no operator allowlist, so
+    // this is the lever for bounding the mutant count (hence wall-clock) by
+    // operator on large files. `cr-filter-operators <session> <config>` ships
+    // with cosmic-ray. Only runs when a list is supplied. Line-scoping is a
+    // separate filter, step 2.6 below.
     //
     // A previous comment here claimed "Skipped mutants are omitted from dump, so
     // they simply drop out of the score". That is FALSE, and it was the premise
@@ -131,20 +136,40 @@ export class PythonEngine extends BaseEngine {
     // filtered mutant is dumped — with `test_outcome: null`, because
     // `WorkResult.test_outcome` defaults to None and nothing sets it.
     //
-    // 8.4.6 additionally cannot serialise that record at all: `cli.py`'s
-    // `result_to_dict` does `d["test_outcome"].value` unconditionally and raises
+    // 8.4.6 additionally could not serialise that record at all: `cli.py`'s
+    // `result_to_dict` did `d["test_outcome"].value` unconditionally and raised
     // `AttributeError: 'NoneType' object has no attribute 'value'`, so the WHOLE
-    // dump exits 1 as soon as one mutant was filtered. That surfaces as the
+    // dump exited 1 as soon as one mutant was filtered. That surfaced as the
     // dump-step failure below, which is why that message carries an
-    // excludeOperators hint. On builds whose dump does emit the null record,
-    // parseCosmicRayDump counts it as `unscored` and the degenerate-run guard
-    // names the exclude list rather than blaming the interpreter.
+    // excludeOperators hint. Fixed in cosmic-ray 8.7.0 (the pinned version as of
+    // this comment): `dump`'s serialiser now guards a null `test_outcome`
+    // instead of reading `.value` off it, so a skipped mutant no longer crashes
+    // the whole dump: parseCosmicRayDump counts it as `unscored` and the
+    // degenerate-run guard names the exclude list rather than blaming the
+    // interpreter.
     if (options?.pythonExcludeOperators && options.pythonExcludeOperators.length > 0) {
       await this.step('filter', [sessionPath, configPath], cwd, budget, options, {
         command: 'cr-filter-operators',
         onExecFailure: (e) =>
           new Error(
             `cosmic-ray operator filter failed (exit ${e.exit}): ${(e.stderr || e.message).slice(0, 500)}`,
+          ),
+      });
+    }
+
+    // Step 2.6: line filter, marking mutants outside the diff-changed line
+    // ranges as skipped, the same way step 2.5 marks mutants by operator name.
+    // Ships as `cr-filter-lines <session> --config <config>` and, like
+    // `cr-filter-operators`, only relabels: `dump` still lists a filtered
+    // mutant, with `test_outcome: null`. Only runs when `diffScope` is the
+    // 'ranges' kind and carries at least one range; an absent or non-'ranges'
+    // diffScope leaves the run whole-file, as before this existed.
+    if (diffRanges && diffRanges.length > 0) {
+      await this.step('line-filter', [sessionPath, '--config', configPath], cwd, budget, options, {
+        command: 'cr-filter-lines',
+        onExecFailure: (e) =>
+          new Error(
+            `cosmic-ray line filter failed (exit ${e.exit}): ${(e.stderr || e.message).slice(0, 500)}`,
           ),
       });
     }
@@ -158,15 +183,17 @@ export class PythonEngine extends BaseEngine {
       onExecFailure: (e) =>
         new Error(
           `cosmic-ray dump failed (exit ${e.exit}): ${(e.stderr || e.message).slice(0, 500)}` +
-            // cosmic-ray 8.4.6's `dump` crashes on any mutant this run's operator
-            // filter skipped (see step 2.5). Without this the operator sees an
-            // opaque AttributeError traceback and no link to the option that
-            // caused it.
+            // Before cosmic-ray 8.7.0 (the pinned version, containers/python/requirements.txt),
+            // `dump` crashed on any mutant this run's operator filter skipped (see step
+            // 2.5): `result_to_dict` read `.value` off a null `test_outcome` unconditionally.
+            // Fixed in 8.7.0, but the hint stays for anyone who has pinned an older
+            // cosmic-ray, so the operator sees a link to the option that caused it rather
+            // than an opaque AttributeError traceback.
             (filtered
-              ? `. NOTE: this run used "cosmicray": { "excludeOperators": [...] }, and cosmic-ray ` +
-                `8.4.6's \`dump\` raises AttributeError on any mutant the filter marked skipped ` +
-                `(its test_outcome is null). Remove excludeOperators, or use a cosmic-ray whose ` +
-                `dump tolerates a null test_outcome, to get results for this file.`
+              ? `. NOTE: this run used "cosmicray": { "excludeOperators": [...] }. On a ` +
+                `cosmic-ray older than 8.7.0, \`dump\` raises AttributeError on any mutant the ` +
+                `filter marked skipped (its test_outcome is null); remove excludeOperators, or ` +
+                `upgrade cosmic-ray, to get results for this file.`
               : ''),
         ),
     });
@@ -181,6 +208,7 @@ export class PythonEngine extends BaseEngine {
       interpreter,
       testCommand,
       excludeOperators: options?.pythonExcludeOperators,
+      diffScoped: !!diffRanges && diffRanges.length > 0,
     });
 
     return result;

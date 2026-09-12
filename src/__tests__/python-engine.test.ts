@@ -18,7 +18,7 @@ import { writeFileSync } from 'node:fs';
 import { runShell } from '../utils/exec.js';
 import { ExecFailureError } from '../utils/exec-error.js';
 import { isCancel } from '../utils/cancel.js';
-import { PythonEngine, parseCosmicRayDump } from '../engines/python.js';
+import { PythonEngine, parseCosmicRayDump, buildCosmicRayConfig } from '../engines/python.js';
 
 const mockRunShell = vi.mocked(runShell);
 const mockWriteFileSync = vi.mocked(writeFileSync);
@@ -535,6 +535,38 @@ describe('PythonEngine (cosmic-ray)', () => {
     expect(message).toContain('excludeOperators');
     expect(message).toContain('["core/.*"]');
     // The interpreter diagnosis must NOT fire — nothing was incompetent.
+    expect(message).not.toContain('interpreter or pytest is missing');
+  });
+
+  it('says "nothing to mutate on the changed lines" when diff scoping skipped every mutant', async () => {
+    // A diffScope whose ranges land only on blank lines or comments makes
+    // cr-filter-lines skip every mutant, the same shape as an over-broad
+    // excludeOperators: every mutant comes back with a null test_outcome, none
+    // incompetent, nothing scored. Before the guard knew about `diffScoped` this
+    // fell into the operator-filter branch below and blamed "an operator filter
+    // that excluded every mutation" even though the caller never passed
+    // excludeOperators at all, a diagnosis pointing at the wrong feature
+    // entirely. It must instead say there was nothing to mutate on the changed
+    // lines.
+    const skipped = (op: string) =>
+      JSON.stringify([
+        { mutations: [{ operator_name: op, start_pos: [1, 1] }] },
+        { worker_outcome: 'skipped', output: 'Filtered line', test_outcome: null },
+      ]);
+    mockRunShell
+      .mockResolvedValueOnce(ok()) // baseline
+      .mockResolvedValueOnce(ok()) // init
+      .mockResolvedValueOnce(ok()) // cr-filter-lines
+      .mockResolvedValueOnce(ok()) // exec
+      .mockResolvedValueOnce(ok([skipped('core/A'), skipped('core/B')].join('\n'))); // dump
+
+    const message = await rejectionMessage({
+      workDir: '/tmp/sandbox',
+      diffScope: { kind: 'ranges', ranges: [{ start: 40, end: 42 }] },
+    });
+
+    expect(message).toContain('nothing to mutate on the changed lines');
+    expect(message).not.toContain('excludeOperators');
     expect(message).not.toContain('interpreter or pytest is missing');
   });
 
@@ -1090,6 +1122,186 @@ describe('PythonEngine (cosmic-ray)', () => {
     // TypeError before the first subprocess starts.
     queueRun('');
     await expect(engine.run('m.py')).resolves.toMatchObject({ target: 'm.py' });
+  });
+
+  describe('buildCosmicRayConfig, line-filter section (diff scoping)', () => {
+    it('emits the line-filter section with the key matching module-path', () => {
+      const cfg = buildCosmicRayConfig({
+        modulePath: 'calc.py',
+        testCommand: 'python -m pytest -x -q',
+        timeoutSeconds: 30,
+        lineRanges: [{ start: 10, end: 14 }],
+      });
+      expect(cfg).toContain(
+        ['[cosmic-ray.filters.line-filter.lines]', '"calc.py" = ["10-14"]'].join('\n'),
+      );
+    });
+
+    it('emits multiple ranges as separate string entries, one per range', () => {
+      const cfg = buildCosmicRayConfig({
+        modulePath: 'calc.py',
+        testCommand: 'python -m pytest -x -q',
+        timeoutSeconds: 30,
+        lineRanges: [
+          { start: 10, end: 14 },
+          { start: 30, end: 30 },
+        ],
+      });
+      expect(cfg).toContain('"calc.py" = ["10-14", "30-30"]');
+    });
+
+    it('omits the line-filter section entirely when no ranges are supplied', () => {
+      const cfg = buildCosmicRayConfig({
+        modulePath: 'calc.py',
+        testCommand: 'python -m pytest -x -q',
+        timeoutSeconds: 30,
+      });
+      expect(cfg).not.toContain('line-filter');
+    });
+
+    it('omits the line-filter section for an EMPTY ranges array', () => {
+      const cfg = buildCosmicRayConfig({
+        modulePath: 'calc.py',
+        testCommand: 'python -m pytest -x -q',
+        timeoutSeconds: 30,
+        lineRanges: [],
+      });
+      expect(cfg).not.toContain('line-filter');
+    });
+  });
+
+  it('generates the config.toml exactly with both an operator filter and a line filter', async () => {
+    // Six steps here: baseline, init, cr-filter-operators, cr-filter-lines, exec, dump.
+    mockRunShell
+      .mockResolvedValueOnce(ok())
+      .mockResolvedValueOnce(ok())
+      .mockResolvedValueOnce(ok())
+      .mockResolvedValueOnce(ok())
+      .mockResolvedValueOnce(ok())
+      .mockResolvedValueOnce(ok(''));
+    await engine.run('calc.py', {
+      workDir: '/tmp/sandbox',
+      testRunner: 'pytest',
+      pythonExcludeOperators: ['core/ReplaceComparisonOperator'],
+      diffScope: { kind: 'ranges', ranges: [{ start: 10, end: 14 }] },
+    });
+
+    expect(lastConfig()).toBe(
+      [
+        '[cosmic-ray]',
+        'module-path = "calc.py"',
+        'timeout = 30',
+        'test-command = "python -m pytest -x -q"',
+        '',
+        '[cosmic-ray.distributor]',
+        'name = "local"',
+        '',
+        '[cosmic-ray.filters.operators-filter]',
+        'exclude-operators = ["core/ReplaceComparisonOperator"]',
+        '',
+        '[cosmic-ray.filters.line-filter.lines]',
+        '"calc.py" = ["10-14"]',
+        '',
+      ].join('\n'),
+    );
+  });
+
+  describe('line filter step (diff scoping)', () => {
+    it('runs cr-filter-lines with --config between init and exec when diffScope has ranges', async () => {
+      // Five runShell calls means the filter ran between init and exec.
+      mockRunShell
+        .mockResolvedValueOnce(ok()) // baseline
+        .mockResolvedValueOnce(ok()) // init
+        .mockResolvedValueOnce(ok()) // cr-filter-lines
+        .mockResolvedValueOnce(ok()) // exec
+        .mockResolvedValueOnce(ok('')); // dump
+
+      await engine.run('pkg/calc.py', {
+        workDir: '/tmp/sandbox',
+        diffScope: { kind: 'ranges', ranges: [{ start: 10, end: 14 }] },
+      });
+
+      const commands = mockRunShell.mock.calls.map((c) => c[0] as string);
+      expect(commands).toEqual([
+        'cosmic-ray',
+        'cosmic-ray',
+        'cr-filter-lines',
+        'cosmic-ray',
+        'cosmic-ray',
+      ]);
+      // the filter runs on the session with the config: `cr-filter-lines <session> --config <config>`
+      const filterArgs = mockRunShell.mock.calls[2][1] as string[];
+      expect(filterArgs[0]).toMatch(/chaos-cosmic-ray\.sqlite$/);
+      expect(filterArgs[1]).toBe('--config');
+      expect(filterArgs[2]).toMatch(/chaos-cosmic-ray\.toml$/);
+    });
+
+    it('runs cr-filter-lines AFTER cr-filter-operators when both are supplied', async () => {
+      mockRunShell
+        .mockResolvedValueOnce(ok()) // baseline
+        .mockResolvedValueOnce(ok()) // init
+        .mockResolvedValueOnce(ok()) // cr-filter-operators
+        .mockResolvedValueOnce(ok()) // cr-filter-lines
+        .mockResolvedValueOnce(ok()) // exec
+        .mockResolvedValueOnce(ok('')); // dump
+
+      await engine.run('m.py', {
+        workDir: '/tmp/sandbox',
+        pythonExcludeOperators: ['core/NumberReplacer'],
+        diffScope: { kind: 'ranges', ranges: [{ start: 1, end: 5 }] },
+      });
+
+      const commands = mockRunShell.mock.calls.map((c) => c[0] as string);
+      expect(commands).toEqual([
+        'cosmic-ray',
+        'cosmic-ray',
+        'cr-filter-operators',
+        'cr-filter-lines',
+        'cosmic-ray',
+        'cosmic-ray',
+      ]);
+    });
+
+    it('does not run cr-filter-lines when diffScope is absent (4 calls)', async () => {
+      queueRun('');
+      await engine.run('m.py', { workDir: '/tmp/sandbox' });
+      const commands = mockRunShell.mock.calls.map((c) => c[0] as string);
+      expect(commands).not.toContain('cr-filter-lines');
+      expect(commands).toHaveLength(4);
+    });
+
+    it('does not run cr-filter-lines when diffScope kind is not "ranges"', async () => {
+      queueRun('');
+      await engine.run('m.py', {
+        workDir: '/tmp/sandbox',
+        diffScope: { kind: 'patch', path: '/tmp/x.patch' },
+      });
+      const commands = mockRunShell.mock.calls.map((c) => c[0] as string);
+      expect(commands).not.toContain('cr-filter-lines');
+      expect(commands).toHaveLength(4);
+    });
+
+    it('does not run cr-filter-lines for an EMPTY ranges array', async () => {
+      queueRun('');
+      await engine.run('m.py', {
+        workDir: '/tmp/sandbox',
+        diffScope: { kind: 'ranges', ranges: [] },
+      });
+      expect(mockRunShell).toHaveBeenCalledTimes(4);
+    });
+
+    it('reports a line-filter-step failure with its own message', async () => {
+      mockRunShell
+        .mockResolvedValueOnce(ok()) // baseline
+        .mockResolvedValueOnce(ok()) // init
+        .mockRejectedValueOnce(fail({ exit: 3, stderr: '' })); // cr-filter-lines
+
+      const message = await rejectionMessage({
+        workDir: '/tmp/sandbox',
+        diffScope: { kind: 'ranges', ranges: [{ start: 1, end: 2 }] },
+      });
+      expect(message).toBe('cosmic-ray line filter failed (exit 3): Command failed');
+    });
   });
 
   describe('operator filter step', () => {
