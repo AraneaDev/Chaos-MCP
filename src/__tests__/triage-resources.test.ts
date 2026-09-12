@@ -299,6 +299,48 @@ describe('triage_test_coverage resource governance', () => {
     expect(payload.summary.filesErrored).toBe(1);
   });
 
+  it('preserves the original exhausted marker when admission is declined on the RETRY pass itself', async () => {
+    mockDiscover.mockReturnValue({ files: ['a.ts'], discovered: 1, skipped: 0 });
+    installFakeEngine();
+    // a.ts's first attempt trips the watchdog (register call 1) and becomes
+    // `{ exhausted }`. Its requeue's own admission check (admit call 2, the
+    // only admission check the single-file retry pool makes) is declined
+    // outright, so the retry pool never reaches `register()` for it at all:
+    // `mapPool` leaves that slot an unassigned hole (utils/pool.ts), never a
+    // resolved outcome, when `admit` declines before `fn` is even called.
+    const resources = makeResources({
+      exhaustOnRegisterCalls: [1],
+      declineOnAdmitCalls: [2],
+    });
+    mockCreateResourceContext.mockReturnValue(
+      resources as unknown as ReturnType<typeof createResourceContext>,
+    );
+
+    const res = await handleTriageCall(req({ paths: ['src'], fileConcurrency: 1 }));
+    const payload = JSON.parse(txt(res)) as {
+      ranking: { file: string }[];
+      errors: { file: string; error: string }[];
+      summary: { filesDiscovered: number; filesAudited: number; filesErrored: number };
+    };
+
+    expect(res.isError).toBeUndefined();
+    // The retry never reached a second engine attempt.
+    expect(mockAuditFile).toHaveBeenCalledTimes(1);
+    expect(resources.watchdog.register).toHaveBeenCalledTimes(1);
+    // A declined retry must not overwrite the original `{ exhausted }`
+    // marker with an empty slot: the file still becomes an error row, the
+    // same RESOURCE_EXHAUSTED wording as a retry that ran and exhausted
+    // again, never a silent drop from the ranking.
+    expect(payload.ranking).toEqual([]);
+    expect(payload.errors).toHaveLength(1);
+    expect(payload.errors[0].file).toBe('a.ts');
+    expect(payload.errors[0].error).toMatch(/exhaust/i);
+    expect(payload.errors[0].error).not.toBe('Operation cancelled.');
+    expect(payload.summary.filesDiscovered).toBe(1);
+    expect(payload.summary.filesAudited).toBe(0);
+    expect(payload.summary.filesErrored).toBe(1);
+  });
+
   it('charges the admission gate and watchdog registration with the per-file figure including the fixed term, not the workers-only figure', async () => {
     mockDiscover.mockReturnValue({ files: ['a.ts'], discovered: 1, skipped: 0 });
     installFakeEngine();

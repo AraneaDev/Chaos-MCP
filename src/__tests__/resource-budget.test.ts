@@ -119,24 +119,57 @@ describe('resolveBudget: the 2026-09-12 fixed-per-file-cost amendment', () => {
 
   it('costs fewer workers over more files as MORE than more workers over fewer files, the property a per-worker-only model gets backwards', () => {
     // The two real acceptance-ramp sweeps from the amendment: 2 files x 3
-    // workers measured 3547 MB, 4 files x 1 worker measured 4665 MB, i.e.
-    // the SAME engine cost MORE with fewer workers spread over more files.
-    // A per-worker-only model (the pre-amendment `workerCostBytes: 600 MB`)
-    // gets the ORDER backwards: 6 workers x 600 MB (3600 MB) look pricier
+    // workers peaked at 3547 MB, 4 files x 1 worker peaked at 4665 MB, i.e.
+    // the SAME engine cost MORE with fewer workers spread over more files. A
+    // per-worker-only model (the pre-amendment `workerCostBytes: 600 MB`)
+    // gets the ORDER backwards: 6 workers x 600 MB (3600 MB) looks pricier
     // than 4 workers x 600 MB (2400 MB), the opposite of what was measured.
-    const oldWorkerOnly = 600 * 1024 ** 2;
-    const oldTwoFilesThreeWorkers = 6 * oldWorkerOnly;
-    const oldFourFilesOneWorker = 4 * oldWorkerOnly;
-    expect(oldFourFilesOneWorker).toBeLessThan(oldTwoFilesThreeWorkers);
+    //
+    // Exercised through `resolveBudget` itself rather than the two figures'
+    // raw arithmetic, so a regression in the production cost function fails
+    // this test: give both configurations the SAME memory, sized to the
+    // cheaper measurement, and check which one `resolveBudget` actually has
+    // to cut.
+    const MIB = 1024 ** 2;
+    const limitBytes = 8 * GIB;
+    const { admissionBytes } = resolveFloors(limitBytes);
+    const availableAtCheaperMeasurement = 3547 * MIB + admissionBytes;
 
-    // The new fixed-plus-per-worker split gets the order right.
-    const newTwoFilesThreeWorkers = 2 * (FIXED + 3 * WORKER);
-    const newFourFilesOneWorker = 4 * (FIXED + 1 * WORKER);
-    expect(newFourFilesOneWorker).toBeGreaterThan(newTwoFilesThreeWorkers);
-    // And both predictions sit slightly above what was actually measured,
-    // the safe direction for a figure that only ever lowers concurrency.
-    expect(newTwoFilesThreeWorkers).toBeGreaterThanOrEqual(3547 * 1024 ** 2);
-    expect(newFourFilesOneWorker).toBeGreaterThanOrEqual(4665 * 1024 ** 2);
+    const cheaper = resolveBudget({
+      snapshot: snapshot(availableAtCheaperMeasurement, limitBytes),
+      fileFixedCostBytes: FIXED,
+      workerCostBytes: WORKER,
+      cpuFileConcurrency: 2,
+      cpuPerFileWorkers: 3,
+    });
+    // The memory its own real measurement needed is enough: its file count
+    // is not cut.
+    expect(cheaper.fileConcurrency).toBe(2);
+
+    const pricier = resolveBudget({
+      snapshot: snapshot(availableAtCheaperMeasurement, limitBytes),
+      fileFixedCostBytes: FIXED,
+      workerCostBytes: WORKER,
+      cpuFileConcurrency: 4,
+      cpuPerFileWorkers: 1,
+    });
+    // The same memory that comfortably covers 2 files at 3 workers each is
+    // not enough for 4 files at 1 worker each: `resolveBudget` cuts its file
+    // count. A per-worker-only model, which sees 6 workers as pricier than
+    // 4, would have cut the CHEAPER configuration instead.
+    expect(pricier.fileConcurrency).toBeLessThan(4);
+
+    // Handed its OWN real measurement as the available memory, the pricier
+    // configuration is not cut.
+    const availableAtPricierMeasurement = 4665 * MIB + admissionBytes;
+    const pricierAtOwnMeasurement = resolveBudget({
+      snapshot: snapshot(availableAtPricierMeasurement, limitBytes),
+      fileFixedCostBytes: FIXED,
+      workerCostBytes: WORKER,
+      cpuFileConcurrency: 4,
+      cpuPerFileWorkers: 1,
+    });
+    expect(pricierAtOwnMeasurement).toMatchObject({ fileConcurrency: 4, perFileWorkers: 1 });
   });
 
   it('an unavailable probe still reproduces the cpu figures exactly with a nonzero fixed cost, and overBudget stays false', () => {
