@@ -257,9 +257,9 @@ const dependenciesRule: FieldRule = {
  * `resources.criticalFloorBytes` rules, shared verbatim by
  * {@link RESOURCES_FIELD_RULES} (the parser, via `parseResourcesConfig`) and
  * {@link SECTION_FIELD_RULES} (the validator, via
- * `sectionRule`/`validateEngineSection`) — same reason `dependencies` is
- * declared once and reused by both: the two cannot drift on what counts as a
- * valid value.
+ * `sectionRule`/`validateEngineSection`), for the same reason `dependencies`
+ * is declared once and reused by both: the two cannot drift on what counts as
+ * a valid value.
  */
 const watchdogRule: FieldRule = {
   key: 'watchdog',
@@ -530,8 +530,8 @@ export const KNOWN_RESOURCES_KEYS = new Set([
 
 /**
  * The resources section. Same shape as {@link SANDBOX_FIELD_RULES}: its
- * warnings read `"resources.${key}" ${phrase} — will be ignored.`, the
- * engine-section house style.
+ * warnings follow the engine-section house style, `"resources.${key}"
+ * ${phrase}`, with a trailing note that the field will be ignored.
  */
 export const RESOURCES_FIELD_RULES: readonly FieldRule[] = [
   watchdogRule,
