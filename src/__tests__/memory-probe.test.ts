@@ -66,6 +66,96 @@ describe('probeMemory', () => {
     expect(snap.availableBytes).toBe(6 * GIB);
   });
 
+  it('resolves a nested cgroup v2 path from /proc/self/cgroup (MAJOR: cgroup resolution)', () => {
+    // The process sits several levels below the mount root, and only ITS OWN
+    // cgroup carries a limit; nothing is set at /sys/fs/cgroup itself. The old
+    // code only ever checked the fixed root path, found nothing there, and
+    // fell back to host headroom (6 GiB) even though this process is actually
+    // capped at 2 GiB. Resolving /proc/self/cgroup is what catches that.
+    const nestedDir = '/sys/fs/cgroup/user.slice/user-1000.slice/app.slice/app-1.scope';
+    const snap = probeMemory(
+      linuxDeps({
+        '/proc/meminfo': 'MemAvailable:    6291456 kB\n',
+        '/proc/self/cgroup': '0::/user.slice/user-1000.slice/app.slice/app-1.scope\n',
+        [`${nestedDir}/memory.max`]: `${2 * GIB}\n`,
+        [`${nestedDir}/memory.current`]: `${1 * GIB}\n`,
+      }),
+    );
+    expect(snap.source).toBe('cgroup');
+    expect(snap.availableBytes).toBe(1 * GIB);
+    expect(snap.limitBytes).toBe(2 * GIB);
+  });
+
+  it('walks up to an ancestor cgroup v2 limit when the leaf has none', () => {
+    // The leaf cgroup (app-1.scope) and its immediate parent (app.slice) carry
+    // no memory files at all; the limit is set two levels up, on
+    // user-1000.slice. The old code never looked past the fixed mount root, so
+    // it would have missed this entirely and reported host headroom instead.
+    const ancestorDir = '/sys/fs/cgroup/user.slice/user-1000.slice';
+    const snap = probeMemory(
+      linuxDeps({
+        '/proc/meminfo': 'MemAvailable:    6291456 kB\n',
+        '/proc/self/cgroup': '0::/user.slice/user-1000.slice/app.slice/app-1.scope\n',
+        [`${ancestorDir}/memory.max`]: `${3 * GIB}\n`,
+        [`${ancestorDir}/memory.current`]: `${1 * GIB}\n`,
+      }),
+    );
+    expect(snap.source).toBe('cgroup');
+    expect(snap.availableBytes).toBe(2 * GIB);
+    expect(snap.limitBytes).toBe(3 * GIB);
+  });
+
+  it('resolves a nested cgroup v1 memory controller path from /proc/self/cgroup', () => {
+    // /proc/self/cgroup lists multiple hierarchies; only the line naming the
+    // "memory" controller is relevant, and its path is nested well below the
+    // fixed /sys/fs/cgroup/memory root the old code exclusively checked there.
+    const nestedDir = '/sys/fs/cgroup/memory/user.slice/user-1000.slice';
+    const snap = probeMemory(
+      linuxDeps({
+        '/proc/meminfo': 'MemAvailable:    6291456 kB\n',
+        '/proc/self/cgroup': [
+          '10:cpu,cpuacct:/user.slice',
+          '9:memory:/user.slice/user-1000.slice',
+        ].join('\n'),
+        [`${nestedDir}/memory.limit_in_bytes`]: `${2 * GIB}\n`,
+        [`${nestedDir}/memory.usage_in_bytes`]: `${1 * GIB}\n`,
+      }),
+    );
+    expect(snap.source).toBe('cgroup');
+    expect(snap.availableBytes).toBe(1 * GIB);
+    expect(snap.limitBytes).toBe(2 * GIB);
+  });
+
+  it('falls back to the fixed root paths when /proc/self/cgroup is unreadable or malformed', () => {
+    // No /proc/self/cgroup entry at all (unreadable), and the limit sits at
+    // the fixed mount root exactly as the pre-existing tests expect. This
+    // guards against the resolution step swallowing the previously-working
+    // root-path case when it has nothing useful to resolve.
+    const snap = probeMemory(
+      linuxDeps({
+        '/proc/meminfo': 'MemAvailable:    6291456 kB\n',
+        '/sys/fs/cgroup/memory.max': `${2 * GIB}\n`,
+        '/sys/fs/cgroup/memory.current': `${1 * GIB}\n`,
+      }),
+    );
+    expect(snap.source).toBe('cgroup');
+    expect(snap.availableBytes).toBe(1 * GIB);
+    expect(snap.limitBytes).toBe(2 * GIB);
+  });
+
+  it('falls back to the fixed root paths when /proc/self/cgroup content is garbage', () => {
+    const snap = probeMemory(
+      linuxDeps({
+        '/proc/meminfo': 'MemAvailable:    6291456 kB\n',
+        '/proc/self/cgroup': 'not a cgroup line at all\n',
+        '/sys/fs/cgroup/memory/memory.limit_in_bytes': `${4 * GIB}\n`,
+        '/sys/fs/cgroup/memory/memory.usage_in_bytes': `${3 * GIB}\n`,
+      }),
+    );
+    expect(snap.source).toBe('cgroup');
+    expect(snap.availableBytes).toBe(1 * GIB);
+  });
+
   it('falls back to cgroup v1 files', () => {
     const snap = probeMemory(
       linuxDeps({

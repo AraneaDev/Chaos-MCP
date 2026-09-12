@@ -11,6 +11,14 @@
  * and reports 'unavailable' when that fails, which disables the watchdog rather
  * than making it wrong.
  *
+ * On Linux, the cgroup reading resolves the process's own cgroup from
+ * `/proc/self/cgroup` first, and walks from that cgroup up to the hierarchy
+ * mount root looking for `memory.max`/`memory.current` (v2) or
+ * `memory.limit_in_bytes`/`memory.usage_in_bytes` (v1) at each level, since a
+ * limit can sit on an ancestor rather than the process's own cgroup. Only when
+ * that file cannot be read or parsed does it fall back to the fixed
+ * hierarchy-root paths.
+ *
  * Every input arrives through {@link ProbeDeps} so the whole ladder is testable
  * without touching a real machine.
  */
@@ -36,6 +44,9 @@ export interface ProbeDeps {
   runVmStat: () => string | undefined;
 }
 
+const CGROUP_SELF = '/proc/self/cgroup';
+const CGROUP_V2_ROOT = '/sys/fs/cgroup';
+const CGROUP_V1_MEMORY_ROOT = '/sys/fs/cgroup/memory';
 const CGROUP_V2_MAX = '/sys/fs/cgroup/memory.max';
 const CGROUP_V2_CURRENT = '/sys/fs/cgroup/memory.current';
 const CGROUP_V1_MAX = '/sys/fs/cgroup/memory/memory.limit_in_bytes';
@@ -76,10 +87,106 @@ function hostAvailable(
   return { availableBytes: deps.freemem(), limitBytes: deps.totalmem() };
 }
 
+interface CgroupLevel {
+  availableBytes: number;
+  limitBytes: number;
+}
+
+/**
+ * Reads one candidate cgroup directory's limit/usage pair, applying the same
+ * "unlimited sentinel" filter used for the fixed-root reads below.
+ */
+function readCgroupLevel(
+  deps: ProbeDeps,
+  dir: string,
+  maxFile: string,
+  currentFile: string,
+): CgroupLevel | undefined {
+  const limit = readNumber(deps, `${dir}/${maxFile}`);
+  const used = readNumber(deps, `${dir}/${currentFile}`);
+  if (limit === undefined || used === undefined) return undefined;
+  if (limit >= V1_UNLIMITED_FLOOR) return undefined;
+  return { availableBytes: Math.max(0, limit - used), limitBytes: limit };
+}
+
+/**
+ * Every directory from the process's own cgroup up to (and including) the
+ * hierarchy mount root, leaf first. A limit set on an ancestor constrains the
+ * process just as much as one on its own cgroup, so every level is a
+ * candidate.
+ */
+function ancestorDirs(root: string, relativePath: string): string[] {
+  const cleaned = relativePath.replace(/\s*\(deleted\)$/, '');
+  const segments = cleaned.split('/').filter((segment) => segment.length > 0);
+  const dirs: string[] = [];
+  for (let count = segments.length; count >= 0; count--) {
+    const suffix = segments.slice(0, count).join('/');
+    dirs.push(suffix ? `${root}/${suffix}` : root);
+  }
+  return dirs;
+}
+
+/** The smallest headroom among valid levels is the one the process is actually bound by. */
+function mostRestrictive(levels: CgroupLevel[]): CgroupLevel | undefined {
+  return levels.reduce<CgroupLevel | undefined>(
+    (best, level) =>
+      best === undefined || level.availableBytes < best.availableBytes ? level : best,
+    undefined,
+  );
+}
+
+/** The `0::<path>` line of `/proc/self/cgroup`, relative to the cgroup v2 mount. */
+function selfCgroupV2Path(deps: ProbeDeps): string | undefined {
+  const content = deps.readFile(CGROUP_SELF);
+  if (!content) return undefined;
+  for (const line of content.split('\n')) {
+    const match = /^0::(.*)$/.exec(line.trim());
+    if (match) return match[1];
+  }
+  return undefined;
+}
+
+/** The path named on the `memory` controller's line of `/proc/self/cgroup` (cgroup v1). */
+function selfCgroupV1MemoryPath(deps: ProbeDeps): string | undefined {
+  const content = deps.readFile(CGROUP_SELF);
+  if (!content) return undefined;
+  for (const line of content.split('\n')) {
+    const match = /^\d+:([^:]*):(.*)$/.exec(line.trim());
+    if (!match) continue;
+    const controllers = match[1].split(',');
+    if (controllers.includes('memory')) return match[2];
+  }
+  return undefined;
+}
+
 function cgroupAvailable(
   deps: ProbeDeps,
 ): { availableBytes: number; limitBytes: number } | undefined {
   if (deps.platform !== 'linux') return undefined;
+
+  const v2Path = selfCgroupV2Path(deps);
+  if (v2Path !== undefined) {
+    const best = mostRestrictive(
+      ancestorDirs(CGROUP_V2_ROOT, v2Path)
+        .map((dir) => readCgroupLevel(deps, dir, 'memory.max', 'memory.current'))
+        .filter((level): level is CgroupLevel => level !== undefined),
+    );
+    if (best) return best;
+  }
+
+  const v1Path = selfCgroupV1MemoryPath(deps);
+  if (v1Path !== undefined) {
+    const best = mostRestrictive(
+      ancestorDirs(CGROUP_V1_MEMORY_ROOT, v1Path)
+        .map((dir) => readCgroupLevel(deps, dir, 'memory.limit_in_bytes', 'memory.usage_in_bytes'))
+        .filter((level): level is CgroupLevel => level !== undefined),
+    );
+    if (best) return best;
+  }
+
+  // Fallback for when /proc/self/cgroup cannot be read or parsed: the fixed
+  // hierarchy-root paths this probe always checked, which still catch the
+  // common case of an unnested cgroup sitting at the mount root.
   for (const [maxPath, currentPath] of [
     [CGROUP_V2_MAX, CGROUP_V2_CURRENT],
     [CGROUP_V1_MAX, CGROUP_V1_CURRENT],
