@@ -317,6 +317,8 @@ export const ENGINE_REGISTRY: Record<SupportedProjectType, EngineDescriptor> = {
     // own default capped the job at 2 workers. Observed peak process-tree
     // RSS was 1693 MB, i.e. ~850 MB per worker; a cargo job carries a full
     // build, which is why this is the heaviest of the four engines.
+    // Caveat: a single measurement of one small file, and it moved DOWN from
+    // the previous placeholder, which permits MORE concurrent workers.
     workerCostBytes: 850 * 1024 ** 2,
   },
   php: {

@@ -51,8 +51,9 @@ import type { Watchdog } from '../utils/resources/watchdog.js';
  *
  * "Exhausted" (Task 8) is its own third kind of nothing-measured: the watchdog
  * stopped this file's run to protect the machine's memory. The sweep gets one
- * chance to requeue it at a lower concurrency before it becomes an error row;
- * see `handleTriageCall`'s retry pass.
+ * chance to requeue it, alone, at file concurrency 1 — its own per-file
+ * worker count is unchanged — before it becomes an error row; see
+ * `handleTriageCall`'s retry pass.
  */
 export type TriageAuditOutcome =
   | { row: TriageRow }
