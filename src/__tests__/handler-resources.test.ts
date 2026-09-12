@@ -239,6 +239,42 @@ describe('audit_code_resilience resource governance', () => {
     expect(resources.dispose).toHaveBeenCalledTimes(1);
   });
 
+  it('reports a user cancel arriving DURING sandbox creation as "Operation cancelled.", not a memory stop', async () => {
+    const resources = stubResources();
+    mockCreateResourceContext.mockReturnValue(
+      resources as unknown as ReturnType<typeof createResourceContext>,
+    );
+
+    const controller = new AbortController();
+    // createSandbox is still "copying" (its promise has not settled) when the
+    // caller cancels. The governed signal handed to createSandbox is the
+    // handler's OWN controller, linked to the request's signal, so aborting
+    // the request signal here reaches createSandbox's `opts.signal` the same
+    // way fs.cp's real abort listener would observe it mid-copy.
+    mockCreateSandbox.mockImplementationOnce(
+      (_targetFile: string, _workspaceRoot: string, _ignorePatterns: string[] | undefined, opts) => {
+        return new Promise((_resolve, reject) => {
+          opts?.signal?.addEventListener('abort', () => {
+            reject(new Error('sandbox copy aborted'));
+          });
+          // The user's cancel lands while the copy is still in flight.
+          controller.abort();
+        });
+      },
+    );
+
+    const ctx: ToolContext = { signal: controller.signal };
+    const response = await handleToolCall(makeRequest({ filePath: 'src/math.ts' }), undefined, ctx);
+
+    expect(response.isError).toBe(true);
+    const text = (response.content[0] as { text: string }).text;
+    // Must be the plain cancel text, never the resource-exhausted wording,
+    // even though a resource context (and its watchdog) exists at this point.
+    expect(text).toBe('Operation cancelled.\nResources: 1 files x 2 workers, 4.0 GB free (host)');
+    expect(text).not.toMatch(/^Stopped to avoid exhausting memory/);
+    expect(resources.dispose).toHaveBeenCalledTimes(1);
+  });
+
   it('still reports a user cancel as "Operation cancelled."', async () => {
     const resources = stubResources();
     mockCreateResourceContext.mockReturnValue(

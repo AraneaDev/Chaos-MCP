@@ -532,6 +532,29 @@ export async function handleTriageCall(
     // can never surface here. Passed anyway, for the same reason it is typed
     // as optional everywhere else: the rule is "pass it when you have it," not
     // "special-case the one caller that today never does."
+    //
+    // INVARIANT (no test covers `resourcesForCatch` carrying a value into this
+    // catch, because nothing can currently put one there): every statement
+    // between `resourcesForCatch = resources` (above) and the end of the try
+    // either cannot throw or has its throw absorbed before it escapes:
+    //   - `mapPool` (utils/pool.ts) never rejects — every worker's `await
+    //     admit(...)` and `await fn(...)` is wrapped in its own try/catch that
+    //     stores the failure in the result slot instead of propagating it.
+    //   - `auditTriageFile` (triage/audit-one.ts) is documented "NEVER
+    //     throws"; its whole body is one try/catch/finally whose catch always
+    //     returns a row and whose finally only calls `deps.onProgress`, itself
+    //     a no-throw closure — and even if either did throw, mapPool's own
+    //     wrapper above would still absorb it.
+    //   - The post-pool steps (`partitionOutcomes`, `compareTriageRows`,
+    //     `buildTriagePayload`, `formatTriageAsText`) are pure functions over
+    //     the already-shaped outcome/row data with no I/O and no unguarded
+    //     parsing (`evaluateGate`/`scoreNum` are NaN- and no-match-safe).
+    // If any of those stop holding, for example `mapPool` starts letting a
+    // rejection through, `auditTriageFile` grows a path that rethrows instead
+    // of returning an error row, or a post-pool step starts throwing on
+    // malformed row data, THIS catch becomes reachable with a real resource
+    // context and needs the end-to-end test this comment stands in for
+    // (assert the failure result carries the `Resources:` line).
     return mapHandlerFailure(error, ctx, resourcesForCatch?.report());
   }
 }
