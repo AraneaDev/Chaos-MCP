@@ -62,4 +62,25 @@ describe('createResourceContext', () => {
     expect(ctx.innerEnv).toEqual({ RUST_TEST_THREADS: '4', CARGO_BUILD_JOBS: '4' });
     ctx.dispose();
   });
+
+  it('runs the Rust inner-pool env at the explicit job count, not the engine default (MAJOR 1)', () => {
+    const ctx = createResourceContext({
+      projectType: 'rust',
+      cpuCount: 8,
+      cpuFileConcurrency: 1,
+      cpuPerFileWorkers: 1,
+      // An explicit request for 8 wins outright over the CPU baseline
+      // (resolveBudget lets `requested.perFileWorkers` win), so `perFileWorkers`
+      // resolves to 8 regardless of `cpuPerFileWorkers` above.
+      requested: { perFileWorkers: 8 },
+      probe: () => ({ availableBytes: 64 * GIB, limitBytes: 64 * GIB, source: 'host' }),
+    });
+    // Before the fix, `jobs` was still clamped to cargo-mutants' own default
+    // (resolveCargoJobs(undefined, 8) === 2) even for an explicit setting,
+    // sizing RUST_TEST_THREADS/CARGO_BUILD_JOBS for `-j 2` while `resolveCargoJobs`
+    // (rust/args.ts) actually runs cargo at `-j 8`, multiplying the real
+    // concurrent thread count instead of spending the budget once.
+    expect(ctx.innerEnv).toEqual({ RUST_TEST_THREADS: '1', CARGO_BUILD_JOBS: '1' });
+    ctx.dispose();
+  });
 });

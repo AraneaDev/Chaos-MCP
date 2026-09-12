@@ -104,7 +104,14 @@ function resolveSingleFileConcurrency(
   configuredConcurrency: number | undefined,
   probeSource: ResourcesPayload['source'],
 ): number | undefined {
-  if (configuredConcurrency === undefined && probeSource === 'unavailable') return undefined;
+  // An explicit setting is never clamped to the engine's own default: that
+  // clamp exists only to stop the CPU-derived baseline from raising cargo
+  // above its own default (the docblock above), not to lower a value the
+  // user set deliberately. `perFileWorkers` already IS that explicit value
+  // here (resolveBudget lets `requested.perFileWorkers` win outright), so
+  // returning it unclamped is returning what the user asked for.
+  if (configuredConcurrency !== undefined) return perFileWorkers;
+  if (probeSource === 'unavailable') return undefined;
   const ownDefault = ENGINE_REGISTRY[projectType].defaultWorkers?.(cpus().length);
   return ownDefault === undefined ? perFileWorkers : Math.min(perFileWorkers, ownDefault);
 }

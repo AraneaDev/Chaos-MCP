@@ -86,11 +86,20 @@ export function createResourceContext(input: ResourceContextInput): ResourceCont
   // unavailable), the engine still applies its own default, so `buildInnerEnv`
   // has the real jobs figure to split the inner-pool env properly
   // (Finding: inner-pool env multiplied the budget instead of dividing it).
+  //
+  // An explicit setting skips that clamp entirely: `resolveCargoJobs` (and its
+  // TypeScript/PHP equivalents) run cargo-mutants at the user's own value, so
+  // sizing `buildInnerEnv` against the engine's default here would build inner
+  // thread counts for a job count cargo never actually runs with.
   const ownDefault = ENGINE_REGISTRY[input.projectType].defaultWorkers?.(
     input.cpuCount ?? cpus().length,
   );
   const jobs =
-    ownDefault === undefined ? budget.perFileWorkers : Math.min(budget.perFileWorkers, ownDefault);
+    input.requested?.perFileWorkers !== undefined
+      ? budget.perFileWorkers
+      : ownDefault === undefined
+        ? budget.perFileWorkers
+        : Math.min(budget.perFileWorkers, ownDefault);
 
   return {
     budget,

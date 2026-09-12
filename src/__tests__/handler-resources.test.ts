@@ -56,11 +56,13 @@ vi.mock('../core/resource-context.js', () => ({
 
 import { handleToolCall } from '../index.js';
 import { TypeScriptEngine } from '../engines/typescript.js';
+import { RustEngine } from '../engines/rust.js';
 import { detectEnvironment } from '../utils/project-detector.js';
 import { createSandbox } from '../utils/sandbox.js';
 import { createResourceContext } from '../core/resource-context.js';
 
 const MockTSEngine = vi.mocked(TypeScriptEngine);
+const MockRustEngine = vi.mocked(RustEngine);
 const mockDetectEnv = vi.mocked(detectEnvironment);
 const mockCreateSandbox = vi.mocked(createSandbox);
 const mockCreateResourceContext = vi.mocked(createResourceContext);
@@ -307,5 +309,45 @@ describe('audit_code_resilience resource governance', () => {
       'Operation cancelled.\nResources: 1 files x 2 workers, 4.0 GB free (host)',
     );
     expect(resources.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves an explicit Rust concurrency instead of clamping it to cargo-mutants' own default (MAJOR 1)", async () => {
+    mockDetectEnv.mockReturnValue({
+      projectType: 'rust',
+      testRunner: 'cargo-test',
+      detectedRunner: 'cargo-test',
+      packageManager: '',
+      workspaceRoot: '/workspace',
+    });
+    // A budget that already honoured the explicit setting (resolveBudget lets
+    // `requested.perFileWorkers` win outright): 8, well above cargo-mutants'
+    // own low default (2 on a 3+ core box, 1 otherwise), so a clamp back to
+    // that default is unambiguously distinguishable from passing 8 through.
+    const resources = stubResources();
+    resources.budget.perFileWorkers = 8;
+    mockCreateResourceContext.mockReturnValue(
+      resources as unknown as ReturnType<typeof createResourceContext>,
+    );
+
+    const mockRun = vi.fn().mockResolvedValue({
+      target: 'src/lib.rs',
+      totalMutants: 2,
+      killed: 2,
+      survived: 0,
+      mutationScore: '100.00%',
+      vulnerabilities: [],
+    });
+    MockRustEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as RustEngine;
+    });
+
+    const response = await handleToolCall(makeRequest({ filePath: 'src/lib.rs', concurrency: 8 }));
+
+    expect(response.isError).toBeUndefined();
+    const [, options] = mockRun.mock.calls[0] as [string, { concurrency?: number }];
+    // Pre-fix, `resolveSingleFileConcurrency` clamped every value (explicit or
+    // not) to `ENGINE_REGISTRY.rust.defaultWorkers?.(cpus().length)`, turning
+    // this into 1 or 2 regardless of the explicit 8 the user configured.
+    expect(options.concurrency).toBe(8);
   });
 });
