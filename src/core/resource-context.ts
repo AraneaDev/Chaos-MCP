@@ -72,10 +72,27 @@ export function createResourceContext(input: ResourceContextInput): ResourceCont
   });
 
   const floors = resolveFloors(snapshot.limitBytes);
+  const criticalBytes = input.criticalFloorBytes ?? floors.criticalBytes;
+  // An admission floor below the critical floor would let a run start at a
+  // memory level the very next watchdog tick immediately stops it at, so the
+  // resolved pair (defaults and either override merged) is clamped to keep
+  // the invariant `admissionBytes >= criticalBytes` rather than trusting an
+  // independently-valid but jointly-unsafe pair of config values.
+  const admissionBytes = Math.max(
+    input.admissionFloorBytes ?? floors.admissionBytes,
+    criticalBytes,
+  );
+  // `resources.watchdog: false` disables ONLY the critical-stop sampler
+  // (`criticalStopEnabled`), documented as leaving sizing and the admission
+  // gate in place. The watchdog keeps the REAL probe either way: faking an
+  // 'unavailable' snapshot here would also disable `admit()`'s check against
+  // `admissionBytes`, since the watchdog treats that source as "disable every
+  // judgement", not just the critical one.
   const watchdog = createWatchdog({
-    probe: input.watchdogEnabled === false ? () => ({ ...snapshot, source: 'unavailable' }) : probe,
-    admissionBytes: input.admissionFloorBytes ?? floors.admissionBytes,
-    criticalBytes: input.criticalFloorBytes ?? floors.criticalBytes,
+    probe,
+    criticalStopEnabled: input.watchdogEnabled !== false,
+    admissionBytes,
+    criticalBytes,
   });
 
   // The `-j`/`--concurrency` figure the engine will ACTUALLY run with, not

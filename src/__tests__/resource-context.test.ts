@@ -83,4 +83,56 @@ describe('createResourceContext', () => {
     expect(ctx.innerEnv).toEqual({ RUST_TEST_THREADS: '1', CARGO_BUILD_JOBS: '1' });
     ctx.dispose();
   });
+
+  it('keeps the admission gate enforcing admissionFloorBytes when watchdog is disabled (MAJOR 2)', async () => {
+    const ctx = createResourceContext({
+      projectType: 'typescript',
+      cpuCount: 8,
+      cpuFileConcurrency: 1,
+      cpuPerFileWorkers: 1,
+      watchdogEnabled: false,
+      admissionFloorBytes: 2 * GIB,
+      probe: () => ({ availableBytes: 1 * GIB, limitBytes: 8 * GIB, source: 'host' }),
+    });
+    // Before the fix, `watchdog: false` swapped in a fake 'unavailable'
+    // snapshot for the watchdog's own probe, and `admit()` treats that source
+    // as "admit unconditionally", so a signal aborted BEFORE admission would
+    // still resolve 'admitted' instead of 'cancelled', because the
+    // unconditional-admit branch runs before the abort check ever does.
+    const controller = new AbortController();
+    controller.abort();
+    const result = await ctx.watchdog.admit(0, controller.signal);
+    expect(result).toBe('cancelled');
+    ctx.dispose();
+  });
+
+  it('never resolves an admission floor below the critical floor (MINOR 8)', async () => {
+    // `admissionFloorBytes` below `criticalFloorBytes` would let the admission
+    // gate start a file at a memory level the very next watchdog tick stops
+    // it at. 512 MiB admission vs 1 GiB critical is exactly that
+    // independently-valid but jointly-unsafe pair from the finding.
+    //
+    // 768 MiB available sits strictly between the two configured numbers, so
+    // it distinguishes which floor the gate actually enforces: it clears the
+    // configured 512 MiB admission floor but not the 1 GiB critical floor.
+    const ctx = createResourceContext({
+      projectType: 'typescript',
+      cpuCount: 8,
+      cpuFileConcurrency: 1,
+      cpuPerFileWorkers: 1,
+      admissionFloorBytes: 512 * 1024 ** 2,
+      criticalFloorBytes: 1 * GIB,
+      probe: () => ({ availableBytes: 768 * 1024 ** 2, limitBytes: 8 * GIB, source: 'host' }),
+    });
+    const controller = new AbortController();
+    controller.abort();
+    // Before the fix, admissionBytes stayed at the configured 512 MiB, so 768
+    // MiB available would satisfy admission (>= 512 MiB) and resolve
+    // 'admitted' despite sitting below the 1 GiB critical floor. After the
+    // fix, admissionBytes is clamped up to the critical floor (1 GiB), so 768
+    // MiB no longer clears it and the pre-aborted signal resolves 'cancelled'.
+    const result = await ctx.watchdog.admit(0, controller.signal);
+    expect(result).toBe('cancelled');
+    ctx.dispose();
+  });
 });

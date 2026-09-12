@@ -19,6 +19,15 @@ export interface WatchdogOptions {
   probe: () => MemorySnapshot;
   criticalBytes: number;
   admissionBytes: number;
+  /**
+   * `false` disables ONLY the critical-stop sampling in `tick()` (the
+   * `resources.watchdog` config key): sizing and the admission gate keep
+   * using the real probe. Defaults to `true`. This must never be simulated by
+   * handing `probe` a fake `'unavailable'` snapshot, because `admit()` and
+   * `drainWaiting()` treat that source as "disable this judgement too" and
+   * would stop enforcing `admissionBytes` along with the critical stop.
+   */
+  criticalStopEnabled?: boolean;
   /** Sampling period for the internal timer. Tests drive `tick()` directly. */
   intervalMs?: number;
   cooldownMs?: number;
@@ -153,8 +162,20 @@ export function createWatchdog(options: WatchdogOptions): Watchdog {
       const snapshot = options.probe();
       if (snapshot.source === 'unavailable') return;
 
-      if (snapshot.availableBytes < options.criticalBytes && now() - lastTripAt >= cooldownMs) {
-        const newest = live.pop();
+      if (
+        (options.criticalStopEnabled ?? true) &&
+        snapshot.availableBytes < options.criticalBytes &&
+        now() - lastTripAt >= cooldownMs
+      ) {
+        // A controller can already be aborted (its run finished, or something
+        // else aborted it) without having been released yet. Popping straight
+        // into that one would count a trip and start the cooldown while an
+        // older, still-live run keeps going unsupervised. Skip past aborted
+        // entries to the newest one that is actually still running.
+        let newest = live.pop();
+        while (newest && newest.signal.aborted) {
+          newest = live.pop();
+        }
         if (newest) {
           trips++;
           lastTripAt = now();

@@ -83,6 +83,32 @@ describe('watchdog', () => {
     expect(live.signal.aborted).toBe(true);
   });
 
+  it('skips an already-aborted controller instead of counting it as the trip (MAJOR 4)', () => {
+    const dog = createWatchdog({
+      probe: () => snap(0),
+      criticalBytes: 1 * GIB,
+      admissionBytes: 2 * GIB,
+      now: () => 0,
+    });
+    const older = new AbortController();
+    const newest = new AbortController();
+    dog.register(older);
+    dog.register(newest);
+    // Aborted by something OTHER than the watchdog (e.g. its own run already
+    // finished, or a user cancel) before `release()` ran, so it is still
+    // sitting in `live` when `tick()` looks for something to stop.
+    newest.abort('finished early');
+
+    dog.tick();
+
+    // Before the fix, `tick()` popped `newest` unconditionally: it counted a
+    // trip and started the cooldown against a controller that was never a
+    // live memory consumer, while `older` (the run that actually still needs
+    // stopping) kept running right through the critical-memory tick.
+    expect(older.signal.aborted).toBe(true);
+    expect(dog.trips).toBe(1);
+  });
+
   it('admits immediately when the memory is there', async () => {
     const dog = createWatchdog({
       probe: () => snap(6 * GIB),
