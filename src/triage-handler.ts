@@ -537,13 +537,13 @@ export async function handleTriageCall(
     // catch, because nothing can currently put one there): every statement
     // between `resourcesForCatch = resources` (above) and the end of the try
     // either cannot throw or has its throw absorbed before it escapes:
-    //   - `mapPool` (utils/pool.ts) never rejects — every worker's `await
+    //   - `mapPool` (utils/pool.ts) never rejects. Every worker's `await
     //     admit(...)` and `await fn(...)` is wrapped in its own try/catch that
     //     stores the failure in the result slot instead of propagating it.
     //   - `auditTriageFile` (triage/audit-one.ts) is documented "NEVER
     //     throws"; its whole body is one try/catch/finally whose catch always
     //     returns a row and whose finally only calls `deps.onProgress`, itself
-    //     a no-throw closure — and even if either did throw, mapPool's own
+    //     a no-throw closure, and even if either did throw, mapPool's own
     //     wrapper above would still absorb it.
     //   - The post-pool steps (`partitionOutcomes`, `compareTriageRows`,
     //     `buildTriagePayload`, `formatTriageAsText`) are pure functions over
