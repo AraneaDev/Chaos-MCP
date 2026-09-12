@@ -66,10 +66,24 @@ export function createResourceContext(input: ResourceContextInput): ResourceCont
     criticalBytes: input.criticalFloorBytes ?? floors.criticalBytes,
   });
 
+  // The `-j`/`--concurrency` figure the engine will ACTUALLY run with, not
+  // the raw per-file budget: `handler.ts` and `triage/audit-one.ts` both
+  // clamp the budget to the engine's own default (`defaultWorkers`) before
+  // handing it to the engine as `concurrency`, and when they omit the
+  // argument entirely (no explicit setting, probe unavailable) the engine
+  // falls back to that same default internally. Either way this reproduces
+  // the real jobs figure, which `buildInnerEnv` needs to split the inner-pool
+  // env so jobs x threads fits the budget rather than each restating it
+  // (Finding: inner-pool env multiplied the budget instead of dividing it).
+  const ownDefault = ENGINE_REGISTRY[input.projectType].defaultWorkers?.(
+    input.cpuCount ?? cpus().length,
+  );
+  const jobs = ownDefault === undefined ? budget.perFileWorkers : Math.min(budget.perFileWorkers, ownDefault);
+
   return {
     budget,
     watchdog,
-    innerEnv: buildInnerEnv(input.projectType, budget.perFileWorkers),
+    innerEnv: buildInnerEnv(input.projectType, budget.perFileWorkers, jobs),
     workerCostBytes,
     report: () => ({
       availableAtStartBytes: snapshot.availableBytes,

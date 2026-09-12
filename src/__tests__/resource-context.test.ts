@@ -35,10 +35,14 @@ describe('createResourceContext', () => {
       projectType: 'rust',
       cpuCount: 8,
       cpuFileConcurrency: 1,
-      cpuPerFileWorkers: 2,
+      cpuPerFileWorkers: 8,
       probe: () => ({ availableBytes: 64 * GIB, limitBytes: 64 * GIB, source: 'host' }),
     });
-    expect(ctx.innerEnv).toEqual({ RUST_TEST_THREADS: '2', CARGO_BUILD_JOBS: '2' });
+    // Plenty of memory leaves the budget at 8, but cargo-mutants' own default
+    // (resolveCargoJobs(undefined, 8) === 2) clamps `-j` to 2, so the inner
+    // threads must be sized against that 2, not against the raw budget of 8:
+    // 2 jobs x 4 threads = 8, the budget, rather than 2 jobs x 8 threads = 16.
+    expect(ctx.innerEnv).toEqual({ RUST_TEST_THREADS: '4', CARGO_BUILD_JOBS: '4' });
     ctx.dispose();
   });
 });
