@@ -51,8 +51,8 @@ import type { Watchdog } from '../utils/resources/watchdog.js';
  *
  * "Exhausted" (Task 8) is its own third kind of nothing-measured: the watchdog
  * stopped this file's run to protect the machine's memory. The sweep gets one
- * chance to requeue it, alone, at file concurrency 1 — its own per-file
- * worker count is unchanged — before it becomes an error row; see
+ * chance to requeue it, alone, at file concurrency 1, its own per-file
+ * worker count is unchanged, before it becomes an error row; see
  * `handleTriageCall`'s retry pass.
  */
 export type TriageAuditOutcome =
@@ -117,7 +117,7 @@ export interface TriageFileDeps {
    * `handleTriageCall` hands its admission gate. Passed to `watchdog.register`
    * so the run is CHARGED against admission for every OTHER file from the
    * moment it starts, not just from whenever the OS probe catches up with
-   * what it actually allocated — closing the gap `utils/pool.ts` documents
+   * what it actually allocated, closing the gap `utils/pool.ts` documents
    * (admission is only serialized against the previous item's `fn` being
    * INVOKED, not against it having consumed anything yet). Optional for the
    * same reason `watchdog` is: a caller with no resource context behind it
@@ -494,7 +494,7 @@ export async function auditTriageFile(
     // a no-op and this file behaves exactly as it did before Task 8.
     //
     // Registered BEFORE sandbox creation (IMPORTANT 5) so a memory trip
-    // during the copy uses the same abort path as a cancel — registering only
+    // during the copy uses the same abort path as a cancel, registering only
     // once the sandbox already existed left that whole phase outside the
     // watchdog's reach.
     engineController = new AbortController();

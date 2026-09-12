@@ -246,7 +246,7 @@ describe('handleToolCall', () => {
     expect(mockRun).toHaveBeenCalledWith('src/x.ts', expect.objectContaining({}));
     // `signal` is the governed controller's own signal (IMPORTANT 5: sandbox
     // creation now happens inside the governed window), not `ctx?.signal`
-    // directly — no `ctx` was passed here, but a controller always exists.
+    // directly, no `ctx` was passed here, but a controller always exists.
     expect(mockCreateSandbox).toHaveBeenCalledWith(
       'src/x.ts',
       nestedRoot,
@@ -704,7 +704,7 @@ describe('handleToolCall', () => {
 
     // createSandbox should receive ignorePatterns as 3rd arg. `signal` is the
     // governed controller's own signal (IMPORTANT 5), not `ctx?.signal`
-    // directly — no `ctx` was passed here, but a controller always exists.
+    // directly, no `ctx` was passed here, but a controller always exists.
     expect(mockCreateSandbox).toHaveBeenCalledWith(
       'src/math.ts',
       '/workspace',
@@ -721,8 +721,8 @@ describe('handleToolCall', () => {
   // Regression (C1 follow-up, updated for IMPORTANT 5): a cancel on the MCP
   // request context must still reach createSandbox. Since sandbox creation
   // moved inside the governed window, it no longer receives `ctx.signal`
-  // directly — it receives the governed controller's OWN signal, linked to
-  // `ctx.signal` by a listener — so this asserts the LINK (aborting the
+  // directly, it receives the governed controller's OWN signal, linked to
+  // `ctx.signal` by a listener, so this asserts the LINK (aborting the
   // request's signal aborts the one createSandbox got) rather than pinning
   // object identity.
   it('forwards ctx.signal into createSandbox so an MCP client cancel propagates', async () => {

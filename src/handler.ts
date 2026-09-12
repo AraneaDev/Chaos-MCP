@@ -85,12 +85,12 @@ function reserveEngineBudget(
  * is, so the budgeted worker count is capped at `defaultWorkers(cpuCount)`
  * for an engine that declares one. cargo-mutants' own low default answers a
  * memory question, not a CPU one, so a pool of 8 cores would otherwise raise
- * it from its own `-j 2` to as much as 7 — a ceiling that can raise the thing
+ * it from its own `-j 2` to as much as 7, a ceiling that can raise the thing
  * it bounds is not a ceiling.
  *
  * When the caller configured nothing explicit AND the probe could not read
- * the machine, this returns `undefined` outright, so a single-file audit is
- * byte-identical to pre-governance behaviour: no `--concurrency` for
+ * the machine, this returns `undefined` outright, so a single-file audit never
+ * raises anything above pre-branch behaviour: no `--concurrency` for
  * StrykerJS (which auto-scales to the core count) and no `-j` for
  * cargo-mutants (which falls back to its own low default).
  */
@@ -269,7 +269,7 @@ export async function handleToolCall(
     // RAISES what the CPU-only math already chose (resolveBudget), only
     // lowers it, and the watchdog stops the newest run rather than letting it
     // exhaust memory. Created BEFORE sandbox provisioning (IMPORTANT 5) so a
-    // trip during the copy uses the same abort path as a cancel — creating it
+    // trip during the copy uses the same abort path as a cancel, creating it
     // only once the sandbox already existed left that whole phase outside the
     // governed window, unable to be stopped by the watchdog at all. Torn down
     // in the same finally as the sandbox below so a long-lived server never
@@ -306,8 +306,8 @@ export async function handleToolCall(
 
       // Provision a sandbox so mutation runs never touch the real workspace
       // tree. audit C1: createSandbox is async (event-loop-friendly fs.cp);
-      // the GOVERNED controller's signal is forwarded (IMPORTANT 5) — linked
-      // to the request's own signal via `abortRequest` above — so a mid-copy
+      // the GOVERNED controller's signal is forwarded (IMPORTANT 5), linked
+      // to the request's own signal via `abortRequest` above, so a mid-copy
       // cancel OR a watchdog trip during the copy both clean up the same way.
       let sandbox;
       try {
@@ -364,7 +364,7 @@ export async function handleToolCall(
         const prebuild = resolveGatedPrebuild(args, env, projectType, cfg);
         if (!prebuild.ok) return toolError(prebuild.message);
 
-        // Abort short-circuit #3 — after prebuild gate, before engine run.
+        // Abort short-circuit #3, after prebuild gate, before engine run.
         // The sandbox finally-block still cleans up even when we return here.
         if (ctx?.signal?.aborted) return toolError('Operation cancelled.');
 

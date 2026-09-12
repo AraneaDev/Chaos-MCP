@@ -138,7 +138,7 @@ describe('watchdog', () => {
     // already started but whose memory the probe has not caught up with yet.
     // Available memory alone would admit a second 2 GiB request against 4
     // GiB free, but a 3 GiB run already registered (and not yet released)
-    // must be charged too, leaving only 1 GiB — below the 2 GiB floor.
+    // must be charged too, leaving only 1 GiB, below the 2 GiB floor.
     const dog = createWatchdog({
       probe: () => snap(4 * GIB),
       criticalBytes: 1 * GIB,

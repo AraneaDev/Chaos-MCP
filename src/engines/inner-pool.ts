@@ -19,7 +19,7 @@
  * runs `cargo build` (`CARGO_BUILD_JOBS`) and then the resulting test binary
  * (`RUST_TEST_THREADS`). The real concurrent thread count for one file is
  * therefore `jobs x threads`, not `jobs` and `threads` each restated as the
- * WHOLE budget — that was the bug: setting both env vars to `perFileWorkers`
+ * WHOLE budget, that was the bug: setting both env vars to `perFileWorkers`
  * while `-j` was ALSO `perFileWorkers` cubed the budget instead of spending
  * it once. `threads` is derived as `perFileWorkers / jobs` (floored, floored
  * to at least 1), so the product of the two layers stays within the

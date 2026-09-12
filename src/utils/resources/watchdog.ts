@@ -32,7 +32,7 @@ export interface RunHandle {
 export interface Watchdog {
   /**
    * `costBytes`, when given, is CHARGED against admission (see `admit`) from
-   * this call until the returned handle's `release()` — the gate's answer to
+   * this call until the returned handle's `release()`, the gate's answer to
    * `mapPool`'s admission checks running well before a run has actually
    * allocated anything (utils/pool.ts docblock). Optional so a caller with no
    * cost figure (or a test) gets the pre-existing behaviour unchanged.
@@ -62,7 +62,7 @@ export function createWatchdog(options: WatchdogOptions): Watchdog {
   // Sum of `costBytes` for runs that have been REGISTERED (started) but not
   // yet RELEASED (finished). Charged against every admission check in
   // addition to the probe's own reading, because the probe cannot see memory
-  // a just-started run has not allocated yet — see `admit`'s docblock and
+  // a just-started run has not allocated yet, see `admit`'s docblock and
   // `utils/pool.ts`'s admission-serialization comment for the gap this closes.
   let reservedBytes = 0;
 

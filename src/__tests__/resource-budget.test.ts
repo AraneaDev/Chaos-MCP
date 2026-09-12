@@ -78,7 +78,7 @@ describe('resolveBudget', () => {
 
   it('never flags overBudget when the probe is unavailable, even for a request the cpu baseline would exceed (MINOR 9)', () => {
     // An 'unavailable' probe applies no memory constraint at all, so there is
-    // no memory verdict to report — overBudget stating true here would claim
+    // no memory verdict to report, overBudget stating true here would claim
     // a verdict no probe actually produced.
     const budget = resolveBudget({
       snapshot: { availableBytes: 0, limitBytes: 0, source: 'unavailable' },

@@ -296,8 +296,8 @@ export async function handleTriageCall(
         innerEnv: resources.innerEnv,
         perFileCostBytes: perFileCost,
         // Progress stops the moment the request is abandoned. A cancelled sweep
-        // still runs one `onProgress` per file — `auditTriageFile` reports in a
-        // `finally`, and the files it skips on the abort check report too — so
+        // still runs one `onProgress` per file, `auditTriageFile` reports in a
+        // `finally`, and the files it skips on the abort check report too, so
         // without this gate a cancelled request keeps receiving `audited N/25`
         // notifications for work nobody is waiting for, right up to 25/25.
         onProgress: () => {
@@ -307,10 +307,10 @@ export async function handleTriageCall(
       };
 
       // Second abort check: skip the pool entirely if already cancelled before we start.
-      // (Task 6 — mirrors the pre-discovery check above.)
+      // (Task 6, mirrors the pre-discovery check above.)
       if (ctx?.signal?.aborted) return toolError('Operation cancelled.');
       // `watchdog.admit` only ever resolves from a `tick()` (memory freed up)
-      // or a `stop()` (the sweep is over) — both of which happen downstream of
+      // or a `stop()` (the sweep is over), both of which happen downstream of
       // the very `mapPool` call this feeds. Under sustained external memory
       // pressure with no in-flight run left to release memory, neither ever
       // fires, and a waiter with only `ctx?.signal` attached blocks forever:
@@ -356,9 +356,9 @@ export async function handleTriageCall(
       // The catch below is the ONLY place `isCancel` runs, and a cancel landing
       // DURING the pool can never enter it: `mapPool` does not reject (it stores a
       // throw in the result slot, utils/pool.ts) and `auditTriageFile` is
-      // documented never to throw — it turns a per-file cancel into an `{ error }`
+      // documented never to throw, it turns a per-file cancel into an `{ error }`
       // outcome. So the sweep fell straight through to the ranking below and
-      // handed the caller a NON-isError leaderboard — gate verdict included —
+      // handed the caller a NON-isError leaderboard, gate verdict included,
       // computed over only the files that happened to finish before the stop.
       // A partial gate is worse than no gate: `gate.passed` would be read as a
       // verdict on the whole selection.

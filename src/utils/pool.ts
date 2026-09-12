@@ -17,7 +17,7 @@ export interface MapPoolOptions<T> {
  * admission check is serialized across workers: a new item's admission does
  * not begin until the previous item's `fn` has been INVOKED. That only means
  * the previous item's promise has started running, not that it has done
- * anything yet — `fn` is released the moment it is called, which for the
+ * anything yet, `fn` is released the moment it is called, which for the
  * mutation-audit callers is well before that file's sandbox copy finishes and
  * long before its engine actually allocates memory. So several files can be
  * admitted back-to-back against a memory reading taken before any of them

@@ -182,7 +182,7 @@ describe('audit_code_resilience resource governance', () => {
 
   it('reports a memory stop DURING sandbox creation as the resource-exhausted message (IMPORTANT 5)', async () => {
     const resources = stubResources();
-    // The watchdog aborts the run's controller the moment it is registered —
+    // The watchdog aborts the run's controller the moment it is registered,
     // which now happens BEFORE createSandbox is even called, proving the
     // sandbox-creation phase is inside the governed window.
     resources.watchdog.register = vi.fn((controller: AbortController) => {

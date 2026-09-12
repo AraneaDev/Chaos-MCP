@@ -235,7 +235,7 @@ describe('triage_test_coverage resource governance', () => {
   it('treats a memory stop DURING sandbox creation the same as one during the engine run (IMPORTANT 5)', async () => {
     mockDiscover.mockReturnValue({ files: ['a.ts'], discovered: 1, skipped: 0 });
     installFakeEngine();
-    // register() aborts the controller the moment it is called — now BEFORE
+    // register() aborts the controller the moment it is called, now BEFORE
     // createSandbox runs at all, proving sandbox creation is inside the
     // governed window. createSandbox observes the aborted signal and rejects,
     // the way fs.cp does mid-copy.
@@ -327,7 +327,7 @@ describe('triage_test_coverage resource governance', () => {
     );
     // admit() is gated on a signal LINKED to the request's own signal (CRITICAL
     // 2 combines it with a deadline signal, so it is no longer the exact same
-    // object) — not yet aborted, but a cancel on the request must still reach
+    // object), not yet aborted, but a cancel on the request must still reach
     // it, which is what actually makes admission give up on a user cancel.
     const [, gatedSignal] = resources.watchdog.admit.mock.calls[0] as [number, AbortSignal];
     expect(gatedSignal.aborted).toBe(false);
@@ -340,8 +340,8 @@ describe('triage_test_coverage resource governance', () => {
     installFakeEngine();
     // A REAL watchdog (not the hand-rolled stub the other tests use): its
     // `admit()` only ever resolves from a `tick()` that finds enough memory or
-    // a `stop()` — never called here, since nothing outside admission is
-    // waiting on it — or from the signal it was handed aborting. An
+    // a `stop()`, never called here, since nothing outside admission is
+    // waiting on it, or from the signal it was handed aborting. An
     // admission floor no amount of "available" memory can clear reproduces
     // the sustained-external-pressure scenario: every file blocks forever
     // unless something OTHER than the watchdog gives up.
