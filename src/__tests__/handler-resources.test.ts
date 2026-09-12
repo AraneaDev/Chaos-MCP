@@ -260,7 +260,11 @@ describe('audit_code_resilience resource governance', () => {
     const response = await handleToolCall(makeRequest({ filePath: 'src/math.ts' }), undefined, ctx);
 
     expect(response.isError).toBe(true);
-    expect((response.content[0] as { text: string }).text).toBe('Operation cancelled.');
+    // Finding B: a cancelled-but-governed run still reports the resources
+    // block that was already resolved, appended after the cancel text.
+    expect((response.content[0] as { text: string }).text).toBe(
+      'Operation cancelled.\nResources: 1 files x 2 workers, 4.0 GB free (host)',
+    );
     expect(resources.dispose).toHaveBeenCalledTimes(1);
   });
 });

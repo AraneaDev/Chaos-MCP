@@ -134,6 +134,7 @@ function logAuditContext(
  */
 async function runEngine(
   input: AuditFileInput,
+  resources: ResourcesPayload,
   ctx?: ToolContext,
 ): Promise<{ ok: true; results: MutationResult } | { ok: false; result: CallToolResult }> {
   try {
@@ -149,10 +150,15 @@ async function runEngine(
     if (isResourceExhausted(abortReason)) {
       // `.message` only (not `String(error)`, which prefixes the class name):
       // the caller needs "Stopped to avoid exhausting memory: ..." verbatim,
-      // not "ResourceExhaustedError: ...".
+      // not "ResourceExhaustedError: ...". Carries `resources` (Finding B):
+      // a memory stop is exactly the failure an operator most needs the
+      // chosen concurrency and watchdog trip count for.
       return {
         ok: false,
-        result: toolError(abortReason instanceof Error ? abortReason.message : String(abortReason)),
+        result: toolError(
+          abortReason instanceof Error ? abortReason.message : String(abortReason),
+          resources,
+        ),
       };
     }
     // A cancel firing DURING the engine run reaches here as a tool-specific
@@ -162,12 +168,14 @@ async function runEngine(
     // cancel paths; a deliberate cancel never masquerades as a phantom
     // tool bug (audit M5 / C1 follow-up).
     if (isCancel(error, ctx)) {
-      return { ok: false, result: toolError('Operation cancelled.') };
+      return { ok: false, result: toolError('Operation cancelled.', resources) };
     }
     // Prebuild failures keep their specific tool error; engine errors
-    // propagate to the outer catch (unchanged behavior).
+    // propagate to the outer catch (unchanged behavior). Carries `resources`
+    // too: the auto-prebuild now runs under the same governance the mutation
+    // tool does (Finding A), so a prebuild failure is a governed-run failure.
     if (message.startsWith('Prebuild command failed in sandbox:')) {
-      return { ok: false, result: toolError(message) };
+      return { ok: false, result: toolError(message, resources) };
     }
     throw error;
   }
@@ -328,6 +336,7 @@ export async function handleToolCall(
             controller.signal.reason instanceof Error
               ? controller.signal.reason.message
               : String(controller.signal.reason),
+            resources.report(),
           );
         }
         return mapCreateSandboxError(error, filePath, ctx);
@@ -337,10 +346,11 @@ export async function handleToolCall(
         if (deadline.expired()) {
           return toolError(
             `Audit time budget exhausted during sandbox provisioning after ${deadline.elapsedMs()}ms.`,
+            resources.report(),
           );
         }
         const budget = reserveEngineBudget(deadline);
-        if (!budget.ok) return toolError(budget.message);
+        if (!budget.ok) return toolError(budget.message, resources.report());
         // Only for engines that honour `concurrency` (M1): cosmic-ray has no
         // worker-count flag, so forcing a value there would misreport as an
         // ignored option no caller ever asked for (ignoredOptionsFor). Clamped
@@ -365,11 +375,11 @@ export async function handleToolCall(
 
         // Resolve + gate the prebuild command (explicit prebuild is opt-in).
         const prebuild = resolveGatedPrebuild(args, env, projectType, cfg);
-        if (!prebuild.ok) return toolError(prebuild.message);
+        if (!prebuild.ok) return toolError(prebuild.message, resources.report());
 
         // Abort short-circuit #3, after prebuild gate, before engine run.
         // The sandbox finally-block still cleans up even when we return here.
-        if (ctx?.signal?.aborted) return toolError('Operation cancelled.');
+        if (ctx?.signal?.aborted) return toolError('Operation cancelled.', resources.report());
 
         // Milestone 3: mutation engine is about to start.
         ctx?.reportProgress?.(3, 4, 'running mutation engine');
@@ -387,6 +397,7 @@ export async function handleToolCall(
             lineRanges: diffRanges,
             signal: controller.signal,
           },
+          resources.report(),
           ctx,
         );
         if (!engineRun.ok) return engineRun.result;

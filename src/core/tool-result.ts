@@ -9,9 +9,30 @@
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import type { ToolContext } from './tool-context.js';
 import { isCancel } from '../utils/cancel.js';
+import { formatResourcesLine } from './format.js';
+import type { ResourcesPayload } from './resource-context.js';
 
-export function toolError(text: string): CallToolResult {
-  return { content: [{ type: 'text', text }], isError: true };
+/**
+ * Build an error `CallToolResult`.
+ *
+ * `resources` is optional and deliberately text-only: most `toolError` call
+ * sites (bad arguments, an unsupported file type, an unknown tool name) fail
+ * before any governance decision was ever made, so there is no resources
+ * block to report. Only a caller that already resolved a {@link
+ * ResourcesPayload} for this run passes one, appended as the same
+ * `Resources: ...` line the success path renders (`formatResourcesLine`), so
+ * an operator can see what concurrency was chosen and whether the watchdog
+ * was involved for the run that failed. Not carried on `structuredContent`:
+ * both tool output schemas declare a `oneOf` of specific, fully-required
+ * success/verify shapes that a bare `{ resources }` object cannot satisfy,
+ * and `toolError` is shared with call sites (estimate_audit, argument
+ * validation, suppression I/O) that have no resources concept at all: a
+ * schema-level contract would be true for a handful of branches and
+ * misleading for the rest.
+ */
+export function toolError(text: string, resources?: ResourcesPayload): CallToolResult {
+  const fullText = resources ? `${text}\n${formatResourcesLine(resources)}` : text;
+  return { content: [{ type: 'text', text: fullText }], isError: true };
 }
 
 /**

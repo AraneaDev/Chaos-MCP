@@ -777,7 +777,9 @@ describe('handleTriageCall', () => {
       });
 
       expect(res.isError).toBe(true);
-      expect(txt(res)).toBe('Operation cancelled.');
+      // Finding B: the resources block resolved before the cancel is still
+      // reported, appended after the cancel text.
+      expect(txt(res)).toMatch(/^Operation cancelled\.\nResources: \d+ files? x \d+ workers?/);
       expect(mockAuditFile).toHaveBeenCalledTimes(1);
     });
 
@@ -802,7 +804,7 @@ describe('handleTriageCall', () => {
       // The file WAS audited — the abort landed while the pool was running.
       expect(mockAuditFile).toHaveBeenCalledTimes(1);
       expect(res.isError).toBe(true);
-      expect(txt(res)).toBe('Operation cancelled.');
+      expect(txt(res)).toMatch(/^Operation cancelled\.\nResources: \d+ files? x \d+ workers?/);
       // No ranking, and above all no gate verdict over a partial file set.
       expect(res.structuredContent).toBeUndefined();
       expect(txt(res)).not.toContain('gate');
@@ -882,7 +884,9 @@ describe('handleTriageCall', () => {
       });
 
       expect(res.isError).toBe(true);
-      expect(txt(res)).toBe('Operation cancelled.');
+      // Finding B: the resources block resolved before the cancel is still
+      // reported, appended after the cancel text.
+      expect(txt(res)).toMatch(/^Operation cancelled\.\nResources: \d+ files? x \d+ workers?/);
       expect(mockAuditFile).not.toHaveBeenCalled();
     });
   });

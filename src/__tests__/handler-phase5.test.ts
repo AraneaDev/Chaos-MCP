@@ -262,7 +262,11 @@ describe('handleToolCall — Phase 5: progress milestones + cancellation', () =>
     const response = await handleToolCall(request, undefined, ctx);
 
     expect(response.isError).toBe(true);
-    expect((response.content[0] as { text: string }).text).toBe('Operation cancelled.');
+    // Finding B: the resources block resolved before the cancel is still
+    // reported, appended after the cancel text.
+    expect((response.content[0] as { text: string }).text).toMatch(
+      /^Operation cancelled\.\nResources: \d+ files? x \d+ workers?/,
+    );
   });
 
   // ── (b'') Abort DURING the pre-sandbox git calls ─────────────────────────

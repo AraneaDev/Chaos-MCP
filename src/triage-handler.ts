@@ -337,7 +337,7 @@ export async function handleTriageCall(
 
       // Second abort check: skip the pool entirely if already cancelled before we start.
       // (Task 6, mirrors the pre-discovery check above.)
-      if (ctx?.signal?.aborted) return toolError('Operation cancelled.');
+      if (ctx?.signal?.aborted) return toolError('Operation cancelled.', resources.report());
       // `watchdog.admit` only ever resolves from a `tick()` (memory freed up)
       // or a `stop()` (the sweep is over), both of which happen downstream of
       // the very `mapPool` call this feeds. Under sustained external memory
@@ -391,7 +391,7 @@ export async function handleTriageCall(
       // computed over only the files that happened to finish before the stop.
       // A partial gate is worse than no gate: `gate.passed` would be read as a
       // verdict on the whole selection.
-      if (ctx?.signal?.aborted) return toolError('Operation cancelled.');
+      if (ctx?.signal?.aborted) return toolError('Operation cancelled.', resources.report());
 
       // Requeue once, at fileConcurrency 1, every file the watchdog stopped for
       // memory, PLUS (new) every file whose failure was specifically its
@@ -474,7 +474,7 @@ export async function handleTriageCall(
           outcomes[target.index] = outcome;
         });
 
-        if (ctx?.signal?.aborted) return toolError('Operation cancelled.');
+        if (ctx?.signal?.aborted) return toolError('Operation cancelled.', resources.report());
       }
 
       const { rows, errors, unaudited } = partitionOutcomes(outcomes);

@@ -1539,6 +1539,12 @@ describe('handleToolCall', () => {
       'Prebuild command failed in sandbox',
     );
     expect((response.content[0] as { text: string }).text).toContain('syntax error');
+    // Finding B: a failed audit still reports the governance block, since the
+    // prebuild now runs under the SAME concurrency caps as the mutation tool
+    // (Finding A), and that is exactly the run an operator needs that info for.
+    expect((response.content[0] as { text: string }).text).toMatch(
+      /Resources: \d+ files? x \d+ workers?/,
+    );
     // Engine must NOT be called
     expect(mockRun).not.toHaveBeenCalled();
     // Sandbox must be cleaned up even on prebuild failure
