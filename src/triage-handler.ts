@@ -36,7 +36,11 @@ import {
   type TriageAuditOutcome,
 } from './triage/audit-one.js';
 import { AuditDeadline } from './utils/deadline.js';
-import { createResourceContext, type ResourcesPayload } from './core/resource-context.js';
+import {
+  createResourceContext,
+  type ResourceContext,
+  type ResourcesPayload,
+} from './core/resource-context.js';
 import { resolveAuditTargetIn } from './audit/target.js';
 import { isBaselineFailureMessage } from './utils/baseline-failure.js';
 
@@ -225,6 +229,18 @@ export async function handleTriageCall(
   const argError = validateTriageArgs(args);
   if (argError) return argError;
 
+  // Mirrored into this OUTER binding right after creation, below, so the
+  // outer catch can still read it: the inner `const resources` is block-scoped
+  // to the try and invisible to its own catch (see the identical fix in
+  // handler.ts). Kept as a separate variable, rather than hoisting `resources`
+  // itself out of the try, because `resources` is read from closures further
+  // down (`admit`, the requeue pass) that TS cannot narrow from `T | undefined`
+  // to `T` across a closure boundary; the inner `const` keeps every existing
+  // use fully typed and this mirror exists ONLY for the catch. `undefined`
+  // until that assignment runs, which is exactly the failures that predate it
+  // (e.g. `resolveTriageTargets`) having no resources context to report,
+  // correctly.
+  let resourcesForCatch: ResourceContext | undefined;
   try {
     const rootCwd = resolve(process.cwd());
     const cpuCount = cpus().length;
@@ -294,6 +310,7 @@ export async function handleTriageCall(
       admissionFloorBytes: cfg.resources?.admissionFloorBytes,
       criticalFloorBytes: cfg.resources?.criticalFloorBytes,
     });
+    resourcesForCatch = resources;
 
     try {
       // Estimated memory one file's engine run will hold: the engine's fixed
@@ -507,7 +524,15 @@ export async function handleTriageCall(
     // A cancel keeps the one string every abort path in this codebase reports,
     // so a deliberate stop never reads as an engine failure — `mapHandlerFailure`
     // is the same branch handler.ts and estimate-handler.ts use.
-    return mapHandlerFailure(error, ctx);
+    //
+    // Unlike handler.ts's outer catch, `resources` is genuinely `undefined`
+    // here in practice: `resolveTriageTargets` is the only reachable path (it
+    // runs before `resources` is assigned below) because `auditTriageFile`
+    // never throws and `mapPool` never rejects, so a per-file engine failure
+    // can never surface here. Passed anyway, for the same reason it is typed
+    // as optional everywhere else: the rule is "pass it when you have it," not
+    // "special-case the one caller that today never does."
+    return mapHandlerFailure(error, ctx, resourcesForCatch?.report());
   }
 }
 

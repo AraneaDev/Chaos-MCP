@@ -66,11 +66,22 @@ export function failureText(error: unknown, ctx?: ToolContext): string {
  * The cancel check runs against the error rather than the formatted text: an
  * engine failure whose message happened to read 'Operation cancelled.' must
  * still be reported as a halt, not silently reclassified as an abort.
+ *
+ * `resources` is the rule from {@link toolError}, restated here because this is
+ * the ordinary engine-failure path (a mutation tool exiting non-zero reaches
+ * exactly this branch, via `handler.ts`'s outer catch) and the one most users
+ * ever see: every caller that resolved a resources context for the run passes
+ * it, and `estimate-handler.ts` (which never creates one) omits it, not by
+ * special-casing the message but because it has nothing to pass.
  */
-export function mapHandlerFailure(error: unknown, ctx?: ToolContext): CallToolResult {
-  if (isCancel(error, ctx)) return toolError(CANCELLED_TEXT);
+export function mapHandlerFailure(
+  error: unknown,
+  ctx?: ToolContext,
+  resources?: ResourcesPayload,
+): CallToolResult {
+  if (isCancel(error, ctx)) return toolError(CANCELLED_TEXT, resources);
   const message = error instanceof Error ? error.message : String(error);
-  return toolError(`Chaos Engine Halted: ${message}`);
+  return toolError(`Chaos Engine Halted: ${message}`, resources);
 }
 
 /**
@@ -109,17 +120,24 @@ export function toStructuredContent<T extends object>(payload: T): Record<string
  *   isolation for <filePath>: <message>. Ensure the file exists and the
  *   workspace is accessible.'` (colon-separated, not parenthesised — the
  *   previous `(message). Ensure…` read like a citation, not a sentence).
+ *
+ * `resources` is optional for the same reason it is on {@link toolError}: the
+ * single-file audit and the triage sandbox-provisioning path both already
+ * have a resources context in scope by the time this runs and pass it, while
+ * `estimate-handler.ts`'s call site never resolves one and passes nothing.
  */
 export function mapCreateSandboxError(
   error: unknown,
   filePath: string,
   ctx?: ToolContext,
+  resources?: ResourcesPayload,
 ): CallToolResult {
   if (isCancel(error, ctx)) {
-    return toolError('Operation cancelled.');
+    return toolError('Operation cancelled.', resources);
   }
   const message = error instanceof Error ? error.message : String(error);
   return toolError(
     `Chaos Engine Halted: Failed to provision sandbox isolation for ${filePath}: ${message}. Ensure the file exists and the workspace is accessible.`,
+    resources,
   );
 }

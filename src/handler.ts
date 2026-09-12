@@ -33,7 +33,11 @@ import { auditFile, assertPythonHasTests, type AuditFileInput } from './audit/au
 import { computeScope } from './audit/scope.js';
 import { buildEnrichContext, formatAuditOutput } from './audit/audit-output.js';
 import { applyAndCountSuppressions } from './audit/suppression-io.js';
-import { createResourceContext, type ResourcesPayload } from './core/resource-context.js';
+import {
+  createResourceContext,
+  type ResourceContext,
+  type ResourcesPayload,
+} from './core/resource-context.js';
 
 /**
  * Validate the optional tool arguments that are not covered by the JSON schema's
@@ -217,6 +221,14 @@ export async function handleToolCall(
   if (!filePathResult.ok) return toolError(filePathResult.message);
   const { resolvedFile, raw: filePath } = filePathResult.value;
 
+  // Declared here, OUTSIDE the try below, so the outer catch can still read it.
+  // `const resources = createResourceContext(...)` used to live inside the try,
+  // which block-scopes it away from the catch entirely: a `let` binding
+  // declared before a try/catch is the only way the catch can see a value the
+  // try assigned. `undefined` until that assignment runs, which is exactly the
+  // failures that predate it (e.g. `computeScope`, the reachable path into this
+  // catch) having no resources context to report, correctly.
+  let resources: ResourceContext | undefined;
   try {
     // `validateFilePath` ran outside this try/catch (it reports its own
     // rejections and must not be re-labelled "Chaos Engine Halted"); everything
@@ -287,7 +299,7 @@ export async function handleToolCall(
     // treated as the EXPLICIT setting Budget always honours; only the absence
     // of one falls back to a cpu-derived baseline that memory may lower.
     const configuredConcurrency = resolveConfiguredConcurrency(earlyArgs, cfg, projectType);
-    const resources = createResourceContext({
+    resources = createResourceContext({
       projectType,
       cpuFileConcurrency: 1,
       cpuPerFileWorkers: configuredConcurrency ?? cpus().length - 1,
@@ -339,7 +351,7 @@ export async function handleToolCall(
             resources.report(),
           );
         }
-        return mapCreateSandboxError(error, filePath, ctx);
+        return mapCreateSandboxError(error, filePath, ctx, resources.report());
       }
 
       try {
@@ -472,11 +484,20 @@ export async function handleToolCall(
       ctx?.signal?.removeEventListener('abort', abortRequest);
     }
   } catch (error: unknown) {
-    // The reachable path is `computeScope`, whose git calls run BEFORE the
-    // sandbox exists and re-throw an abort instead of flattening it into a
-    // `DiffResult`; the engine-run and sandbox cancels are already caught by
-    // `runEngine` and `mapCreateSandboxError` above. `mapHandlerFailure` owns
-    // the cancel-vs-halt branch for all three tools.
-    return mapHandlerFailure(error, ctx);
+    // Two different classes of failure land here, not just one. `computeScope`
+    // runs BEFORE the sandbox exists and its git calls re-throw an abort
+    // instead of flattening it into a `DiffResult`, so a cancel during scope
+    // resolution arrives with `resources` still `undefined`. But an ordinary
+    // engine failure ALSO arrives here: `runEngine`'s catch only intercepts a
+    // watchdog stop, a cancel, and a prebuild failure by message prefix, and
+    // rethrows everything else (audit M5's remit was narrower than that name
+    // suggests), so the "cargo-mutants failed... baseline test suite itself
+    // failed" case a user actually hits reaches this catch too, WITH a
+    // resources context in scope. `mapHandlerFailure` owns the cancel-vs-halt
+    // branch for all three tools; passing `resources` here (rather than
+    // treating this catch as unreachable-with-context) is the fix for the
+    // gap a real end-to-end run exposed: the ordinary failure path is the
+    // most common one and was the one path leaving `resources` off entirely.
+    return mapHandlerFailure(error, ctx, resources?.report());
   }
 }

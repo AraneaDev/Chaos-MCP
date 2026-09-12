@@ -414,6 +414,12 @@ describe('handleToolCall', () => {
     expect((response.content[0] as { text: string }).text).toContain(
       'Failed to provision sandbox isolation',
     );
+    // Gap 1: mapCreateSandboxError is called with a resources context already
+    // resolved at this point (it is created before sandbox provisioning), so
+    // the failure must carry the same governance line a success would.
+    expect((response.content[0] as { text: string }).text).toMatch(
+      /Resources: \d+ files? x \d+ workers?/,
+    );
   });
 
   it('cleans up sandbox after engine throws', async () => {
@@ -442,8 +448,14 @@ describe('handleToolCall', () => {
     const response = await handleToolCall(request);
 
     expect(response.isError).toBe(true);
-    expect((response.content[0] as { text: string }).text).toBe(
-      'Chaos Engine Halted: Stryker crashed',
+    // Gap 2: an ordinary engine failure (not a watchdog stop, not a cancel, not
+    // a prebuild failure) is the failure mode a user hits most often, and it
+    // reaches handler.ts's OUTER catch via runEngine's fallthrough rethrow, at
+    // a point where the resources context is already resolved. The governance
+    // block must be reported here too, not just on the branches that catch a
+    // failure closer to its source.
+    expect((response.content[0] as { text: string }).text).toMatch(
+      /^Chaos Engine Halted: Stryker crashed\nResources: \d+ files? x \d+ workers?/,
     );
     expect(mockCleanup).toHaveBeenCalledOnce();
   });
@@ -4253,6 +4265,38 @@ describe('mapCreateSandboxError', () => {
     });
     expect(text(result)).toContain('Chaos Engine Halted');
     expect(text(result)).toContain('EACCES');
+  });
+
+  it('appends the resources line to the halted message when a resources context is passed (Gap 1)', () => {
+    const result = mapCreateSandboxError(new Error('ENOSPC: no space left'), 'src/math.ts', undefined, {
+      availableAtStartBytes: 4 * 1024 ** 3,
+      limitBytes: 8 * 1024 ** 3,
+      source: 'host',
+      fileConcurrency: 1,
+      perFileWorkers: 2,
+      overBudget: false,
+      watchdogTrips: 0,
+    });
+    expect(text(result)).toBe(
+      'Chaos Engine Halted: Failed to provision sandbox isolation for src/math.ts: ' +
+        'ENOSPC: no space left. Ensure the file exists and the workspace is accessible.\n' +
+        'Resources: 1 files x 2 workers, 4.0 GB free (host)',
+    );
+  });
+
+  it('appends the resources line to the cancel message too, when passed', () => {
+    const controller = new AbortController();
+    controller.abort();
+    const result = mapCreateSandboxError(new Error('whatever'), 'src/math.ts', { signal: controller.signal }, {
+      availableAtStartBytes: 4 * 1024 ** 3,
+      limitBytes: 8 * 1024 ** 3,
+      source: 'host',
+      fileConcurrency: 1,
+      perFileWorkers: 2,
+      overBudget: false,
+      watchdogTrips: 0,
+    });
+    expect(text(result)).toBe('Operation cancelled.\nResources: 1 files x 2 workers, 4.0 GB free (host)');
   });
 });
 
