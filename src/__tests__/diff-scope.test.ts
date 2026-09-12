@@ -130,6 +130,31 @@ describe('materialiseDiffScope', () => {
     expect(result.note).toBeDefined();
   });
 
+  it('restores the CURRENT content even when a later git step fails', async () => {
+    const h = harness({
+      run: async (command: string, args: string[]) => {
+        if (args[0] === 'add') throw new Error('git add failed');
+        if (args[0] === 'show') return { stdout: 'BASE CONTENT\n' };
+        return { stdout: '' };
+      },
+    });
+    const result = await materialiseDiffScope({
+      projectType: 'php',
+      relFile: 'src/Calculator.php',
+      workspaceRoot: '/work',
+      sandboxDir: '/sandbox',
+      diffBase: 'HEAD',
+      ranges,
+      run: h.run as never,
+      fs: h.fs,
+    });
+    expect(result.diffScope).toBeUndefined();
+    expect(result.note).toBeDefined();
+    // The write of the BASE content must never be left standing: whatever
+    // failed after it, the sandbox file must hold the CURRENT content again.
+    expect(h.written['/sandbox/src/Calculator.php']).toBe('CURRENT CONTENT\n');
+  });
+
   it('returns nothing at all for typescript, which needs no materialisation', async () => {
     const h = harness();
     const result = await materialiseDiffScope({

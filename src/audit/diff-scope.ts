@@ -129,12 +129,23 @@ async function materialisePhpGitBase(
     );
 
     await run('git', ['init', '-q', '-b', CHAOS_BASE_REF], { cwd: input.sandboxDir });
-    fs.writeFile(sandboxFile, baseContent);
-    await run('git', ['add', '-f', input.relFile], { cwd: input.sandboxDir });
-    await run('git', [...CHAOS_GIT_IDENTITY, 'commit', '-q', '-m', 'chaos-mcp base'], {
-      cwd: input.sandboxDir,
-    });
-    fs.writeFile(sandboxFile, currentContent);
+
+    // From here on the sandbox file holds the BASE content, not the real one.
+    // Once that write happens, restoring the CURRENT content is not optional
+    // cleanup, it is the difference between a scoped audit and a silent wrong
+    // answer: a caller that falls back to whole-file mutation because `add`
+    // or `commit` failed must still find its own file on disk, never the base
+    // version. The `finally` guarantees the restore runs whichever way the
+    // block below exits.
+    try {
+      fs.writeFile(sandboxFile, baseContent);
+      await run('git', ['add', '-f', input.relFile], { cwd: input.sandboxDir });
+      await run('git', [...CHAOS_GIT_IDENTITY, 'commit', '-q', '-m', 'chaos-mcp base'], {
+        cwd: input.sandboxDir,
+      });
+    } finally {
+      fs.writeFile(sandboxFile, currentContent);
+    }
 
     return { diffScope: { kind: 'git-base', ref: CHAOS_BASE_REF } };
   } catch (err: unknown) {
