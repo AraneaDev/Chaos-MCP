@@ -97,9 +97,19 @@ export function probeMemory(deps: ProbeDeps): MemorySnapshot {
   const host = hostAvailable(deps);
   const cgroup = cgroupAvailable(deps);
 
-  if (cgroup && (!host || cgroup.availableBytes <= host.availableBytes)) {
-    return { ...cgroup, source: 'cgroup' };
+  // Host and cgroup ceilings are independent: a small active cgroup can sit
+  // inside a large host with more headroom, or the reverse. Reporting only
+  // the winner's OWN limitBytes discards whichever ceiling did not win, so
+  // floors get computed against a limit this run is not actually bound by.
+  // Both figures must come back as the smaller of the two, independently.
+  if (host && cgroup) {
+    return {
+      availableBytes: Math.min(host.availableBytes, cgroup.availableBytes),
+      limitBytes: Math.min(host.limitBytes, cgroup.limitBytes),
+      source: cgroup.availableBytes <= host.availableBytes ? 'cgroup' : 'host',
+    };
   }
+  if (cgroup) return { ...cgroup, source: 'cgroup' };
   if (host) return { ...host, source: 'host' };
   return { availableBytes: 0, limitBytes: 0, source: 'unavailable' };
 }

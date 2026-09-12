@@ -35,6 +35,25 @@ describe('probeMemory', () => {
     expect(snap.limitBytes).toBe(2 * GIB);
   });
 
+  it('preserves the cgroup ceiling when host headroom is smaller (MAJOR 3)', () => {
+    // A 16 GiB host with 2 GiB available, inside a 4 GiB cgroup with 3 GiB
+    // available (1 GiB used): host has LESS headroom (2 GiB < 3 GiB) so it
+    // wins the source, but the cgroup's 4 GiB ceiling is still the real limit
+    // this run is bound by. Reporting the host's 16 GiB `limitBytes` here
+    // would size floors (resolveFloors) off a number 4x too large for the
+    // cgroup this process is actually confined to.
+    const snap = probeMemory(
+      linuxDeps({
+        '/proc/meminfo': `MemAvailable:    ${(2 * GIB) / 1024} kB\n`,
+        '/sys/fs/cgroup/memory.max': `${4 * GIB}\n`,
+        '/sys/fs/cgroup/memory.current': `${1 * GIB}\n`,
+      }),
+    );
+    expect(snap.source).toBe('host');
+    expect(snap.availableBytes).toBe(2 * GIB);
+    expect(snap.limitBytes).toBe(4 * GIB);
+  });
+
   it('ignores a cgroup v2 limit of "max"', () => {
     const snap = probeMemory(
       linuxDeps({
