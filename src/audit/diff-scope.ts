@@ -24,12 +24,14 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { runShell } from '../utils/exec.js';
 import type { SupportedProjectType } from '../engines/registry.js';
+import type { DiffScope } from '../engines/base.js';
 
-/** How a single engine should be pointed at the already-computed diff. */
-export type DiffScope =
-  | { kind: 'patch'; path: string }
-  | { kind: 'git-base'; ref: string }
-  | { kind: 'ranges'; ranges: { start: number; end: number }[] };
+/**
+ * Re-exported from where it is defined ({@link DiffScope} in engines/base.ts,
+ * beside `RunOptions`, which is what it describes) so existing
+ * `from './diff-scope.js'` importers keep working.
+ */
+export type { DiffScope };
 
 export interface MaterialiseInput {
   projectType: SupportedProjectType;

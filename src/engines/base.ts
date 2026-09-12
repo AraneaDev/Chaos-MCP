@@ -1,7 +1,12 @@
 import { ExecFailureError } from '../utils/exec-error.js';
 import { MutationToolStartupError } from '../utils/exec-classify.js';
 import type { ExecutionSession } from '../utils/execution.js';
-import type { DiffScope } from '../audit/diff-scope.js';
+
+/** How a single engine should be pointed at the already-computed diff. */
+export type DiffScope =
+  | { kind: 'patch'; path: string }
+  | { kind: 'git-base'; ref: string }
+  | { kind: 'ranges'; ranges: { start: number; end: number }[] };
 
 /**
  * Describes a single surviving mutant — a logical fault the test suite failed to catch.

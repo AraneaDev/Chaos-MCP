@@ -5,7 +5,7 @@
  * job-count policy, the `--file` glob escaping, and the `--in-diff` argument
  * are all assertable as plain values.
  */
-import type { DiffScope } from '../../audit/diff-scope.js';
+import type { DiffScope } from '../base.js';
 
 /**
  * Resolve the cargo-mutants `-j` job count. Explicit `concurrency` (from a tool
