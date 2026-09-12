@@ -263,11 +263,15 @@ export const ENGINE_REGISTRY: Record<SupportedProjectType, EngineDescriptor> = {
     // The caller still rejects a name that is not in `MUTATOR_SEMANTICS`, which
     // is what keeps a custom Stryker plugin's mutator out of the table.
     canonicalizeMutator: (rawMutator) => rawMutator,
-    // Measured on an 8-core / 8 GB box: audit_code_resilience against
-    // src/core/baseline-timing.ts (138 mutants), no explicit concurrency
-    // override, so StrykerJS ran at the CPU default of 7 workers. Observed
-    // peak process-tree RSS was 2974 MB, i.e. ~425 MB per worker.
-    workerCostBytes: 425 * 1024 ** 2,
+    // Measured on an 8-core / 8 GB box: single-file audit against
+    // src/core/baseline-timing.ts (138 mutants, 7 workers), observed peak
+    // 2974 MB, about 425 MB per worker. Two-file sweep (2026-09-12) measured
+    // higher: peak 3547 MB across 6 workers, about 591 MB per worker. The
+    // higher figure is used because the model charges per worker only and
+    // carries no term for the fixed per-file cost of a Stryker parent and
+    // its dry run. This gap grows with file concurrency, which matters most
+    // since under-reserving crashes the machine.
+    workerCostBytes: 600 * 1024 ** 2,
   },
   python: {
     make: () => new PythonEngine(),
