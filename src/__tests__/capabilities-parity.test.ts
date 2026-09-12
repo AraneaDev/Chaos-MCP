@@ -20,7 +20,7 @@ function parseBaseline(raw: string): Record<string, Record<string, CapabilityLev
   const parsed = JSON.parse(raw) as Record<string, Record<string, unknown>>;
   for (const [engine, caps] of Object.entries(parsed)) {
     for (const [capability, level] of Object.entries(caps)) {
-      if (!(level in LEVEL_RANK)) {
+      if (typeof level !== 'string' || !(level in LEVEL_RANK)) {
         throw new Error(
           `capabilities.baseline.json: ${engine}.${capability} has invalid level ` +
             `${JSON.stringify(level)}, expected one of ${Object.keys(LEVEL_RANK).join(', ')}`,
