@@ -208,4 +208,73 @@ describe('watchdog', () => {
     dog.stop();
     await expect(pending).resolves.toBe('cancelled');
   });
+
+  it('reserves each admitted waiter before judging the next one in the same drain (Finding 1)', async () => {
+    // Three waiters at 3 GiB each, queued because nothing is available yet.
+    let available = 0;
+    const dog = createWatchdog({
+      probe: () => snap(available),
+      criticalBytes: 1 * GIB,
+      admissionBytes: 2 * GIB,
+      now: () => 0,
+    });
+    const cost = 3 * GIB;
+    const settled: string[] = [];
+    const track = (label: string, p: Promise<'admitted' | 'cancelled'>) =>
+      p.then((r) => settled.push(`${label}:${r}`));
+    track('a', dog.admit(cost));
+    track('b', dog.admit(cost));
+    track('c', dog.admit(cost));
+
+    // Each of the three fits ALONE against 9 GiB free (9 - 3 - 2 = 4 >= 0),
+    // but not all three TOGETHER (9 - 3 - 3 - 3 = 0 < 2 GiB floor). Before the
+    // fix, every waiter in this drain was judged against the same
+    // `reservedBytes` (0), so all three were admitted at once and their files
+    // would have started simultaneously.
+    available = 9 * GIB;
+    dog.tick();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(settled).toEqual(['a:admitted', 'b:admitted']);
+
+    // `register()` must HAND OVER the admission lease `a` already holds
+    // rather than reserving its cost a second time: if it double-counted,
+    // releasing `a` would leave 6 GiB reserved (b's lease plus a's double
+    // charge) and `c` would still not fit (9 - 3 - 6 = 0 < 2). Because the
+    // lease is claimed instead of re-reserved, releasing `a` leaves only b's
+    // 3 GiB reserved, and `c` clears (9 - 3 - 3 = 3 >= 2).
+    const handleA = dog.register(new AbortController(), cost);
+    handleA.release();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(settled).toEqual(['a:admitted', 'b:admitted', 'c:admitted']);
+  });
+
+  it('sweeps an unclaimed admission lease on stop rather than leaking it (Finding 1)', async () => {
+    // `a` is admitted (a lease is created) but its file never calls
+    // `register()` at all, e.g. it turned out to be an unsupported project
+    // type, or the sweep deadline expired first.
+    const dog = createWatchdog({
+      probe: () => snap(9 * GIB),
+      criticalBytes: 1 * GIB,
+      admissionBytes: 2 * GIB,
+      now: () => 0,
+    });
+    await expect(dog.admit(3 * GIB)).resolves.toBe('admitted');
+
+    dog.stop();
+
+    // Without sweeping the stale lease on stop, it would still be charged
+    // against admission forever: 9 - 4.5 - 3(leaked) = 1.5 < 2 GiB floor, so
+    // this request would have to wait rather than admit immediately. Proven
+    // the same way the existing in-flight-cost test proves a queue: abort
+    // right after calling `admit`, which only flips a QUEUED promise to
+    // 'cancelled' and has no effect on one already resolved 'admitted'.
+    const controller = new AbortController();
+    const pending = dog.admit(4.5 * GIB, controller.signal);
+    controller.abort();
+    await expect(pending).resolves.toBe('admitted');
+  });
 });

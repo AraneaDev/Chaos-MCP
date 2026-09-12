@@ -73,7 +73,26 @@ export function createWatchdog(options: WatchdogOptions): Watchdog {
   // addition to the probe's own reading, because the probe cannot see memory
   // a just-started run has not allocated yet, see `admit`'s docblock and
   // `utils/pool.ts`'s admission-serialization comment for the gap this closes.
+  //
+  // Also carries ADMISSION LEASES (see `drainWaiting` below): a waiter's cost
+  // is added here the moment it is admitted out of `waiting`, before its file
+  // has actually registered a run, so a later waiter drained in the SAME pass
+  // is judged against memory that is already spoken for.
   let reservedBytes = 0;
+  // Admission leases created by `drainWaiting` that no `register()` call has
+  // claimed yet, keyed by the exact cost reserved. A lease's bytes are ALREADY
+  // included in `reservedBytes`; this map exists only so `register()` can tell
+  // "this cost was already reserved at admission" from "this run never went
+  // through admission" and avoid reserving it a second time (Finding 1).
+  //
+  // A lease whose file never calls `register()` at all (an unsupported
+  // project type discovered after admission, or the sweep deadline expiring
+  // first) is adopted by the next run that registers the SAME cost, since the
+  // map is keyed by amount rather than by waiter identity; the two are
+  // fungible bytes in `reservedBytes`, not a specific run's money. Any lease
+  // still unclaimed when the watchdog stops is swept in `stop()`, so it can
+  // never sit reserved for the rest of this watchdog's life either way.
+  const unclaimedLeasesByCost = new Map<number, number>();
 
   // Admit whatever fits in `snapshot`, oldest waiter first. Shared by `tick()`
   // (on its own sampled snapshot) and `release()` (on a fresh probe taken the
@@ -90,6 +109,17 @@ export function createWatchdog(options: WatchdogOptions): Watchdog {
       }
       waiting.shift();
       next.cleanup?.();
+      // Reserve THIS waiter's cost immediately, before resolving the next one
+      // in the loop, so a later waiter in the SAME drain sees it too (Finding
+      // 1): without this, every waiter in one drain pass was judged against
+      // the SAME `reservedBytes`, so several that each fit alone but not
+      // together were all admitted together, and their files started
+      // simultaneously, which is exactly what this gate exists to prevent.
+      reservedBytes += next.costBytes;
+      unclaimedLeasesByCost.set(
+        next.costBytes,
+        (unclaimedLeasesByCost.get(next.costBytes) ?? 0) + 1,
+      );
       next.resolve('admitted');
     }
   }
@@ -106,7 +136,24 @@ export function createWatchdog(options: WatchdogOptions): Watchdog {
     register(controller, costBytes) {
       live.push(controller);
       let released = false;
-      if (costBytes) reservedBytes += costBytes;
+      if (costBytes) {
+        // Hand an existing admission lease over to this run instead of
+        // reserving a second time (Finding 1): `drainWaiting` already added
+        // `costBytes` to `reservedBytes` for whichever waiter this run
+        // resumed from, so claiming it here (rather than adding again) is
+        // what keeps a reservation from ever being counted twice, once as
+        // the admission lease and once at registration. A run that never
+        // went through `admit()` at all (no lease outstanding at this cost,
+        // e.g. the single-file audit path) still reserves fresh, exactly as
+        // before.
+        const pending = unclaimedLeasesByCost.get(costBytes);
+        if (pending) {
+          if (pending === 1) unclaimedLeasesByCost.delete(costBytes);
+          else unclaimedLeasesByCost.set(costBytes, pending - 1);
+        } else {
+          reservedBytes += costBytes;
+        }
+      }
       return {
         release() {
           const index = live.indexOf(controller);
@@ -195,6 +242,15 @@ export function createWatchdog(options: WatchdogOptions): Watchdog {
         entry.cleanup?.();
         entry.resolve('cancelled');
       }
+      // Any admission lease still unclaimed at this point never will be:
+      // nothing else calls `register()` against a stopped watchdog. Release
+      // it here rather than leaving it reserved forever (Finding 1's "release
+      // it if the file never starts"), the last of the three exit paths
+      // (cancel, sweep deadline, watchdog stop) a lease must never leak on.
+      for (const [cost, count] of unclaimedLeasesByCost) {
+        reservedBytes = Math.max(0, reservedBytes - cost * count);
+      }
+      unclaimedLeasesByCost.clear();
     },
   };
 
