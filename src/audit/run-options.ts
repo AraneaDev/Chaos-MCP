@@ -198,8 +198,8 @@ export function resolveAuditTimeoutMs(
  *
  * `core/resource-context.ts` treats this value as the EXPLICIT setting that
  * always wins over its own cpu/memory baseline (only flagging `overBudget`
- * when it exceeds what memory allows), and falls back to a core-derived
- * baseline, subject to lowering, only when this is `undefined`.
+ * when it exceeds what memory allows). Only when this is `undefined` does it
+ * fall back to a cpu-derived baseline that memory may still lower.
  */
 export function resolveConfiguredConcurrency(
   args: ToolArgs,

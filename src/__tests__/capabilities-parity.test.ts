@@ -1,8 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { CAPABILITIES, LEVEL_RANK, type CapabilityLevel } from '../engines/capabilities.js';
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 const BASELINE_PATH = join(__dirname, '..', 'engines', 'capabilities.baseline.json');
 
 describe('parity ratchet', () => {
