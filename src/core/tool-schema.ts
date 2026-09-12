@@ -481,8 +481,21 @@ export const TOOL_DEFINITION = {
       newSurvivors: { type: 'array', items: MUTANT_KEY_SCHEMA },
     },
     oneOf: [
-      // Standard audit report.
-      { required: ['target', 'mutationScore', 'summary', 'survivors', 'noCoverage', 'note'] },
+      // Standard audit report. `resources` is always populated by
+      // `formatStandardOutput` (audit/audit-output.ts: `StandardOutputOptions.
+      // resources` is non-optional), unlike the verify branch below, which
+      // intentionally omits it.
+      {
+        required: [
+          'target',
+          'mutationScore',
+          'summary',
+          'survivors',
+          'noCoverage',
+          'note',
+          'resources',
+        ],
+      },
       // Verify-mode delta.
       {
         required: [
