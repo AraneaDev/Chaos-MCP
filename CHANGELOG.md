@@ -2,6 +2,13 @@
 
 All notable changes to Chaos-MCP are documented in this file.
 
+## [4.3.0](https://github.com/AraneaDev/Chaos-MCP/compare/v4.2.2...v4.3.0) (2026-09-12)
+
+
+### Features
+
+* size mutation runs to the memory the machine has ([#68](https://github.com/AraneaDev/Chaos-MCP/issues/68)) ([5046499](https://github.com/AraneaDev/Chaos-MCP/commit/50464996184469c1fbd108c56cc0e8bf2075fb50))
+
 ## [4.2.2](https://github.com/AraneaDev/Chaos-MCP/compare/v4.2.1...v4.2.2) (2026-09-10)
 
 
