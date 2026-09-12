@@ -225,6 +225,15 @@ export interface EngineDescriptor {
    * the exact factually-false note this replaced (see `unclassifiedNote`).
    */
   unclassifiedMutatorNote?: string;
+
+  /**
+   * Rough peak memory ONE worker of this engine holds, in bytes, used to lower
+   * concurrency to fit the machine (utils/resources/budget.ts).
+   *
+   * Placeholder values seeded 2026-09-12; Task 10 of the resource-governance
+   * plan replaces each with a measured figure and cites the measurement here.
+   */
+  workerCostBytes: number;
 }
 
 /**
@@ -251,6 +260,7 @@ export const ENGINE_REGISTRY: Record<SupportedProjectType, EngineDescriptor> = {
     // The caller still rejects a name that is not in `MUTATOR_SEMANTICS`, which
     // is what keeps a custom Stryker plugin's mutator out of the table.
     canonicalizeMutator: (rawMutator) => rawMutator,
+    workerCostBytes: 300 * 1024 ** 2,
   },
   python: {
     make: () => new PythonEngine(),
@@ -263,6 +273,7 @@ export const ENGINE_REGISTRY: Record<SupportedProjectType, EngineDescriptor> = {
     label: 'Python',
     estimateFidelity: 'approx',
     canonicalizeMutator: canonicalizePythonMutator,
+    workerCostBytes: 200 * 1024 ** 2,
   },
   rust: {
     make: () => new RustEngine(),
@@ -290,6 +301,7 @@ export const ENGINE_REGISTRY: Record<SupportedProjectType, EngineDescriptor> = {
     unclassifiedMutatorNote:
       'some mutants could not be classified — cargo-mutants reports a free-text description rather than a per-mutant operator, and those descriptions were not in a shape this server recognises (severity reported as "unknown"). The five shapes it does read are an operator swap, a deleted `!`, a deleted match arm, a match guard forced to a constant, and a whole-body replacement.',
     canonicalizeMutator: canonicalizeRustMutator,
+    workerCostBytes: 1024 ** 3,
   },
   php: {
     make: () => new PhpEngine(),
@@ -302,6 +314,7 @@ export const ENGINE_REGISTRY: Record<SupportedProjectType, EngineDescriptor> = {
     label: 'PHP',
     estimateFidelity: 'approx',
     canonicalizeMutator: canonicalizePhpMutator,
+    workerCostBytes: 200 * 1024 ** 2,
   },
 };
 
