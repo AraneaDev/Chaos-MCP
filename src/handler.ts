@@ -33,7 +33,7 @@ import { auditFile, assertPythonHasTests, type AuditFileInput } from './audit/au
 import { computeScope } from './audit/scope.js';
 import { buildEnrichContext, formatAuditOutput } from './audit/audit-output.js';
 import { applyAndCountSuppressions } from './audit/suppression-io.js';
-import { createResourceContext } from './core/resource-context.js';
+import { createResourceContext, type ResourcesPayload } from './core/resource-context.js';
 
 /**
  * Validate the optional tool arguments that are not covered by the JSON schema's
@@ -74,6 +74,35 @@ function reserveEngineBudget(
     };
   }
   return { ok: true, remainingMs };
+}
+
+/**
+ * The `concurrency` value to forward to an engine that honours it, or
+ * `undefined` when none should be passed at all.
+ *
+ * Mirrors the clamp `buildPerFileArgs` (triage/audit-one.ts) already applies:
+ * memory governance must never RAISE what the engine's own default already
+ * is, so the budgeted worker count is capped at `defaultWorkers(cpuCount)`
+ * for an engine that declares one. cargo-mutants' own low default answers a
+ * memory question, not a CPU one, so a pool of 8 cores would otherwise raise
+ * it from its own `-j 2` to as much as 7 — a ceiling that can raise the thing
+ * it bounds is not a ceiling.
+ *
+ * When the caller configured nothing explicit AND the probe could not read
+ * the machine, this returns `undefined` outright, so a single-file audit is
+ * byte-identical to pre-governance behaviour: no `--concurrency` for
+ * StrykerJS (which auto-scales to the core count) and no `-j` for
+ * cargo-mutants (which falls back to its own low default).
+ */
+function resolveSingleFileConcurrency(
+  projectType: SupportedProjectType,
+  perFileWorkers: number,
+  configuredConcurrency: number | undefined,
+  probeSource: ResourcesPayload['source'],
+): number | undefined {
+  if (configuredConcurrency === undefined && probeSource === 'unavailable') return undefined;
+  const ownDefault = ENGINE_REGISTRY[projectType].defaultWorkers?.(cpus().length);
+  return ownDefault === undefined ? perFileWorkers : Math.min(perFileWorkers, ownDefault);
 }
 
 /** Dump the resolved run context when verbose logging is on. */
@@ -289,15 +318,23 @@ export async function handleToolCall(
       }
       const budget = reserveEngineBudget(deadline);
       if (!budget.ok) return toolError(budget.message);
+      // Only for engines that honour `concurrency` (M1): cosmic-ray has no
+      // worker-count flag, so forcing a value there would misreport as an
+      // ignored option no caller ever asked for (ignoredOptionsFor). Clamped
+      // (and possibly omitted outright) by resolveSingleFileConcurrency so
+      // governance can only ever LOWER what the engine would otherwise do.
+      const singleFileConcurrency = ENGINE_REGISTRY[projectType].honorsConcurrency
+        ? resolveSingleFileConcurrency(
+            projectType,
+            resources.budget.perFileWorkers,
+            configuredConcurrency,
+            resources.report().source,
+          )
+        : undefined;
       const args: ToolArgs = {
         ...(request.params.arguments ?? {}),
         timeoutMs: budget.remainingMs,
-        // Only for engines that honour `concurrency` (M1): cosmic-ray has no
-        // worker-count flag, so forcing a value there would misreport as an
-        // ignored option no caller ever asked for (ignoredOptionsFor).
-        ...(ENGINE_REGISTRY[projectType].honorsConcurrency
-          ? { concurrency: resources.budget.perFileWorkers }
-          : {}),
+        ...(singleFileConcurrency === undefined ? {} : { concurrency: singleFileConcurrency }),
         innerEnv: resources.innerEnv,
       };
 

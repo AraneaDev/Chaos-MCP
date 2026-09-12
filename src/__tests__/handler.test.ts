@@ -120,6 +120,8 @@ import { workspaceHasPythonTests } from '../core/test-file.js';
 import { computeScope } from '../audit/scope.js';
 import { AuditDeadline } from '../utils/deadline.js';
 import { createResourceContext } from '../core/resource-context.js';
+import { resolveCargoJobs } from '../engines/rust/args.js';
+import { cpus } from 'node:os';
 
 const MockTSEngine = vi.mocked(TypeScriptEngine);
 const MockRustEngine = vi.mocked(RustEngine);
@@ -2361,7 +2363,10 @@ describe('handleToolCall', () => {
    * (2.5, 999) so the assertion proves the STUB's number reached the engine,
    * not a coincidence.
    */
-  function stubGovernedResources(perFileWorkers: number): ReturnType<typeof createResourceContext> {
+  function stubGovernedResources(
+    perFileWorkers: number,
+    source: 'host' | 'cgroup' | 'unavailable' = 'host',
+  ): ReturnType<typeof createResourceContext> {
     return {
       budget: { fileConcurrency: 1, perFileWorkers, overBudget: false, affordableWorkers: perFileWorkers },
       watchdog: {
@@ -2376,7 +2381,7 @@ describe('handleToolCall', () => {
       report: () => ({
         availableAtStartBytes: 4 * 1024 ** 3,
         limitBytes: 8 * 1024 ** 3,
-        source: 'host',
+        source,
         fileConcurrency: 1,
         perFileWorkers,
         overBudget: false,
@@ -2385,6 +2390,81 @@ describe('handleToolCall', () => {
       dispose: vi.fn(),
     };
   }
+
+  /**
+   * CRITICAL 1 regression: a single-file audit must never hand an engine more
+   * concurrency than it would have received before this branch. These assert
+   * the VALUE reaching `engine.run`, not just that a `resources` block exists
+   * in the payload (`handler-resources.test.ts` already covers the payload).
+   */
+  it('passes no concurrency for a Rust audit when the probe is unavailable and none was configured', async () => {
+    const mockRun = vi.fn().mockResolvedValue({
+      target: 'src/main.rs',
+      totalMutants: 3,
+      killed: 3,
+      survived: 0,
+      mutationScore: '100.00%',
+      vulnerabilities: [],
+    });
+    MockRustEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as typeof RustEngine.prototype;
+    });
+    mockDetectEnv.mockReturnValue({
+      projectType: 'rust',
+      testRunner: 'cargo test',
+      detectedRunner: 'cargo test',
+      packageManager: '',
+      workspaceRoot: '/workspace',
+    });
+    // An 'unavailable' source with no explicit concurrency setting must
+    // reproduce pre-governance behaviour byte-for-byte: no `--concurrency`
+    // argument at all, so cargo-mutants falls back to its own low default
+    // (`resolveCargoJobs`) instead of a governance-derived number.
+    mockCreateResourceContext.mockReturnValueOnce(stubGovernedResources(8, 'unavailable'));
+
+    const request = makeRequest('audit_code_resilience', { filePath: 'src/main.rs' });
+    const response = await handleToolCall(request);
+
+    expect(response.isError).toBeUndefined();
+    expect(mockRun).toHaveBeenCalledTimes(1);
+    const runOptions = mockRun.mock.calls[0]?.[1] as { concurrency?: number };
+    expect(runOptions.concurrency).toBeUndefined();
+  });
+
+  it('never exceeds the engine\'s own default concurrency even when the budget allows more', async () => {
+    const mockRun = vi.fn().mockResolvedValue({
+      target: 'src/main.rs',
+      totalMutants: 3,
+      killed: 3,
+      survived: 0,
+      mutationScore: '100.00%',
+      vulnerabilities: [],
+    });
+    MockRustEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as typeof RustEngine.prototype;
+    });
+    mockDetectEnv.mockReturnValue({
+      projectType: 'rust',
+      testRunner: 'cargo test',
+      detectedRunner: 'cargo test',
+      packageManager: '',
+      workspaceRoot: '/workspace',
+    });
+    // A generous budget (8 workers) must still be clamped to cargo-mutants'
+    // own default (resolveCargoJobs(undefined, cpuCount)), never raised past
+    // it, exactly as the triage path's buildPerFileArgs already guarantees.
+    mockCreateResourceContext.mockReturnValueOnce(stubGovernedResources(8, 'host'));
+
+    const request = makeRequest('audit_code_resilience', { filePath: 'src/main.rs' });
+    const response = await handleToolCall(request);
+
+    expect(response.isError).toBeUndefined();
+    const ownDefault = resolveCargoJobs(undefined, cpus().length);
+    expect(mockRun).toHaveBeenCalledWith(
+      'src/main.rs',
+      expect.objectContaining({ concurrency: Math.min(8, ownDefault) }),
+    );
+  });
 
   it('config concurrency with float is rejected and falls to the governed baseline (H6 regression)', async () => {
     const mockRun = vi.fn().mockResolvedValue({
