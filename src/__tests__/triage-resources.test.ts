@@ -211,6 +211,27 @@ describe('triage_test_coverage resource governance', () => {
     expect(resources.watchdog.register).toHaveBeenCalledTimes(4);
   });
 
+  it('reports progress once per file even when the file is requeued (MINOR 7)', async () => {
+    mockDiscover.mockReturnValue({ files: ['a.ts', 'b.ts', 'c.ts'], discovered: 3, skipped: 0 });
+    installFakeEngine();
+    const resources = makeResources({ exhaustOnRegisterCalls: [2] });
+    mockCreateResourceContext.mockReturnValue(
+      resources as unknown as ReturnType<typeof createResourceContext>,
+    );
+    const reportProgress = vi.fn();
+
+    await handleTriageCall(
+      req({ paths: ['src'], fileConcurrency: 1 }),
+      undefined,
+      { reportProgress },
+    );
+
+    // 3 files, never 4: b.ts's requeue must not report progress a second
+    // time, or a 3-file sweep would print "audited 4/3".
+    expect(reportProgress).toHaveBeenCalledTimes(3);
+    expect(reportProgress).toHaveBeenLastCalledWith(3, 3, 'audited 3/3');
+  });
+
   it('treats a memory stop DURING sandbox creation the same as one during the engine run (IMPORTANT 5)', async () => {
     mockDiscover.mockReturnValue({ files: ['a.ts'], discovered: 1, skipped: 0 });
     installFakeEngine();

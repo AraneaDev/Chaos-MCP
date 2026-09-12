@@ -378,10 +378,17 @@ export async function handleTriageCall(
         !ctx?.signal?.aborted &&
         deadline.remainingMs(TRIAGE_CLEANUP_RESERVE_MS) > MIN_RETRY_BUDGET_MS
       ) {
+        // A no-op `onProgress` for the retry pass (MINOR 7): the original
+        // pass already counted every one of these files once (`auditTriageFile`
+        // reports in a `finally` regardless of outcome, `exhausted` included),
+        // so counting again here double-reports the retried files and can
+        // print "audited 26/25" for a 25-file sweep.
+        // eslint-disable-next-line @typescript-eslint/no-empty-function
+        const retryDeps: TriageFileDeps = { ...deps, onProgress: () => {} };
         const retried = await mapPool(
           retryTargets.map((t) => t.file),
           1,
-          (file) => auditTriageFile(file, deps),
+          (file) => auditTriageFile(file, retryDeps),
           { admit },
         );
         retryTargets.forEach((target, i) => {
