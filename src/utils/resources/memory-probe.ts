@@ -126,13 +126,28 @@ function ancestorDirs(root: string, relativePath: string): string[] {
   return dirs;
 }
 
-/** The smallest headroom among valid levels is the one the process is actually bound by. */
-function mostRestrictive(levels: CgroupLevel[]): CgroupLevel | undefined {
-  return levels.reduce<CgroupLevel | undefined>(
-    (best, level) =>
-      best === undefined || level.availableBytes < best.availableBytes ? level : best,
-    undefined,
-  );
+/**
+ * The figures a process is actually bound by across a set of candidate levels:
+ * the smallest headroom and, INDEPENDENTLY, the smallest ceiling.
+ *
+ * Independently is the whole point, and taking one level's pair wholesale is
+ * the bug this replaces. The level with the least free memory need not be the
+ * level with the lowest limit: a 1 GiB leaf cgroup can sit under a 10 GiB
+ * ancestor that merely happens to have less free right now, and returning that
+ * ancestor's ceiling lets the caller compute its floors against 10 GiB the
+ * process can never reach, which can refuse every run.
+ *
+ * Shared with the host-versus-cgroup combination in {@link probeMemory}, which
+ * needs the same rule over exactly two levels.
+ */
+function bindingLevel(levels: [CgroupLevel, ...CgroupLevel[]]): CgroupLevel;
+function bindingLevel(levels: CgroupLevel[]): CgroupLevel | undefined;
+function bindingLevel(levels: CgroupLevel[]): CgroupLevel | undefined {
+  if (levels.length === 0) return undefined;
+  return {
+    availableBytes: Math.min(...levels.map((level) => level.availableBytes)),
+    limitBytes: Math.min(...levels.map((level) => level.limitBytes)),
+  };
 }
 
 /** The `0::<path>` line of `/proc/self/cgroup`, relative to the cgroup v2 mount. */
@@ -166,7 +181,7 @@ function cgroupAvailable(
 
   const v2Path = selfCgroupV2Path(deps);
   if (v2Path !== undefined) {
-    const best = mostRestrictive(
+    const best = bindingLevel(
       ancestorDirs(CGROUP_V2_ROOT, v2Path)
         .map((dir) => readCgroupLevel(deps, dir, 'memory.max', 'memory.current'))
         .filter((level): level is CgroupLevel => level !== undefined),
@@ -176,7 +191,7 @@ function cgroupAvailable(
 
   const v1Path = selfCgroupV1MemoryPath(deps);
   if (v1Path !== undefined) {
-    const best = mostRestrictive(
+    const best = bindingLevel(
       ancestorDirs(CGROUP_V1_MEMORY_ROOT, v1Path)
         .map((dir) => readCgroupLevel(deps, dir, 'memory.limit_in_bytes', 'memory.usage_in_bytes'))
         .filter((level): level is CgroupLevel => level !== undefined),
@@ -211,8 +226,10 @@ export function probeMemory(deps: ProbeDeps): MemorySnapshot {
   // Both figures must come back as the smaller of the two, independently.
   if (host && cgroup) {
     return {
-      availableBytes: Math.min(host.availableBytes, cgroup.availableBytes),
-      limitBytes: Math.min(host.limitBytes, cgroup.limitBytes),
+      ...bindingLevel([host, cgroup]),
+      // `source` names which side is BINDING on headroom, which is the figure
+      // an operator reads first. The two numbers above can come from different
+      // sides, and that is deliberate.
       source: cgroup.availableBytes <= host.availableBytes ? 'cgroup' : 'host',
     };
   }

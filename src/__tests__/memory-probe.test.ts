@@ -105,6 +105,32 @@ describe('probeMemory', () => {
     expect(snap.limitBytes).toBe(3 * GIB);
   });
 
+  it('takes the smallest ceiling and the smallest headroom from DIFFERENT cgroup levels', () => {
+    // The binding pair is split across levels on purpose: the leaf caps the
+    // process at 1 GiB while the ancestor, which the process can never exceed
+    // anyway, happens to have less free right now. Reporting the level with the
+    // least headroom wholesale returned the ancestor's 10 GiB ceiling, and the
+    // caller then computed its memory floors from 10 GiB this process can never
+    // reach, which can refuse every run inside a 1 GiB cgroup.
+    const leaf = '/sys/fs/cgroup/user.slice/app.scope';
+    const ancestor = '/sys/fs/cgroup/user.slice';
+    const snap = probeMemory(
+      linuxDeps({
+        '/proc/meminfo': 'MemAvailable:    62914560 kB\n',
+        '/proc/self/cgroup': '0::/user.slice/app.scope\n',
+        [`${leaf}/memory.max`]: `${1 * GIB}\n`,
+        [`${leaf}/memory.current`]: `${512 * 1024 ** 2}\n`,
+        [`${ancestor}/memory.max`]: `${10 * GIB}\n`,
+        [`${ancestor}/memory.current`]: `${10 * GIB - 100 * 1024 ** 2}\n`,
+      }),
+    );
+    expect(snap.source).toBe('cgroup');
+    // Least headroom: the ancestor's 100 MiB.
+    expect(snap.availableBytes).toBe(100 * 1024 ** 2);
+    // Lowest ceiling: the leaf's 1 GiB, NOT the ancestor's 10 GiB.
+    expect(snap.limitBytes).toBe(1 * GIB);
+  });
+
   it('resolves a nested cgroup v1 memory controller path from /proc/self/cgroup', () => {
     // /proc/self/cgroup lists multiple hierarchies; only the line naming the
     // "memory" controller is relevant, and its path is nested well below the
