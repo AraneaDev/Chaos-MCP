@@ -32,7 +32,7 @@
     "per-test-coverage": "none",
     "incremental-cache": "none",
     "run-cache-verify": "partial",
-    "inner-pool-cap": "none",
+    "inner-pool-cap": "partial",
     "per-mutant-timeout": "partial",
     "partial-results-on-timeout": "none",
     "baseline-timing": "partial",

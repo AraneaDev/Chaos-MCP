@@ -83,9 +83,10 @@ export const CAPABILITIES: Record<SupportedProjectType, Record<Capability, Capab
     'per-test-coverage': 'none',
     'incremental-cache': 'none',
     'run-cache-verify': 'partial',
-    // cosmic-ray runs its mutants serially, so there is no inner pool to cap.
-    // 'none' here is the tool's shape, not a gap to close.
-    'inner-pool-cap': 'none',
+    // cosmic-ray runs its mutants serially, so there is no pool to cap.
+    // 'partial' rather than 'none': cosmic-ray having no pool is the tool's
+    // shape, not a gap to close, and 'none' reads as something to fix later.
+    'inner-pool-cap': 'partial',
     'per-mutant-timeout': 'partial',
     'partial-results-on-timeout': 'none',
     'baseline-timing': 'partial',
