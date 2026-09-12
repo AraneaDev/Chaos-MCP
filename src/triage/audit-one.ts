@@ -107,11 +107,14 @@ export interface TriageFileDeps {
    */
   watchdog?: Watchdog;
   /**
-   * Environment for the mutation tool's OWN inner worker pool, sized from the
-   * resolved memory budget (Task 8's `resources.innerEnv`). Forwarded to the
-   * engine verbatim via `buildPerFileArgs`; absent means "no cap".
+   * Builds the environment for the mutation tool's OWN inner worker pool,
+   * sized from the resolved memory budget (Task 8's `resources.innerEnvFor`).
+   * Called with EACH file's own `projectType` rather than handed a single
+   * pre-built env (Finding 2): a sweep spans several languages often enough
+   * that a TypeScript-sized env (`{}`) handed to a Rust file left
+   * cargo-mutants' own worker pool completely uncapped. Absent means "no cap".
    */
-  innerEnv?: NodeJS.ProcessEnv;
+  innerEnvFor?: (projectType: SupportedProjectType) => NodeJS.ProcessEnv;
   /**
    * Estimated memory this file's run will hold (IMPORTANT 4), the same figure
    * `handleTriageCall` hands its admission gate. Passed to `watchdog.register`
@@ -433,10 +436,13 @@ function buildPerFileArgs(
         : Math.min(deps.perFileConcurrency, ownDefault);
   }
   // Memory-budget cap for the engine's OWN inner worker pool (Task 8), the
-  // same field the single-file audit forwards on `args.innerEnv`. Only set
-  // when the sweep actually has one, so a caller with no resource context
-  // behind it gets today's uncapped behaviour.
-  if (deps.innerEnv !== undefined) perFileArgs.innerEnv = deps.innerEnv;
+  // same field the single-file audit forwards on `args.innerEnv`. Built from
+  // THIS file's own `projectType` (Finding 2), not a single sweep-wide env,
+  // so each engine gets an inner-pool cap in ITS OWN vocabulary rather than
+  // whichever language the sweep happened to size itself against. Only set
+  // when the sweep actually has a builder, so a caller with no resource
+  // context behind it gets today's uncapped behaviour.
+  if (deps.innerEnvFor) perFileArgs.innerEnv = deps.innerEnvFor(projectType);
   return perFileArgs;
 }
 

@@ -41,7 +41,8 @@ import {
   type ResourceContext,
   type ResourcesPayload,
 } from './core/resource-context.js';
-import { resolveAuditTargetIn } from './audit/target.js';
+import { resolveAuditTargetIn, supportedTypeOf } from './audit/target.js';
+import type { SupportedProjectType } from './utils/project-detector.js';
 import { isBaselineFailureMessage } from './utils/baseline-failure.js';
 
 const DEFAULT_MAX_FILES = 25;
@@ -282,18 +283,31 @@ export async function handleTriageCall(
     // Size this sweep to the memory the machine actually has (Task 8): never
     // RAISES what the CPU-only math already chose (poolSize / the per-file
     // worker cap below), only lowers it, and the watchdog stops the newest
-    // run rather than letting the sweep exhaust memory. `projectType` is read
-    // from the first selected file: a sweep almost always spans one language,
-    // and a mixed one still gets a real (if approximate) per-worker cost
-    // rather than none. `resources.dispose()` in the `finally` below tears
-    // down the sampler once the sweep is done, same as the single-file audit
-    // (Task 7).
+    // run rather than letting the sweep exhaust memory. `resources.dispose()`
+    // in the `finally` below tears down the sampler once the sweep is done,
+    // same as the single-file audit (Task 7).
     // Resolved once here and handed to the pool as `deps.primaryTarget` below,
     // so the file the pool audits at `files[0]` does not run the same
     // workspace detection a second time (it would otherwise: `auditTriageFile`
     // resolves every file's target itself, this one included).
     const primaryTarget = resolveAuditTargetIn(rootCwd, files[0]);
     const primaryProjectType = primaryTarget?.projectType ?? 'typescript';
+    // Every OTHER project type actually present among the REST of the sweep's
+    // files (Finding 2): sizing the budget, the admission charge and the
+    // engine inner-pool env off only the first file's language silently
+    // handed a cheaper engine's numbers to a pricier one, and vice versa.
+    // `supportedTypeOf` is the cheap extension check alone (no per-file
+    // workspace walk, unlike `resolveAuditTargetIn` above); each file still
+    // resolves its own full target later, in its own pass through the pool.
+    // An unsupported file runs no engine and contributes nothing to size for.
+    const otherProjectTypes = Array.from(
+      new Set(
+        files
+          .slice(1)
+          .map((f) => supportedTypeOf(f))
+          .filter((t): t is SupportedProjectType => t !== null),
+      ),
+    );
     // The engine-worker cap this sweep would use with no memory pressure at
     // all. `undefined` when the pool is serial, matching the existing "no cap
     // needed for one file at a time" rule `buildPerFileArgs` already applies;
@@ -303,6 +317,7 @@ export async function handleTriageCall(
     const cpuPerFileWorkers = resolvePerFileConcurrency(poolSize, cpuCount);
     const resources = createResourceContext({
       projectType: primaryProjectType,
+      projectTypes: otherProjectTypes,
       cpuFileConcurrency: poolSize,
       cpuPerFileWorkers: cpuPerFileWorkers ?? 1,
       requested: args.fileConcurrency === undefined ? undefined : { fileConcurrency: poolSize },
@@ -316,10 +331,13 @@ export async function handleTriageCall(
       // Estimated memory one file's engine run will hold: the engine's fixed
       // per-file cost (parent process plus dry run) plus its worker cost
       // times how many workers that file gets (`resources.perFileCostBytes`,
-      // per the 2026-09-12 cost-model amendment). Same figure the
-      // single-file audit charges its own watchdog registration with
-      // (Task 7 / handler.ts); the watchdog's real-time trip, not this
-      // estimate, is what actually protects the machine.
+      // per the 2026-09-12 cost-model amendment), sized from the MOST
+      // EXPENSIVE target type in the sweep (Finding 2), so every file is
+      // charged at least what it could really cost rather than what the
+      // first file's engine happens to cost. Same figure the single-file
+      // audit charges its own watchdog registration with (Task 7 /
+      // handler.ts); the watchdog's real-time trip, not this estimate, is
+      // what actually protects the machine.
       // Computed before `deps` so it can be handed to BOTH the admission gate
       // below and `watchdog.register` (via `deps.perFileCostBytes`), which
       // charges it against admission for every other file from the moment
@@ -339,7 +357,7 @@ export async function handleTriageCall(
         cleanupReserveMs: TRIAGE_CLEANUP_RESERVE_MS,
         ctx,
         watchdog: resources.watchdog,
-        innerEnv: resources.innerEnv,
+        innerEnvFor: resources.innerEnvFor,
         perFileCostBytes: perFileCost,
         primaryTarget: primaryTarget ? { file: files[0], target: primaryTarget } : undefined,
         // Progress stops the moment the request is abandoned. A cancelled sweep

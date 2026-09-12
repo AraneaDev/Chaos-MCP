@@ -458,6 +458,31 @@ describe('handleTriageCall', () => {
       expect(mockAuditFile.mock.calls[0][0].args.concurrency).toBeTypeOf('number');
     });
 
+    it('builds each file its own inner-pool env from ITS OWN project type (Finding 2)', async () => {
+      // TypeScript first, Rust second: the exact ordering that hid the bug,
+      // since sizing off only `files[0]`'s engine never notices Rust showing
+      // up later. Serial pool so `mockAuditFile`'s calls line up with `files`.
+      mockDiscover.mockReturnValue({ files: ['a.ts', 'b.rs'], discovered: 2, skipped: 0 });
+      mockDetectEnv.mockImplementation((rawPath: string) =>
+        rawPath.endsWith('.rs') ? { ...tsEnv, projectType: 'rust' } : tsEnv,
+      );
+      mockAuditFile.mockResolvedValue(mrOf({}));
+
+      await handleTriageCall(req({ paths: ['src'], fileConcurrency: 1 }));
+
+      expect(mockAuditFile).toHaveBeenCalledTimes(2);
+      // Before the fix, the WHOLE sweep's inner-pool env was built once from
+      // `files[0]`'s type (TypeScript's own env is `{}`), so the Rust file
+      // would have received the SAME empty env and cargo-mutants' own worker
+      // pool would have run completely uncapped.
+      expect(mockAuditFile.mock.calls[0][0].args.innerEnv).toEqual({});
+      const rustEnv = mockAuditFile.mock.calls[1][0].args.innerEnv as
+        | Record<string, string>
+        | undefined;
+      expect(rustEnv?.CARGO_BUILD_JOBS).toBeDefined();
+      expect(rustEnv?.RUST_TEST_THREADS).toBeDefined();
+    });
+
     it('ignores a non-integer fileConcurrency when sizing the pool', async () => {
       // 2.5 is rejected by validation, but `null` reaches the pool sizer and
       // must fall through to the default rather than becoming the pool size.

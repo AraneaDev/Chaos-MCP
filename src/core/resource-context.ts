@@ -28,6 +28,20 @@ export interface ResourcesPayload {
 
 export interface ResourceContextInput {
   projectType: SupportedProjectType;
+  /**
+   * Every OTHER project type actually present among a sweep's targets
+   * (Finding: a triage sweep sized its whole budget off only the FIRST
+   * file's engine, so a TypeScript-first, Rust-second sweep handed Rust
+   * files an empty inner-pool env, uncapping cargo-mutants' own worker pool,
+   * and charged the admission gate TypeScript's per-worker cost for a file
+   * that actually costs more). Combined with `projectType` below to pick
+   * whichever type resolves to the most expensive per-file charge at the
+   * resolved worker count: the conservative direction is the higher cost and
+   * the lower concurrency, never the first file's language alone. `undefined`
+   * (every single-file caller, and a sweep that only ever saw one language)
+   * reproduces the pre-amendment, `projectType`-only sizing exactly.
+   */
+  projectTypes?: SupportedProjectType[];
   cpuCount?: number;
   cpuFileConcurrency: number;
   cpuPerFileWorkers: number;
@@ -42,14 +56,28 @@ export interface ResourceContextInput {
 export interface ResourceContext {
   budget: Budget;
   watchdog: Watchdog;
+  /** `innerEnvFor(projectType)`, the single-language convenience every caller with only one type used before `projectTypes` existed. */
   innerEnv: NodeJS.ProcessEnv;
+  /**
+   * The engine inner-pool env for ONE target's OWN project type, sized from
+   * the SAME resolved worker budget every target in the sweep shares. A
+   * mixed-language sweep must build this per file from that file's own
+   * type, not once from whichever type sizing picked: TypeScript's own inner
+   * env is `{}` (StrykerJS forces `singleThread: true` on its own), and
+   * handing that verbatim to a Rust file left cargo-mutants' `-j` and its
+   * build/test thread count completely uncapped.
+   */
+  innerEnvFor(projectType: SupportedProjectType): NodeJS.ProcessEnv;
   workerCostBytes: number;
   /**
    * The admission charge for ONE file at the resolved budget:
    * `fileFixedCostBytes + perFileWorkers * workerCostBytes`. This is what the
    * triage admission gate and the watchdog registration on both the triage
    * and single-file paths charge, per the 2026-09-12 cost-model amendment,
-   * rather than the pre-amendment workers-only figure.
+   * rather than the pre-amendment workers-only figure. Sized from the most
+   * expensive of `projectType` and `projectTypes` (see there), so a sweep
+   * that spans several engines charges every file the pricier one's cost
+   * rather than under-charging for it.
    */
   perFileCostBytes: number;
   report(): ResourcesPayload;
@@ -60,16 +88,38 @@ export function createResourceContext(input: ResourceContextInput): ResourceCont
   const deps = defaultProbeDeps();
   const probe = input.probe ?? (() => probeMemory(deps));
   const snapshot = probe();
-  const { workerCostBytes, fileFixedCostBytes } = ENGINE_REGISTRY[input.projectType];
 
-  const budget = resolveBudget({
-    snapshot,
-    fileFixedCostBytes,
-    workerCostBytes,
-    cpuFileConcurrency: input.cpuFileConcurrency,
-    cpuPerFileWorkers: input.cpuPerFileWorkers,
-    requested: input.requested,
-  });
+  const resolveFor = (projectType: SupportedProjectType) => {
+    const { workerCostBytes, fileFixedCostBytes } = ENGINE_REGISTRY[projectType];
+    const budget = resolveBudget({
+      snapshot,
+      fileFixedCostBytes,
+      workerCostBytes,
+      cpuFileConcurrency: input.cpuFileConcurrency,
+      cpuPerFileWorkers: input.cpuPerFileWorkers,
+      requested: input.requested,
+    });
+    return {
+      workerCostBytes,
+      fileFixedCostBytes,
+      budget,
+      perFileCostBytes: fileFixedCostBytes + budget.perFileWorkers * workerCostBytes,
+    };
+  };
+
+  // Pick whichever candidate type resolves to the most expensive per-file
+  // charge, and size the WHOLE sweep (fileConcurrency, perFileWorkers, the
+  // admission charge) from that one rather than from `projectType` alone: a
+  // sweep spans one language most of the time, but when it does not, sizing
+  // off only the first file's engine silently under-charged a pricier one.
+  // The conservative direction is the higher cost and the lower concurrency.
+  const candidates = Array.from(new Set([input.projectType, ...(input.projectTypes ?? [])]));
+  let chosen = resolveFor(candidates[0]);
+  for (const projectType of candidates.slice(1)) {
+    const candidate = resolveFor(projectType);
+    if (candidate.perFileCostBytes > chosen.perFileCostBytes) chosen = candidate;
+  }
+  const { budget, perFileCostBytes } = chosen;
 
   const floors = resolveFloors(snapshot.limitBytes);
   const criticalBytes = input.criticalFloorBytes ?? floors.criticalBytes;
@@ -108,22 +158,33 @@ export function createResourceContext(input: ResourceContextInput): ResourceCont
   // TypeScript/PHP equivalents) run cargo-mutants at the user's own value, so
   // sizing `buildInnerEnv` against the engine's default here would build inner
   // thread counts for a job count cargo never actually runs with.
-  const ownDefault = ENGINE_REGISTRY[input.projectType].defaultWorkers?.(
-    input.cpuCount ?? cpus().length,
-  );
-  const jobs =
-    input.requested?.perFileWorkers !== undefined
+  //
+  // Computed PER TARGET TYPE (not just the type sizing picked): each engine's
+  // own default clamp is its own, and `buildInnerEnv`'s env keys and split
+  // are per-language too (Finding: a TypeScript-sized inner env is `{}`,
+  // which left a Rust file's cargo-mutants entirely uncapped). Every type
+  // shares the SAME resolved `budget.perFileWorkers`, only the clamp and the
+  // resulting env differ.
+  const jobsFor = (projectType: SupportedProjectType): number => {
+    const ownDefault = ENGINE_REGISTRY[projectType].defaultWorkers?.(
+      input.cpuCount ?? cpus().length,
+    );
+    return input.requested?.perFileWorkers !== undefined
       ? budget.perFileWorkers
       : ownDefault === undefined
         ? budget.perFileWorkers
         : Math.min(budget.perFileWorkers, ownDefault);
+  };
+  const innerEnvFor = (projectType: SupportedProjectType): NodeJS.ProcessEnv =>
+    buildInnerEnv(projectType, budget.perFileWorkers, jobsFor(projectType));
 
   return {
     budget,
     watchdog,
-    innerEnv: buildInnerEnv(input.projectType, budget.perFileWorkers, jobs),
-    workerCostBytes,
-    perFileCostBytes: fileFixedCostBytes + budget.perFileWorkers * workerCostBytes,
+    innerEnv: innerEnvFor(input.projectType),
+    innerEnvFor,
+    workerCostBytes: chosen.workerCostBytes,
+    perFileCostBytes,
     report: () => ({
       availableAtStartBytes: snapshot.availableBytes,
       limitBytes: snapshot.limitBytes,

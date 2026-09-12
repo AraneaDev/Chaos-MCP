@@ -2409,6 +2409,7 @@ describe('handleToolCall', () => {
         trips: 0,
       },
       innerEnv: {},
+      innerEnvFor: () => ({}),
       workerCostBytes: 300 * 1024 ** 2,
       perFileCostBytes: 300 * 1024 ** 2 * perFileWorkers,
       report: () => ({

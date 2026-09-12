@@ -106,6 +106,62 @@ describe('createResourceContext', () => {
     ctx.dispose();
   });
 
+  it('sizes a mixed-language sweep from the most expensive target type, not the first one (Finding 2)', () => {
+    // TypeScript first, Rust second: the exact ordering that hid the bug,
+    // since a sweep that only ever reads `files[0]`'s engine never notices a
+    // pricier language showing up later. TypeScript's admission charge (900
+    // MiB fixed + 320 MiB/worker) is cheaper than Rust's (0 fixed + 850
+    // MiB/worker), so sizing off TypeScript alone would under-charge Rust and
+    // leave cargo-mutants' own worker pool unsized.
+    const ctx = createResourceContext({
+      projectType: 'typescript',
+      projectTypes: ['rust'],
+      cpuCount: 8,
+      cpuFileConcurrency: 1,
+      cpuPerFileWorkers: 4,
+      probe: () => ({ availableBytes: 64 * GIB, limitBytes: 64 * GIB, source: 'host' }),
+    });
+    const perFileWorkers = ctx.budget.perFileWorkers;
+    expect(ctx.perFileCostBytes).toBe(850 * 1024 ** 2 * perFileWorkers);
+    expect(ctx.workerCostBytes).toBe(850 * 1024 ** 2);
+    // The TypeScript-first, Rust-second ordering must not leak into which
+    // language's cost is charged: the SAME sizing results whichever position
+    // Rust appears at.
+    const swapped = createResourceContext({
+      projectType: 'rust',
+      projectTypes: ['typescript'],
+      cpuCount: 8,
+      cpuFileConcurrency: 1,
+      cpuPerFileWorkers: 4,
+      probe: () => ({ availableBytes: 64 * GIB, limitBytes: 64 * GIB, source: 'host' }),
+    });
+    expect(swapped.perFileCostBytes).toBe(ctx.perFileCostBytes);
+    ctx.dispose();
+    swapped.dispose();
+  });
+
+  it('builds each target its OWN inner-pool env from the shared budget (Finding 2)', () => {
+    // Plentiful memory keeps the shared worker budget at the CPU figure (4),
+    // and Rust being the pricier engine (see above) does not change what
+    // TypeScript's own inner env looks like: TypeScript still gets `{}`
+    // (StrykerJS forces `singleThread: true` on its own), while Rust gets a
+    // real cap rather than the empty env a TypeScript-only sizing pass used
+    // to hand it.
+    const ctx = createResourceContext({
+      projectType: 'typescript',
+      projectTypes: ['rust'],
+      cpuCount: 8,
+      cpuFileConcurrency: 1,
+      cpuPerFileWorkers: 4,
+      probe: () => ({ availableBytes: 64 * GIB, limitBytes: 64 * GIB, source: 'host' }),
+    });
+    expect(ctx.innerEnvFor('typescript')).toEqual({});
+    const rustEnv = ctx.innerEnvFor('rust');
+    expect(rustEnv.CARGO_BUILD_JOBS).toBeDefined();
+    expect(rustEnv.RUST_TEST_THREADS).toBeDefined();
+    ctx.dispose();
+  });
+
   it('never resolves an admission floor below the critical floor (MINOR 8)', async () => {
     // `admissionFloorBytes` below `criticalFloorBytes` would let the admission
     // gate start a file at a memory level the very next watchdog tick stops
