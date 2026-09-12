@@ -44,7 +44,12 @@ export function createWatchdog(options: WatchdogOptions): Watchdog {
   const now = options.now ?? Date.now;
   const cooldownMs = options.cooldownMs ?? DEFAULT_COOLDOWN_MS;
   const live: AbortController[] = [];
-  const waiting: { costBytes: number; resolve: (value: 'admitted') => void }[] = [];
+  interface WaitingEntry {
+    costBytes: number;
+    resolve: (value: 'admitted' | 'cancelled') => void;
+    cleanup?: () => void;
+  }
+  const waiting: WaitingEntry[] = [];
   let trips = 0;
   let lastTripAt = Number.NEGATIVE_INFINITY;
 
@@ -76,17 +81,25 @@ export function createWatchdog(options: WatchdogOptions): Watchdog {
       if (signal?.aborted) return Promise.resolve('cancelled');
 
       return new Promise((resolve) => {
-        const entry = { costBytes, resolve: resolve as (value: 'admitted') => void };
+        const entry: WaitingEntry = {
+          costBytes,
+          resolve: resolve as (value: 'admitted' | 'cancelled') => void,
+        };
+
+        const abortListener = () => {
+          const index = waiting.indexOf(entry);
+          if (index >= 0) waiting.splice(index, 1);
+          resolve('cancelled');
+        };
+
+        entry.cleanup = () => {
+          if (signal && abortListener) {
+            signal.removeEventListener('abort', abortListener);
+          }
+        };
+
         waiting.push(entry);
-        signal?.addEventListener(
-          'abort',
-          () => {
-            const index = waiting.indexOf(entry);
-            if (index >= 0) waiting.splice(index, 1);
-            resolve('cancelled');
-          },
-          { once: true },
-        );
+        signal?.addEventListener('abort', abortListener, { once: true });
       });
     },
 
@@ -108,13 +121,20 @@ export function createWatchdog(options: WatchdogOptions): Watchdog {
         const next = waiting[0];
         if (options.probe().availableBytes - next.costBytes < options.admissionBytes) break;
         waiting.shift();
+        next.cleanup?.();
         next.resolve('admitted');
       }
     },
 
     stop() {
       clearInterval(timer);
-      for (const entry of waiting.splice(0)) entry.resolve('admitted');
+      // Resolve pending waiters as 'cancelled', not 'admitted'. 'admitted' tells
+      // the caller to start the file, but if we stop before admitting, the file
+      // must be skipped, never run unsupervised without the watchdog.
+      for (const entry of waiting.splice(0)) {
+        entry.cleanup?.();
+        entry.resolve('cancelled');
+      }
     },
   };
 

@@ -132,4 +132,16 @@ describe('watchdog', () => {
     dog.tick();
     expect(run.signal.aborted).toBe(false);
   });
+
+  it('cancels pending waiters on stop, not admits them', async () => {
+    const dog = createWatchdog({
+      probe: () => snap(0),
+      criticalBytes: 1 * GIB,
+      admissionBytes: 2 * GIB,
+      now: () => 0,
+    });
+    const pending = dog.admit(4 * GIB);
+    dog.stop();
+    await expect(pending).resolves.toBe('cancelled');
+  });
 });
