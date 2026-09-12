@@ -66,6 +66,18 @@ export interface EngineDescriptor {
   configKey: EngineConfigKey;
 
   /**
+   * Whether the engine can restrict a run to what a DIFF changed.
+   *
+   * Distinct from {@link EngineDescriptor.supportsLineScope}, which is about
+   * arbitrary ranges. Every engine can do the diff kind: StrykerJS through
+   * `--mutate file:start-end`, cargo-mutants through `--in-diff`, cosmic-ray
+   * through `cr-filter-lines`, Infection through `--git-diff-lines`. Only
+   * StrykerJS can be handed a range that no diff produced, which is what a
+   * verify re-scope needs, so that one stays its own flag.
+   */
+  supportsDiffScope: boolean;
+
+  /**
    * Whether the engine supports line-level scoping — `lineScope`, diff-aware
    * scoping (A2), and baseline verify re-scoping (A3). Only StrykerJS
    * (TypeScript) does today; the other tools always run whole-file. Also gates
@@ -266,6 +278,7 @@ export const ENGINE_REGISTRY: Record<SupportedProjectType, EngineDescriptor> = {
   typescript: {
     make: () => new TypeScriptEngine(),
     configKey: 'stryker',
+    supportsDiffScope: true,
     supportsLineScope: true,
     honorsConcurrency: true,
     dependencyDirs: DEPENDENCY_DIRS.typescript,
@@ -294,6 +307,7 @@ export const ENGINE_REGISTRY: Record<SupportedProjectType, EngineDescriptor> = {
   python: {
     make: () => new PythonEngine(),
     configKey: 'cosmicray',
+    supportsDiffScope: true,
     supportsLineScope: false,
     honorsConcurrency: false,
     dependencyDirs: DEPENDENCY_DIRS.python,
@@ -315,6 +329,7 @@ export const ENGINE_REGISTRY: Record<SupportedProjectType, EngineDescriptor> = {
   rust: {
     make: () => new RustEngine(),
     configKey: 'rust',
+    supportsDiffScope: true,
     supportsLineScope: false,
     honorsConcurrency: true,
     // The same policy `RustEngine` applies to a single-file audit, so a sweep
@@ -354,6 +369,7 @@ export const ENGINE_REGISTRY: Record<SupportedProjectType, EngineDescriptor> = {
   php: {
     make: () => new PhpEngine(),
     configKey: 'infection',
+    supportsDiffScope: true,
     supportsLineScope: false,
     honorsConcurrency: true,
     dependencyDirs: DEPENDENCY_DIRS.php,

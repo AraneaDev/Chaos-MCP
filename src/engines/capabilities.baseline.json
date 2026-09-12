@@ -1,6 +1,7 @@
 {
   "typescript": {
     "diff-line-scope": "full",
+    "arbitrary-line-scope": "full",
     "concurrency": "full",
     "related-test-selection": "full",
     "per-test-coverage": "partial",
@@ -26,7 +27,8 @@
     "memory-watchdog": "full"
   },
   "python": {
-    "diff-line-scope": "none",
+    "diff-line-scope": "full",
+    "arbitrary-line-scope": "none",
     "concurrency": "none",
     "related-test-selection": "partial",
     "per-test-coverage": "none",
@@ -52,7 +54,8 @@
     "memory-watchdog": "full"
   },
   "rust": {
-    "diff-line-scope": "none",
+    "diff-line-scope": "full",
+    "arbitrary-line-scope": "none",
     "concurrency": "full",
     "related-test-selection": "none",
     "per-test-coverage": "none",
@@ -78,7 +81,8 @@
     "memory-watchdog": "full"
   },
   "php": {
-    "diff-line-scope": "none",
+    "diff-line-scope": "full",
+    "arbitrary-line-scope": "none",
     "concurrency": "full",
     "related-test-selection": "full",
     "per-test-coverage": "full",

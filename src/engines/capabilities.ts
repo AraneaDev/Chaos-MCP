@@ -22,6 +22,7 @@ export type Capability =
   | 'incremental-cache'
   | 'run-cache-verify'
   | 'diff-line-scope'
+  | 'arbitrary-line-scope'
   | 'concurrency'
   | 'inner-pool-cap'
   | 'per-mutant-timeout'
@@ -43,7 +44,10 @@ export type Capability =
   | 'memory-watchdog';
 
 const derived = (type: SupportedProjectType) => ({
-  'diff-line-scope': ENGINE_REGISTRY[type].supportsLineScope
+  'diff-line-scope': ENGINE_REGISTRY[type].supportsDiffScope
+    ? ('full' as CapabilityLevel)
+    : ('none' as CapabilityLevel),
+  'arbitrary-line-scope': ENGINE_REGISTRY[type].supportsLineScope
     ? ('full' as CapabilityLevel)
     : ('none' as CapabilityLevel),
   concurrency: ENGINE_REGISTRY[type].honorsConcurrency
