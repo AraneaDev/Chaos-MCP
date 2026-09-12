@@ -526,9 +526,13 @@ describe('triage_test_coverage resource governance', () => {
     });
 
     it('reports a baseline failure that fails TWICE as an error row with the original message and a retried note, and does not queue a third attempt', async () => {
-      mockDiscover.mockReturnValue({ files: ['b.ts'], discovered: 1, skipped: 0 });
+      // Two files, so the first pass is GENUINELY parallel (MINOR 10: a
+      // single-file discovery would run mapPool at width 1 regardless of the
+      // configured fileConcurrency, and never queue a retry at all).
+      mockDiscover.mockReturnValue({ files: ['a.ts', 'b.ts'], discovered: 2, skipped: 0 });
       let bCalls = 0;
-      mockAuditFile.mockImplementation(async () => {
+      mockAuditFile.mockImplementation(async (input) => {
+        if (input.targetFile !== 'b.ts') return mrOf({});
         bCalls++;
         // A different message on the retry proves the reported row keeps the
         // FIRST message rather than whatever the second attempt produced.
@@ -541,12 +545,12 @@ describe('triage_test_coverage resource governance', () => {
 
       const res = await handleTriageCall(req({ paths: ['src'], fileConcurrency: 2 }));
       const payload = JSON.parse(txt(res)) as {
-        ranking: unknown[];
+        ranking: { file: string }[];
         errors: { file: string; error: string }[];
       };
 
       expect(res.isError).toBeUndefined();
-      expect(payload.ranking).toEqual([]);
+      expect(payload.ranking.map((r) => r.file)).toEqual(['a.ts']);
       expect(payload.errors).toHaveLength(1);
       expect(payload.errors[0].file).toBe('b.ts');
       // The original message survives verbatim...
@@ -582,6 +586,37 @@ describe('triage_test_coverage resource governance', () => {
       expect(payload.errors[0].file).toBe('b.ts');
       // Reported exactly once, with no "retried" note, contention was never a
       // plausible cause for a sweep that was already serial.
+      expect(payload.errors[0].error).toBe(BASELINE_FAILURE_MESSAGE);
+      expect(bCalls).toBe(1);
+    });
+
+    it('does not retry a baseline failure in a one-file sweep even when fileConcurrency resolves to 2 (MINOR 10)', async () => {
+      // `mapPool` caps actual concurrency at `items.length` (utils/pool.ts),
+      // so a single discovered file runs the first pass SERIALLY no matter
+      // what `resources.budget.fileConcurrency` says. Before the fix,
+      // `firstPassWasParallel` read only `fileConcurrency > 1` and queued this
+      // for a pointless retry; contention was never possible with one file.
+      mockDiscover.mockReturnValue({ files: ['b.ts'], discovered: 1, skipped: 0 });
+      let bCalls = 0;
+      mockAuditFile.mockImplementation(async () => {
+        bCalls++;
+        throw new Error(BASELINE_FAILURE_MESSAGE);
+      });
+      const resources = makeResources({ fileConcurrency: 2 });
+      mockCreateResourceContext.mockReturnValue(
+        resources as unknown as ReturnType<typeof createResourceContext>,
+      );
+
+      const res = await handleTriageCall(req({ paths: ['src'], fileConcurrency: 2 }));
+      const payload = JSON.parse(txt(res)) as {
+        ranking: unknown[];
+        errors: { file: string; error: string }[];
+      };
+
+      expect(res.isError).toBeUndefined();
+      expect(payload.errors).toHaveLength(1);
+      expect(payload.errors[0].file).toBe('b.ts');
+      // Reported exactly once, with no "retried" note.
       expect(payload.errors[0].error).toBe(BASELINE_FAILURE_MESSAGE);
       expect(bCalls).toBe(1);
     });
@@ -644,9 +679,13 @@ describe('triage_test_coverage resource governance', () => {
         // exists for, and it must still contain the shared TS/PHP marker.
         expect(GENERIC_MESSAGE).toContain('the initial test run failed');
 
-        mockDiscover.mockReturnValue({ files: ['b.php'], discovered: 1, skipped: 0 });
+        // Two files, so the first pass is GENUINELY parallel (MINOR 10: a
+        // single-file discovery would run mapPool at width 1 regardless of the
+        // configured fileConcurrency, and never queue a retry at all).
+        mockDiscover.mockReturnValue({ files: ['a.php', 'b.php'], discovered: 2, skipped: 0 });
         let bCalls = 0;
-        mockAuditFile.mockImplementation(async () => {
+        mockAuditFile.mockImplementation(async (input) => {
+          if (input.targetFile !== 'b.php') return mrOf({});
           bCalls++;
           if (bCalls === 1) throw new Error(GENERIC_MESSAGE);
           return mrOf({});
@@ -661,7 +700,7 @@ describe('triage_test_coverage resource governance', () => {
 
         expect(res.isError).toBeUndefined();
         expect(payload.errors).toEqual([]);
-        expect(payload.ranking.map((r) => r.file)).toEqual(['b.php']);
+        expect(payload.ranking.map((r) => r.file).sort()).toEqual(['a.php', 'b.php']);
         expect(bCalls).toBe(2);
       });
 

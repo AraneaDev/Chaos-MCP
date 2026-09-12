@@ -427,7 +427,13 @@ export async function handleTriageCall(
       // plausible cause for either. A serial sweep still requeues its
       // memory-stopped files (unrelated to this check) but never a baseline
       // failure, so a genuinely broken suite is reported once, immediately.
-      const firstPassWasParallel = resources.budget.fileConcurrency > 1;
+      //
+      // It also reads the ACTUAL width `mapPool` ran the first pass at, not
+      // the resolved fileConcurrency alone: `mapPool` caps concurrency at
+      // `items.length` (utils/pool.ts), so a one-file sweep runs serially
+      // even when the budget says 2, and there is still no contention to
+      // blame a baseline failure on.
+      const firstPassWasParallel = Math.min(files.length, resources.budget.fileConcurrency) > 1;
       const retryTargets: RetryTarget[] = outcomes.flatMap((outcome, index): RetryTarget[] => {
         if ('exhausted' in outcome) {
           return [{ file: files[index], index, reason: 'exhausted' }];
