@@ -107,13 +107,25 @@ function runChild(
  * is killed by a signal, or times out.
  *
  * @param command - Full shell command string (e.g. "npm run build").
- * @param options - cwd and timeoutMs.
+ * @param options - cwd, timeoutMs, and an optional env.
  */
 export function runShellCommand(
   command: string,
-  options: { cwd?: string; timeoutMs?: number; signal?: AbortSignal; killTree?: boolean } = {},
+  options: {
+    cwd?: string;
+    timeoutMs?: number;
+    env?: NodeJS.ProcessEnv;
+    signal?: AbortSignal;
+    killTree?: boolean;
+  } = {},
 ): Promise<ExecResult> {
-  const { cwd = process.cwd(), timeoutMs = DEFAULT_TIMEOUT_MS, signal, killTree = false } = options;
+  const {
+    cwd = process.cwd(),
+    timeoutMs = DEFAULT_TIMEOUT_MS,
+    env,
+    signal,
+    killTree = false,
+  } = options;
 
   if (isVerbose()) {
     log(`exec-shell: ${command}  (cwd=${cwd}, timeout=${timeoutMs}ms)`);
@@ -126,6 +138,7 @@ export function runShellCommand(
         {
           cwd,
           timeout: timeoutMs,
+          env,
           signal,
           encoding: 'utf-8',
           maxBuffer: MAX_OUTPUT_BYTES,

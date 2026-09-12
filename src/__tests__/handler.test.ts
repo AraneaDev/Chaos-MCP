@@ -2901,6 +2901,62 @@ describe('handleToolCall', () => {
     expect(mockRun).toHaveBeenCalled();
   });
 
+  it('governs the auto Rust prebuild with the same inner-pool caps the mutation tool gets', async () => {
+    // Regression for the finding that the auto-prebuild (`cargo check`) ran
+    // ungoverned: it is a cold compile of every dependency (the sandbox
+    // excludes target/), cargo parallelises it across every core, and it runs
+    // INSIDE the governed window where the watchdog may then stop the run it
+    // just paid for. The prebuild must receive the same CARGO_BUILD_JOBS cap
+    // the mutation invocation gets, merged over (not replacing) the inherited
+    // environment.
+    const { RustEngine } = await import('../engines/rust.js');
+    const MockRustEngine = vi.mocked(RustEngine);
+
+    const mockRun = vi.fn().mockResolvedValue({
+      target: 'src/main.rs',
+      totalMutants: 0,
+      killed: 0,
+      survived: 0,
+      mutationScore: '100.00%',
+      vulnerabilities: [],
+    });
+
+    MockRustEngine.mockImplementation(function () {
+      return { run: mockRun } as unknown as typeof RustEngine.prototype;
+    });
+    mockDetectEnv.mockReturnValue({
+      projectType: 'rust',
+      testRunner: 'cargo test',
+      detectedRunner: 'cargo test',
+      packageManager: '',
+      workspaceRoot: '/workspace',
+    });
+
+    // Cargo.toml must exist for smart prebuild to trigger.
+    mockExistsSync.mockImplementation((p) => String(p).endsWith('Cargo.toml'));
+
+    mockRunShellCommand.mockResolvedValue({
+      stdout: '',
+      stderr: '',
+      exit: 0,
+      signal: null,
+    });
+
+    const request = makeRequest('audit_code_resilience', { filePath: 'src/main.rs' });
+    await handleToolCall(request);
+
+    expect(mockRunShellCommand).toHaveBeenCalledWith('cargo check', expect.any(Object));
+    const prebuildEnv = mockRunShellCommand.mock.calls[0][1]?.env;
+    // Today's code hands the prebuild no env at all (undefined): this is the
+    // assertion that fails against that behaviour.
+    expect(prebuildEnv).toBeDefined();
+    expect(prebuildEnv?.CARGO_BUILD_JOBS).toBeDefined();
+    // The merge must be OVER process.env, not a replacement of it: a bare
+    // innerEnv would strip PATH and cargo would fail to launch at all.
+    expect(prebuildEnv?.PATH).toBe(process.env.PATH);
+    expect(mockRun).toHaveBeenCalled();
+  });
+
   it('skips smart prebuild for Rust when Cargo.toml is absent', async () => {
     const { RustEngine } = await import('../engines/rust.js');
     const MockRustEngine = vi.mocked(RustEngine);
