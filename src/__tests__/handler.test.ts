@@ -2464,7 +2464,7 @@ describe('handleToolCall', () => {
     expect(runOptions.concurrency).toBeUndefined();
   });
 
-  it('never exceeds the engine\'s own default concurrency even when the budget allows more', async () => {
+  it("never exceeds the engine's own default concurrency even when the budget allows more", async () => {
     const mockRun = vi.fn().mockResolvedValue({
       target: 'src/main.rs',
       totalMutants: 3,
@@ -4268,15 +4268,20 @@ describe('mapCreateSandboxError', () => {
   });
 
   it('appends the resources line to the halted message when a resources context is passed (Gap 1)', () => {
-    const result = mapCreateSandboxError(new Error('ENOSPC: no space left'), 'src/math.ts', undefined, {
-      availableAtStartBytes: 4 * 1024 ** 3,
-      limitBytes: 8 * 1024 ** 3,
-      source: 'host',
-      fileConcurrency: 1,
-      perFileWorkers: 2,
-      overBudget: false,
-      watchdogTrips: 0,
-    });
+    const result = mapCreateSandboxError(
+      new Error('ENOSPC: no space left'),
+      'src/math.ts',
+      undefined,
+      {
+        availableAtStartBytes: 4 * 1024 ** 3,
+        limitBytes: 8 * 1024 ** 3,
+        source: 'host',
+        fileConcurrency: 1,
+        perFileWorkers: 2,
+        overBudget: false,
+        watchdogTrips: 0,
+      },
+    );
     expect(text(result)).toBe(
       'Chaos Engine Halted: Failed to provision sandbox isolation for src/math.ts: ' +
         'ENOSPC: no space left. Ensure the file exists and the workspace is accessible.\n' +
@@ -4287,16 +4292,23 @@ describe('mapCreateSandboxError', () => {
   it('appends the resources line to the cancel message too, when passed', () => {
     const controller = new AbortController();
     controller.abort();
-    const result = mapCreateSandboxError(new Error('whatever'), 'src/math.ts', { signal: controller.signal }, {
-      availableAtStartBytes: 4 * 1024 ** 3,
-      limitBytes: 8 * 1024 ** 3,
-      source: 'host',
-      fileConcurrency: 1,
-      perFileWorkers: 2,
-      overBudget: false,
-      watchdogTrips: 0,
-    });
-    expect(text(result)).toBe('Operation cancelled.\nResources: 1 files x 2 workers, 4.0 GB free (host)');
+    const result = mapCreateSandboxError(
+      new Error('whatever'),
+      'src/math.ts',
+      { signal: controller.signal },
+      {
+        availableAtStartBytes: 4 * 1024 ** 3,
+        limitBytes: 8 * 1024 ** 3,
+        source: 'host',
+        fileConcurrency: 1,
+        perFileWorkers: 2,
+        overBudget: false,
+        watchdogTrips: 0,
+      },
+    );
+    expect(text(result)).toBe(
+      'Operation cancelled.\nResources: 1 files x 2 workers, 4.0 GB free (host)',
+    );
   });
 });
 

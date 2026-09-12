@@ -1987,7 +1987,11 @@ describe('resources section', () => {
 
   it('parses the resources section', () => {
     const cfg = buildConfig({
-      resources: { watchdog: false, admissionFloorBytes: 2147483648, criticalFloorBytes: 1073741824 },
+      resources: {
+        watchdog: false,
+        admissionFloorBytes: 2147483648,
+        criticalFloorBytes: 1073741824,
+      },
     });
     expect(cfg.resources).toEqual({
       watchdog: false,

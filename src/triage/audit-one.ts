@@ -481,7 +481,9 @@ export async function auditTriageFile(
     // already resolved (`primaryTarget`), rather than walking the workspace
     // again for a path `handleTriageCall` just finished detecting.
     const target =
-      deps.primaryTarget?.file === file ? deps.primaryTarget.target : resolveAuditTargetIn(deps.rootCwd, file);
+      deps.primaryTarget?.file === file
+        ? deps.primaryTarget.target
+        : resolveAuditTargetIn(deps.rootCwd, file);
     if (!target) {
       return { error: { file, error: `Unsupported file type for ${file}` } };
     }

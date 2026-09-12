@@ -196,7 +196,9 @@ describe('engine worker and fixed costs', () => {
     for (const descriptor of Object.values(ENGINE_REGISTRY)) {
       expect(descriptor.fileFixedCostBytes).toBeGreaterThanOrEqual(0);
     }
-    const nonTypescript = Object.entries(ENGINE_REGISTRY).filter(([projectType]) => projectType !== 'typescript');
+    const nonTypescript = Object.entries(ENGINE_REGISTRY).filter(
+      ([projectType]) => projectType !== 'typescript',
+    );
     for (const [, descriptor] of nonTypescript) {
       expect(descriptor.fileFixedCostBytes).toBe(0);
     }

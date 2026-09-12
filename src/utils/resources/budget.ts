@@ -78,8 +78,14 @@ export interface Budget {
  * where a zero fixed cost stops memory from bounding file concurrency at all.
  */
 export function resolveBudget(input: BudgetInput): Budget {
-  const { snapshot, fileFixedCostBytes, workerCostBytes, cpuFileConcurrency, cpuPerFileWorkers, requested } =
-    input;
+  const {
+    snapshot,
+    fileFixedCostBytes,
+    workerCostBytes,
+    cpuFileConcurrency,
+    cpuPerFileWorkers,
+    requested,
+  } = input;
 
   let fileConcurrency = Math.max(1, cpuFileConcurrency);
   let perFileWorkers = Math.max(1, cpuPerFileWorkers);

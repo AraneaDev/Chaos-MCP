@@ -331,7 +331,8 @@ export async function handleTriageCall(
         cfg,
         args,
         diffBase,
-        perFileConcurrency: cpuPerFileWorkers === undefined ? undefined : resources.budget.perFileWorkers,
+        perFileConcurrency:
+          cpuPerFileWorkers === undefined ? undefined : resources.budget.perFileWorkers,
         survivorsPerFile,
         suppressionCache: new Map(),
         deadline,

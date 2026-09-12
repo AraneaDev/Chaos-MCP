@@ -115,16 +115,18 @@ const mrOf = (over: Record<string, unknown>) => ({
  * with `fileConcurrency: 1` in every test, call number and file position in
  * `files` line up exactly.
  */
-function makeResources(opts: {
-  fileConcurrency?: number;
-  perFileWorkers?: number;
-  /** 1-based `register()` calls whose controller is aborted for memory. */
-  exhaustOnRegisterCalls?: number[];
-  /** 1-based `admit()` calls that decline instead of admitting. */
-  declineOnAdmitCalls?: number[];
-  /** Overrides the default workers-only charge, to prove a fixed term reaches admission/registration. */
-  perFileCostBytes?: number;
-} = {}) {
+function makeResources(
+  opts: {
+    fileConcurrency?: number;
+    perFileWorkers?: number;
+    /** 1-based `register()` calls whose controller is aborted for memory. */
+    exhaustOnRegisterCalls?: number[];
+    /** 1-based `admit()` calls that decline instead of admitting. */
+    declineOnAdmitCalls?: number[];
+    /** Overrides the default workers-only charge, to prove a fixed term reaches admission/registration. */
+    perFileCostBytes?: number;
+  } = {},
+) {
   const fileConcurrency = opts.fileConcurrency ?? 1;
   const perFileWorkers = opts.perFileWorkers ?? 2;
   const exhaustOn = new Set(opts.exhaustOnRegisterCalls ?? []);
@@ -227,11 +229,9 @@ describe('triage_test_coverage resource governance', () => {
     );
     const reportProgress = vi.fn();
 
-    await handleTriageCall(
-      req({ paths: ['src'], fileConcurrency: 1 }),
-      undefined,
-      { reportProgress },
-    );
+    await handleTriageCall(req({ paths: ['src'], fileConcurrency: 1 }), undefined, {
+      reportProgress,
+    });
 
     // 3 files, never 4: b.ts's requeue must not report progress a second
     // time, or a 3-file sweep would print "audited 4/3".
@@ -391,9 +391,7 @@ describe('triage_test_coverage resource governance', () => {
     expect(payload.unaudited).toEqual(['c.ts']);
     expect(payload.errors).toEqual([]);
     expect(mockAuditFile).toHaveBeenCalledTimes(2);
-    expect(mockAuditFile).not.toHaveBeenCalledWith(
-      expect.objectContaining({ targetFile: 'c.ts' }),
-    );
+    expect(mockAuditFile).not.toHaveBeenCalledWith(expect.objectContaining({ targetFile: 'c.ts' }));
     // admit() is gated on a signal LINKED to the request's own signal (CRITICAL
     // 2 combines it with a deadline signal, so it is no longer the exact same
     // object), not yet aborted, but a cancel on the request must still reach
@@ -445,7 +443,9 @@ describe('triage_test_coverage resource governance', () => {
     // give up in, short enough to keep the test fast but long enough that the
     // deadline signal, not the immediate "no time left at all" shortcut, is
     // what resolves it.
-    const res = await handleTriageCall(req({ paths: ['src'], fileConcurrency: 1, totalTimeoutMs: 2100 }));
+    const res = await handleTriageCall(
+      req({ paths: ['src'], fileConcurrency: 1, totalTimeoutMs: 2100 }),
+    );
     const payload = JSON.parse(txt(res)) as {
       ranking: unknown[];
       errors: unknown[];
@@ -589,7 +589,8 @@ describe('triage_test_coverage resource governance', () => {
     it('does not retry an ordinary engine failure that is not a baseline failure', async () => {
       mockDiscover.mockReturnValue({ files: ['b.ts'], discovered: 1, skipped: 0 });
       let bCalls = 0;
-      const ORDINARY_MESSAGE = 'StrykerJS configuration or internal error (exit 1): malformed stryker.conf.js';
+      const ORDINARY_MESSAGE =
+        'StrykerJS configuration or internal error (exit 1): malformed stryker.conf.js';
       mockAuditFile.mockImplementation(async () => {
         bCalls++;
         throw new Error(ORDINARY_MESSAGE);

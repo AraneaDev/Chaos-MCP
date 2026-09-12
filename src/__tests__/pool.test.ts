@@ -100,16 +100,21 @@ describe('mapPool', () => {
       release = r;
     });
 
-    const run = mapPool([1, 2], 2, async (n) => {
-      order.push(`run:${n}`);
-      return n;
-    }, {
-      admit: async (n) => {
-        order.push(`admit:${n}`);
-        if (n === 2) await gate;
-        return 'admitted';
+    const run = mapPool(
+      [1, 2],
+      2,
+      async (n) => {
+        order.push(`run:${n}`);
+        return n;
       },
-    });
+      {
+        admit: async (n) => {
+          order.push(`admit:${n}`);
+          if (n === 2) await gate;
+          return 'admitted';
+        },
+      },
+    );
 
     await tick();
     expect(order).toEqual(['admit:1', 'run:1', 'admit:2']);
@@ -120,12 +125,17 @@ describe('mapPool', () => {
 
   it('skips an item whose admission is cancelled', async () => {
     const ran: number[] = [];
-    const out = await mapPool([1, 2, 3], 2, async (n) => {
-      ran.push(n);
-      return n;
-    }, {
-      admit: async (n) => (n === 2 ? 'cancelled' : 'admitted'),
-    });
+    const out = await mapPool(
+      [1, 2, 3],
+      2,
+      async (n) => {
+        ran.push(n);
+        return n;
+      },
+      {
+        admit: async (n) => (n === 2 ? 'cancelled' : 'admitted'),
+      },
+    );
     expect(ran.sort()).toEqual([1, 3]);
     expect(out[1]).toBeUndefined();
   });

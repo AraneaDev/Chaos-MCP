@@ -252,7 +252,12 @@ describe('audit_code_resilience resource governance', () => {
     // the request signal here reaches createSandbox's `opts.signal` the same
     // way fs.cp's real abort listener would observe it mid-copy.
     mockCreateSandbox.mockImplementationOnce(
-      (_targetFile: string, _workspaceRoot: string, _ignorePatterns: string[] | undefined, opts) => {
+      (
+        _targetFile: string,
+        _workspaceRoot: string,
+        _ignorePatterns: string[] | undefined,
+        opts,
+      ) => {
         return new Promise((_resolve, reject) => {
           opts?.signal?.addEventListener('abort', () => {
             reject(new Error('sandbox copy aborted'));

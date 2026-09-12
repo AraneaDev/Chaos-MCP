@@ -54,7 +54,9 @@ function readNumber(deps: ProbeDeps, path: string): number | undefined {
   return Number.isFinite(value) ? value : undefined;
 }
 
-function hostAvailable(deps: ProbeDeps): { availableBytes: number; limitBytes: number } | undefined {
+function hostAvailable(
+  deps: ProbeDeps,
+): { availableBytes: number; limitBytes: number } | undefined {
   if (deps.platform === 'linux') {
     const meminfo = deps.readFile('/proc/meminfo');
     const match = meminfo?.match(/^MemAvailable:\s+(\d+) kB$/m);
@@ -65,7 +67,8 @@ function hostAvailable(deps: ProbeDeps): { availableBytes: number; limitBytes: n
     const out = deps.runVmStat();
     if (!out) return undefined;
     const pageSize = Number(out.match(/page size of (\d+) bytes/)?.[1] ?? 4096);
-    const pages = (label: string) => Number(out.match(new RegExp(`^Pages ${label}:\\s+(\\d+)\\.`, 'm'))?.[1] ?? 0);
+    const pages = (label: string) =>
+      Number(out.match(new RegExp(`^Pages ${label}:\\s+(\\d+)\\.`, 'm'))?.[1] ?? 0);
     const free = pages('free') + pages('inactive') + pages('speculative');
     if (free === 0) return undefined;
     return { availableBytes: free * pageSize, limitBytes: deps.totalmem() };
@@ -73,7 +76,9 @@ function hostAvailable(deps: ProbeDeps): { availableBytes: number; limitBytes: n
   return { availableBytes: deps.freemem(), limitBytes: deps.totalmem() };
 }
 
-function cgroupAvailable(deps: ProbeDeps): { availableBytes: number; limitBytes: number } | undefined {
+function cgroupAvailable(
+  deps: ProbeDeps,
+): { availableBytes: number; limitBytes: number } | undefined {
   if (deps.platform !== 'linux') return undefined;
   for (const [maxPath, currentPath] of [
     [CGROUP_V2_MAX, CGROUP_V2_CURRENT],

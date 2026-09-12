@@ -18,9 +18,10 @@ describe('parity ratchet', () => {
     const drops: string[] = [];
     for (const [engine, caps] of Object.entries(baseline)) {
       for (const [capability, level] of Object.entries(caps)) {
-        const current = CAPABILITIES[engine as keyof typeof CAPABILITIES]?.[
-          capability as keyof (typeof CAPABILITIES)['typescript']
-        ];
+        const current =
+          CAPABILITIES[engine as keyof typeof CAPABILITIES]?.[
+            capability as keyof (typeof CAPABILITIES)['typescript']
+          ];
         if (current === undefined) {
           drops.push(`${engine}.${capability} was removed from the matrix`);
           continue;

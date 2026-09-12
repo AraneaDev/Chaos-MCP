@@ -8,7 +8,11 @@ import { cpus } from 'node:os';
 import { ENGINE_REGISTRY } from '../engines/registry.js';
 import { buildInnerEnv } from '../engines/inner-pool.js';
 import type { SupportedProjectType } from '../utils/project-detector.js';
-import { defaultProbeDeps, probeMemory, type MemorySnapshot } from '../utils/resources/memory-probe.js';
+import {
+  defaultProbeDeps,
+  probeMemory,
+  type MemorySnapshot,
+} from '../utils/resources/memory-probe.js';
 import { resolveBudget, resolveFloors, type Budget } from '../utils/resources/budget.js';
 import { createWatchdog, type Watchdog } from '../utils/resources/watchdog.js';
 
@@ -85,7 +89,8 @@ export function createResourceContext(input: ResourceContextInput): ResourceCont
   const ownDefault = ENGINE_REGISTRY[input.projectType].defaultWorkers?.(
     input.cpuCount ?? cpus().length,
   );
-  const jobs = ownDefault === undefined ? budget.perFileWorkers : Math.min(budget.perFileWorkers, ownDefault);
+  const jobs =
+    ownDefault === undefined ? budget.perFileWorkers : Math.min(budget.perFileWorkers, ownDefault);
 
   return {
     budget,
