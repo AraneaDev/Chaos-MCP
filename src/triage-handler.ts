@@ -304,7 +304,26 @@ export async function handleTriageCall(
       // audit uses for its own admission (Task 7); the watchdog's real-time
       // trip, not this estimate, is what actually protects the machine.
       const perFileCost = resources.workerCostBytes * resources.budget.perFileWorkers;
-      const admit = () => resources.watchdog.admit(perFileCost, ctx?.signal);
+      // `watchdog.admit` only ever resolves from a `tick()` (memory freed up)
+      // or a `stop()` (the sweep is over) — both of which happen downstream of
+      // the very `mapPool` call this feeds. Under sustained external memory
+      // pressure with no in-flight run left to release memory, neither ever
+      // fires, and a waiter with only `ctx?.signal` attached blocks forever:
+      // `mapPool`'s turnstile serializes admission across every worker, so one
+      // stuck waiter stalls the WHOLE pool, not just its own file (CRITICAL 2).
+      //
+      // Recomputed on every call rather than once, so the deadline is honoured
+      // freshly for each file (including the requeue pass below, which reuses
+      // this same closure): `deadline.remainingMs` shrinks as the sweep
+      // proceeds, and `AbortSignal.timeout` needs the CURRENT remaining
+      // duration, not the one computed when the sweep started.
+      const admit = () => {
+        const remainingMs = deadline.remainingMs(TRIAGE_CLEANUP_RESERVE_MS);
+        if (remainingMs <= 0) return Promise.resolve('cancelled' as const);
+        const deadlineSignal = AbortSignal.timeout(remainingMs);
+        const signal = ctx?.signal ? AbortSignal.any([ctx.signal, deadlineSignal]) : deadlineSignal;
+        return resources.watchdog.admit(perFileCost, signal);
+      };
 
       // Governance lowers `poolSize` down to `resources.budget.fileConcurrency`
       // (never raises it) and gates each file's start on free memory. A file

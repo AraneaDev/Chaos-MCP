@@ -67,6 +67,7 @@ import { discoverFiles } from '../triage/discover-files.js';
 import { detectEnvironment } from '../utils/project-detector.js';
 import { auditFile } from '../audit/audit-file.js';
 import { createResourceContext } from '../core/resource-context.js';
+import { createWatchdog } from '../utils/resources/watchdog.js';
 import { handleTriageCall } from '../triage-handler.js';
 
 const mockDiscover = vi.mocked(discoverFiles);
@@ -270,9 +271,71 @@ describe('triage_test_coverage resource governance', () => {
     expect(mockAuditFile).not.toHaveBeenCalledWith(
       expect.objectContaining({ targetFile: 'c.ts' }),
     );
-    // The request's own (non-aborted) signal is what admit() is gated on.
-    expect(resources.watchdog.admit).toHaveBeenCalledWith(expect.any(Number), controller.signal);
+    // admit() is gated on a signal LINKED to the request's own signal (CRITICAL
+    // 2 combines it with a deadline signal, so it is no longer the exact same
+    // object) — not yet aborted, but a cancel on the request must still reach
+    // it, which is what actually makes admission give up on a user cancel.
+    const [, gatedSignal] = resources.watchdog.admit.mock.calls[0] as [number, AbortSignal];
+    expect(gatedSignal.aborted).toBe(false);
+    controller.abort();
+    expect(gatedSignal.aborted).toBe(true);
   });
+
+  it('gives up on admission when the sweep deadline passes, instead of hanging forever (CRITICAL 2)', async () => {
+    mockDiscover.mockReturnValue({ files: ['a.ts'], discovered: 1, skipped: 0 });
+    installFakeEngine();
+    // A REAL watchdog (not the hand-rolled stub the other tests use): its
+    // `admit()` only ever resolves from a `tick()` that finds enough memory or
+    // a `stop()` — never called here, since nothing outside admission is
+    // waiting on it — or from the signal it was handed aborting. An
+    // admission floor no amount of "available" memory can clear reproduces
+    // the sustained-external-pressure scenario: every file blocks forever
+    // unless something OTHER than the watchdog gives up.
+    const realWatchdog = createWatchdog({
+      probe: () => ({ availableBytes: 0, limitBytes: 8 * GIB, source: 'host' }),
+      criticalBytes: 1,
+      admissionBytes: 8 * GIB,
+      intervalMs: 10_000_000,
+    });
+    const resources = {
+      budget: { fileConcurrency: 1, perFileWorkers: 1, overBudget: false, affordableWorkers: 1 },
+      watchdog: realWatchdog,
+      innerEnv: {},
+      workerCostBytes: 1,
+      report: () => ({
+        availableAtStartBytes: 0,
+        limitBytes: 8 * GIB,
+        source: 'host' as const,
+        fileConcurrency: 1,
+        perFileWorkers: 1,
+        overBudget: false,
+        watchdogTrips: 0,
+      }),
+      dispose: () => realWatchdog.stop(),
+    };
+    mockCreateResourceContext.mockReturnValue(
+      resources as unknown as ReturnType<typeof createResourceContext>,
+    );
+
+    // TRIAGE_CLEANUP_RESERVE_MS is 2000ms; this leaves ~100ms for admission to
+    // give up in, short enough to keep the test fast but long enough that the
+    // deadline signal, not the immediate "no time left at all" shortcut, is
+    // what resolves it.
+    const res = await handleTriageCall(req({ paths: ['src'], fileConcurrency: 1, totalTimeoutMs: 2100 }));
+    const payload = JSON.parse(txt(res)) as {
+      ranking: unknown[];
+      errors: unknown[];
+      unaudited?: string[];
+    };
+
+    expect(res.isError).toBeUndefined();
+    // Reported the same way the deadline path already reports a file it never
+    // started: the unaudited bucket, never a silent drop and never a hang.
+    expect(payload.unaudited).toEqual(['a.ts']);
+    expect(payload.ranking).toEqual([]);
+    expect(payload.errors).toEqual([]);
+    expect(mockAuditFile).not.toHaveBeenCalled();
+  }, 10_000);
 
   it('reports the resources block', async () => {
     mockDiscover.mockReturnValue({ files: ['a.ts'], discovered: 1, skipped: 0 });
