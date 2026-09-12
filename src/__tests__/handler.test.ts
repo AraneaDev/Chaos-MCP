@@ -244,11 +244,14 @@ describe('handleToolCall', () => {
 
     expect(response.isError).toBeUndefined();
     expect(mockRun).toHaveBeenCalledWith('src/x.ts', expect.objectContaining({}));
+    // `signal` is the governed controller's own signal (IMPORTANT 5: sandbox
+    // creation now happens inside the governed window), not `ctx?.signal`
+    // directly — no `ctx` was passed here, but a controller always exists.
     expect(mockCreateSandbox).toHaveBeenCalledWith(
       'src/x.ts',
       nestedRoot,
       undefined,
-      expect.objectContaining({ signal: undefined }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
   });
 
@@ -699,12 +702,14 @@ describe('handleToolCall', () => {
     });
     await handleToolCall(request);
 
-    // createSandbox should receive ignorePatterns as 3rd arg
+    // createSandbox should receive ignorePatterns as 3rd arg. `signal` is the
+    // governed controller's own signal (IMPORTANT 5), not `ctx?.signal`
+    // directly — no `ctx` was passed here, but a controller always exists.
     expect(mockCreateSandbox).toHaveBeenCalledWith(
       'src/math.ts',
       '/workspace',
       ['.test.ts', 'fixtures/'],
-      expect.objectContaining({ signal: undefined }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
     // ...and NOT to the engine. ignorePatterns governs what the sandbox copy
     // excludes; no engine has ever read it, so carrying it on RunOptions only
@@ -713,11 +718,13 @@ describe('handleToolCall', () => {
     expect(runOptions).not.toHaveProperty('ignorePatterns');
   });
 
-  // Regression (C1 follow-up): the AbortSignal from the MCP request context must
-  // be forwarded verbatim into the createSandbox options so a mid-copy MCP
-  // cancel propagates into the sandbox. We pin the exact signal object (===),
-  // not just objectContaining, so the test fails if a future refactor
-  // accidentally closes over the wrong controller.
+  // Regression (C1 follow-up, updated for IMPORTANT 5): a cancel on the MCP
+  // request context must still reach createSandbox. Since sandbox creation
+  // moved inside the governed window, it no longer receives `ctx.signal`
+  // directly — it receives the governed controller's OWN signal, linked to
+  // `ctx.signal` by a listener — so this asserts the LINK (aborting the
+  // request's signal aborts the one createSandbox got) rather than pinning
+  // object identity.
   it('forwards ctx.signal into createSandbox so an MCP client cancel propagates', async () => {
     const mockRun = vi.fn().mockResolvedValue({
       target: 'src/math.ts',
@@ -739,15 +746,22 @@ describe('handleToolCall', () => {
     });
 
     const controller = new AbortController();
+    // Cancel WHILE sandbox creation is in flight (a mid-copy cancel), the
+    // scenario this regression guards: the signal createSandbox was handed
+    // must reflect it immediately, proving the link `abortRequest` sets up is
+    // live at exactly the moment it needs to be, not merely present.
+    let sawAbortedDuringCopy = false;
+    mockCreateSandbox.mockImplementationOnce(
+      async (_file: string, _root: string, _ignore, opts?: { signal?: AbortSignal }) => {
+        controller.abort();
+        sawAbortedDuringCopy = opts?.signal?.aborted === true;
+        return { workDir: '/tmp/chaos-mcp-sandbox', targetFile: '', cleanup: vi.fn() };
+      },
+    );
     const request = makeRequest('audit_code_resilience', { filePath: 'src/math.ts' });
     await handleToolCall(request, undefined, { signal: controller.signal });
 
-    expect(mockCreateSandbox).toHaveBeenCalledWith(
-      'src/math.ts',
-      '/workspace',
-      undefined,
-      expect.objectContaining({ signal: controller.signal }),
-    );
+    expect(sawAbortedDuringCopy).toBe(true);
   });
 
   it('forwards config.sandbox.dependencies into createSandbox options', async () => {

@@ -68,12 +68,14 @@ import { detectEnvironment } from '../utils/project-detector.js';
 import { auditFile } from '../audit/audit-file.js';
 import { createResourceContext } from '../core/resource-context.js';
 import { createWatchdog } from '../utils/resources/watchdog.js';
+import { createSandbox } from '../utils/sandbox.js';
 import { handleTriageCall } from '../triage-handler.js';
 
 const mockDiscover = vi.mocked(discoverFiles);
 const mockDetectEnv = vi.mocked(detectEnvironment);
 const mockAuditFile = vi.mocked(auditFile);
 const mockCreateResourceContext = vi.mocked(createResourceContext);
+const mockCreateSandbox = vi.mocked(createSandbox);
 
 const GIB = 1024 ** 3;
 
@@ -207,6 +209,37 @@ describe('triage_test_coverage resource governance', () => {
     // a, b, c in the first pass, plus one more call for b.ts's requeue.
     expect(mockAuditFile).toHaveBeenCalledTimes(4);
     expect(resources.watchdog.register).toHaveBeenCalledTimes(4);
+  });
+
+  it('treats a memory stop DURING sandbox creation the same as one during the engine run (IMPORTANT 5)', async () => {
+    mockDiscover.mockReturnValue({ files: ['a.ts'], discovered: 1, skipped: 0 });
+    installFakeEngine();
+    // register() aborts the controller the moment it is called — now BEFORE
+    // createSandbox runs at all, proving sandbox creation is inside the
+    // governed window. createSandbox observes the aborted signal and rejects,
+    // the way fs.cp does mid-copy.
+    const resources = makeResources({ exhaustOnRegisterCalls: [1] });
+    mockCreateResourceContext.mockReturnValue(
+      resources as unknown as ReturnType<typeof createResourceContext>,
+    );
+    mockCreateSandbox.mockImplementationOnce(
+      async (_file: string, _root: string, _ignore, opts?: { signal?: AbortSignal }) => {
+        if (opts?.signal?.aborted) throw new Error('sandbox copy failed');
+        return { workDir: '/tmp/s', targetFile: '', cleanup: cleanupSpy };
+      },
+    );
+
+    const res = await handleTriageCall(req({ paths: ['src'], fileConcurrency: 1 }));
+    const payload = JSON.parse(txt(res)) as {
+      ranking: { file: string }[];
+      errors: { file: string; error: string }[];
+    };
+
+    expect(res.isError).toBeUndefined();
+    // The retry succeeds (register call 2, not in the exhaust set), same
+    // requeue-once contract as a trip during the engine run.
+    expect(payload.ranking.map((r) => r.file)).toEqual(['a.ts']);
+    expect(payload.errors).toEqual([]);
   });
 
   it('turns a second memory stop into an error row, never a silent drop', async () => {

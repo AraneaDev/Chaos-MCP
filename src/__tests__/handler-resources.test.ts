@@ -180,6 +180,31 @@ describe('audit_code_resilience resource governance', () => {
     expect(resources.dispose).toHaveBeenCalledTimes(1);
   });
 
+  it('reports a memory stop DURING sandbox creation as the resource-exhausted message (IMPORTANT 5)', async () => {
+    const resources = stubResources();
+    // The watchdog aborts the run's controller the moment it is registered —
+    // which now happens BEFORE createSandbox is even called, proving the
+    // sandbox-creation phase is inside the governed window.
+    resources.watchdog.register = vi.fn((controller: AbortController) => {
+      controller.abort(new ResourceExhaustedError(100 * 1024 ** 2, 512 * 1024 ** 2));
+      return { release: vi.fn() };
+    });
+    mockCreateResourceContext.mockReturnValue(
+      resources as unknown as ReturnType<typeof createResourceContext>,
+    );
+    // createSandbox observes the already-aborted signal and rejects, the way
+    // fs.cp does when its AbortSignal fires mid-copy.
+    mockCreateSandbox.mockRejectedValueOnce(new Error('sandbox copy failed'));
+
+    const response = await handleToolCall(makeRequest({ filePath: 'src/math.ts' }));
+
+    expect(response.isError).toBe(true);
+    const text = (response.content[0] as { text: string }).text;
+    expect(text).toMatch(/^Stopped to avoid exhausting memory/);
+    expect(text).not.toContain('Chaos Engine Halted');
+    expect(resources.dispose).toHaveBeenCalledTimes(1);
+  });
+
   it('still reports a user cancel as "Operation cancelled."', async () => {
     const resources = stubResources();
     mockCreateResourceContext.mockReturnValue(

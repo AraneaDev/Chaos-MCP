@@ -442,8 +442,14 @@ export async function auditTriageFile(
   // The per-file controller the watchdog aborts on a memory stop (Task 8).
   // Declared here, outside the try that creates it, so the catch below can
   // still read `.signal.reason` off it; stays `undefined` for a failure that
-  // happened before the engine was ever reached.
+  // happened before the engine was ever reached. `handle`/`abortRequest` live
+  // alongside it (rather than beside the sandbox try, as before IMPORTANT 5)
+  // because registration now happens BEFORE sandbox creation, and both must
+  // still be released/detached from the outermost `finally` regardless of
+  // which phase failed.
   let engineController: AbortController | undefined;
+  let handle: { release(): void } | undefined;
+  let abortRequest: (() => void) | undefined;
   try {
     // Skip not-yet-started files quickly when already cancelled. (Task 6)
     if (ctx?.signal?.aborted) {
@@ -478,18 +484,43 @@ export async function auditTriageFile(
     const prebuildCmd = resolvePrebuildCommand(undefined, env, projectType);
     const scope = await resolveDiffScope(targetFile, env, projectType, fileBudgetMs, deps);
 
-    // audit C1: await the async createSandbox; forward the abort signal so
-    // a mid-copy cancel from the MCP client propagates into the file copy.
-    // Wrapped in try/catch so a sandbox-failure row can be returned to the
-    // pooling caller (instead of being thrown to the outer catch and aborting
-    // other in-flight audits via tool-promise rejection).
+    // Linked to the request's own signal (a user cancel must still stop this
+    // file) but distinct from it, so a watchdog-triggered abort never flips
+    // `ctx.signal.aborted` and is never mistaken for a user cancel in the
+    // catch below. Mirrors the single-file audit's wiring in handler.ts
+    // (Task 7); `deps.watchdog` is undefined only for a caller exercising
+    // this function without a sweep behind it, in which case registration is
+    // a no-op and this file behaves exactly as it did before Task 8.
+    //
+    // Registered BEFORE sandbox creation (IMPORTANT 5) so a memory trip
+    // during the copy uses the same abort path as a cancel — registering only
+    // once the sandbox already existed left that whole phase outside the
+    // watchdog's reach.
+    engineController = new AbortController();
+    abortRequest = () => engineController?.abort(ctx?.signal?.reason);
+    ctx?.signal?.addEventListener('abort', abortRequest, { once: true });
+    handle = deps.watchdog?.register(engineController, deps.perFileCostBytes);
+
+    // audit C1: await the async createSandbox; forward the GOVERNED signal
+    // (linked to `ctx.signal` above) so a mid-copy cancel OR a watchdog trip
+    // both propagate into the file copy. Wrapped in try/catch so a
+    // sandbox-failure row can be returned to the pooling caller (instead of
+    // being thrown to the outer catch and aborting other in-flight audits via
+    // tool-promise rejection).
     let sandbox: Awaited<ReturnType<typeof createSandbox>>;
     try {
       sandbox = await createSandbox(targetFile, env.workspaceRoot, undefined, {
-        signal: ctx?.signal,
+        signal: engineController.signal,
         dependencies: deps.cfg.sandbox?.dependencies,
       });
     } catch (error: unknown) {
+      // A memory stop during the copy must become the SAME `exhausted`
+      // outcome a trip during the engine run does (checked before the cancel
+      // classification below, same ordering rule as the catch at the bottom
+      // of this function).
+      if (isResourceExhausted(engineController.signal.reason)) {
+        return { exhausted: file };
+      }
       // Cancellation (mid-CP reject or pre-aborted signal) must surface as a
       // row with `error: 'Operation cancelled.'` so the caller can distinguish
       // it from a real provisioning failure (which surfaces the file's `raw`
@@ -498,8 +529,6 @@ export async function auditTriageFile(
       return { error: { file, error: sandboxErrorText(error, file, ctx) } };
     }
     let result: MutationResult;
-    let handle: { release(): void } | undefined;
-    let abortRequest: (() => void) | undefined;
     try {
       // Re-read the budget now that provisioning is done (audit Med#9). The
       // first read happened before up to four git calls (each clamped to
@@ -517,17 +546,6 @@ export async function auditTriageFile(
       const engineBudgetMs = deps.deadline.remainingMs(deps.cleanupReserveMs);
       if (engineBudgetMs < MIN_ENGINE_BUDGET_MS) return { unaudited: file };
       const perFileArgs = buildPerFileArgs(engineBudgetMs, projectType, deps);
-      // Linked to the request's own signal (a user cancel must still stop this
-      // file) but distinct from it, so a watchdog-triggered abort never flips
-      // `ctx.signal.aborted` and is never mistaken for a user cancel in the
-      // catch below. Mirrors the single-file audit's wiring in handler.ts
-      // (Task 7); `deps.watchdog` is undefined only for a caller exercising
-      // this function without a sweep behind it, in which case registration is
-      // a no-op and this file behaves exactly as it did before Task 8.
-      engineController = new AbortController();
-      abortRequest = () => engineController?.abort(ctx?.signal?.reason);
-      ctx?.signal?.addEventListener('abort', abortRequest, { once: true });
-      handle = deps.watchdog?.register(engineController, deps.perFileCostBytes);
       result = await auditFile({
         targetFile,
         env,
@@ -543,8 +561,6 @@ export async function auditTriageFile(
       });
     } finally {
       sandbox.cleanup();
-      handle?.release();
-      if (abortRequest) ctx?.signal?.removeEventListener('abort', abortRequest);
     }
 
     // Apply equivalent-mutant suppression before building the row. The key is
@@ -614,6 +630,12 @@ export async function auditTriageFile(
     // prefix, so it uses that rule directly rather than `mapHandlerFailure`.
     return { error: { file, error: failureText(error, ctx) } };
   } finally {
+    // Release the watchdog slot and detach the request-signal listener here
+    // (IMPORTANT 5): registration now happens before sandbox creation, so
+    // this is the only point guaranteed to run regardless of which phase
+    // (sandbox, budget re-read, or engine run) returned or threw.
+    handle?.release();
+    if (abortRequest) ctx?.signal?.removeEventListener('abort', abortRequest);
     // Advance progress counter in finally so even errored files are counted. (Task 6)
     deps.onProgress();
   }
