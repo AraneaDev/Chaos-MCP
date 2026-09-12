@@ -7,6 +7,7 @@
  * cleanup) that make the order load-bearing. Every phase's substance lives in
  * a dedicated module under `src/audit/` (Finding 2).
  */
+import { cpus } from 'node:os';
 import { validateFilePath } from './utils/file-path.js';
 import type { CallToolRequest, CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import type { ToolContext } from './core/tool-context.js';
@@ -17,16 +18,22 @@ import { EnvironmentInfo } from './utils/project-detector.js';
 import { resolveAuditTarget } from './audit/target.js';
 import { createSandbox } from './utils/sandbox.js';
 import { isCancel } from './utils/cancel.js';
+import { isResourceExhausted } from './utils/resources/errors.js';
 import { ChaosConfig } from './utils/config-loader.js';
 import { log, isVerbose } from './utils/logger.js';
 import { ToolArgs, TOOL_ARG_VALIDATORS } from './core/tool-args-validation.js';
 import { mintRunIdSafely } from './audit/run-id.js';
 import { AuditDeadline } from './utils/deadline.js';
-import { resolveAuditTimeoutMs, resolveGatedPrebuild } from './audit/run-options.js';
+import {
+  resolveAuditTimeoutMs,
+  resolveConfiguredConcurrency,
+  resolveGatedPrebuild,
+} from './audit/run-options.js';
 import { auditFile, assertPythonHasTests, type AuditFileInput } from './audit/audit-file.js';
 import { computeScope } from './audit/scope.js';
 import { buildEnrichContext, formatAuditOutput } from './audit/audit-output.js';
 import { applyAndCountSuppressions } from './audit/suppression-io.js';
+import { createResourceContext } from './core/resource-context.js';
 
 /**
  * Validate the optional tool arguments that are not covered by the JSON schema's
@@ -104,6 +111,21 @@ async function runEngine(
     return { ok: true, results: await auditFile(input) };
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
+    // The watchdog's own abort reason must be checked BEFORE isCancel: the
+    // controller it aborts is not the request's ctx.signal, but the killed
+    // child process still misreads as an AbortError/ExecFailureError the same
+    // way a user cancel does, so isCancel would otherwise report a memory stop
+    // as "Operation cancelled." and hide what to lower.
+    const abortReason = input.signal?.reason;
+    if (isResourceExhausted(abortReason)) {
+      // `.message` only (not `String(error)`, which prefixes the class name):
+      // the caller needs "Stopped to avoid exhausting memory: ..." verbatim,
+      // not "ResourceExhaustedError: ...".
+      return {
+        ok: false,
+        result: toolError(abortReason instanceof Error ? abortReason.message : String(abortReason)),
+      };
+    }
     // A cancel firing DURING the engine run reaches here as a tool-specific
     // failure (each engine misreads the aborted child's null exit as a
     // baseline/report failure). Detect the abort via the shared
@@ -230,6 +252,35 @@ export async function handleToolCall(
       return mapCreateSandboxError(error, filePath, ctx);
     }
 
+    // Size this one-file run to the memory the machine actually has: never
+    // RAISES what the CPU-only math already chose (resolveBudget), only
+    // lowers it, and the watchdog stops the newest run rather than letting it
+    // exhaust memory. Created once sandbox provisioning has succeeded, and torn
+    // down in the same finally as the sandbox below so a long-lived server
+    // never accumulates timers or abort listeners across requests.
+    // The value that would reach the engine without governance (explicit tool
+    // argument, else engine config section, else global config default) is
+    // treated as the EXPLICIT setting Budget always honours; only the absence
+    // of one falls back to a cpu-derived baseline that memory may lower.
+    const configuredConcurrency = resolveConfiguredConcurrency(earlyArgs, cfg, projectType);
+    const resources = createResourceContext({
+      projectType,
+      cpuFileConcurrency: 1,
+      cpuPerFileWorkers: configuredConcurrency ?? cpus().length - 1,
+      requested:
+        configuredConcurrency === undefined ? undefined : { perFileWorkers: configuredConcurrency },
+      watchdogEnabled: cfg.resources?.watchdog,
+      admissionFloorBytes: cfg.resources?.admissionFloorBytes,
+      criticalFloorBytes: cfg.resources?.criticalFloorBytes,
+    });
+    // Linked to the request's own signal (a user cancel must still stop this
+    // run) but distinct from it, so a watchdog-triggered abort never flips
+    // `ctx.signal.aborted` and is never mistaken for a user cancel downstream.
+    const controller = new AbortController();
+    const abortRequest = () => controller.abort(ctx?.signal?.reason);
+    ctx?.signal?.addEventListener('abort', abortRequest, { once: true });
+    const handle = resources.watchdog.register(controller);
+
     try {
       if (deadline.expired()) {
         return toolError(
@@ -241,6 +292,13 @@ export async function handleToolCall(
       const args: ToolArgs = {
         ...(request.params.arguments ?? {}),
         timeoutMs: budget.remainingMs,
+        // Only for engines that honour `concurrency` (M1): cosmic-ray has no
+        // worker-count flag, so forcing a value there would misreport as an
+        // ignored option no caller ever asked for (ignoredOptionsFor).
+        ...(ENGINE_REGISTRY[projectType].honorsConcurrency
+          ? { concurrency: resources.budget.perFileWorkers }
+          : {}),
+        innerEnv: resources.innerEnv,
       };
 
       if (isVerbose()) logAuditContext(filePath, projectType, env, sandbox.workDir, cfg);
@@ -267,7 +325,7 @@ export async function handleToolCall(
           workDir: sandbox.workDir,
           prebuildCmd: prebuild.prebuildCmd,
           lineRanges: diffRanges,
-          signal: ctx?.signal,
+          signal: controller.signal,
         },
         ctx,
       );
@@ -328,10 +386,17 @@ export async function handleToolCall(
         suppression,
         mintedRunId,
         relFromRoot,
+        resources.report(),
       );
     } finally {
       // Always clean up the sandbox, even if the engine threw
       sandbox.cleanup();
+      // Same rule for the resource context: release this run's watchdog slot,
+      // stop its sampler, and drop the listener on the request's own signal, so
+      // a long-lived server does not accumulate either across requests.
+      handle.release();
+      resources.dispose();
+      ctx?.signal?.removeEventListener('abort', abortRequest);
     }
   } catch (error: unknown) {
     // The reachable path is `computeScope`, whose git calls run BEFORE the

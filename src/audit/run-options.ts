@@ -190,6 +190,28 @@ export function resolveAuditTimeoutMs(
 }
 
 /**
+ * The concurrency that would reach the engine WITHOUT resource governance: an
+ * explicit tool argument, else the matching engine config section, else the
+ * global config default. `undefined` when none of those supplied a valid value
+ * (an invalid one, e.g. a float or an out-of-range integer, is rejected here
+ * exactly as {@link buildRunOptions} rejects it, not silently accepted).
+ *
+ * `core/resource-context.ts` treats this value as the EXPLICIT setting that
+ * always wins over its own cpu/memory baseline (only flagging `overBudget`
+ * when it exceeds what memory allows), and falls back to a core-derived
+ * baseline, subject to lowering, only when this is `undefined`.
+ */
+export function resolveConfiguredConcurrency(
+  args: ToolArgs,
+  cfg: ChaosConfig,
+  projectType: ProjectType,
+): number | undefined {
+  const configKey = ENGINE_REGISTRY[projectType as SupportedProjectType]?.configKey;
+  const engCfg = configKey ? cfg[configKey] : undefined;
+  return resolveConcurrency(args.concurrency, sectionConcurrency(engCfg) ?? cfg.concurrency);
+}
+
+/**
  * Assemble {@link RunOptions} from tool-call arguments merged with config
  * defaults. Tool-call arguments always take precedence over config values.
  */

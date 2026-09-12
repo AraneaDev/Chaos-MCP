@@ -2361,17 +2361,16 @@ describe('handleToolCall', () => {
       workspaceRoot: '/workspace',
     });
 
-    // Config has float concurrency — should be rejected, falling to undefined
+    // Config has float concurrency, which is rejected; it falls back to the
+    // resource-governed cpu baseline (Task 7) rather than the invalid value.
     const config = { concurrency: 2.5 };
 
     const request = makeRequest('audit_code_resilience', { filePath: 'src/app.ts' });
     await handleToolCall(request, config);
 
-    // concurrency should be undefined (float rejected)
-    expect(mockRun).toHaveBeenCalledWith(
-      'src/app.ts',
-      expect.objectContaining({ concurrency: undefined }),
-    );
+    const usedConcurrency = mockRun.mock.calls[0]?.[1]?.concurrency;
+    expect(usedConcurrency).not.toBe(2.5);
+    expect(Number.isInteger(usedConcurrency)).toBe(true);
   });
 
   it('config concurrency above 64 is rejected and falls to undefined (H6 regression)', async () => {
@@ -2400,11 +2399,11 @@ describe('handleToolCall', () => {
     const request = makeRequest('audit_code_resilience', { filePath: 'src/app.ts' });
     await handleToolCall(request, config);
 
-    // concurrency should be undefined (cap exceeded)
-    expect(mockRun).toHaveBeenCalledWith(
-      'src/app.ts',
-      expect.objectContaining({ concurrency: undefined }),
-    );
+    // concurrency should fall back to the resource-governed cpu baseline
+    // (Task 7), not the out-of-range config value.
+    const usedConcurrency = mockRun.mock.calls[0]?.[1]?.concurrency;
+    expect(usedConcurrency).not.toBe(999);
+    expect(Number.isInteger(usedConcurrency)).toBe(true);
   });
 
   it('config perMutantTimeoutMs with zero is rejected and falls to undefined (H6 regression)', async () => {

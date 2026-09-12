@@ -10,6 +10,7 @@ import type { ToolArgs } from '../core/tool-args-validation.js';
 import type { SupportedProjectType } from '../engines/registry.js';
 import type { SuppressionCounts } from '../audit/suppression-io.js';
 import type { MutantKey } from '../core/verify.js';
+import type { ResourcesPayload } from '../core/resource-context.js';
 import { fingerprintOfLine } from '../utils/suppression.js';
 
 /**
@@ -71,6 +72,16 @@ const result = (over: Partial<MutationResult> = {}): MutationResult => ({
   ...over,
 });
 
+const NO_RESOURCES: ResourcesPayload = {
+  availableAtStartBytes: 0,
+  limitBytes: 0,
+  source: 'unavailable',
+  fileConcurrency: 1,
+  perFileWorkers: 1,
+  overBudget: false,
+  watchdogTrips: 0,
+};
+
 const NO_SUPPRESSION: SuppressionCounts = {
   applied: 0,
   drifted: 0,
@@ -105,6 +116,7 @@ function run(opts: {
     opts.suppression ?? NO_SUPPRESSION,
     undefined,
     RELATIVE_TARGET,
+    NO_RESOURCES,
   );
 }
 

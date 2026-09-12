@@ -13,6 +13,7 @@ import type { EnvironmentInfo } from '../utils/project-detector.js';
 import type { ChaosConfig } from '../utils/config-loader.js';
 import type { ToolArgs } from '../core/tool-args-validation.js';
 import { formatResultAsText, buildResultPayload, type EnrichContext } from '../core/format.js';
+import type { ResourcesPayload } from '../core/resource-context.js';
 import { suppressionDriftNotes } from '../core/score-semantics.js';
 import { evaluateGate } from '../core/gate.js';
 import { toStructuredContent } from '../core/tool-result.js';
@@ -89,6 +90,8 @@ interface StandardOutputOptions {
   /** Counts from the handler's suppression phase; verify mode has none. */
   suppression: SuppressionCounts;
   runId: string | undefined;
+  /** How this run sized itself to the machine's memory (Task 7). */
+  resources: ResourcesPayload;
 }
 
 /**
@@ -270,6 +273,7 @@ function formatStandardOutput({
   env,
   suppression,
   runId,
+  resources,
 }: StandardOutputOptions): CallToolResult {
   const enrichOpts = {
     enrich: enrichCtx,
@@ -311,6 +315,7 @@ function formatStandardOutput({
     unsuppressMisses: suppression.unsuppressMisses,
     workspace,
     gate,
+    resources,
   });
 
   const text =
@@ -331,6 +336,7 @@ function formatStandardOutput({
           // text output previously rendered no verdict at all, so a caller
           // reading only the text block saw a clean report for a failing gate.
           gate,
+          resources,
         })
       : JSON.stringify(payload);
 
@@ -355,8 +361,8 @@ function formatStandardOutput({
  *
  * The two modes share no state and produce different `structuredContent` shapes,
  * so each lives in its own function above; this is the single entry point the
- * handler calls, and its positional signature is unchanged. Verify-mode output
- * is UNCHANGED.
+ * handler calls. The trailing `resources` argument (Task 7) is forwarded to
+ * the standard path only. Verify-mode output is UNCHANGED.
  */
 export function formatAuditOutput(
   auditResults: MutationResult,
@@ -370,6 +376,7 @@ export function formatAuditOutput(
   suppression: SuppressionCounts,
   runId: string | undefined,
   relFromRoot: string,
+  resources: ResourcesPayload,
 ): CallToolResult {
   return baselineKeys
     ? formatVerifyOutput({
@@ -392,5 +399,6 @@ export function formatAuditOutput(
         env,
         suppression,
         runId,
+        resources,
       });
 }

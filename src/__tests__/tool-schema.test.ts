@@ -508,6 +508,7 @@ describe('audit outputSchema ↔ ResultPayload parity', () => {
     batchesCompleted: true,
     batchesPlanned: true,
     stoppedReason: true,
+    resources: true,
   };
 
   /**

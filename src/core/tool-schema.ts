@@ -443,6 +443,32 @@ export const TOOL_DEFINITION = {
       batchesPlanned: { type: 'integer' },
       stoppedReason: { type: 'string', enum: ['time_budget_exhausted'] },
       note: { type: 'string' },
+      // How this run sized itself to the machine's memory (Task 7). Always
+      // populated: `availableAtStartBytes`/`limitBytes`/`source` describe the
+      // probe, `fileConcurrency`/`perFileWorkers` the resolved budget,
+      // `overBudget` whether an explicit request exceeded it, and
+      // `watchdogTrips` how many times the sampler stopped the newest run.
+      resources: {
+        type: 'object',
+        properties: {
+          availableAtStartBytes: { type: 'integer' },
+          limitBytes: { type: 'integer' },
+          source: { type: 'string', enum: ['host', 'cgroup', 'unavailable'] },
+          fileConcurrency: { type: 'integer' },
+          perFileWorkers: { type: 'integer' },
+          overBudget: { type: 'boolean' },
+          watchdogTrips: { type: 'integer' },
+        },
+        required: [
+          'availableAtStartBytes',
+          'limitBytes',
+          'source',
+          'fileConcurrency',
+          'perFileWorkers',
+          'overBudget',
+          'watchdogTrips',
+        ],
+      },
       // ── Verify-mode fields (present only when a baseline/runId was supplied).
       // Verify responses carry a delta shape instead of the audit report; the
       // `oneOf` below discriminates the two required-sets so a strict MCP client
