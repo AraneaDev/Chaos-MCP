@@ -17,6 +17,8 @@ import { runShellCommand } from '../utils/exec.js';
 import { log, isVerbose } from '../utils/logger.js';
 import { findPythonTestSelection, workspaceHasPythonTests } from '../core/test-file.js';
 import { buildRunOptions, type ProjectType } from './run-options.js';
+import { ENGINE_REGISTRY } from '../engines/registry.js';
+import { materialiseDiffScope } from './diff-scope.js';
 
 /**
  * The single wording of the "this Python project has no test suite" refusal.
@@ -94,6 +96,32 @@ export async function auditFile(input: AuditFileInput): Promise<MutationResult> 
   // cannot fix this at the call site — `[] ?? x` is `[]` — so the emptiness has
   // to be decided here (audit High#1 / Fix 1).
   if (lineRanges && lineRanges.length > 0) runOptions.lineRanges = lineRanges;
+  // Turn the already-computed diff ranges into whatever the target engine
+  // needs INSIDE the sandbox to act on them. StrykerJS already consumed
+  // `lineRanges` directly above, so `materialiseDiffScope` has nothing to do
+  // for TypeScript; it exists for the engines that need a patch file or a
+  // throwaway git repository built inside `workDir` first (see
+  // `audit/diff-scope.ts`). A materialisation failure never blocks the run:
+  // it comes back as a `note` that joins the run's scope note below rather
+  // than a `diffScope`, so the engine falls back to mutating the whole file.
+  let diffScopeNote: string | undefined;
+  if (lineRanges && lineRanges.length > 0 && ENGINE_REGISTRY[projectType].supportsDiffScope) {
+    const diffBase = typeof args.diffBase === 'string' ? args.diffBase : undefined;
+    if (diffBase) {
+      const materialised = await materialiseDiffScope({
+        projectType,
+        relFile: targetFile,
+        workspaceRoot: env.workspaceRoot,
+        sandboxDir: workDir,
+        diffBase,
+        ranges: lineRanges,
+        signal: input.signal,
+        timeoutMs: runOptions.timeoutMs,
+      });
+      if (materialised.diffScope) runOptions.diffScope = materialised.diffScope;
+      diffScopeNote = materialised.note;
+    }
+  }
   // Python only: when neither the tool args nor the config scoped the suite,
   // default to the target file's own test module(s). cosmic-ray otherwise runs
   // the WHOLE suite per mutant — impractical on real projects, and a single
@@ -184,6 +212,13 @@ export async function auditFile(input: AuditFileInput): Promise<MutationResult> 
     }
 
     const result = await engine.run(targetFile, runOptions);
+    // Append rather than replace: the engine may already have set a scope note
+    // of its own (e.g. a batched run's "Completed N bounded mutation
+    // batches."), and overwriting it would silently drop that fact from the
+    // one field the text output prints.
+    if (diffScopeNote) {
+      result.scopeNote = result.scopeNote ? `${result.scopeNote} ${diffScopeNote}` : diffScopeNote;
+    }
     // Applied HERE, after the engine and once, rather than in each engine: the
     // silent-harness failure is a property of the numbers every engine already
     // reports, not of any one tool's output format, and four copies of the rule
