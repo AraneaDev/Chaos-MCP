@@ -93,6 +93,17 @@ vi.mock('../utils/logger.js', () => ({
   warn: vi.fn(),
 }));
 
+// Real by default (every other test in this file relies on the real budget
+// math), overridden per-test where a deterministic concurrency figure matters
+// (see the H6 concurrency-rejection tests below): the real probe/cpu count
+// otherwise makes the governed default vary by machine.
+vi.mock('../core/resource-context.js', async () => {
+  const actual = await vi.importActual<typeof import('../core/resource-context.js')>(
+    '../core/resource-context.js',
+  );
+  return { ...actual, createResourceContext: vi.fn(actual.createResourceContext) };
+});
+
 import { handleToolCall } from '../index.js';
 import { validateToolArgs } from '../handler.js';
 import { mapCreateSandboxError } from '../core/tool-result.js';
@@ -108,6 +119,7 @@ import { applyAndCountSuppressions } from '../audit/suppression-io.js';
 import { workspaceHasPythonTests } from '../core/test-file.js';
 import { computeScope } from '../audit/scope.js';
 import { AuditDeadline } from '../utils/deadline.js';
+import { createResourceContext } from '../core/resource-context.js';
 
 const MockTSEngine = vi.mocked(TypeScriptEngine);
 const MockRustEngine = vi.mocked(RustEngine);
@@ -120,6 +132,7 @@ const mockExistsSync = vi.mocked(existsSync);
 const mockComputeChangedRanges = vi.mocked(computeChangedRanges);
 const mockApplySuppressions = vi.mocked(applyAndCountSuppressions);
 const mockComputeScope = vi.mocked(computeScope);
+const mockCreateResourceContext = vi.mocked(createResourceContext);
 
 function makeRequest(name: string, args: Record<string, unknown>): CallToolRequest {
   return {
@@ -2340,7 +2353,40 @@ describe('handleToolCall', () => {
     );
   });
 
-  it('config concurrency with float is rejected and falls to undefined (H6 regression)', async () => {
+  /**
+   * A deterministic resource context for the two H6 tests below: real
+   * governance (real cpu count, real memory probe) would make the fallback
+   * concurrency vary by machine, which is exactly what those tests must not
+   * depend on. Fixed at an arbitrary value distinct from both rejected inputs
+   * (2.5, 999) so the assertion proves the STUB's number reached the engine,
+   * not a coincidence.
+   */
+  function stubGovernedResources(perFileWorkers: number): ReturnType<typeof createResourceContext> {
+    return {
+      budget: { fileConcurrency: 1, perFileWorkers, overBudget: false, affordableWorkers: perFileWorkers },
+      watchdog: {
+        register: vi.fn(() => ({ release: vi.fn() })),
+        admit: vi.fn().mockResolvedValue('admitted'),
+        tick: vi.fn(),
+        stop: vi.fn(),
+        trips: 0,
+      },
+      innerEnv: {},
+      workerCostBytes: 300 * 1024 ** 2,
+      report: () => ({
+        availableAtStartBytes: 4 * 1024 ** 3,
+        limitBytes: 8 * 1024 ** 3,
+        source: 'host',
+        fileConcurrency: 1,
+        perFileWorkers,
+        overBudget: false,
+        watchdogTrips: 0,
+      }),
+      dispose: vi.fn(),
+    };
+  }
+
+  it('config concurrency with float is rejected and falls to the governed baseline (H6 regression)', async () => {
     const mockRun = vi.fn().mockResolvedValue({
       target: 'src/app.ts',
       totalMutants: 0,
@@ -2360,20 +2406,19 @@ describe('handleToolCall', () => {
       packageManager: '',
       workspaceRoot: '/workspace',
     });
+    mockCreateResourceContext.mockReturnValueOnce(stubGovernedResources(4));
 
     // Config has float concurrency, which is rejected; it falls back to the
-    // resource-governed cpu baseline (Task 7) rather than the invalid value.
+    // resource-governed baseline (Task 7) rather than the invalid value.
     const config = { concurrency: 2.5 };
 
     const request = makeRequest('audit_code_resilience', { filePath: 'src/app.ts' });
     await handleToolCall(request, config);
 
-    const usedConcurrency = mockRun.mock.calls[0]?.[1]?.concurrency;
-    expect(usedConcurrency).not.toBe(2.5);
-    expect(Number.isInteger(usedConcurrency)).toBe(true);
+    expect(mockRun).toHaveBeenCalledWith('src/app.ts', expect.objectContaining({ concurrency: 4 }));
   });
 
-  it('config concurrency above 64 is rejected and falls to undefined (H6 regression)', async () => {
+  it('config concurrency above 64 is rejected and falls to the governed baseline (H6 regression)', async () => {
     const mockRun = vi.fn().mockResolvedValue({
       target: 'src/app.ts',
       totalMutants: 0,
@@ -2393,17 +2438,16 @@ describe('handleToolCall', () => {
       packageManager: '',
       workspaceRoot: '/workspace',
     });
+    mockCreateResourceContext.mockReturnValueOnce(stubGovernedResources(4));
 
     const config = { concurrency: 999 };
 
     const request = makeRequest('audit_code_resilience', { filePath: 'src/app.ts' });
     await handleToolCall(request, config);
 
-    // concurrency should fall back to the resource-governed cpu baseline
-    // (Task 7), not the out-of-range config value.
-    const usedConcurrency = mockRun.mock.calls[0]?.[1]?.concurrency;
-    expect(usedConcurrency).not.toBe(999);
-    expect(Number.isInteger(usedConcurrency)).toBe(true);
+    // concurrency should fall back to the resource-governed baseline (Task 7),
+    // not the out-of-range config value.
+    expect(mockRun).toHaveBeenCalledWith('src/app.ts', expect.objectContaining({ concurrency: 4 }));
   });
 
   it('config perMutantTimeoutMs with zero is rejected and falls to undefined (H6 regression)', async () => {
