@@ -444,10 +444,17 @@ function formatGateLine(gate: GateResult, displayedScore: string): string {
  * (Task 8) instead of growing its own copy that could drift from this one.
  */
 export function formatResourcesLine(resources: ResourcesPayload): string {
-  const gbFree = (resources.availableAtStartBytes / 1024 ** 3).toFixed(1);
+  // A probe that could not read the machine reports the `0` sentinel for
+  // `availableAtStartBytes` (memory-probe.ts), which is not the same claim as
+  // "confirmed zero bytes free". Rendering it as "0.0 GB free" reads as the
+  // latter.
+  const memory =
+    resources.source === 'unavailable'
+      ? 'free memory unknown'
+      : `${(resources.availableAtStartBytes / 1024 ** 3).toFixed(1)} GB free`;
   return (
     `Resources: ${resources.fileConcurrency} files x ${resources.perFileWorkers} workers, ` +
-    `${gbFree} GB free (${resources.source})`
+    `${memory} (${resources.source})`
   );
 }
 
