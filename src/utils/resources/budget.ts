@@ -14,9 +14,6 @@ import type { MemorySnapshot } from './memory-probe.js';
 const MIB = 1024 ** 2;
 const GIB = 1024 ** 3;
 
-/** Used when a caller has no engine-specific figure. */
-export const DEFAULT_WORKER_COST_BYTES = 300 * MIB;
-
 const ADMISSION_FRACTION = 0.15;
 const CRITICAL_FRACTION = 0.07;
 const ADMISSION_ABSOLUTE_BYTES = 1 * GIB;
@@ -38,7 +35,6 @@ export function resolveFloors(limitBytes: number): Floors {
 
 export interface BudgetInput {
   snapshot: MemorySnapshot;
-  cpuCount: number;
   workerCostBytes: number;
   /** What the existing CPU-only math chose. Never raised, only lowered. */
   cpuFileConcurrency: number;
@@ -52,8 +48,6 @@ export interface Budget {
   perFileWorkers: number;
   /** True when an explicit setting asked for more than the memory budget allows. */
   overBudget: boolean;
-  /** Total workers the budget allows, for the admission gate. */
-  affordableWorkers: number;
 }
 
 export function resolveBudget(input: BudgetInput): Budget {
@@ -79,14 +73,18 @@ export function resolveBudget(input: BudgetInput): Budget {
 
   const resolvedFiles = requested?.fileConcurrency ?? fileConcurrency;
   const resolvedWorkers = requested?.perFileWorkers ?? perFileWorkers;
+  // An 'unavailable' probe applied no memory constraint at all (the CPU-only
+  // figures were reproduced exactly, above), so there is no memory verdict to
+  // report: `overBudget` must stay false regardless of what was requested,
+  // never state a verdict the probe never actually produced (MINOR 9).
   const overBudget =
-    (requested?.fileConcurrency !== undefined && requested.fileConcurrency > fileConcurrency) ||
-    (requested?.perFileWorkers !== undefined && requested.perFileWorkers > perFileWorkers);
+    snapshot.source !== 'unavailable' &&
+    ((requested?.fileConcurrency !== undefined && requested.fileConcurrency > fileConcurrency) ||
+      (requested?.perFileWorkers !== undefined && requested.perFileWorkers > perFileWorkers));
 
   return {
     fileConcurrency: resolvedFiles,
     perFileWorkers: resolvedWorkers,
     overBudget,
-    affordableWorkers,
   };
 }

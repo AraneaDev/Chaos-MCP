@@ -77,7 +77,7 @@ function makeRequest(args: Record<string, unknown>): CallToolRequest {
 /** A resource context whose watchdog never trips, for the "normal" tests. */
 function stubResources() {
   return {
-    budget: { fileConcurrency: 1, perFileWorkers: 2, overBudget: false, affordableWorkers: 2 },
+    budget: { fileConcurrency: 1, perFileWorkers: 2, overBudget: false },
     watchdog: {
       register: vi.fn((_controller: AbortController) => ({ release: vi.fn() })),
       admit: vi.fn().mockResolvedValue('admitted'),

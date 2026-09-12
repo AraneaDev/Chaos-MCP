@@ -52,7 +52,6 @@ export function createResourceContext(input: ResourceContextInput): ResourceCont
 
   const budget = resolveBudget({
     snapshot,
-    cpuCount: input.cpuCount ?? cpus().length,
     workerCostBytes,
     cpuFileConcurrency: input.cpuFileConcurrency,
     cpuPerFileWorkers: input.cpuPerFileWorkers,

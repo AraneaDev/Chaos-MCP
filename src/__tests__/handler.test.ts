@@ -2382,7 +2382,7 @@ describe('handleToolCall', () => {
     source: 'host' | 'cgroup' | 'unavailable' = 'host',
   ): ReturnType<typeof createResourceContext> {
     return {
-      budget: { fileConcurrency: 1, perFileWorkers, overBudget: false, affordableWorkers: perFileWorkers },
+      budget: { fileConcurrency: 1, perFileWorkers, overBudget: false },
       watchdog: {
         register: vi.fn(() => ({ release: vi.fn() })),
         admit: vi.fn().mockResolvedValue('admitted'),

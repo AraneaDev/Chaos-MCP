@@ -145,7 +145,7 @@ function makeResources(opts: {
   };
 
   return {
-    budget: { fileConcurrency, perFileWorkers, overBudget: false, affordableWorkers: fileConcurrency * perFileWorkers },
+    budget: { fileConcurrency, perFileWorkers, overBudget: false },
     watchdog,
     innerEnv: {},
     workerCostBytes: 300 * 1024 ** 2,
@@ -352,7 +352,7 @@ describe('triage_test_coverage resource governance', () => {
       intervalMs: 10_000_000,
     });
     const resources = {
-      budget: { fileConcurrency: 1, perFileWorkers: 1, overBudget: false, affordableWorkers: 1 },
+      budget: { fileConcurrency: 1, perFileWorkers: 1, overBudget: false },
       watchdog: realWatchdog,
       innerEnv: {},
       workerCostBytes: 1,

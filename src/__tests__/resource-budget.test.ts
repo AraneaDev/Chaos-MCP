@@ -25,7 +25,6 @@ describe('resolveBudget', () => {
   it('lowers the cpu figure when memory is tight', () => {
     const budget = resolveBudget({
       snapshot: snapshot(2 * GIB),
-      cpuCount: 8,
       workerCostBytes: 300 * 1024 ** 2,
       cpuFileConcurrency: 4,
       cpuPerFileWorkers: 2,
@@ -38,7 +37,6 @@ describe('resolveBudget', () => {
   it('never raises the cpu figure when memory is plentiful', () => {
     const budget = resolveBudget({
       snapshot: snapshot(64 * GIB, 64 * GIB),
-      cpuCount: 32,
       workerCostBytes: 300 * 1024 ** 2,
       cpuFileConcurrency: 4,
       cpuPerFileWorkers: 2,
@@ -49,7 +47,6 @@ describe('resolveBudget', () => {
   it('keeps at least one file and one worker even under pressure', () => {
     const budget = resolveBudget({
       snapshot: snapshot(0),
-      cpuCount: 8,
       workerCostBytes: 1024 ** 3,
       cpuFileConcurrency: 4,
       cpuPerFileWorkers: 2,
@@ -60,7 +57,6 @@ describe('resolveBudget', () => {
   it('reproduces the cpu figures exactly when the probe is unavailable', () => {
     const budget = resolveBudget({
       snapshot: { availableBytes: 0, limitBytes: 0, source: 'unavailable' },
-      cpuCount: 8,
       workerCostBytes: 1024 ** 3,
       cpuFileConcurrency: 4,
       cpuPerFileWorkers: 2,
@@ -71,7 +67,6 @@ describe('resolveBudget', () => {
   it('honours an explicit request and flags it when it exceeds the budget', () => {
     const budget = resolveBudget({
       snapshot: snapshot(1 * GIB),
-      cpuCount: 8,
       workerCostBytes: 300 * 1024 ** 2,
       cpuFileConcurrency: 4,
       cpuPerFileWorkers: 2,
@@ -79,6 +74,22 @@ describe('resolveBudget', () => {
     });
     expect(budget.fileConcurrency).toBe(8);
     expect(budget.overBudget).toBe(true);
+  });
+
+  it('never flags overBudget when the probe is unavailable, even for a request the cpu baseline would exceed (MINOR 9)', () => {
+    // An 'unavailable' probe applies no memory constraint at all, so there is
+    // no memory verdict to report — overBudget stating true here would claim
+    // a verdict no probe actually produced.
+    const budget = resolveBudget({
+      snapshot: { availableBytes: 0, limitBytes: 0, source: 'unavailable' },
+      workerCostBytes: 300 * 1024 ** 2,
+      cpuFileConcurrency: 4,
+      cpuPerFileWorkers: 2,
+      requested: { fileConcurrency: 8, perFileWorkers: 6 },
+    });
+    expect(budget.fileConcurrency).toBe(8);
+    expect(budget.perFileWorkers).toBe(6);
+    expect(budget.overBudget).toBe(false);
   });
 });
 
