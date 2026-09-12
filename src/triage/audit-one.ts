@@ -19,7 +19,7 @@ import { createSandbox } from '../utils/sandbox.js';
 import type { EnvironmentInfo, SupportedProjectType } from '../utils/project-detector.js';
 import { ENGINE_REGISTRY, makeEngine, resolvePrebuildCommand } from '../engines/registry.js';
 import { computeChangedRanges } from '../utils/git-diff.js';
-import { resolveAuditTargetIn } from '../audit/target.js';
+import { resolveAuditTargetIn, type ResolvedTarget } from '../audit/target.js';
 import { loadSuppressions, verifySuppressions, type StoredEntry } from '../utils/suppression.js';
 import { applySuppressions } from '../audit/apply-suppressions.js';
 import { isWholeFileRun } from '../audit/suppression-io.js';
@@ -124,6 +124,15 @@ export interface TriageFileDeps {
    * gets today's un-charged registration.
    */
   perFileCostBytes?: number;
+  /**
+   * The workspace detection `handleTriageCall` already ran for one file
+   * (`files[0]`, to pick the `projectType` its cost estimate is built from)
+   * before this sweep started, so that file's own pass through the pool does
+   * not redo `resolveAuditTargetIn` for the same path. `undefined` for every
+   * other file, and for `files[0]` itself whenever detection found no
+   * supported project type there (nothing to reuse either way).
+   */
+  primaryTarget?: { file: string; target: ResolvedTarget };
 }
 
 /** The line scope for one file, plus the note explaining it on the row. */
@@ -468,7 +477,11 @@ export async function auditTriageFile(
     // this number does not know about. See the re-read below.
     const fileBudgetMs = deps.deadline.remainingMs(deps.cleanupReserveMs);
     if (fileBudgetMs <= 0) return { unaudited: file };
-    const target = resolveAuditTargetIn(deps.rootCwd, file);
+    // Reuse the sweep's own pre-sweep detection when this is the same file it
+    // already resolved (`primaryTarget`), rather than walking the workspace
+    // again for a path `handleTriageCall` just finished detecting.
+    const target =
+      deps.primaryTarget?.file === file ? deps.primaryTarget.target : resolveAuditTargetIn(deps.rootCwd, file);
     if (!target) {
       return { error: { file, error: `Unsupported file type for ${file}` } };
     }
