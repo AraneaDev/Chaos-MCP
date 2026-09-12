@@ -66,6 +66,25 @@ export function createWatchdog(options: WatchdogOptions): Watchdog {
   // `utils/pool.ts`'s admission-serialization comment for the gap this closes.
   let reservedBytes = 0;
 
+  // Admit whatever fits in `snapshot`, oldest waiter first. Shared by `tick()`
+  // (on its own sampled snapshot) and `release()` (on a fresh probe taken the
+  // moment a reservation is freed), so a waiter blocked purely on another
+  // run's reservation does not sit until the next sampler interval once that
+  // memory is actually back. An 'unavailable' snapshot disables this too,
+  // same as every other judgement in this file.
+  function drainWaiting(snapshot: MemorySnapshot): void {
+    if (snapshot.source === 'unavailable') return;
+    while (waiting.length > 0) {
+      const next = waiting[0];
+      if (snapshot.availableBytes - next.costBytes - reservedBytes < options.admissionBytes) {
+        break;
+      }
+      waiting.shift();
+      next.cleanup?.();
+      next.resolve('admitted');
+    }
+  }
+
   const timer = setInterval(() => api.tick(), options.intervalMs ?? DEFAULT_INTERVAL_MS);
   // Never hold the process open for a sampler.
   timer.unref?.();
@@ -86,6 +105,10 @@ export function createWatchdog(options: WatchdogOptions): Watchdog {
           if (costBytes && !released) {
             released = true;
             reservedBytes = Math.max(0, reservedBytes - costBytes);
+            // The reservation just freed may be exactly what a waiter needed;
+            // drain now rather than leaving it to wait out the rest of the
+            // sampler interval.
+            drainWaiting(options.probe());
           }
         },
       };
@@ -112,7 +135,7 @@ export function createWatchdog(options: WatchdogOptions): Watchdog {
         };
 
         entry.cleanup = () => {
-          if (signal && abortListener) {
+          if (signal) {
             signal.removeEventListener('abort', abortListener);
           }
         };
@@ -123,6 +146,10 @@ export function createWatchdog(options: WatchdogOptions): Watchdog {
     },
 
     tick() {
+      // One snapshot for both judgements below: the critical check and the
+      // admission drain must agree on the same reading within a tick, rather
+      // than risk the probe (a file read or a shell-out) returning two
+      // different figures for a single tick.
       const snapshot = options.probe();
       if (snapshot.source === 'unavailable') return;
 
@@ -135,16 +162,7 @@ export function createWatchdog(options: WatchdogOptions): Watchdog {
         }
       }
 
-      // Admit whatever now fits, oldest waiter first.
-      while (waiting.length > 0) {
-        const next = waiting[0];
-        if (options.probe().availableBytes - next.costBytes - reservedBytes < options.admissionBytes) {
-          break;
-        }
-        waiting.shift();
-        next.cleanup?.();
-        next.resolve('admitted');
-      }
+      drainWaiting(snapshot);
     },
 
     stop() {
