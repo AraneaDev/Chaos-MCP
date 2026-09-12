@@ -2,7 +2,8 @@ import { readFileSync } from 'node:fs';
 import type { EnvironmentInfo, SupportedProjectType } from '../utils/project-detector.js';
 import { estimateHeuristic } from './estimate-heuristic.js';
 import { invokeMutationTool, MutationToolStartupError } from '../utils/exec-classify.js';
-import { escapeCargoFileGlob } from '../engines/rust.js';
+import { escapeCargoFileGlob, inDiffArgs } from '../engines/rust.js';
+import type { DiffScope } from '../audit/diff-scope.js';
 import { ENGINE_REGISTRY } from '../engines/registry.js';
 import { runShell } from '../utils/exec.js';
 import { ExecFailureError } from '../utils/exec-error.js';
@@ -83,6 +84,14 @@ export interface EstimateOptions {
   signal?: AbortSignal;
   /** Internal native/container execution session for exact counts and timing. */
   executor?: ExecutionSession;
+  /**
+   * How this estimate is restricted to what a diff changed, in the same shape
+   * a run uses (`RunOptions.diffScope`). Only the `'patch'` kind is honoured
+   * here — cargo-mutants `--list --in-diff <path>` turns the count from
+   * approximate-over-the-whole-file into exact-over-the-changed-lines. The
+   * other kinds are ignored, matching how the run path treats them.
+   */
+  diffScope?: DiffScope;
 }
 
 const ESTIMATE_TIMEOUT_MS = 60_000;
@@ -193,7 +202,17 @@ async function computeCount(opts: EstimateOptions): Promise<EstimateResult> {
         // degrade to the heuristic: it returns a confident `mutants: 0`, and the
         // timing projected from it is silently zero-cost. See the docblock on
         // `escapeCargoFileGlob` for the verified cargo-mutants 27.1.0 incident.
-        ['mutants', '--list', '--file', escapeCargoFileGlob(opts.relFile)],
+        [
+          'mutants',
+          '--list',
+          '--file',
+          escapeCargoFileGlob(opts.relFile),
+          // Scoped the same way a run is (`inDiffArgs` reads only the
+          // 'patch' kind): cargo-mutants' --list also accepts --in-diff, so a
+          // scoped estimate becomes an EXACT count of the changed lines
+          // instead of an approximation over the whole file.
+          ...inDiffArgs(opts.diffScope),
+        ],
         {
           cwd: opts.workDir,
           timeoutMs: opts.timeoutMs ?? ESTIMATE_TIMEOUT_MS,

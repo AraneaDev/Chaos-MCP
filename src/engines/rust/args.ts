@@ -1,10 +1,11 @@
 /**
  * cargo-mutants argv construction.
  *
- * Pure by design: no filesystem access and no environment reads, so both the
- * job-count policy and the `--file` glob escaping are assertable as plain
- * values.
+ * Pure by design: no filesystem access and no environment reads, so the
+ * job-count policy, the `--file` glob escaping, and the `--in-diff` argument
+ * are all assertable as plain values.
  */
+import type { DiffScope } from '../../audit/diff-scope.js';
 
 /**
  * Resolve the cargo-mutants `-j` job count. Explicit `concurrency` (from a tool
@@ -59,4 +60,27 @@ export function resolveCargoJobs(concurrency: number | undefined, cpuCount: numb
  */
 export function escapeCargoFileGlob(filePath: string): string {
   return filePath.replace(/[*?[\]{}]/g, (c) => `[${c}]`);
+}
+
+/**
+ * Build the cargo-mutants `--in-diff <path>` argument pair from a run's diff
+ * scope, or nothing at all when there is none to apply.
+ *
+ * Reads ONLY the `'patch'` kind: a probe against a real cargo-mutants binary
+ * confirmed `--in-diff` takes a unified diff file with `b/`-prefixed paths,
+ * which is exactly what `git diff` writes and what the `'patch'` scope points
+ * at. The other two `DiffScope` kinds, `'git-base'` (a ref, for Infection) and
+ * `'ranges'` (explicit line ranges, for cosmic-ray), name inputs cargo-mutants
+ * has no flag for, so they are deliberately ignored here rather than
+ * mishandled — the run falls back to whole-file, the same as an absent
+ * `diffScope` today.
+ *
+ * `--in-diff` composes with `--file`: the glob still selects which file's
+ * mutants are enumerated, and `--in-diff` narrows that set to what the diff
+ * touched. Returning an empty array (rather than `undefined`) means the
+ * caller can always spread the result onto its argv, so an unscoped run stays
+ * byte-identical to before this existed.
+ */
+export function inDiffArgs(diffScope: DiffScope | undefined): string[] {
+  return diffScope?.kind === 'patch' ? ['--in-diff', diffScope.path] : [];
 }

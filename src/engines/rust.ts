@@ -22,10 +22,10 @@ import { BaseEngine, RunOptions, MutationResult } from './base.js';
 import { invokeMutationTool } from '../utils/exec-classify.js';
 import { log, isVerbose } from '../utils/logger.js';
 import { DEFAULT_TIMEOUT_MS } from '../utils/constants.js';
-import { resolveCargoJobs, escapeCargoFileGlob } from './rust/args.js';
+import { resolveCargoJobs, escapeCargoFileGlob, inDiffArgs } from './rust/args.js';
 import { parseCargoMutantsText } from './rust/report.js';
 
-export { resolveCargoJobs, escapeCargoFileGlob } from './rust/args.js';
+export { resolveCargoJobs, escapeCargoFileGlob, inDiffArgs } from './rust/args.js';
 export {
   type CargoSummary,
   type ScoredCounts,
@@ -78,7 +78,12 @@ export class RustEngine extends BaseEngine {
     // the check can never manufacture a score that was not there before.
     const targetExists = existsSync(resolve(cwd, filePath));
 
-    const args = ['mutants', '--file', fileGlob];
+    // `--in-diff` composes with `--file` rather than replacing it: the glob
+    // still selects the file, and `--in-diff` narrows enumeration to what the
+    // diff touched. Reads only `diffScope.kind === 'patch'` (see inDiffArgs);
+    // an absent or non-patch diffScope adds nothing, so an unscoped run stays
+    // byte-identical to before diff scoping existed.
+    const args = ['mutants', '--file', fileGlob, ...inDiffArgs(options?.diffScope)];
     if (jobs > 1) args.push('-j', String(jobs));
 
     if (isVerbose()) {
