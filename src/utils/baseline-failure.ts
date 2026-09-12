@@ -35,6 +35,24 @@
  *   - Python (`engines/python.ts`): "baseline failed (exit", raised only by
  *     the dedicated `baseline` step, the unmutated suite run once before
  *     `init`/`exec` ever see a mutant.
+ *
+ * Two PHP diagnoses match the markers above on message text alone but are
+ * NOT contention: `explainMissingJsonLog` embeds "the initial test run" /
+ * "without producing a JSON log" into both regardless of cause, and a retry
+ * can never fix either because the same input reproduces them every time.
+ * `DETERMINISTIC_STARTUP_MARKERS` excludes both by text unique to their own
+ * diagnosis, checked before a message is allowed to count as retryable:
+ *   - "the first byte written to STDERR": the exit-143 case
+ *     (`engines/php/failures.ts#diagnoseInfectionStartupFailure`, first
+ *     branch). Infection's InitialTestsRunner stops the test process the
+ *     moment it writes ANYTHING to STDERR, so PHPUnit exits 143 on every run
+ *     of the same suite, retry or not; nothing about contention changes that.
+ *   - "coverage-scope warning": the coverage-scope case (same function,
+ *     second branch). `--filter` narrows the generated initial-run config's
+ *     `<source>` to one file, which deterministically invalidates every
+ *     coverage-target attribute pointing elsewhere and trips PHPUnit's
+ *     injected `stopOnDefect`; the same `--filter` value produces the same
+ *     warning on every run, so a retry cannot help it either.
  */
 const BASELINE_FAILURE_MARKERS = [
   'initial test run',
@@ -44,9 +62,28 @@ const BASELINE_FAILURE_MARKERS = [
 ] as const;
 
 /**
+ * Text unique to a deterministic PHP/Infection startup failure that a retry
+ * can never fix, checked before {@link BASELINE_FAILURE_MARKERS} so neither
+ * diagnosis is ever reported as a retryable baseline/contention failure. See
+ * the module doc comment above for what each phrase is keyed on and why.
+ */
+const DETERMINISTIC_STARTUP_MARKERS = [
+  'the first byte written to STDERR',
+  'coverage-scope warning',
+] as const;
+
+/**
  * Whether an engine failure message describes a baseline/initial-run failure
  * rather than an ordinary scored run or an unrelated startup/config error.
+ *
+ * A message that also matches a {@link DETERMINISTIC_STARTUP_MARKERS} entry
+ * is never retryable, even when it also matches a baseline marker: those two
+ * PHP diagnoses are deterministic, so a retry only pays a wasted second run
+ * before surfacing the same failure.
  */
 export function isBaselineFailureMessage(message: string): boolean {
+  if (DETERMINISTIC_STARTUP_MARKERS.some((marker) => message.includes(marker))) {
+    return false;
+  }
   return BASELINE_FAILURE_MARKERS.some((marker) => message.includes(marker));
 }

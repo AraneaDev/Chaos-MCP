@@ -20,6 +20,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { CallToolRequest } from '@modelcontextprotocol/sdk/types.js';
 import { ResourceExhaustedError } from '../utils/resources/errors.js';
+import { isBaselineFailureMessage } from '../utils/baseline-failure.js';
+import { explainMissingJsonLog } from '../engines/php/failures.js';
+import { ExecFailureError } from '../utils/exec-error.js';
 
 vi.mock('../triage/discover-files.js', async () => {
   const actual = await vi.importActual<typeof import('../triage/discover-files.js')>(
@@ -609,6 +612,152 @@ describe('triage_test_coverage resource governance', () => {
       expect(payload.errors[0].file).toBe('b.ts');
       expect(payload.errors[0].error).toBe(ORDINARY_MESSAGE);
       expect(bCalls).toBe(1);
+    });
+
+    describe('PHP deterministic Infection startup failures (never retried)', () => {
+      /**
+       * Mirrors the `failure` helper in `php-engine.test.ts`: builds the exact
+       * `ExecFailureError` shape `explainMissingJsonLog` takes, so the message
+       * text asserted below comes from the real production function rather
+       * than a paraphrase that could drift from `engines/php/failures.ts`.
+       */
+      const execFailure = (opts: { stdout?: string; stderr?: string }) =>
+        new ExecFailureError(
+          {
+            stdout: opts.stdout ?? '',
+            stderr: opts.stderr ?? '',
+            exit: 1,
+            signal: null,
+            code: undefined,
+          },
+          'Infection failed',
+        );
+
+      it('still retries a generic PHP initial-test-run failure (no named startup cause)', async () => {
+        const GENERIC_MESSAGE = explainMissingJsonLog(
+          execFailure({ stderr: 'something unrecognised' }),
+          '/fake-project',
+          true,
+        ).message;
+        // Sanity check on the fixture itself: this is the branch the retry
+        // exists for, and it must still contain the shared TS/PHP marker.
+        expect(GENERIC_MESSAGE).toContain('the initial test run failed');
+
+        mockDiscover.mockReturnValue({ files: ['b.php'], discovered: 1, skipped: 0 });
+        let bCalls = 0;
+        mockAuditFile.mockImplementation(async () => {
+          bCalls++;
+          if (bCalls === 1) throw new Error(GENERIC_MESSAGE);
+          return mrOf({});
+        });
+        const resources = makeResources({ fileConcurrency: 2 });
+        mockCreateResourceContext.mockReturnValue(
+          resources as unknown as ReturnType<typeof createResourceContext>,
+        );
+
+        const res = await handleTriageCall(req({ paths: ['src'], fileConcurrency: 2 }));
+        const payload = JSON.parse(txt(res)) as { ranking: { file: string }[]; errors: unknown[] };
+
+        expect(res.isError).toBeUndefined();
+        expect(payload.errors).toEqual([]);
+        expect(payload.ranking.map((r) => r.file)).toEqual(['b.php']);
+        expect(bCalls).toBe(2);
+      });
+
+      it('does NOT retry the exit-143 diagnosis (Infection kills the run on the first STDERR byte)', async () => {
+        const EXIT_143_MESSAGE = explainMissingJsonLog(
+          execFailure({
+            stdout: 'Project tests must be in a passing state\nexit code of 143',
+          }),
+          '/fake-project',
+          true,
+        ).message;
+        // Sanity check on the fixture: this is the trap the naive fix misses,
+        // the diagnosis text itself contains the generic TS/PHP marker.
+        expect(EXIT_143_MESSAGE).toContain('the initial test run');
+
+        mockDiscover.mockReturnValue({ files: ['b.php'], discovered: 1, skipped: 0 });
+        let bCalls = 0;
+        mockAuditFile.mockImplementation(async () => {
+          bCalls++;
+          throw new Error(EXIT_143_MESSAGE);
+        });
+        const resources = makeResources({ fileConcurrency: 2 });
+        mockCreateResourceContext.mockReturnValue(
+          resources as unknown as ReturnType<typeof createResourceContext>,
+        );
+
+        const res = await handleTriageCall(req({ paths: ['src'], fileConcurrency: 2 }));
+        const payload = JSON.parse(txt(res)) as {
+          errors: { file: string; error: string }[];
+        };
+
+        expect(res.isError).toBeUndefined();
+        expect(payload.errors).toHaveLength(1);
+        expect(payload.errors[0].file).toBe('b.php');
+        // Reported once, verbatim, no "retried once" note.
+        expect(payload.errors[0].error).toBe(EXIT_143_MESSAGE);
+        expect(bCalls).toBe(1);
+      });
+
+      it('does NOT retry the coverage-scope diagnosis (--filter invalidates coverage targets deterministically)', async () => {
+        const COVERAGE_SCOPE_MESSAGE = explainMissingJsonLog(
+          execFailure({ stderr: 'is not a valid target for code coverage' }),
+          '/fake-project',
+          true,
+        ).message;
+
+        mockDiscover.mockReturnValue({ files: ['b.php'], discovered: 1, skipped: 0 });
+        let bCalls = 0;
+        mockAuditFile.mockImplementation(async () => {
+          bCalls++;
+          throw new Error(COVERAGE_SCOPE_MESSAGE);
+        });
+        const resources = makeResources({ fileConcurrency: 2 });
+        mockCreateResourceContext.mockReturnValue(
+          resources as unknown as ReturnType<typeof createResourceContext>,
+        );
+
+        const res = await handleTriageCall(req({ paths: ['src'], fileConcurrency: 2 }));
+        const payload = JSON.parse(txt(res)) as {
+          errors: { file: string; error: string }[];
+        };
+
+        expect(res.isError).toBeUndefined();
+        expect(payload.errors).toHaveLength(1);
+        expect(payload.errors[0].file).toBe('b.php');
+        expect(payload.errors[0].error).toBe(COVERAGE_SCOPE_MESSAGE);
+        expect(bCalls).toBe(1);
+      });
+    });
+  });
+
+  describe('isBaselineFailureMessage: other engines unaffected by the PHP exclusion', () => {
+    it('still matches the Rust baseline marker', () => {
+      expect(
+        isBaselineFailureMessage(
+          'cargo-mutants failed (exit null): the baseline test suite itself failed',
+        ),
+      ).toBe(true);
+    });
+
+    it('still matches the Python baseline marker', () => {
+      expect(isBaselineFailureMessage('baseline failed (exit 1): pytest exited non-zero')).toBe(
+        true,
+      );
+    });
+
+    it('still matches the TypeScript/Stryker baseline marker', () => {
+      expect(
+        isBaselineFailureMessage(
+          'StrykerJS configuration or internal error (exit 1): Error: Something went wrong in the initial test run',
+        ),
+      ).toBe(true);
+    });
+
+    it('does not match an ordinary scored run for any engine', () => {
+      expect(isBaselineFailureMessage('12/50 mutants killed, 3 survived')).toBe(false);
+      expect(isBaselineFailureMessage('cargo-mutants: 4 survivors, 40 caught')).toBe(false);
     });
   });
 });
