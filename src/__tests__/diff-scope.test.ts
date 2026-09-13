@@ -1,7 +1,13 @@
-import { describe, it, expect } from 'vitest';
-import { materialiseDiffScope } from '../audit/diff-scope.js';
+import { describe, it, expect, vi } from 'vitest';
+import { materialiseDiffScope, SandboxRestoreFailedError } from '../audit/diff-scope.js';
+import type { ResolvedDiffBase } from '../utils/git-diff.js';
+
+vi.mock('../utils/exec.js', () => ({ runShell: vi.fn() }));
+import { runShell } from '../utils/exec.js';
+const mockRunShell = vi.mocked(runShell);
 
 const ranges = [{ start: 10, end: 14 }];
+const headBase: ResolvedDiffBase = { ref: 'HEAD', staged: false };
 
 function harness(overrides: Partial<Record<string, unknown>> = {}) {
   const calls: { command: string; args: string[]; cwd: string }[] = [];
@@ -33,7 +39,7 @@ describe('materialiseDiffScope', () => {
       relFile: 'src/notify.rs',
       workspaceRoot: '/work',
       sandboxDir: '/sandbox',
-      diffBase: 'HEAD',
+      resolvedBase: headBase,
       ranges,
       run: h.run,
       fs: h.fs,
@@ -43,8 +49,33 @@ describe('materialiseDiffScope', () => {
     // image never needs git.
     const diff = h.calls.find((c) => c.args[0] === 'diff');
     expect(diff?.cwd).toBe('/work');
-    expect(diff?.args).toEqual(['diff', 'HEAD', '--', 'src/notify.rs']);
+    // `--relative`, not a bare `git diff HEAD -- <path>` (IMPORTANT: `git
+    // diff` header paths are repository-root relative, but this patch is
+    // matched against `relFile`, which is workspace-root relative. Without
+    // `--relative` the two disagree the moment the workspace is a
+    // sub-directory of the repository, and cargo-mutants matches nothing).
+    expect(diff?.args).toEqual(['diff', '--relative', 'HEAD', '--', 'src/notify.rs']);
     expect(h.calls.some((c) => c.args[0] === 'init')).toBe(false);
+  });
+
+  it('adds --cached for a staged resolved base', async () => {
+    const h = harness();
+    await materialiseDiffScope({
+      projectType: 'rust',
+      relFile: 'src/notify.rs',
+      workspaceRoot: '/work',
+      sandboxDir: '/sandbox',
+      // `staged: true` is the flag a resolved 'HEAD' ref alone cannot carry
+      // (CRITICAL: the 'staged' sentinel is not a valid `git diff` revision,
+      // and without `--cached` a plain `git diff HEAD` reads the WORKING TREE
+      // rather than the staged changes `computeChangedRanges` actually scored).
+      resolvedBase: { ref: 'HEAD', staged: true },
+      ranges,
+      run: h.run,
+      fs: h.fs,
+    });
+    const diff = h.calls.find((c) => c.args[0] === 'diff');
+    expect(diff?.args).toEqual(['diff', '--relative', '--cached', 'HEAD', '--', 'src/notify.rs']);
   });
 
   it('passes ranges straight through for python, with no git at all', async () => {
@@ -54,7 +85,7 @@ describe('materialiseDiffScope', () => {
       relFile: 'calc.py',
       workspaceRoot: '/work',
       sandboxDir: '/sandbox',
-      diffBase: 'HEAD',
+      resolvedBase: headBase,
       ranges,
       run: h.run,
       fs: h.fs,
@@ -70,12 +101,20 @@ describe('materialiseDiffScope', () => {
       relFile: 'src/Calculator.php',
       workspaceRoot: '/work',
       sandboxDir: '/sandbox',
-      diffBase: 'origin/main',
+      resolvedBase: { ref: 'origin/main', staged: false },
       ranges,
       run: h.run,
       fs: h.fs,
     });
     expect(result.diffScope).toEqual({ kind: 'git-base', ref: 'chaos-base' });
+
+    // `./` prefix (IMPORTANT): `<rev>:<path>` treats `path` as
+    // REPOSITORY-root relative unless it starts with `./`, in which case git
+    // resolves it against `cwd` (the workspace root) instead. Without it, a
+    // workspace below the repository root reads the wrong blob.
+    const show = h.calls.find((c) => c.args[0] === 'show');
+    expect(show?.cwd).toBe('/work');
+    expect(show?.args).toEqual(['show', 'origin/main:./src/Calculator.php']);
 
     const inSandbox = h.calls.filter((c) => c.cwd === '/sandbox').map((c) => c.args);
     expect(inSandbox[0]).toEqual(['init', '-q', '-b', 'chaos-base']);
@@ -100,7 +139,7 @@ describe('materialiseDiffScope', () => {
       relFile: 'src/Calculator.php',
       workspaceRoot: '/work',
       sandboxDir: '/sandbox',
-      diffBase: 'HEAD',
+      resolvedBase: headBase,
       ranges,
       run: h.run as never,
       fs: h.fs,
@@ -121,7 +160,7 @@ describe('materialiseDiffScope', () => {
       relFile: 'src/New.php',
       workspaceRoot: '/work',
       sandboxDir: '/sandbox',
-      diffBase: 'HEAD',
+      resolvedBase: headBase,
       ranges,
       run: h.run as never,
       fs: h.fs,
@@ -143,7 +182,7 @@ describe('materialiseDiffScope', () => {
       relFile: 'src/Calculator.php',
       workspaceRoot: '/work',
       sandboxDir: '/sandbox',
-      diffBase: 'HEAD',
+      resolvedBase: headBase,
       ranges,
       run: h.run as never,
       fs: h.fs,
@@ -155,6 +194,43 @@ describe('materialiseDiffScope', () => {
     expect(h.written['/sandbox/src/Calculator.php']).toBe('CURRENT CONTENT\n');
   });
 
+  it('fails the run rather than falling back when the restore write itself fails', async () => {
+    // MINOR finding: before this, a restore failure was caught by the same
+    // outer try/catch as everything else here and turned into a fallback
+    // note, so the caller fell back to a "whole file" run against a sandbox
+    // file that was STILL HOLDING BASE CONTENT (the restore that was
+    // supposed to undo that is exactly what failed). A silent wrong answer,
+    // not a degraded one. This must reject instead of resolving to a note.
+    let writeCount = 0;
+    const h = harness({
+      run: async (command: string, args: string[]) => {
+        if (args[0] === 'show') return { stdout: 'BASE CONTENT\n' };
+        return { stdout: '' };
+      },
+      fs: {
+        readFile: () => 'CURRENT CONTENT\n',
+        writeFile: (_p: string, _c: string) => {
+          writeCount += 1;
+          // First write is the BASE content before the commit; the second is
+          // the restore in the `finally`. Only the restore fails.
+          if (writeCount === 2) throw new Error('ENOSPC: no space left on device');
+        },
+      },
+    });
+    await expect(
+      materialiseDiffScope({
+        projectType: 'php',
+        relFile: 'src/Calculator.php',
+        workspaceRoot: '/work',
+        sandboxDir: '/sandbox',
+        resolvedBase: headBase,
+        ranges,
+        run: h.run as never,
+        fs: h.fs as never,
+      }),
+    ).rejects.toBeInstanceOf(SandboxRestoreFailedError);
+  });
+
   it('returns nothing at all for typescript, which needs no materialisation', async () => {
     const h = harness();
     const result = await materialiseDiffScope({
@@ -162,12 +238,72 @@ describe('materialiseDiffScope', () => {
       relFile: 'src/a.ts',
       workspaceRoot: '/work',
       sandboxDir: '/sandbox',
-      diffBase: 'HEAD',
+      resolvedBase: headBase,
       ranges,
       run: h.run,
       fs: h.fs,
     });
     expect(result).toEqual({});
     expect(h.calls).toEqual([]);
+  });
+});
+
+/**
+ * IMPORTANT finding: `DEFAULT_MATERIALISE_TIMEOUT_MS` was only a `??`
+ * fallback, and `audit/audit-file.ts` always passes a value (the run's own
+ * remaining budget, which can be minutes), so the fallback never actually
+ * applied and a hung `git show`/`git diff` could eat the whole audit window.
+ * These exercise the REAL `run` (no `run` override), the only path that goes
+ * through `defaultRun` and its clamp, with `runShell` mocked underneath.
+ */
+describe('materialiseDiffScope bounds its own git calls to a tight timeout', () => {
+  it('clamps a much larger caller-supplied timeoutMs down to the materialisation ceiling', async () => {
+    mockRunShell.mockResolvedValue({ stdout: 'diff --git a/x b/x\n@@ -1 +1 @@\n' } as never);
+
+    await materialiseDiffScope({
+      projectType: 'rust',
+      relFile: 'src/notify.rs',
+      workspaceRoot: '/work',
+      sandboxDir: '/sandbox',
+      resolvedBase: headBase,
+      ranges,
+      // The run's own remaining budget can be minutes; materialisation must
+      // not be handed anywhere near that much.
+      timeoutMs: 5 * 60_000,
+      fs: {
+        readFile: () => 'CURRENT CONTENT\n',
+        writeFile: () => undefined,
+      },
+    });
+
+    expect(mockRunShell).toHaveBeenCalledWith(
+      'git',
+      expect.any(Array),
+      expect.objectContaining({ timeoutMs: 15_000 }),
+    );
+  });
+
+  it('still honours a caller timeout that is already tighter than the ceiling', async () => {
+    mockRunShell.mockResolvedValue({ stdout: 'diff --git a/x b/x\n@@ -1 +1 @@\n' } as never);
+
+    await materialiseDiffScope({
+      projectType: 'rust',
+      relFile: 'src/notify.rs',
+      workspaceRoot: '/work',
+      sandboxDir: '/sandbox',
+      resolvedBase: headBase,
+      ranges,
+      timeoutMs: 2_000,
+      fs: {
+        readFile: () => 'CURRENT CONTENT\n',
+        writeFile: () => undefined,
+      },
+    });
+
+    expect(mockRunShell).toHaveBeenCalledWith(
+      'git',
+      expect.any(Array),
+      expect.objectContaining({ timeoutMs: 2_000 }),
+    );
   });
 });

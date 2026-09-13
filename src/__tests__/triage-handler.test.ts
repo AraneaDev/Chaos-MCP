@@ -506,12 +506,23 @@ describe('handleTriageCall', () => {
       // true for Python (engines/registry.ts), so the row must now come back
       // line-scoped, exactly like a TypeScript row, and the git call the old
       // assertion said never happened must now happen.
+      //
+      // CRITICAL fix-wave finding: this test's ORIGINAL assertions (scopeNote
+      // + lineRanges reaching `auditFile`) passed even while `buildPerFileArgs`
+      // never put anything on the per-file args that let `auditFile` actually
+      // materialise a diff scope for Python/Rust/PHP, so the row was labelled
+      // "scored on changed lines" while the engine silently mutated the whole
+      // file. The `resolvedDiffBase` assertion below is the one that actually
+      // fails against that broken wiring: `auditFile` gates materialisation on
+      // `resolvedDiffBase` (audit/audit-file.ts), and before the fix the sweep
+      // never passed it at all.
       mockListChangedFiles.mockResolvedValue({ kind: 'files', files: ['a.py'] });
       mockDiscoverChanged.mockReturnValue({ files: ['a.py'], discovered: 1, skipped: 0 });
       mockDetectEnv.mockReturnValue({ ...tsEnv, projectType: 'python' });
       mockComputeChangedRanges.mockResolvedValue({
         kind: 'ranges',
         ranges: [{ start: 4, end: 4 }],
+        resolvedBase: { ref: 'HEAD', staged: false },
       });
       mockAuditFile.mockResolvedValue(mrOf({}));
 
@@ -521,6 +532,10 @@ describe('handleTriageCall', () => {
       expect(payload.ranking[0].scopeNote).toBe('scored on changed lines');
       expect(mockComputeChangedRanges).toHaveBeenCalled();
       expect(mockAuditFile.mock.calls[0][0].lineRanges).toEqual([{ start: 4, end: 4 }]);
+      expect(mockAuditFile.mock.calls[0][0].resolvedDiffBase).toEqual({
+        ref: 'HEAD',
+        staged: false,
+      });
     });
 
     it('still marks a row when the language cannot diff-scope at all', async () => {
@@ -1337,6 +1352,7 @@ describe('handleTriageCall', () => {
     mockComputeChangedRanges.mockResolvedValue({
       kind: 'ranges',
       ranges: [{ start: 1, end: 10 }],
+      resolvedBase: { ref: 'abc123', staged: false },
     });
     mockAuditFile.mockResolvedValue(mrOf({ mutationScore: '60.00%', survived: 4 }));
     const res = await handleTriageCall(req({ diffBase: 'main' }));
@@ -1348,7 +1364,10 @@ describe('handleTriageCall', () => {
       expect.objectContaining({ timeoutMs: expect.any(Number) as number }),
     );
     expect(mockAuditFile).toHaveBeenCalledWith(
-      expect.objectContaining({ lineRanges: [{ start: 1, end: 10 }] }),
+      expect.objectContaining({
+        lineRanges: [{ start: 1, end: 10 }],
+        resolvedDiffBase: { ref: 'abc123', staged: false },
+      }),
     );
     const parsed = JSON.parse(txt(res));
     expect(parsed.ranking[0].scopeNote).toBe('scored on changed lines');

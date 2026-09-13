@@ -18,7 +18,7 @@ import { auditFile } from '../audit/audit-file.js';
 import { createSandbox } from '../utils/sandbox.js';
 import type { EnvironmentInfo, SupportedProjectType } from '../utils/project-detector.js';
 import { ENGINE_REGISTRY, makeEngine, resolvePrebuildCommand } from '../engines/registry.js';
-import { computeChangedRanges } from '../utils/git-diff.js';
+import { computeChangedRanges, type ResolvedDiffBase } from '../utils/git-diff.js';
 import { resolveAuditTargetIn, type ResolvedTarget } from '../audit/target.js';
 import { loadSuppressions, verifySuppressions, type StoredEntry } from '../utils/suppression.js';
 import { applySuppressions } from '../audit/apply-suppressions.js';
@@ -138,9 +138,26 @@ export interface TriageFileDeps {
   primaryTarget?: { file: string; target: ResolvedTarget };
 }
 
-/** The line scope for one file, plus the note explaining it on the row. */
-interface DiffScope {
+/**
+ * The line scope for one file, plus the note explaining it on the row.
+ *
+ * Named `TriageDiffScope` rather than `DiffScope` (MINOR finding): the latter
+ * name is already exported from `engines/base.ts` for a different, unrelated
+ * shape (the value `RunOptions.diffScope` carries into an engine), and having
+ * two same-named, differently-shaped interfaces in the same codebase is a
+ * trap for the next reader even though neither file imports the other's.
+ */
+interface TriageDiffScope {
   lineRanges?: { start: number; end: number }[];
+  /**
+   * The base `lineRanges` was resolved against, carried alongside it so
+   * `auditFile` can materialise from the SAME resolution rather than
+   * re-deriving it from a raw `diffBase` string (CRITICAL finding: doing the
+   * latter is what let a diverged branch's Rust patch and PHP base come from
+   * a different commit than the ranges they were supposed to match). Present
+   * exactly when `lineRanges` is.
+   */
+  resolvedBase?: ResolvedDiffBase;
   scopeNote?: string;
 }
 
@@ -158,7 +175,7 @@ async function resolveDiffScope(
   projectType: SupportedProjectType,
   fileBudgetMs: number,
   deps: TriageFileDeps,
-): Promise<DiffScope> {
+): Promise<TriageDiffScope> {
   if (deps.diffBase === undefined) return {};
   if (!ENGINE_REGISTRY[projectType].supportsDiffScope) {
     return { scopeNote: 'diff scoping unsupported for this language; whole file' };
@@ -169,7 +186,11 @@ async function resolveDiffScope(
   });
   switch (diff.kind) {
     case 'ranges':
-      return { lineRanges: diff.ranges, scopeNote: 'scored on changed lines' };
+      return {
+        lineRanges: diff.ranges,
+        resolvedBase: diff.resolvedBase,
+        scopeNote: 'scored on changed lines',
+      };
     case 'untracked':
       return { scopeNote: 'untracked; whole file' };
     case 'git-failed':
@@ -578,6 +599,7 @@ export async function auditTriageFile(
         workDir: sandbox.workDir,
         prebuildCmd,
         lineRanges: scope.lineRanges,
+        resolvedDiffBase: scope.resolvedBase,
         // Task 6 abort + Task 8 memory stop share this one signal.
         signal: engineController.signal,
       });

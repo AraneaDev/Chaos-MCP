@@ -62,11 +62,12 @@ describe('auditFile diff-scope wiring', () => {
       env: env(),
       projectType: 'rust',
       engine: { run } as never,
-      args: { diffBase: 'HEAD' },
+      args: {},
       config: {},
       workDir: '/tmp/sandbox',
       prebuildCmd: null,
       lineRanges: ranges,
+      resolvedDiffBase: { ref: 'HEAD', staged: false },
     });
 
     expect(mockMaterialise).toHaveBeenCalledWith(
@@ -75,7 +76,7 @@ describe('auditFile diff-scope wiring', () => {
         relFile: 'src/x.rs',
         workspaceRoot: '/ws',
         sandboxDir: '/tmp/sandbox',
-        diffBase: 'HEAD',
+        resolvedBase: { ref: 'HEAD', staged: false },
         ranges,
       }),
     );
@@ -94,11 +95,12 @@ describe('auditFile diff-scope wiring', () => {
       env: env(),
       projectType: 'rust',
       engine: { run } as never,
-      args: { diffBase: 'HEAD' },
+      args: {},
       config: {},
       workDir: '/tmp/sandbox',
       prebuildCmd: null,
       lineRanges: ranges,
+      resolvedDiffBase: { ref: 'HEAD', staged: false },
     });
 
     const options = run.mock.calls[0][1];
@@ -118,13 +120,38 @@ describe('auditFile diff-scope wiring', () => {
       config: {},
       workDir: '/tmp/sandbox',
       prebuildCmd: null,
-      // No lineRanges: no diffBase was given upstream, so there is nothing to
-      // scope. This is today's path, and it must stay byte-identical.
+      // No lineRanges and no resolvedDiffBase: no diffBase was given upstream,
+      // so there is nothing to scope. This is today's path, and it must stay
+      // byte-identical.
     });
 
     expect(mockMaterialise).not.toHaveBeenCalled();
     const options = run.mock.calls[0][1];
     expect(options.diffScope).toBeUndefined();
     expect(out.scopeNote).toBeUndefined();
+  });
+
+  it('does not materialise when lineRanges exist but resolvedDiffBase is missing', async () => {
+    // Guards the CRITICAL fix directly: gating on `resolvedDiffBase` rather
+    // than `args.diffBase` must not silently start materialising for every
+    // caller that sets `lineRanges` some other way (e.g. `baseline`/verify
+    // mode, which also populates `lineRanges` but must stay whole-file-styled
+    // scoping, not diff scoping).
+    const run = vi.fn().mockResolvedValue(result());
+
+    await auditFile({
+      targetFile: 'src/x.rs',
+      env: env(),
+      projectType: 'rust',
+      engine: { run } as never,
+      args: {},
+      config: {},
+      workDir: '/tmp/sandbox',
+      prebuildCmd: null,
+      lineRanges: ranges,
+      // resolvedDiffBase intentionally omitted.
+    });
+
+    expect(mockMaterialise).not.toHaveBeenCalled();
   });
 });

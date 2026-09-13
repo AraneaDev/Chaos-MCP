@@ -270,6 +270,9 @@ describe('computeScope — diff path against a real repository', () => {
   const setupGit = (args: string[]) =>
     execFileSync('git', args, { cwd: repo, encoding: 'utf-8', stdio: 'pipe' });
 
+  /** The commit `diffBase: 'HEAD'` resolves to in this single-commit fixture. */
+  const headSha = () => setupGit(['rev-parse', 'HEAD']).trim();
+
   const scopeIn = (
     args: ToolArgs,
     projectType: 'typescript' | 'python' = 'typescript',
@@ -364,6 +367,12 @@ describe('computeScope — diff path against a real repository', () => {
     expect(scope).toStrictEqual({
       kind: 'scope',
       diffRanges: [{ start: 3, end: 3 }],
+      // `diffBase: 'HEAD'` against a single-commit repo resolves
+      // `merge-base HEAD HEAD` to HEAD's own sha, a concrete commit, never
+      // the string `'HEAD'` itself, so a materialiser given this value never
+      // has to resolve anything a second time (CRITICAL: two resolutions of
+      // the same base disagreeing on a diverged branch).
+      resolvedBase: { ref: headSha(), staged: false },
       scopeNote: undefined,
       baselineKeys: undefined,
     });
@@ -388,6 +397,7 @@ describe('computeScope — diff path against a real repository', () => {
     expect(scope).toStrictEqual({
       kind: 'scope',
       diffRanges: [{ start: 3, end: 3 }],
+      resolvedBase: { ref: headSha(), staged: false },
       scopeNote: undefined,
       baselineKeys: undefined,
     });

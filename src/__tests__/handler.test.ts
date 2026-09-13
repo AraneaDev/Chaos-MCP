@@ -3725,6 +3725,7 @@ describe('handleToolCall', () => {
       mockComputeChangedRanges.mockResolvedValue({
         kind: 'ranges',
         ranges: [{ start: 3, end: 5 }],
+        resolvedBase: { ref: 'HEAD', staged: false },
       });
 
       await handleToolCall(
@@ -3790,6 +3791,10 @@ describe('handleToolCall', () => {
         mockComputeChangedRanges.mockResolvedValue({
           kind: 'ranges',
           ranges: [{ start: 3, end: 3 }],
+          // Real materialisation follows (see the test comment above): this
+          // must be a ref the REAL `git diff`/`git show` against `repo` can
+          // actually resolve, so `HEAD` here is not incidental.
+          resolvedBase: { ref: 'HEAD', staged: false },
         });
 
         const res = await handleToolCall(
@@ -4513,6 +4518,7 @@ describe('handleToolCall defensive paths', () => {
     mockComputeChangedRanges.mockResolvedValue({
       kind: 'ranges',
       ranges: [{ start: 1, end: 5 }],
+      resolvedBase: { ref: 'HEAD', staged: false },
     });
 
     const response = await handleToolCall(

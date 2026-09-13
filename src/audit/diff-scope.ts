@@ -19,12 +19,17 @@
  *
  * Every failure path here is caught and turned into a `note`: a scoping
  * failure means "mutate the whole file and say why", never a failed audit.
- * This function must never throw and never reject.
+ * This function must never throw and never reject, with ONE exception: a
+ * failure to restore the sandbox file's CURRENT content after the PHP
+ * base-commit sequence propagates instead of degrading, because degrading it
+ * would let the caller fall back to a "whole file" run that mutates the BASE
+ * content left behind by the failed restore; see {@link SandboxRestoreFailedError}.
  */
 import { readFileSync, writeFileSync } from 'node:fs';
 import { runShell } from '../utils/exec.js';
 import type { SupportedProjectType } from '../engines/registry.js';
 import type { DiffScope } from '../engines/base.js';
+import type { ResolvedDiffBase } from '../utils/git-diff.js';
 
 /**
  * Re-exported from where it is defined ({@link DiffScope} in engines/base.ts,
@@ -39,7 +44,16 @@ export interface MaterialiseInput {
   relFile: string;
   workspaceRoot: string;
   sandboxDir: string;
-  diffBase: string;
+  /**
+   * The SAME base {@link computeChangedRanges} (utils/git-diff.ts) resolved
+   * `ranges` from, resolved exactly once by the caller and handed here rather
+   * than re-resolved. Passing the raw `diffBase` string through a second
+   * resolution is exactly the bug this field exists to close: a diverged
+   * branch's `diffBase: "main"` resolves to a different commit each time
+   * `merge-base` is asked from a different HEAD, and the `'staged'` sentinel
+   * is not a valid revision for `git diff`/`git show` at all.
+   */
+  resolvedBase: ResolvedDiffBase;
   ranges: { start: number; end: number }[];
   signal?: AbortSignal;
   timeoutMs?: number;
@@ -73,10 +87,21 @@ function defaultRun(
   args: string[],
   opts: { cwd: string; signal?: AbortSignal; timeoutMs?: number },
 ): Promise<{ stdout: string }> {
+  // `Math.min`, not `??`: the caller (audit/audit-file.ts) always passes a
+  // value, the run's own remaining budget, which can be minutes, so the
+  // `??` fallback this used to be never actually applied, and a hung `git
+  // show`/`git diff` could eat the whole audit window. Materialisation is a
+  // handful of read-only git calls; it gets its own tight ceiling regardless
+  // of how much of the run's budget is left, the same clamp pattern
+  // `gitRunner` (utils/git-diff.ts) already applies for the same reason.
+  const timeoutMs =
+    opts.timeoutMs === undefined
+      ? DEFAULT_MATERIALISE_TIMEOUT_MS
+      : Math.max(1, Math.min(DEFAULT_MATERIALISE_TIMEOUT_MS, opts.timeoutMs));
   return runShell(command, args, {
     cwd: opts.cwd,
     signal: opts.signal,
-    timeoutMs: opts.timeoutMs ?? DEFAULT_MATERIALISE_TIMEOUT_MS,
+    timeoutMs,
     killTree: true,
   });
 }
@@ -91,6 +116,40 @@ function fallbackNote(reason: string): string {
   return `Diff scoping unavailable (${reason}); mutating the whole file instead.`;
 }
 
+/**
+ * Thrown ONLY when the PHP sequence's `finally` cannot restore the sandbox
+ * file's CURRENT content after writing the BASE content over it. Every other
+ * failure in this module degrades to a `note` and a whole-file fallback,
+ * which is safe because the sandbox file still holds the right content. This
+ * one case is not safe: the fallback would run against the BASE content the
+ * failed restore left behind and silently score the wrong version of the
+ * file. So this propagates past the usual catch-and-degrade handling in both
+ * {@link materialisePhpGitBase} and {@link materialiseDiffScope}, and out to
+ * the caller, which must fail the run rather than fall back.
+ */
+export class SandboxRestoreFailedError extends Error {}
+
+/**
+ * Build the `git diff` argv that reproduces the SAME ranges
+ * `computeChangedRanges` (utils/git-diff.ts) already computed from
+ * `resolvedBase`, plus `--relative` so the patch's `a/`/`b/` header paths are
+ * relative to `cwd` (the workspace root) rather than the repository root.
+ *
+ * `git diff`'s header paths are repository-root relative by construction;
+ * `computeChangedRanges` never needs to care, since it only parses `@@` hunk
+ * headers, but this patch is handed to cargo-mutants as `--in-diff` and
+ * matched against `relFile`, which is WORKSPACE-root relative. Those two
+ * agree only when the workspace root IS the repository root; the moment the
+ * workspace is a sub-directory (a crate inside a monorepo), an un-relativised
+ * header like `b/crates/foo/src/lib.rs` matches nothing under `relFile`
+ * (`src/lib.rs`), cargo-mutants scopes to zero mutants, and the run reports a
+ * clean scoped result that never mutated anything.
+ */
+function rustDiffArgs(resolvedBase: ResolvedDiffBase, relFile: string): string[] {
+  const base = resolvedBase.staged ? ['--cached', resolvedBase.ref] : [resolvedBase.ref];
+  return ['diff', '--relative', ...base, '--', relFile];
+}
+
 /** Generate a host-side unified diff for `relFile` and write it into the sandbox. */
 async function materialiseRustPatch(
   input: MaterialiseInput,
@@ -98,7 +157,7 @@ async function materialiseRustPatch(
   fs: { readFile(p: string): string; writeFile(p: string, c: string): void },
 ): Promise<MaterialiseResult> {
   try {
-    const { stdout } = await run('git', ['diff', input.diffBase, '--', input.relFile], {
+    const { stdout } = await run('git', rustDiffArgs(input.resolvedBase, input.relFile), {
       cwd: input.workspaceRoot,
     });
     const path = `${input.sandboxDir}/${PATCH_FILE_NAME}`;
@@ -124,9 +183,17 @@ async function materialisePhpGitBase(
   try {
     const currentContent = fs.readFile(sandboxFile);
 
+    // `<rev>:<path>` treats `path` as REPOSITORY-root relative unless it
+    // starts with `./` or `../`, in which case git resolves it against `cwd`
+    // (here, the workspace root) instead (see gitrevisions(7), "A suffix :
+    // followed by a path"). `relFile` is workspace-root relative, so without
+    // the `./` prefix this silently read the wrong blob whenever the
+    // workspace is a sub-directory of the repository (a crate/package inside
+    // a monorepo): same root-vs-workspace mismatch as the Rust patch, but
+    // this one degrades to a `note` instead of scoping to nothing.
     const { stdout: baseContent } = await run(
       'git',
-      ['show', `${input.diffBase}:${input.relFile}`],
+      ['show', `${input.resolvedBase.ref}:./${input.relFile}`],
       { cwd: input.workspaceRoot },
     );
 
@@ -137,20 +204,50 @@ async function materialisePhpGitBase(
     // cleanup, it is the difference between a scoped audit and a silent wrong
     // answer: a caller that falls back to whole-file mutation because `add`
     // or `commit` failed must still find its own file on disk, never the base
-    // version. The `finally` guarantees the restore runs whichever way the
-    // block below exits.
+    // version. The restore below always runs, whether or not `add`/`commit`
+    // succeeded (deliberately NOT a `try/finally`: `no-unsafe-finally`
+    // forbids throwing out of a `finally`, and this needs to: the restore
+    // failure must win over whatever `commitError` holds, not be masked by
+    // it, so both are captured and it is this function's own code, not the
+    // language's finally-unwind order, that decides which one propagates).
+    //
+    // A failure of the restore ITSELF is not the same kind of failure as
+    // everything else in this module: every other catch below degrades to a
+    // note because the sandbox file is known-good either way, but here the
+    // sandbox file is known-BAD (it holds base content) and staying that way
+    // is precisely the silent-wrong-answer this whole sequence exists to
+    // prevent. `SandboxRestoreFailedError` marks that one case so the outer
+    // catches (here and in `materialiseDiffScope`) can refuse to convert it
+    // into a fallback note.
+    let commitError: unknown;
     try {
       fs.writeFile(sandboxFile, baseContent);
       await run('git', ['add', '-f', input.relFile], { cwd: input.sandboxDir });
       await run('git', [...CHAOS_GIT_IDENTITY, 'commit', '-q', '-m', 'chaos-mcp base'], {
         cwd: input.sandboxDir,
       });
-    } finally {
-      fs.writeFile(sandboxFile, currentContent);
+    } catch (err: unknown) {
+      commitError = err;
     }
+    let restoreError: unknown;
+    try {
+      fs.writeFile(sandboxFile, currentContent);
+    } catch (err: unknown) {
+      restoreError = err;
+    }
+    if (restoreError !== undefined) {
+      throw new SandboxRestoreFailedError(
+        `Failed to restore ${input.relFile} to its current content after diff-scope ` +
+          `materialisation left it holding base content: ${errorMessage(restoreError)}. ` +
+          'Refusing to fall back, which would mutate the base content instead of the ' +
+          'current file.',
+      );
+    }
+    if (commitError !== undefined) throw commitError;
 
     return { diffScope: { kind: 'git-base', ref: CHAOS_BASE_REF } };
   } catch (err: unknown) {
+    if (err instanceof SandboxRestoreFailedError) throw err;
     return { note: fallbackNote(errorMessage(err)) };
   }
 }
@@ -162,8 +259,11 @@ function errorMessage(err: unknown): string {
 /**
  * Prepare, inside the disposable sandbox, whatever the target engine needs to
  * mutate only the already-computed diff ranges. Never throws and never
- * rejects: every failure path collapses into a `note` explaining why the
- * caller should mutate the whole file instead.
+ * rejects, EXCEPT for {@link SandboxRestoreFailedError}: every other failure
+ * path collapses into a `note` explaining why the caller should mutate the
+ * whole file instead, but a failed restore means the sandbox file is left
+ * holding base content, and a whole-file fallback would mutate that instead
+ * of the real one, so it propagates and the caller must fail the run.
  */
 export async function materialiseDiffScope(input: MaterialiseInput): Promise<MaterialiseResult> {
   try {
@@ -184,6 +284,7 @@ export async function materialiseDiffScope(input: MaterialiseInput): Promise<Mat
         return {};
     }
   } catch (err: unknown) {
+    if (err instanceof SandboxRestoreFailedError) throw err;
     return { note: fallbackNote(errorMessage(err)) };
   }
 }

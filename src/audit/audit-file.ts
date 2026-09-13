@@ -19,6 +19,7 @@ import { findPythonTestSelection, workspaceHasPythonTests } from '../core/test-f
 import { buildRunOptions, type ProjectType } from './run-options.js';
 import { ENGINE_REGISTRY } from '../engines/registry.js';
 import { materialiseDiffScope } from './diff-scope.js';
+import type { ResolvedDiffBase } from '../utils/git-diff.js';
 
 /**
  * The single wording of the "this Python project has no test suite" refusal.
@@ -70,6 +71,17 @@ export interface AuditFileInput {
   workDir: string;
   prebuildCmd: string | null;
   lineRanges?: { start: number; end: number }[];
+  /**
+   * The base `lineRanges` was resolved against, already resolved ONCE by the
+   * caller (`handler.ts`'s `computeScope`, or `triage/audit-one.ts`'s own
+   * `resolveDiffScope`), never re-derived here. Both callers already run
+   * `computeChangedRanges` (utils/git-diff.ts) to get `lineRanges`; handing
+   * its `resolvedBase` straight through is what keeps this and that ONE
+   * resolution rather than two that can disagree on a diverged branch.
+   * Absent whenever `lineRanges` is, and gates materialisation exactly the
+   * way `lineRanges.length > 0` does.
+   */
+  resolvedDiffBase?: ResolvedDiffBase;
   /** Abort signal forwarded from the MCP request context; kills in-flight subprocesses. */
   signal?: AbortSignal;
 }
@@ -82,8 +94,18 @@ export interface AuditFileInput {
  * errors propagate from `engine.run`.
  */
 export async function auditFile(input: AuditFileInput): Promise<MutationResult> {
-  const { targetFile, env, projectType, engine, args, config, workDir, prebuildCmd, lineRanges } =
-    input;
+  const {
+    targetFile,
+    env,
+    projectType,
+    engine,
+    args,
+    config,
+    workDir,
+    prebuildCmd,
+    lineRanges,
+    resolvedDiffBase,
+  } = input;
   const runOptions = buildRunOptions(args, config, env, workDir, projectType, targetFile);
   // `length > 0`, not just truthiness: an EMPTY array is truthy, and every
   // consumer downstream reads "no ranges" as "the whole file" — StrykerJS's
@@ -104,23 +126,36 @@ export async function auditFile(input: AuditFileInput): Promise<MutationResult> 
   // `audit/diff-scope.ts`). A materialisation failure never blocks the run:
   // it comes back as a `note` that joins the run's scope note below rather
   // than a `diffScope`, so the engine falls back to mutating the whole file.
+  //
+  // Gated on `resolvedDiffBase`, a value the CALLER already resolved via
+  // `computeChangedRanges` (whichever produced `lineRanges`), not on
+  // `args.diffBase`. Re-reading the raw string here would either duplicate
+  // that resolution (the exact bug that let a diverged branch's Rust patch
+  // and PHP base come from two different commits) or, for the triage sweep,
+  // simply never fire: `triage/audit-one.ts` builds a fresh, minimal
+  // `ToolArgs` per file that has never carried `diffBase`, so gating on it
+  // left every triage sweep materialising nothing for Python, Rust and PHP
+  // while `resolveDiffScope` still stamped their rows "scored on changed
+  // lines".
   let diffScopeNote: string | undefined;
-  if (lineRanges && lineRanges.length > 0 && ENGINE_REGISTRY[projectType].supportsDiffScope) {
-    const diffBase = typeof args.diffBase === 'string' ? args.diffBase : undefined;
-    if (diffBase) {
-      const materialised = await materialiseDiffScope({
-        projectType,
-        relFile: targetFile,
-        workspaceRoot: env.workspaceRoot,
-        sandboxDir: workDir,
-        diffBase,
-        ranges: lineRanges,
-        signal: input.signal,
-        timeoutMs: runOptions.timeoutMs,
-      });
-      if (materialised.diffScope) runOptions.diffScope = materialised.diffScope;
-      diffScopeNote = materialised.note;
-    }
+  if (
+    lineRanges &&
+    lineRanges.length > 0 &&
+    resolvedDiffBase &&
+    ENGINE_REGISTRY[projectType].supportsDiffScope
+  ) {
+    const materialised = await materialiseDiffScope({
+      projectType,
+      relFile: targetFile,
+      workspaceRoot: env.workspaceRoot,
+      sandboxDir: workDir,
+      resolvedBase: resolvedDiffBase,
+      ranges: lineRanges,
+      signal: input.signal,
+      timeoutMs: runOptions.timeoutMs,
+    });
+    if (materialised.diffScope) runOptions.diffScope = materialised.diffScope;
+    diffScopeNote = materialised.note;
   }
   // Python only: when neither the tool args nor the config scoped the suite,
   // default to the target file's own test module(s). cosmic-ray otherwise runs

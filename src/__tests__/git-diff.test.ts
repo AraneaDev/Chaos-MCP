@@ -226,6 +226,11 @@ describe('computeChangedRanges', () => {
         { start: 3, end: 4 },
         { start: 20, end: 20 },
       ],
+      // The RESOLVED merge-base sha, not the `diffBase` argument ('main')
+      // itself: a materialiser given `diffBase` verbatim would diff against
+      // main's current tip rather than the commit these ranges actually came
+      // from (CRITICAL: two resolutions of the same base disagreeing).
+      resolvedBase: { ref: 'abc123', staged: false },
     });
   });
 
@@ -235,7 +240,15 @@ describe('computeChangedRanges', () => {
       .mockResolvedValueOnce(ok('a.ts\n')) // ls-files
       .mockResolvedValueOnce(ok('@@ -1,1 +1,1 @@\n')); // diff --cached
     const res = await computeChangedRanges('a.ts', '/w', 'staged');
-    expect(res).toEqual({ kind: 'ranges', ranges: [{ start: 1, end: 1 }] });
+    expect(res).toEqual({
+      kind: 'ranges',
+      ranges: [{ start: 1, end: 1 }],
+      // `git diff --cached` with no tree-ish diffs the index against `HEAD`,
+      // so `HEAD`, never the `'staged'` sentinel, which is not a valid
+      // revision for `git show`/`git diff <ref>`, is the concrete base a
+      // materialiser must reproduce content from.
+      resolvedBase: { ref: 'HEAD', staged: true },
+    });
     const diffCall = mockRunShell.mock.calls[2];
     expect(diffCall[1]).toEqual(['diff', '--cached', '-U0', '--', 'a.ts']);
   });
@@ -803,6 +816,10 @@ describe('listChangedFiles against a real repository', () => {
 
     const r = await computeChangedRanges('src/a.ts', pkg, 'HEAD');
 
-    expect(r).toEqual({ kind: 'ranges', ranges: [{ start: 2, end: 2 }] });
+    expect(r).toEqual({
+      kind: 'ranges',
+      ranges: [{ start: 2, end: 2 }],
+      resolvedBase: { ref: expect.any(String) as string, staged: false },
+    });
   });
 });

@@ -276,7 +276,7 @@ export async function handleToolCall(
       if (!scope.result.isError) ctx?.reportProgress?.(4, 4, 'complete');
       return scope.result;
     }
-    const { diffRanges, scopeNote, baselineKeys } = scope;
+    const { diffRanges, resolvedBase, scopeNote, baselineKeys } = scope;
     if (deadline.expired()) {
       return toolError(
         `Audit time budget exhausted during scope resolution after ${deadline.elapsedMs()}ms.`,
@@ -414,6 +414,7 @@ export async function handleToolCall(
             workDir: sandbox.workDir,
             prebuildCmd: prebuild.prebuildCmd,
             lineRanges: diffRanges,
+            resolvedDiffBase: resolvedBase,
             signal: controller.signal,
           },
           resources.report(),
