@@ -13,17 +13,19 @@
  * - PHP: Infection insists on reading git itself, and the sandbox copy
  *   deliberately excludes `.git`. So a throwaway single-commit repository is
  *   built in the sandbox: the BASE content of the target file is committed on
- *   a branch named `chaos-base`, then the CURRENT content is restored over
- *   it. `git diff` inside the sandbox then reproduces exactly the ranges
- *   Chaos already computed from the real repository.
+ *   a branch named `chaos-base`, then the content that must sit alongside it
+ *   is restored over it (the working tree content for a ref base, the INDEX
+ *   content for the `'staged'` base, since that is the side `diff --cached`
+ *   actually diffed). `git diff` inside the sandbox then reproduces exactly
+ *   the ranges Chaos already computed from the real repository.
  *
  * Every failure path here is caught and turned into a `note`: a scoping
  * failure means "mutate the whole file and say why", never a failed audit.
  * This function must never throw and never reject, with ONE exception: a
- * failure to restore the sandbox file's CURRENT content after the PHP
- * base-commit sequence propagates instead of degrading, because degrading it
- * would let the caller fall back to a "whole file" run that mutates the BASE
- * content left behind by the failed restore; see {@link SandboxRestoreFailedError}.
+ * failure to restore the sandbox file's content after the PHP base-commit
+ * sequence propagates instead of degrading, because degrading it would let
+ * the caller fall back to a "whole file" run that mutates the BASE content
+ * left behind by the failed restore; see {@link SandboxRestoreFailedError}.
  */
 import { readFileSync, writeFileSync } from 'node:fs';
 import { runShell } from '../utils/exec.js';
@@ -170,9 +172,11 @@ async function materialiseRustPatch(
 
 /**
  * Build the throwaway single-commit repository in the sandbox: read the
- * current content, fetch the BASE content from the host repository, commit
- * the base content on `chaos-base`, then restore the current content so the
- * sandbox's working tree diff reproduces the ranges Chaos already computed.
+ * sandbox's own content, fetch the BASE content from the host repository,
+ * commit the base content on `chaos-base`, then restore whichever content
+ * matches the side `computeChangedRanges` actually diffed (the index for the
+ * `'staged'` base, the working tree otherwise), so the sandbox's own diff
+ * reproduces the ranges Chaos already computed.
  */
 async function materialisePhpGitBase(
   input: MaterialiseInput,
@@ -197,14 +201,29 @@ async function materialisePhpGitBase(
       { cwd: input.workspaceRoot },
     );
 
+    // The staged case needs the INDEX content here, not the working tree
+    // copy already sitting in the sandbox. `computeChangedRanges` computed
+    // its ranges from `git diff --cached` (INDEX versus HEAD), so the
+    // sandbox's own diff has to reproduce index-versus-HEAD too. Restoring
+    // the worktree content instead would make it HEAD-versus-worktree, which
+    // agrees with the reported ranges only when there are no unstaged edits
+    // layered on top of the staged ones; the moment there are, Infection
+    // mutates (and reports survivors on) lines outside the ranges the row
+    // claims. `git show :<path>` reads the index (stage 0); the `./` prefix
+    // is the same repository-root-vs-workspace-root fix as the base fetch
+    // above.
+    const restoreContent = input.resolvedBase.staged
+      ? (await run('git', ['show', `:./${input.relFile}`], { cwd: input.workspaceRoot })).stdout
+      : currentContent;
+
     await run('git', ['init', '-q', '-b', CHAOS_BASE_REF], { cwd: input.sandboxDir });
 
     // From here on the sandbox file holds the BASE content, not the real one.
-    // Once that write happens, restoring the CURRENT content is not optional
+    // Once that write happens, restoring `restoreContent` is not optional
     // cleanup, it is the difference between a scoped audit and a silent wrong
     // answer: a caller that falls back to whole-file mutation because `add`
-    // or `commit` failed must still find its own file on disk, never the base
-    // version. The restore below always runs, whether or not `add`/`commit`
+    // or `commit` failed must still find the right content on disk, never
+    // the base version. The restore below always runs, whether or not `add`/`commit`
     // succeeded (deliberately NOT a `try/finally`: `no-unsafe-finally`
     // forbids throwing out of a `finally`, and this needs to: the restore
     // failure must win over whatever `commitError` holds, not be masked by
@@ -231,16 +250,15 @@ async function materialisePhpGitBase(
     }
     let restoreError: unknown;
     try {
-      fs.writeFile(sandboxFile, currentContent);
+      fs.writeFile(sandboxFile, restoreContent);
     } catch (err: unknown) {
       restoreError = err;
     }
     if (restoreError !== undefined) {
       throw new SandboxRestoreFailedError(
-        `Failed to restore ${input.relFile} to its current content after diff-scope ` +
-          `materialisation left it holding base content: ${errorMessage(restoreError)}. ` +
-          'Refusing to fall back, which would mutate the base content instead of the ' +
-          'current file.',
+        `Failed to restore ${input.relFile} after diff-scope materialisation left it ` +
+          `holding base content: ${errorMessage(restoreError)}. ` +
+          'Refusing to fall back, which would mutate the base content instead.',
       );
     }
     if (commitError !== undefined) throw commitError;

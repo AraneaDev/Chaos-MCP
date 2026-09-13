@@ -128,6 +128,48 @@ describe('materialiseDiffScope', () => {
     expect(h.written['/sandbox/src/Calculator.php']).toBe('CURRENT CONTENT\n');
   });
 
+  it('restores the INDEX content, not the worktree content, for a staged base', async () => {
+    // LOW residual from re-review: `computeChangedRanges`'s staged ranges
+    // come from `git diff --cached` (INDEX versus HEAD), but the sandbox
+    // copy holds the WORKING TREE content, which can differ from the index
+    // when a file carries unstaged edits layered on top of staged ones.
+    // Restoring the worktree copy after the base commit would make
+    // Infection's in-sandbox diff HEAD-versus-worktree instead of the
+    // index-versus-HEAD ranges the row actually reports, so it would mutate
+    // (and report survivors on) lines outside its own stated scope. `git
+    // show :<path>` reads the index (stage 0), which is what must land back
+    // in the sandbox for the staged case.
+    const written: Record<string, string> = {};
+    const result = await materialiseDiffScope({
+      projectType: 'php',
+      relFile: 'src/Calculator.php',
+      workspaceRoot: '/work',
+      sandboxDir: '/sandbox',
+      resolvedBase: { ref: 'HEAD', staged: true },
+      ranges,
+      run: async (command: string, args: string[]) => {
+        if (args[0] === 'show' && args[1] === 'HEAD:./src/Calculator.php') {
+          return { stdout: 'HEAD CONTENT\n' };
+        }
+        if (args[0] === 'show' && args[1] === ':./src/Calculator.php') {
+          return { stdout: 'INDEX CONTENT\n' };
+        }
+        return { stdout: '' };
+      },
+      fs: {
+        // Deliberately different from both HEAD and the index: an unstaged
+        // edit sitting on top of a staged one.
+        readFile: () => 'WORKTREE CONTENT\n',
+        writeFile: (p: string, c: string) => {
+          written[p] = c;
+        },
+      },
+    });
+
+    expect(result.diffScope).toEqual({ kind: 'git-base', ref: 'chaos-base' });
+    expect(written['/sandbox/src/Calculator.php']).toBe('INDEX CONTENT\n');
+  });
+
   it('degrades to a note when git is unavailable, never throws', async () => {
     const h = harness({
       run: async () => {
