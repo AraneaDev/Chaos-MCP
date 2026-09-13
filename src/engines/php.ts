@@ -160,7 +160,11 @@ export class PhpEngine extends BaseEngine {
       );
     }
 
-    const result = parseInfectionJsonLog(logText, filePath);
+    const result = parseInfectionJsonLog(
+      logText,
+      filePath,
+      options?.diffScope?.kind === 'git-base' ? 'scoped' : 'whole-file',
+    );
     // Only worth saying when there is something it could be wrong about: a
     // clean run has no survivor to doubt.
     if (result.survived > 0 && !this.projectFailsOnWarning(cwd)) {

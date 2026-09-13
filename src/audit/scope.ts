@@ -249,7 +249,7 @@ async function resolveDiffScope(
         scopeNote: `${targetFile} is untracked in git vs ${diffBase}; mutated the whole file.`,
       };
     case 'ranges':
-      if (ENGINE_REGISTRY[projectType].supportsLineScope) {
+      if (ENGINE_REGISTRY[projectType].supportsDiffScope) {
         return { kind: 'scope', diffRanges: diff.ranges };
       }
       return {

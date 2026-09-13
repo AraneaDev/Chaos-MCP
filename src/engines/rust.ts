@@ -162,6 +162,11 @@ export class RustEngine extends BaseEngine {
     // there is nothing to attempt a JSON parse on. The old JSON branch was
     // unreachable, validated a shape `outcomes.json` does not have anyway, and
     // cost a throwaway multi-MB `JSON.parse` on every run (audit L7).
-    return parseCargoMutantsText(stdout, filePath, targetExists);
+    return parseCargoMutantsText(
+      stdout,
+      filePath,
+      targetExists,
+      options?.diffScope?.kind === 'patch' ? 'scoped' : 'whole-file',
+    );
   }
 }

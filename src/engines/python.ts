@@ -198,7 +198,16 @@ export class PythonEngine extends BaseEngine {
         ),
     });
 
-    const { result, completed, unscored } = parseCosmicRayDump(dump.stdout, filePath);
+    // Same `diffRanges` that gated `cr-filter-lines` above: a run is only
+    // 'scoped' when the filter actually ran and had something to restrict to,
+    // never merely because a `diffScope` was requested (an untracked file, or
+    // one with no ranges, still enumerates the whole module).
+    const diffScoped = !!diffRanges && diffRanges.length > 0;
+    const { result, completed, unscored } = parseCosmicRayDump(
+      dump.stdout,
+      filePath,
+      diffScoped ? 'scoped' : 'whole-file',
+    );
 
     assertScorableRun({
       result,
@@ -208,7 +217,7 @@ export class PythonEngine extends BaseEngine {
       interpreter,
       testCommand,
       excludeOperators: options?.pythonExcludeOperators,
-      diffScoped: !!diffRanges && diffRanges.length > 0,
+      diffScoped,
     });
 
     return result;

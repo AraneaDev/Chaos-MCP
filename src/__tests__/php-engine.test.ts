@@ -1281,6 +1281,29 @@ describe('PhpEngine.run', () => {
     expect(args).toContain('--filter=src/Calculator.php');
   });
 
+  it('stamps scopeKind "scoped" for a diff-scoped run and "whole-file" otherwise (Task 8)', async () => {
+    // `parseInfectionJsonLog`'s `scopeKind` now depends on whether THIS run was
+    // actually diff-scoped (`diffScope.kind === 'git-base'`), the same signal a
+    // scoped TypeScript run stamps (`engines/typescript.ts`). Before this,
+    // Infection unconditionally stamped `'whole-file'` regardless of
+    // `--git-diff-lines`, which reported a diffBase-scoped PHP run to
+    // suppression verification (`audit/suppression-io.ts`) as whole-file,
+    // keying it against the wrong scope.
+    mockExists.mockImplementation((p) => String(p).endsWith('chaos-infection-log.json'));
+    mockRead.mockReturnValue(SAMPLE_LOG);
+    mockInvoke.mockResolvedValue({ stdout: '', stderr: '', exit: 0, signal: null });
+
+    const engine = new PhpEngine();
+    const scoped = await engine.run('src/Calculator.php', {
+      workDir: '/sb',
+      diffScope: { kind: 'git-base', ref: 'chaos-base' },
+    });
+    expect(scoped.scopeKind).toBe('scoped');
+
+    const wholeFile = await engine.run('src/Calculator.php', { workDir: '/sb' });
+    expect(wholeFile.scopeKind).toBe('whole-file');
+  });
+
   it('omits the git-diff flags when diffScope is absent', async () => {
     // An unscoped run must stay byte-identical to today: neither flag appears,
     // but --filter for the target file is still there.

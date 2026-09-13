@@ -52,13 +52,16 @@ import { buildResultPayload } from '../core/format.js';
  * `handler.ts`'s `diffRanges` / `args.lineScope`.
  *
  * `scopeKind === 'scoped'` is exactly the unsound set, not an approximation.
- * StrykerJS is the only engine with `supportsLineScope: true`, so it is the only
- * engine whose runs can be scoped at all — the other three mutate the whole file
- * and say so in a `scopeNote` even when `diffBase` was requested, which leaves
- * their baselines whole-file and their verifies sound. And a BATCHED whole-file
- * TypeScript run reports `'whole-file'` (batching is an implementation detail of
- * covering the file, see `engines/typescript/batches.ts`), so large files keep
- * their runIds.
+ * Task 8 (`supportsDiffScope`) gave every engine a way to run `'scoped'` via
+ * `diffBase`, not only StrykerJS (the only one with `supportsLineScope: true`,
+ * an arbitrary `file:A-B` range), so this check now guards Python, Rust and
+ * PHP diff-scoped runs exactly as it already guarded TypeScript's. An
+ * untracked file, or a diff with nothing changed in it, still enumerates the
+ * whole file and says so in a `scopeNote` with `scopeKind: 'whole-file'`,
+ * which leaves that baseline whole-file and that verify sound. And a BATCHED
+ * whole-file TypeScript run reports `'whole-file'` (batching is an
+ * implementation detail of covering the file, see
+ * `engines/typescript/batches.ts`), so large files keep their runIds.
  */
 export function mintRunIdSafely(
   auditResults: MutationResult,

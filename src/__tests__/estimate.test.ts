@@ -280,11 +280,14 @@ describe('estimateAudit', () => {
     expect(r.recommendation).not.toContain('60000ms estimation cap');
   });
 
-  it('recommends what a whole-file engine can actually do about an overrun', async () => {
-    // The old sentence offered lineScope/diffBase to every language. Only
-    // StrykerJS honours either; a Rust audit returns `ignoredOptions:
-    // ["lineScope"]` and runs whole-file regardless, so the first remedy a
-    // reader was given provably did nothing.
+  it('recommends what an arbitrary-line-scope-less engine can actually do about an overrun', async () => {
+    // The old sentence offered lineScope/diffBase to every language as if
+    // interchangeable. Only StrykerJS takes an arbitrary lineScope; a Rust
+    // audit returns `ignoredOptions: ["lineScope"]` and runs whole-file
+    // regardless of it, so the first remedy a reader was given provably did
+    // nothing, but diffBase (which restricts a run to a diff's changed
+    // lines) works on Rust too, and the recommendation must say so rather
+    // than lump it in with lineScope's dead end.
     mockInvoke.mockResolvedValueOnce({
       stdout: 'src/lib.rs:1:1: replace foo with ()\n',
       stderr: '',
@@ -303,7 +306,8 @@ describe('estimateAudit', () => {
     });
 
     expect(r.fitsBudget).toBe(false);
-    expect(r.recommendation).toMatch(/cargo-mutants always runs whole-file/);
+    expect(r.recommendation).toMatch(/cargo-mutants cannot take an arbitrary lineScope/);
+    expect(r.recommendation).toMatch(/diffBase still narrows it to the diff's changed lines/);
     expect(r.recommendation).toMatch(/raise timeoutMs/);
   });
 

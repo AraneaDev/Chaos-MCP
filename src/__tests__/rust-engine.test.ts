@@ -1331,6 +1331,26 @@ describe('RustEngine — --in-diff diff scoping', () => {
     );
   });
 
+  it('stamps scopeKind "scoped" for a diff-scoped run and "whole-file" otherwise (Task 8)', async () => {
+    // `parseCargoMutantsText`'s `scopeKind` now depends on whether THIS run was
+    // actually diff-scoped (`diffScope.kind === 'patch'`), the same signal a
+    // scoped TypeScript run stamps (`engines/typescript.ts`). Before this,
+    // cargo-mutants unconditionally stamped `'whole-file'` regardless of
+    // `--in-diff`, which reported a diffBase-scoped Rust run to suppression
+    // verification (`audit/suppression-io.ts`) as whole-file, keying it
+    // against the wrong scope.
+    mockRunShell.mockResolvedValue(makeExecResult(MINIMAL_RUN));
+
+    const scoped = await engine.run('src/test.rs', {
+      concurrency: 1,
+      diffScope: { kind: 'patch', path: '/sandbox/.chaos-mcp.in-diff.patch' },
+    });
+    expect(scoped.scopeKind).toBe('scoped');
+
+    const wholeFile = await engine.run('src/test.rs', { concurrency: 1 });
+    expect(wholeFile.scopeKind).toBe('whole-file');
+  });
+
   it('composes --in-diff with -j when both apply', async () => {
     mockRunShell.mockResolvedValue(makeExecResult(MINIMAL_RUN));
 

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from 'fs';
+import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -10,6 +11,7 @@ import {
 import type { TriageError, TriageRow } from '../core/triage.js';
 import type { AuditDeadline } from '../utils/deadline.js';
 import type { MutationResult } from '../engines/base.js';
+import { ENGINE_REGISTRY } from '../engines/registry.js';
 
 /**
  * The row `triage/audit-one.ts` assembles from one file's mutation result.
@@ -156,13 +158,34 @@ describe('buildTriageRow — optional keys are absent, not undefined', () => {
     expect(row.fidelityNote).toBe(note);
   });
 
-  it('labels the row when the sweep could not line-scope this language', async () => {
-    // The other arm of the scopeNote guard, reached without git: a diff-scoped
-    // sweep over a language whose engine cannot take a line scope says so on the
-    // row, because an unlabelled score would read as covering only the diff.
+  it('no longer labels Python as diff-scoping-unsupported now that diffBase is honoured (Task 8)', async () => {
+    // Before Task 8, `resolveDiffScope`'s early return gated on
+    // `supportsLineScope` (false for Python) and produced this note WITHOUT
+    // ever calling git. `supportsDiffScope` is true for Python
+    // (engines/registry.ts), so the early return no longer fires here: this
+    // workspace has no git repo behind it, so `computeChangedRanges` reports
+    // 'not-a-repo', which `resolveDiffScope` treats as unlabelled whole-file
+    // (the same disposition a git-capable engine gets in a non-repo
+    // workspace) rather than as an unsupported-language note.
     const row = await rowFor(sourceFile('x.py'), { diffBase: 'main' });
 
-    expect(row.scopeNote).toBe('diff scoping unsupported for this language; whole file');
+    expect(row.scopeNote).toBeUndefined();
+  });
+
+  it('still labels the row for a language whose engine cannot diff-scope at all', async () => {
+    // The "unsupported" branch itself must not be deleted: it protects a
+    // FUTURE engine with neither `supportsLineScope` nor `supportsDiffScope`.
+    // There is no such language in the registry today, so this pins the
+    // branch directly against a descriptor rather than inventing a fifth
+    // engine.
+    const original = ENGINE_REGISTRY.python.supportsDiffScope;
+    ENGINE_REGISTRY.python.supportsDiffScope = false;
+    try {
+      const row = await rowFor(sourceFile('x.py'), { diffBase: 'main' });
+      expect(row.scopeNote).toBe('diff scoping unsupported for this language; whole file');
+    } finally {
+      ENGINE_REGISTRY.python.supportsDiffScope = original;
+    }
   });
 
   it('records a partial audit without inventing batch counts it was not given', async () => {
@@ -295,5 +318,66 @@ describe('auditTriageFile — the engine budget floor', () => {
 
     expect(outcome.unaudited).toBe(sourceFile('x.ts'));
     expect(auditFileMock).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Real git, real target detection: the two tests above stop at "no note",
+ * which is also what a `not-a-repo` result produces, consistent with the old
+ * behaviour by coincidence, not proof the early return is gone. This describe
+ * proves the POSITIVE case: a real diff against a real Python file comes back
+ * line-scoped, exactly as `audit-scope.test.ts` already proves for the
+ * single-file audit path (`computeScope`).
+ */
+describe('auditTriageFile: diffBase scoping honours supportsDiffScope, not supportsLineScope (Task 8)', () => {
+  let repo: string;
+
+  /** Fixture-only git, never the code under test. */
+  const setupGit = (args: string[]) =>
+    execFileSync('git', args, { cwd: repo, encoding: 'utf-8', stdio: 'pipe' });
+
+  const pySourceFile = (name: string, contents: string): string => {
+    const abs = join(repo, 'src', name);
+    writeFileSync(abs, contents);
+    return abs;
+  };
+
+  beforeEach(() => {
+    // realpath: `tmpdir()` is a symlink on some platforms and git reports the
+    // resolved path, which would put the pathspec outside the work tree. Same
+    // rule `audit-scope.test.ts`'s git fixture follows.
+    repo = mkdtempSync(join(realpathSync(tmpdir()), 'chaos-triage-diff-'));
+    mkdirSync(join(repo, 'src'), { recursive: true });
+    // pyproject.toml is a Python root marker (utils/detectors/python.ts), so
+    // `detectEnvironment` resolves this directory as the Python workspace
+    // root instead of walking past it.
+    writeFileSync(join(repo, 'pyproject.toml'), '[project]\nname = "fixture"\n');
+    setupGit(['init', '-q', '-b', 'main', '.']);
+    setupGit(['config', 'user.email', 'test@example.com']);
+    setupGit(['config', 'user.name', 'Chaos Test']);
+    setupGit(['config', 'commit.gpgsign', 'false']);
+    pySourceFile('m.py', 'a = 1\nb = 2\n');
+    setupGit(['add', '-A']);
+    setupGit(['commit', '-qm', 'init']);
+  });
+
+  afterEach(() => rmSync(repo, { recursive: true, force: true }));
+
+  it('line-scopes a Python sweep row to the diff, instead of running whole-file unlabelled', async () => {
+    // Before Task 8, `resolveDiffScope` returned the "unsupported" note for
+    // Python WITHOUT calling git at all, so `auditFile` always received
+    // `lineRanges: undefined` here regardless of what changed on disk, and
+    // the row never carried a "scored on changed lines" note. Appending one
+    // line and diffing against `HEAD` must now produce the same shape
+    // `computeScope` produces for the single-file audit path.
+    const abs = pySourceFile('m.py', 'a = 1\nb = 2\nc = 3\n');
+
+    const outcome = arms(await auditTriageFile(abs, deps({ rootCwd: repo, diffBase: 'HEAD' })));
+    if (!outcome.row) throw new Error(`expected a row, got ${JSON.stringify(outcome)}`);
+
+    expect(outcome.row.scopeNote).toBe('scored on changed lines');
+    expect(auditFileMock).toHaveBeenCalledWith(
+      expect.objectContaining({ lineRanges: [{ start: 3, end: 3 }] }),
+    );
   });
 });

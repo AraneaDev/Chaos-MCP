@@ -1290,6 +1290,31 @@ describe('PythonEngine (cosmic-ray)', () => {
       expect(mockRunShell).toHaveBeenCalledTimes(4);
     });
 
+    it('stamps scopeKind "scoped" only when the line filter actually had ranges to apply (Task 8)', async () => {
+      // `parseCosmicRayDump`'s `scopeKind` now depends on whether `cr-filter-lines`
+      // actually ran with non-empty ranges, the same "scoped" signal a scoped
+      // TypeScript run stamps (engines/typescript.ts). Before this, cosmic-ray
+      // unconditionally stamped 'whole-file', which reported a diffBase-scoped
+      // Python run to suppression verification (audit/suppression-io.ts) as
+      // whole-file, keying it against the wrong scope.
+      mockRunShell
+        .mockResolvedValueOnce(ok()) // baseline
+        .mockResolvedValueOnce(ok()) // init
+        .mockResolvedValueOnce(ok()) // cr-filter-lines
+        .mockResolvedValueOnce(ok()) // exec
+        .mockResolvedValueOnce(ok('')); // dump
+
+      const scoped = await engine.run('m.py', {
+        workDir: '/tmp/sandbox',
+        diffScope: { kind: 'ranges', ranges: [{ start: 10, end: 14 }] },
+      });
+      expect(scoped.scopeKind).toBe('scoped');
+
+      queueRun('');
+      const wholeFile = await engine.run('m.py', { workDir: '/tmp/sandbox' });
+      expect(wholeFile.scopeKind).toBe('whole-file');
+    });
+
     it('reports a line-filter-step failure with its own message', async () => {
       mockRunShell
         .mockResolvedValueOnce(ok()) // baseline

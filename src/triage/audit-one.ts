@@ -148,9 +148,9 @@ interface DiffScope {
  * Narrow a diff-scoped sweep down to the changed lines of ONE file.
  *
  * Whole-file (`{}`) for a sweep that is not diff-scoped. Languages whose engine
- * cannot take a line scope say so on the row: their score covers more than the
- * diff, and an unlabelled 60% would read as "your changed lines are 60%
- * covered".
+ * cannot take a diff scope (`supportsDiffScope`, engines/registry.ts) say so on
+ * the row: their score covers more than the diff, and an unlabelled 60% would
+ * read as "your changed lines are 60% covered".
  */
 async function resolveDiffScope(
   targetFile: string,
@@ -160,7 +160,7 @@ async function resolveDiffScope(
   deps: TriageFileDeps,
 ): Promise<DiffScope> {
   if (deps.diffBase === undefined) return {};
-  if (!ENGINE_REGISTRY[projectType].supportsLineScope) {
+  if (!ENGINE_REGISTRY[projectType].supportsDiffScope) {
     return { scopeNote: 'diff scoping unsupported for this language; whole file' };
   }
   const diff = await computeChangedRanges(targetFile, env.workspaceRoot, deps.diffBase, {

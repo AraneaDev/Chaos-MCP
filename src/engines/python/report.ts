@@ -118,6 +118,7 @@ function resolveSurvivorLocation(item: unknown): { line: number; operator: strin
 export function parseCosmicRayDump(
   dumpText: string,
   filePath: string,
+  scopeKind: 'whole-file' | 'scoped' = 'whole-file',
 ): { result: MutationResult; completed: number; unscored: number } {
   let killed = 0;
   let survived = 0;
@@ -180,11 +181,13 @@ export function parseCosmicRayDump(
       survived,
       mutationScore: formatMutationScore(killed, totalMutants),
       vulnerabilities,
-      // cosmic-ray mutates whole modules — `supportsLineScope: false` in
-      // engines/registry.ts — so this report always enumerated the whole file.
-      // See the same field in engines/rust/report.ts for why the absence of a
-      // scope note is NOT a usable proxy for it.
-      scopeKind: 'whole-file' as const,
+      // cosmic-ray has no arbitrary line-scoping mode (`supportsLineScope:
+      // false` in engines/registry.ts), but `cr-filter-lines` CAN restrict a
+      // run to a diff's changed lines (`supportsDiffScope: true`), and the caller
+      // says which this run was via `scopeKind`, the same signal a scoped
+      // TypeScript run stamps. See the same field in engines/rust/report.ts
+      // for why the absence of a scope note is NOT a usable proxy for it.
+      scopeKind,
       incompetent,
     },
     completed,
