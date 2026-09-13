@@ -1262,10 +1262,12 @@ describe('PhpEngine.run', () => {
     expect(args).not.toContain('--only-covering-test-cases');
   });
 
-  it('passes --git-diff-lines and --git-diff-base when diffScope is git-base', async () => {
+  it('passes --git-diff-lines and --git-diff-base, and omits --filter, when diffScope is git-base', async () => {
     // The audit layer builds a throwaway single-commit git repo in the sandbox
     // with the ref name it hands us; Infection needs both flags to confine
-    // mutants to what that diff changed.
+    // mutants to what that diff changed. Infection 0.34 rejects `--filter`
+    // together with the git-diff flags (`assertOnlyOneTypeOfFiltering`), so a
+    // scoped run must never carry both.
     mockExists.mockImplementation((p) => String(p).endsWith('chaos-infection-log.json'));
     mockRead.mockReturnValue(SAMPLE_LOG);
     mockInvoke.mockResolvedValue({ stdout: '', stderr: '', exit: 0, signal: null });
@@ -1278,7 +1280,7 @@ describe('PhpEngine.run', () => {
     const args = mockInvoke.mock.calls[0][2] as string[];
     expect(args).toContain('--git-diff-lines');
     expect(args).toContain('--git-diff-base=chaos-base');
-    expect(args).toContain('--filter=src/Calculator.php');
+    expect(args.some((a) => a.startsWith('--filter='))).toBe(false);
   });
 
   it('stamps scopeKind "scoped" for a diff-scoped run and "whole-file" otherwise (Task 8)', async () => {

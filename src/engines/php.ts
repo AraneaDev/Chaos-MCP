@@ -50,7 +50,10 @@ export { parseInfectionJsonLog } from './php/report.js';
  * infection.json/.json5 if present, else write a minimal one whose `logs.json`
  * points at our JSON log) → run
  * `infection --filter=<file> --no-progress --no-interaction --threads=<n|max>
- * --only-covering-test-cases`
+ * --only-covering-test-cases` (unscoped), or the same command with
+ * `--filter` swapped for `--git-diff-lines --git-diff-base=<ref>` when a diff
+ * scope is present, since Infection 0.34 rejects `--filter` and
+ * `--git-diff-filter` together
  * → read + parse the JSON log emitted via config `logs.json`. (Infection 0.34+
  * removed the `--logger-json` CLI flag, so the log path lives in the config.)
  *
@@ -81,12 +84,7 @@ export class PhpEngine extends BaseEngine {
     // `The "--logger-json" option does not exist.` The full mutation-detail log
     // this engine parses is only obtainable through config `logs.json`; the CLI
     // only exposes summary/gitlab/html/text loggers.
-    const args = [
-      `--filter=${filePath}`,
-      '--no-progress',
-      '--no-interaction',
-      `--threads=${threads}`,
-    ];
+    const args = ['--no-progress', '--no-interaction', `--threads=${threads}`];
     // Infection's default re-runs every covering test FILE for every mutant, so
     // a file whose covering set is large pays for all of it once per mutant —
     // which is what makes a big class take longer than its mutant count
@@ -106,11 +104,22 @@ export class PhpEngine extends BaseEngine {
     if (options?.phpTestFrameworkOptions) {
       args.push(`--test-framework-options=${options.phpTestFrameworkOptions}`);
     }
-    // Confine mutation to the lines a diff touched. Only 'git-base' applies
-    // here; 'patch' and 'ranges' are the other engines' scoping shapes and are
-    // silently ignored, since only one engine ever sees a given RunOptions.
+    // Infection 0.34 rejects `--filter` and `--git-diff-filter` together
+    // (`assertOnlyOneTypeOfFiltering` in SourceFilterOptions.php): "The
+    // options \"--filter\" and \"--git-diff-filter\" are mutually exclusive."
+    // So the two are never passed in the same run. When a diff scope is
+    // present, skip `--filter` entirely and let the git-based flags narrow
+    // both the file and the lines; the sandbox repository built in
+    // diff-scope.ts commits ONLY the target file (`git add -f <relFile>`) on
+    // `chaos-base`, so `git diff` there already reports exactly one changed
+    // file, the target, with nothing else tracked to show up. Only
+    // 'git-base' applies here; 'patch' and 'ranges' are the other engines'
+    // scoping shapes and are silently ignored, since only one engine ever
+    // sees a given RunOptions.
     if (options?.diffScope?.kind === 'git-base') {
       args.push('--git-diff-lines', `--git-diff-base=${options.diffScope.ref}`);
+    } else {
+      args.push(`--filter=${filePath}`);
     }
 
     if (isVerbose()) log(`PhpEngine: ${bin} ${args.join(' ')}`);
