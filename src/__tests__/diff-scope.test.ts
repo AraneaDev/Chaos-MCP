@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { materialiseDiffScope, SandboxRestoreFailedError } from '../audit/diff-scope.js';
+import { ExecFailureError } from '../utils/exec-error.js';
 import type { ResolvedDiffBase } from '../utils/git-diff.js';
 
 vi.mock('../utils/exec.js', () => ({ runShell: vi.fn() }));
@@ -287,6 +288,57 @@ describe('materialiseDiffScope', () => {
     });
     expect(result).toEqual({});
     expect(h.calls).toEqual([]);
+  });
+
+  it('rethrows a cancelled rust patch generation instead of degrading to a note (Finding 2)', async () => {
+    // The default runner (`utils/exec.ts`'s `runShell`) classifies an aborted
+    // child as `ExecFailureError` with `code: 'ABORTED'`. Before this fix, the
+    // catch around `materialiseRustPatch` treated that exactly like any other
+    // git failure and returned a fallback note, so `auditFile` carried on and
+    // started a WHOLE-FILE engine run after the caller had already cancelled.
+    const h = harness({
+      run: async () => {
+        throw new ExecFailureError(
+          { stdout: '', stderr: '', exit: null, signal: null, code: 'ABORTED' },
+          'ABORT_ERR: aborted',
+        );
+      },
+    });
+    await expect(
+      materialiseDiffScope({
+        projectType: 'rust',
+        relFile: 'src/notify.rs',
+        workspaceRoot: '/work',
+        sandboxDir: '/sandbox',
+        resolvedBase: headBase,
+        ranges,
+        run: h.run as never,
+        fs: h.fs,
+      }),
+    ).rejects.toMatchObject({ code: 'ABORTED' });
+  });
+
+  it('rethrows a cancelled php base sequence instead of degrading to a note (Finding 2)', async () => {
+    const h = harness({
+      run: async () => {
+        throw new ExecFailureError(
+          { stdout: '', stderr: '', exit: null, signal: null, code: 'ABORTED' },
+          'ABORT_ERR: aborted',
+        );
+      },
+    });
+    await expect(
+      materialiseDiffScope({
+        projectType: 'php',
+        relFile: 'src/Calculator.php',
+        workspaceRoot: '/work',
+        sandboxDir: '/sandbox',
+        resolvedBase: headBase,
+        ranges,
+        run: h.run as never,
+        fs: h.fs,
+      }),
+    ).rejects.toMatchObject({ code: 'ABORTED' });
   });
 });
 

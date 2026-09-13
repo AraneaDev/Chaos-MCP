@@ -29,6 +29,7 @@
  */
 import { readFileSync, writeFileSync } from 'node:fs';
 import { runShell } from '../utils/exec.js';
+import { isCancel } from '../utils/cancel.js';
 import type { SupportedProjectType } from '../engines/registry.js';
 import type { DiffScope } from '../engines/base.js';
 import type { ResolvedDiffBase } from '../utils/git-diff.js';
@@ -166,6 +167,10 @@ async function materialiseRustPatch(
     fs.writeFile(path, stdout);
     return { diffScope: { kind: 'patch', path } };
   } catch (err: unknown) {
+    // A deliberate cancellation must stop the run, never degrade into a
+    // whole-file fallback the caller never asked for (Finding 2): rethrow
+    // before the note is built so the engine never starts.
+    if (isCancel(err)) throw err;
     return { note: fallbackNote(errorMessage(err)) };
   }
 }
@@ -266,6 +271,9 @@ async function materialisePhpGitBase(
     return { diffScope: { kind: 'git-base', ref: CHAOS_BASE_REF } };
   } catch (err: unknown) {
     if (err instanceof SandboxRestoreFailedError) throw err;
+    // See the matching comment in `materialiseRustPatch`: a cancel must stop
+    // the run, not degrade into a whole-file fallback.
+    if (isCancel(err)) throw err;
     return { note: fallbackNote(errorMessage(err)) };
   }
 }
@@ -303,6 +311,7 @@ export async function materialiseDiffScope(input: MaterialiseInput): Promise<Mat
     }
   } catch (err: unknown) {
     if (err instanceof SandboxRestoreFailedError) throw err;
+    if (isCancel(err)) throw err;
     return { note: fallbackNote(errorMessage(err)) };
   }
 }
