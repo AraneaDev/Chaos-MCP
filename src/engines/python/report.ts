@@ -84,7 +84,7 @@ function resolveSurvivorLocation(item: unknown): { line: number; operator: strin
       `so its line and operator cannot be identified. Chaos-MCP refuses to substitute a ` +
       `placeholder here because every survivor would then share one suppression key and ` +
       `suppressing one would hide them all. Install a supported cosmic-ray ` +
-      `(\`pipx install 'cosmic-ray==8.4.6'\` — the version containers/python pins).`,
+      `(\`pipx install 'cosmic-ray==8.7.0'\` — the version containers/python pins).`,
   );
 }
 
