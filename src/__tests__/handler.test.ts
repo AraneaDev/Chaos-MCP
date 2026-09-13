@@ -113,7 +113,9 @@ import { detectEnvironment } from '../utils/project-detector.js';
 import { createSandbox } from '../utils/sandbox.js';
 import { runShellCommand } from '../utils/exec.js';
 import { isVerbose, log } from '../utils/logger.js';
-import { existsSync } from 'fs';
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from 'fs';
+import { execFileSync } from 'child_process';
+import { join } from 'node:path';
 import { computeChangedRanges } from '../utils/git-diff.js';
 import { applyAndCountSuppressions } from '../audit/suppression-io.js';
 import { workspaceHasPythonTests } from '../core/test-file.js';
@@ -121,7 +123,7 @@ import { computeScope } from '../audit/scope.js';
 import { AuditDeadline } from '../utils/deadline.js';
 import { createResourceContext } from '../core/resource-context.js';
 import { resolveCargoJobs } from '../engines/rust/args.js';
-import { cpus } from 'node:os';
+import { cpus, tmpdir } from 'node:os';
 
 const MockTSEngine = vi.mocked(TypeScriptEngine);
 const MockRustEngine = vi.mocked(RustEngine);
@@ -3723,6 +3725,7 @@ describe('handleToolCall', () => {
       mockComputeChangedRanges.mockResolvedValue({
         kind: 'ranges',
         ranges: [{ start: 3, end: 5 }],
+        resolvedBase: { ref: 'HEAD', staged: false },
       });
 
       await handleToolCall(
@@ -3734,40 +3737,85 @@ describe('handleToolCall', () => {
       expect(runOpts.lineRanges).toEqual([{ start: 3, end: 5 }]);
     });
 
-    it('ranges → non-TypeScript: runs whole file and attaches a scopeNote', async () => {
-      const mockRun = vi.fn().mockResolvedValue({
-        target: 'src/x.rs',
-        totalMutants: 1,
-        killed: 1,
-        survived: 0,
-        mutationScore: '100.00%',
-        vulnerabilities: [],
-      });
-      MockRustEngine.mockImplementation(function () {
-        return { run: mockRun } as unknown as RustEngine;
-      });
-      mockDetectEnv.mockReturnValue({
-        projectType: 'rust',
-        testRunner: 'cargo test',
-        detectedRunner: 'cargo test',
-        packageManager: '',
-        workspaceRoot: '/workspace',
-      });
-      mockComputeChangedRanges.mockResolvedValue({
-        kind: 'ranges',
-        ranges: [{ start: 1, end: 2 }],
-      });
+    it("ranges → non-TypeScript: diff-scopes it too, via the engine's own diffScope shape (Task 8)", async () => {
+      // Before Task 8, `computeScope`'s diffBase gate read `supportsLineScope`
+      // (false for Rust) and this request never got past "not supported for
+      // rust", so `materialiseDiffScope` (audit/diff-scope.ts) was reached for
+      // no Rust request at all. `supportsDiffScope` is true for Rust, so the
+      // request now reaches it, and Rust's own materialisation shells out to
+      // real git against `env.workspaceRoot` to build the `--in-diff` patch
+      // `RustEngine` consumes (rust.ts / rust/args.ts), hence the real git
+      // repository below instead of the synthetic '/workspace' every other
+      // case in this describe block uses.
+      let repo = '';
+      let sandboxDir = '';
+      const setupGit = (args: string[]) =>
+        execFileSync('git', args, { cwd: repo, encoding: 'utf-8', stdio: 'pipe' });
+      try {
+        repo = mkdtempSync(join(realpathSync(tmpdir()), 'chaos-handler-diff-repo-'));
+        sandboxDir = mkdtempSync(join(realpathSync(tmpdir()), 'chaos-handler-diff-sandbox-'));
+        mkdirSync(join(repo, 'src'), { recursive: true });
+        setupGit(['init', '-q', '-b', 'main', '.']);
+        setupGit(['config', 'user.email', 'test@example.com']);
+        setupGit(['config', 'user.name', 'Chaos Test']);
+        setupGit(['config', 'commit.gpgsign', 'false']);
+        writeFileSync(join(repo, 'src/x.rs'), 'fn a() {}\nfn b() {}\n');
+        setupGit(['add', '-A']);
+        setupGit(['commit', '-qm', 'init']);
+        writeFileSync(join(repo, 'src/x.rs'), 'fn a() {}\nfn b() {}\nfn c() {}\n');
 
-      const res = await handleToolCall(
-        makeRequest('audit_code_resilience', { filePath: 'src/x.rs', diffBase: 'HEAD' }),
-      );
+        mockCreateSandbox.mockResolvedValue({
+          workDir: sandboxDir,
+          targetFile: '',
+          cleanup: vi.fn(),
+        });
 
-      expect(mockRun).toHaveBeenCalled();
-      const json = JSON.parse((res.content[0] as { text: string }).text);
-      expect(json.scopeNote).toMatch(/not supported for rust/i);
-      // The Rust engine receives NO line scoping (whole-file run).
-      const runOpts = mockRun.mock.calls[0][1] as { lineRanges?: unknown };
-      expect(runOpts.lineRanges).toBeUndefined();
+        const mockRun = vi.fn().mockResolvedValue({
+          target: 'src/x.rs',
+          totalMutants: 1,
+          killed: 1,
+          survived: 0,
+          mutationScore: '100.00%',
+          vulnerabilities: [],
+        });
+        MockRustEngine.mockImplementation(function () {
+          return { run: mockRun } as unknown as RustEngine;
+        });
+        mockDetectEnv.mockReturnValue({
+          projectType: 'rust',
+          testRunner: 'cargo test',
+          detectedRunner: 'cargo test',
+          packageManager: '',
+          workspaceRoot: repo,
+        });
+        mockComputeChangedRanges.mockResolvedValue({
+          kind: 'ranges',
+          ranges: [{ start: 3, end: 3 }],
+          // Real materialisation follows (see the test comment above): this
+          // must be a ref the REAL `git diff`/`git show` against `repo` can
+          // actually resolve, so `HEAD` here is not incidental.
+          resolvedBase: { ref: 'HEAD', staged: false },
+        });
+
+        const res = await handleToolCall(
+          makeRequest('audit_code_resilience', { filePath: 'src/x.rs', diffBase: 'HEAD' }),
+        );
+
+        expect(mockRun).toHaveBeenCalled();
+        const json = JSON.parse((res.content[0] as { text: string }).text);
+        // Real materialisation succeeded, so there is nothing to say on the
+        // note: the old "not supported for rust" text must not appear.
+        expect(json.scopeNote).toBeUndefined();
+        const runOpts = mockRun.mock.calls[0][1] as {
+          lineRanges?: { start: number; end: number }[];
+          diffScope?: { kind: string; path?: string };
+        };
+        expect(runOpts.lineRanges).toEqual([{ start: 3, end: 3 }]);
+        expect(runOpts.diffScope?.kind).toBe('patch');
+      } finally {
+        if (repo) rmSync(repo, { recursive: true, force: true });
+        if (sandboxDir) rmSync(sandboxDir, { recursive: true, force: true });
+      }
     });
 
     it('untracked file → runs whole file with an explanatory scopeNote and no line scoping', async () => {
@@ -4470,6 +4518,7 @@ describe('handleToolCall defensive paths', () => {
     mockComputeChangedRanges.mockResolvedValue({
       kind: 'ranges',
       ranges: [{ start: 1, end: 5 }],
+      resolvedBase: { ref: 'HEAD', staged: false },
     });
 
     const response = await handleToolCall(

@@ -17,6 +17,19 @@ import { runShellCommand } from '../utils/exec.js';
 import { log, isVerbose } from '../utils/logger.js';
 import { findPythonTestSelection, workspaceHasPythonTests } from '../core/test-file.js';
 import { buildRunOptions, type ProjectType } from './run-options.js';
+import { ENGINE_REGISTRY } from '../engines/registry.js';
+import { materialiseDiffScope } from './diff-scope.js';
+import type { ResolvedDiffBase } from '../utils/git-diff.js';
+import { AuditDeadline } from '../utils/deadline.js';
+
+/**
+ * Mirrors `MIN_ENGINE_BUDGET_MS` in `handler.ts` and `triage/audit-one.ts`,
+ * which apply the same floor at their own phase boundaries: below this, an
+ * engine cannot do anything useful before its own process/report overhead
+ * eats the budget, so the run is refused here rather than started
+ * token-funded (Finding 3).
+ */
+const MIN_ENGINE_BUDGET_MS = 1_000;
 
 /**
  * The single wording of the "this Python project has no test suite" refusal.
@@ -68,6 +81,17 @@ export interface AuditFileInput {
   workDir: string;
   prebuildCmd: string | null;
   lineRanges?: { start: number; end: number }[];
+  /**
+   * The base `lineRanges` was resolved against, already resolved ONCE by the
+   * caller (`handler.ts`'s `computeScope`, or `triage/audit-one.ts`'s own
+   * `resolveDiffScope`), never re-derived here. Both callers already run
+   * `computeChangedRanges` (utils/git-diff.ts) to get `lineRanges`; handing
+   * its `resolvedBase` straight through is what keeps this and that ONE
+   * resolution rather than two that can disagree on a diverged branch.
+   * Absent whenever `lineRanges` is, and gates materialisation exactly the
+   * way `lineRanges.length > 0` does.
+   */
+  resolvedDiffBase?: ResolvedDiffBase;
   /** Abort signal forwarded from the MCP request context; kills in-flight subprocesses. */
   signal?: AbortSignal;
 }
@@ -80,8 +104,18 @@ export interface AuditFileInput {
  * errors propagate from `engine.run`.
  */
 export async function auditFile(input: AuditFileInput): Promise<MutationResult> {
-  const { targetFile, env, projectType, engine, args, config, workDir, prebuildCmd, lineRanges } =
-    input;
+  const {
+    targetFile,
+    env,
+    projectType,
+    engine,
+    args,
+    config,
+    workDir,
+    prebuildCmd,
+    lineRanges,
+    resolvedDiffBase,
+  } = input;
   const runOptions = buildRunOptions(args, config, env, workDir, projectType, targetFile);
   // `length > 0`, not just truthiness: an EMPTY array is truthy, and every
   // consumer downstream reads "no ranges" as "the whole file" — StrykerJS's
@@ -94,6 +128,75 @@ export async function auditFile(input: AuditFileInput): Promise<MutationResult> 
   // cannot fix this at the call site — `[] ?? x` is `[]` — so the emptiness has
   // to be decided here (audit High#1 / Fix 1).
   if (lineRanges && lineRanges.length > 0) runOptions.lineRanges = lineRanges;
+  // Turn the already-computed diff ranges into whatever the target engine
+  // needs INSIDE the sandbox to act on them. StrykerJS already consumed
+  // `lineRanges` directly above, so `materialiseDiffScope` has nothing to do
+  // for TypeScript; it exists for the engines that need a patch file or a
+  // throwaway git repository built inside `workDir` first (see
+  // `audit/diff-scope.ts`). A materialisation failure never blocks the run:
+  // it comes back as a `note` that joins the run's scope note below rather
+  // than a `diffScope`, so the engine falls back to mutating the whole file.
+  //
+  // Gated on `resolvedDiffBase`, a value the CALLER already resolved via
+  // `computeChangedRanges` (whichever produced `lineRanges`), not on
+  // `args.diffBase`. Re-reading the raw string here would either duplicate
+  // that resolution (the exact bug that let a diverged branch's Rust patch
+  // and PHP base come from two different commits) or, for the triage sweep,
+  // simply never fire: `triage/audit-one.ts` builds a fresh, minimal
+  // `ToolArgs` per file that has never carried `diffBase`, so gating on it
+  // left every triage sweep materialising nothing for Python, Rust and PHP
+  // while `resolveDiffScope` still stamped their rows "scored on changed
+  // lines".
+  let diffScopeNote: string | undefined;
+  if (
+    lineRanges &&
+    lineRanges.length > 0 &&
+    resolvedDiffBase &&
+    ENGINE_REGISTRY[projectType].supportsDiffScope
+  ) {
+    // Charge materialisation against the SAME budget the engine is about to
+    // run under (Finding 3): left unmeasured, a slow or timed-out git
+    // sequence here spent real wall-clock time while `runOptions.timeoutMs`
+    // stayed untouched, so a whole-file fallback run then started with the
+    // FULL budget on top of what materialisation already used, promising the
+    // engine time the caller's deadline no longer has. `AuditDeadline` is the
+    // same elapsed-time primitive `handler.ts` and `triage/audit-one.ts`
+    // already deadline the surrounding phases with, reused here rather than a
+    // second hand-rolled `Date.now()` diff.
+    const materialiseDeadline =
+      typeof runOptions.timeoutMs === 'number'
+        ? new AuditDeadline(runOptions.timeoutMs)
+        : undefined;
+    const materialised = await materialiseDiffScope({
+      projectType,
+      relFile: targetFile,
+      workspaceRoot: env.workspaceRoot,
+      sandboxDir: workDir,
+      resolvedBase: resolvedDiffBase,
+      ranges: lineRanges,
+      signal: input.signal,
+      timeoutMs: runOptions.timeoutMs,
+    });
+    if (materialised.diffScope) runOptions.diffScope = materialised.diffScope;
+    diffScopeNote = materialised.note;
+    if (materialiseDeadline) {
+      const remaining = materialiseDeadline.remainingMs();
+      if (remaining < MIN_ENGINE_BUDGET_MS) {
+        // Same wording family as `handler.ts`'s `reserveEngineBudget`
+        // ("Audit time budget exhausted <phase> after <n>ms.") so both
+        // callers recognise it as the SAME kind of exhaustion their own
+        // phase-boundary checks already produce, rather than a generic
+        // engine failure: `handler.ts` turns it into the identical tool
+        // error, and the triage sweep folds it into the `unaudited` bucket
+        // instead of a per-file error row.
+        throw new Error(
+          `Audit time budget exhausted during diff-scope materialisation after ` +
+            `${materialiseDeadline.elapsedMs()}ms.`,
+        );
+      }
+      runOptions.timeoutMs = remaining;
+    }
+  }
   // Python only: when neither the tool args nor the config scoped the suite,
   // default to the target file's own test module(s). cosmic-ray otherwise runs
   // the WHOLE suite per mutant — impractical on real projects, and a single
@@ -184,6 +287,13 @@ export async function auditFile(input: AuditFileInput): Promise<MutationResult> 
     }
 
     const result = await engine.run(targetFile, runOptions);
+    // Append rather than replace: the engine may already have set a scope note
+    // of its own (e.g. a batched run's "Completed N bounded mutation
+    // batches."), and overwriting it would silently drop that fact from the
+    // one field the text output prints.
+    if (diffScopeNote) {
+      result.scopeNote = result.scopeNote ? `${result.scopeNote} ${diffScopeNote}` : diffScopeNote;
+    }
     // Applied HERE, after the engine and once, rather than in each engine: the
     // silent-harness failure is a property of the numbers every engine already
     // reports, not of any one tool's output format, and four copies of the rule

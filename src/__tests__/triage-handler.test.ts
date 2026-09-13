@@ -70,6 +70,7 @@ import { loadSuppressions, fingerprintSourceLine, type StoredEntry } from '../ut
 import { mintRunId, loadRun, workspaceFingerprint } from '../utils/run-cache.js';
 import { computeScope } from '../audit/scope.js';
 import { createSandbox } from '../utils/sandbox.js';
+import { ENGINE_REGISTRY } from '../engines/registry.js';
 import { handleTriageCall, partitionOutcomes } from '../triage-handler.js';
 
 const mockDiscover = vi.mocked(discoverFiles);
@@ -498,22 +499,69 @@ describe('handleTriageCall', () => {
   });
 
   describe('diff-scoped rows', () => {
-    it('marks a row when the language cannot be line-scoped', async () => {
-      // cargo-mutants/cosmic-ray/Infection run whole-file, so a diff-scoped
-      // triage must say the score covers more than the diff — otherwise the
-      // number reads as "your changed lines are 60% covered".
+    it('no longer marks Python as diff-scoping-unsupported now that diffBase is honoured (Task 8)', async () => {
+      // Before Task 8, `resolveDiffScope`'s early return (triage/audit-one.ts)
+      // gated on `supportsLineScope` (false for Python) and returned this note
+      // WITHOUT ever calling `computeChangedRanges`. `supportsDiffScope` is
+      // true for Python (engines/registry.ts), so the row must now come back
+      // line-scoped, exactly like a TypeScript row, and the git call the old
+      // assertion said never happened must now happen.
+      //
+      // CRITICAL fix-wave finding: this test's ORIGINAL assertions (scopeNote
+      // + lineRanges reaching `auditFile`) passed even while `buildPerFileArgs`
+      // never put anything on the per-file args that let `auditFile` actually
+      // materialise a diff scope for Python/Rust/PHP, so the row was labelled
+      // "scored on changed lines" while the engine silently mutated the whole
+      // file. The `resolvedDiffBase` assertion below is the one that actually
+      // fails against that broken wiring: `auditFile` gates materialisation on
+      // `resolvedDiffBase` (audit/audit-file.ts), and before the fix the sweep
+      // never passed it at all.
       mockListChangedFiles.mockResolvedValue({ kind: 'files', files: ['a.py'] });
       mockDiscoverChanged.mockReturnValue({ files: ['a.py'], discovered: 1, skipped: 0 });
       mockDetectEnv.mockReturnValue({ ...tsEnv, projectType: 'python' });
+      mockComputeChangedRanges.mockResolvedValue({
+        kind: 'ranges',
+        ranges: [{ start: 4, end: 4 }],
+        resolvedBase: { ref: 'HEAD', staged: false },
+      });
       mockAuditFile.mockResolvedValue(mrOf({}));
 
       const res = await handleTriageCall(req({ diffBase: 'HEAD' }));
       const payload = JSON.parse(txt(res)) as { ranking: { scopeNote?: string }[] };
 
-      expect(payload.ranking[0].scopeNote).toBe(
-        'diff scoping unsupported for this language; whole file',
-      );
-      expect(mockComputeChangedRanges).not.toHaveBeenCalled();
+      expect(payload.ranking[0].scopeNote).toBe('scored on changed lines');
+      expect(mockComputeChangedRanges).toHaveBeenCalled();
+      expect(mockAuditFile.mock.calls[0][0].lineRanges).toEqual([{ start: 4, end: 4 }]);
+      expect(mockAuditFile.mock.calls[0][0].resolvedDiffBase).toEqual({
+        ref: 'HEAD',
+        staged: false,
+      });
+    });
+
+    it('still marks a row when the language cannot diff-scope at all', async () => {
+      // The "unsupported" branch itself must not be deleted: it protects a
+      // FUTURE engine with neither `supportsLineScope` nor `supportsDiffScope`.
+      // There is no such language in the registry today, so this pins the
+      // branch directly against a descriptor rather than inventing a fifth
+      // engine.
+      const original = ENGINE_REGISTRY.python.supportsDiffScope;
+      ENGINE_REGISTRY.python.supportsDiffScope = false;
+      try {
+        mockListChangedFiles.mockResolvedValue({ kind: 'files', files: ['a.py'] });
+        mockDiscoverChanged.mockReturnValue({ files: ['a.py'], discovered: 1, skipped: 0 });
+        mockDetectEnv.mockReturnValue({ ...tsEnv, projectType: 'python' });
+        mockAuditFile.mockResolvedValue(mrOf({}));
+
+        const res = await handleTriageCall(req({ diffBase: 'HEAD' }));
+        const payload = JSON.parse(txt(res)) as { ranking: { scopeNote?: string }[] };
+
+        expect(payload.ranking[0].scopeNote).toBe(
+          'diff scoping unsupported for this language; whole file',
+        );
+        expect(mockComputeChangedRanges).not.toHaveBeenCalled();
+      } finally {
+        ENGINE_REGISTRY.python.supportsDiffScope = original;
+      }
     });
 
     it('marks an untracked file as whole-file rather than leaving it unlabelled', async () => {
@@ -1304,6 +1352,7 @@ describe('handleTriageCall', () => {
     mockComputeChangedRanges.mockResolvedValue({
       kind: 'ranges',
       ranges: [{ start: 1, end: 10 }],
+      resolvedBase: { ref: 'abc123', staged: false },
     });
     mockAuditFile.mockResolvedValue(mrOf({ mutationScore: '60.00%', survived: 4 }));
     const res = await handleTriageCall(req({ diffBase: 'main' }));
@@ -1315,7 +1364,10 @@ describe('handleTriageCall', () => {
       expect.objectContaining({ timeoutMs: expect.any(Number) as number }),
     );
     expect(mockAuditFile).toHaveBeenCalledWith(
-      expect.objectContaining({ lineRanges: [{ start: 1, end: 10 }] }),
+      expect.objectContaining({
+        lineRanges: [{ start: 1, end: 10 }],
+        resolvedDiffBase: { ref: 'abc123', staged: false },
+      }),
     );
     const parsed = JSON.parse(txt(res));
     expect(parsed.ranking[0].scopeNote).toBe('scored on changed lines');

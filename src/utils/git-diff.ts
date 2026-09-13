@@ -32,6 +32,34 @@ export interface GitFailure {
 }
 
 /**
+ * The git revision a diff's ranges were actually computed against, resolved
+ * ONCE by {@link computeChangedRanges} rather than re-derived by every
+ * consumer of its ranges.
+ *
+ * Before this existed, `computeChangedRanges` diffed against
+ * `merge-base <diffBase> HEAD` while `materialiseDiffScope` (audit/diff-scope.ts)
+ * separately passed the RAW `diffBase` straight to `git diff <base>` /
+ * `git show <base>:<path>`. On a diverged branch those two are different
+ * commits, so the materialiser built a patch (or a PHP base commit) from the
+ * tip of `diffBase` while the ranges it was supposed to match came from the
+ * merge-base, and the engine mutated lines the branch never touched. The
+ * `'staged'` sentinel made it worse: passed verbatim to `git show`/`git diff`
+ * it is not a valid revision at all, so materialisation failed outright.
+ *
+ * `ref` is always a concrete commit-ish (the resolved merge-base for a ref
+ * `diffBase`, or `'HEAD'` for `'staged'`, the implicit right-hand side of
+ * `git diff --cached`), never the sentinel itself. `staged` tells a
+ * materialiser that reproduces the diff with its own `git diff` call to add
+ * `--cached`, since `ref` alone does not carry that.
+ */
+export interface ResolvedDiffBase {
+  /** A concrete commit-ish; never the `'staged'` sentinel. */
+  ref: string;
+  /** True when the ranges came from `git diff --cached` (index vs `ref`). */
+  staged: boolean;
+}
+
+/**
  * Classification of a target file's change status against a diff base.
  *
  * `git-failed` is reachable from ALL FOUR git calls in `computeChangedRanges`
@@ -41,7 +69,7 @@ export interface GitFailure {
  * originated from; there is no call site where it can safely be assumed away.
  */
 export type DiffResult =
-  | { kind: 'ranges'; ranges: LineRange[] } // tracked file with ≥1 changed hunk
+  | { kind: 'ranges'; ranges: LineRange[]; resolvedBase: ResolvedDiffBase } // tracked file with ≥1 changed hunk
   | { kind: 'no-changes' } // tracked file, identical to base
   | { kind: 'untracked' } // file not known to git → whole file is "new"
   | { kind: 'not-a-repo' } // git says the workspace is not a git work tree
@@ -191,8 +219,32 @@ export async function computeChangedRanges(
   // are never parsed. Adding `--relative` here would change nothing and would
   // silently drop the file whenever `workspaceRoot` sits below it.
   let diffArgs: string[];
+  let resolvedBase: ResolvedDiffBase;
   if (diffBase === 'staged') {
     diffArgs = ['diff', '--cached', '-U0', '--', relFilePath];
+    // `git diff --cached` with no tree-ish compares the index to `HEAD`, so
+    // `HEAD` is the concrete revision a materialiser must reproduce the base
+    // content from, never the `'staged'` sentinel itself (see
+    // {@link ResolvedDiffBase}). Resolved to an immutable SHA here, not left
+    // as the symbolic ref `HEAD` (Finding 4): materialisation
+    // (audit/diff-scope.ts) reads this same base again, later and in a
+    // different process, for PHP's `git show` and Rust's `git diff --cached`.
+    // A symbolic `HEAD` can advance between the two reads (another commit
+    // lands while the sweep is running); the materialiser would then
+    // reproduce a different base than the ranges below were computed
+    // against, and the row would report a score for lines it never
+    // reproduced. A SHA cannot move out from under it.
+    let headSha: string;
+    try {
+      headSha = (await git(['rev-parse', 'HEAD'])).stdout.trim();
+    } catch (err: unknown) {
+      // Same rule as the merge-base branch below: only a non-zero exit (an
+      // unborn branch, no commits yet) is evidence the ref itself is bad.
+      const failure = classifyGitFailure(err);
+      if (failure.kind !== 'exit') return failure;
+      return { kind: 'bad-ref', ref: 'HEAD' };
+    }
+    resolvedBase = { ref: headSha, staged: true };
   } else {
     let base: string;
     try {
@@ -205,6 +257,7 @@ export async function computeChangedRanges(
       return { kind: 'bad-ref', ref: diffBase };
     }
     diffArgs = ['diff', '-U0', base, '--', relFilePath];
+    resolvedBase = { ref: base, staged: false };
   }
 
   let diffOut: string;
@@ -219,7 +272,7 @@ export async function computeChangedRanges(
   }
 
   const ranges = parseHunks(diffOut);
-  return ranges.length === 0 ? { kind: 'no-changes' } : { kind: 'ranges', ranges };
+  return ranges.length === 0 ? { kind: 'no-changes' } : { kind: 'ranges', ranges, resolvedBase };
 }
 
 /**

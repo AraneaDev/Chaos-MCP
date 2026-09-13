@@ -2,6 +2,12 @@ import { ExecFailureError } from '../utils/exec-error.js';
 import { MutationToolStartupError } from '../utils/exec-classify.js';
 import type { ExecutionSession } from '../utils/execution.js';
 
+/** How a single engine should be pointed at the already-computed diff. */
+export type DiffScope =
+  | { kind: 'patch'; path: string }
+  | { kind: 'git-base'; ref: string }
+  | { kind: 'ranges'; ranges: { start: number; end: number }[] };
+
 /**
  * Describes a single surviving mutant — a logical fault the test suite failed to catch.
  */
@@ -252,6 +258,17 @@ export interface RunOptions {
    * patterns. Ignored by cosmic-ray, cargo-mutants.
    */
   lineRanges?: { start: number; end: number }[];
+
+  /**
+   * How this run is restricted to what a diff changed, in the shape the engine
+   * understands: a patch file for cargo-mutants, explicit ranges for
+   * cosmic-ray, a git ref for Infection. Absent means mutate the whole file,
+   * which is what every engine did before this existed.
+   *
+   * Distinct from {@link RunOptions.lineRanges}, which is arbitrary ranges and
+   * remains StrykerJS only.
+   */
+  diffScope?: DiffScope;
 
   /**
    * Restrict which Stryker mutator names to use.

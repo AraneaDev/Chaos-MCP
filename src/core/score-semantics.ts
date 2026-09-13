@@ -54,14 +54,15 @@ import type { MutationResult } from '../engines/base.js';
  *    concept leave it undefined and must keep behaving as before.
  *
  * TRANSITIONAL: conjunct 2 accepts `scopeKind === undefined` as long as the
- * result carries no `scopeNote`. Only the TypeScript engine emits `scopeKind`
- * today; the Python, Rust and PHP engines do not, and demanding it outright
- * would silently un-fix audit M3 for three of the four languages — a Rust
- * constants file would go straight back to reporting "100.00%". The `!scopeNote`
- * fallback is exactly the old predicate, and it still excludes the one
- * non-enumerating run that exists: StrykerJS `dryRun` is the only producer of a
- * `scopeKind`-less zero-with-no-enumeration, and `dryRunResult` always sets a
- * scopeNote. Delete the fallback once every engine sets `scopeKind`.
+ * result carries no `scopeNote`. Every engine now emits `scopeKind` on every
+ * run it scores (Task 8: Python, Rust and PHP stamp it exactly as TypeScript
+ * does), so a `scopeKind`-less result is believed to reach this function only
+ * through {@link MutationResult} shapes built by hand rather than by an
+ * engine's own report parser (a `dryRunResult`, a short-circuit payload). The
+ * `!scopeNote` fallback is exactly the old predicate, and it still excludes
+ * the one non-enumerating run that exists: StrykerJS `dryRun` is the only
+ * producer of a `scopeKind`-less zero-with-no-enumeration, and `dryRunResult`
+ * always sets a scopeNote.
  */
 export function hasNoMutableLogic(result: MutationResult): boolean {
   if (result.totalMutants !== 0) return false;

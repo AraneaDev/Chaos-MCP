@@ -112,16 +112,13 @@ import {
  * this gate exists to prevent, on the one engine that batches by default.
  *
  * TRANSITIONAL, twin of `hasNoMutableLogic`'s conjunct 2 in
- * `core/score-semantics.ts` (see the note there): only the TypeScript engine
- * emits `scopeKind` today, so gating on `=== 'whole-file'` alone would
- * hard-wire this to `false` for every Rust, Python and PHP run — exactly the
- * Rust-upgrade case this whole feature exists for. The fallback (`scopeKind`
- * unset AND no `scopeNote`) is safe rather than an approximation: Python,
- * Rust and PHP set `supportsLineScope: false` in `engines/registry.ts`, so a
- * run of theirs is ALWAYS whole-file and there is no scoped case for the
- * fallback to misjudge. TypeScript, the one engine that can be scoped, always
- * sets `scopeKind` explicitly and so never reaches it. Delete this fallback
- * alongside that one once every engine sets `scopeKind`.
+ * `core/score-semantics.ts` (see the note there): every engine now sets
+ * `scopeKind` on every run (Task 8: Python, Rust and PHP stamp `'scoped'`
+ * for a diff-scoped run and `'whole-file'` otherwise, the same as
+ * TypeScript), so the `scopeKind` unset AND no `scopeNote` fallback below is
+ * believed to be unreachable in practice. It stays rather than being deleted
+ * because nothing here proves every code path constructs a `MutationResult`
+ * through one of those engines' report parsers.
  */
 export function isWholeFileRun(result: MutationResult): boolean {
   if (result.complete === false) return false;

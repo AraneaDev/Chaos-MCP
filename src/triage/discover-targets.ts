@@ -119,7 +119,7 @@ export async function resolveTriageTargets(input: TriageTargetInput): Promise<Tr
       // as skipped — otherwise it vanishes from every total and `discovered` no
       // longer equals audited + skipped + errored + unaudited.
       skipped: sel.skipped + (sel.files.length - permitted.length),
-      scopeNote: `Scoped to files changed vs ${diffBase}. TypeScript files mutated on changed lines; other languages whole-file.`,
+      scopeNote: `Scoped to files changed vs ${diffBase}. Each file is mutated on its changed lines; a per-row note explains any whole-file fallback.`,
     };
   }
 

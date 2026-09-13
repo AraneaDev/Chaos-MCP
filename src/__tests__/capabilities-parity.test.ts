@@ -72,8 +72,15 @@ describe('parity ratchet', () => {
 
   it('keeps the matrix in step with the registry flags', () => {
     expect(CAPABILITIES.typescript['diff-line-scope']).toBe('full');
-    expect(CAPABILITIES.python['diff-line-scope']).toBe('none');
+    expect(CAPABILITIES.python['diff-line-scope']).toBe('full');
     expect(CAPABILITIES.python.concurrency).toBe('none');
+  });
+
+  it('records arbitrary line scoping as a capability of its own', () => {
+    expect(CAPABILITIES.typescript['arbitrary-line-scope']).toBe('full');
+    expect(CAPABILITIES.python['arbitrary-line-scope']).toBe('none');
+    expect(CAPABILITIES.rust['arbitrary-line-scope']).toBe('none');
+    expect(CAPABILITIES.php['arbitrary-line-scope']).toBe('none');
   });
 });
 

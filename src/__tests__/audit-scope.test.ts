@@ -4,6 +4,7 @@ import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { computeScope } from '../audit/scope.js';
+import { ENGINE_REGISTRY } from '../engines/registry.js';
 import { AuditDeadline } from '../utils/deadline.js';
 import { saveRun, workspaceFingerprint } from '../utils/run-cache.js';
 import type { EnvironmentInfo } from '../utils/project-detector.js';
@@ -48,6 +49,37 @@ const env = (): EnvironmentInfo => ({
 
 const scopeFor = (args: ToolArgs) =>
   computeScope(args, join(ws, REL), env(), 'typescript', {}, REL);
+
+describe('computeScope: verify (baseline mode) never diff-scopes, on any engine', () => {
+  it('leaves diffRanges undefined in baseline mode even for an engine Task 8 made diff-scopable', async () => {
+    // Task 8 flipped the DIFFBASE gate (the `case 'ranges':` arm further down
+    // in this file) from `supportsLineScope` to `supportsDiffScope`, so a
+    // Rust/Python/PHP AUDIT can now be diff-scoped. Verify, the `baseline`/
+    // `runId` arm below, mutually exclusive with `diffBase`, must not pick
+    // that up: it always re-runs whole-file and filters by baseline key
+    // afterward, on every engine, regardless of what that engine can diff-
+    // scope (see the long comment later in `computeScope`, "Verify
+    // deliberately does NOT line-scope the re-run, on ANY engine"). This
+    // never depended on `supportsLineScope`/`supportsDiffScope` at all, so it
+    // guards against a FUTURE change that wires the two selectors together
+    // and starts diff-scoping verify as a byproduct, exactly the trap the
+    // task brief calls out, proven here on `rust`, one of the engines the
+    // diffBase gate now scopes.
+    const scope = await computeScope(
+      { baseline: { survivors: [{ line: 1, mutators: { ConditionalExpression: 1 } }] } },
+      join(ws, REL),
+      { ...env(), projectType: 'rust' },
+      'rust',
+      {},
+      REL,
+    );
+
+    expect(scope.kind).toBe('scope');
+    if (scope.kind !== 'scope') return;
+    expect(scope.diffRanges).toBeUndefined();
+    expect(scope.baselineKeys).toEqual([{ line: 1, mutator: 'ConditionalExpression' }]);
+  });
+});
 
 describe('computeScope — baseline selector', () => {
   it('parses a well-formed baseline object into mutant keys', () => {
@@ -238,6 +270,9 @@ describe('computeScope — diff path against a real repository', () => {
   const setupGit = (args: string[]) =>
     execFileSync('git', args, { cwd: repo, encoding: 'utf-8', stdio: 'pipe' });
 
+  /** The commit `diffBase: 'HEAD'` resolves to in this single-commit fixture. */
+  const headSha = () => setupGit(['rev-parse', 'HEAD']).trim();
+
   const scopeIn = (
     args: ToolArgs,
     projectType: 'typescript' | 'python' = 'typescript',
@@ -332,15 +367,26 @@ describe('computeScope — diff path against a real repository', () => {
     expect(scope).toStrictEqual({
       kind: 'scope',
       diffRanges: [{ start: 3, end: 3 }],
+      // `diffBase: 'HEAD'` against a single-commit repo resolves
+      // `merge-base HEAD HEAD` to HEAD's own sha, a concrete commit, never
+      // the string `'HEAD'` itself, so a materialiser given this value never
+      // has to resolve anything a second time (CRITICAL: two resolutions of
+      // the same base disagreeing on a diverged branch).
+      resolvedBase: { ref: headSha(), staged: false },
       scopeNote: undefined,
       baselineKeys: undefined,
     });
   });
 
-  it('mutates the whole file, with a note, when the engine cannot line-scope', async () => {
-    // cosmic-ray takes no line ranges, so the same `ranges` DiffResult must come
-    // back as a whole-file run that SAYS it was not scoped. Dropping the
-    // capability check hands Python an unusable range list instead.
+  it('line-scopes a diffBase run on an engine with no arbitrary line scope too (Task 8)', async () => {
+    // Before Task 8, this gate read `supportsLineScope`, true only for
+    // StrykerJS, so a `ranges` DiffResult against Python fell through to the
+    // "not supported" note without ever reaching `computeChangedRanges`'s
+    // ranges being used. `supportsDiffScope` is true for all four engines
+    // (engines/registry.ts), and cosmic-ray/cargo-mutants/Infection can all
+    // restrict a run to a diff via their own flag (`cr-filter-lines`,
+    // `--in-diff`, `--git-diff-lines`), so Python must now come back scoped
+    // exactly like TypeScript does above, not with the "unsupported" note.
     writeFileSync(
       join(repo, REL),
       'export const a = 1;\nexport const b = 2;\nexport const c = 3;\n',
@@ -348,10 +394,40 @@ describe('computeScope — diff path against a real repository', () => {
 
     const scope = await scopeIn({ diffBase: 'HEAD' }, 'python');
 
-    expect(scope.kind).toBe('scope');
-    if (scope.kind !== 'scope') return;
-    expect(scope.diffRanges).toBeUndefined();
-    expect(scope.scopeNote).toContain('diffBase scoping is not supported for python');
+    expect(scope).toStrictEqual({
+      kind: 'scope',
+      diffRanges: [{ start: 3, end: 3 }],
+      resolvedBase: { ref: headSha(), staged: false },
+      scopeNote: undefined,
+      baselineKeys: undefined,
+    });
+  });
+
+  it('still falls back whole-file, with a note, for an engine with neither capability', async () => {
+    // The "unsupported" branch itself must not be deleted: it is what protects
+    // a FUTURE fifth engine that supports neither scoping shape. There is no
+    // such engine in the registry today, so this pins the branch directly
+    // against a descriptor rather than a real project type. `computeScope`
+    // only ever reads `ENGINE_REGISTRY[projectType].supportsDiffScope`, so a
+    // registry entry that flips it off is sufficient to exercise the branch
+    // without inventing a fifth language.
+    const original = ENGINE_REGISTRY.python.supportsDiffScope;
+    ENGINE_REGISTRY.python.supportsDiffScope = false;
+    try {
+      writeFileSync(
+        join(repo, REL),
+        'export const a = 1;\nexport const b = 2;\nexport const c = 3;\n',
+      );
+
+      const scope = await scopeIn({ diffBase: 'HEAD' }, 'python');
+
+      expect(scope.kind).toBe('scope');
+      if (scope.kind !== 'scope') return;
+      expect(scope.diffRanges).toBeUndefined();
+      expect(scope.scopeNote).toContain('diffBase scoping is not supported for python');
+    } finally {
+      ENGINE_REGISTRY.python.supportsDiffScope = original;
+    }
   });
 
   it('mutates the whole file, with a note, when the target is untracked', async () => {

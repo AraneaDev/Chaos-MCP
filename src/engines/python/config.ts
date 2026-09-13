@@ -30,6 +30,15 @@ export interface CosmicRayConfigOptions {
    * bounded on large files — matching mutants are marked skipped before exec.
    */
   excludeOperators?: string[];
+  /**
+   * 1-based inclusive line ranges to scope mutation to (read by
+   * `cr-filter-lines`), populated from `RunOptions.diffScope` of kind
+   * 'ranges'. Like the operator filter, cosmic-ray does not remove mutants
+   * outside these ranges: the filter relabels them 'skipped' in place, so
+   * `dump` still lists every mutant and `parseCosmicRayDump` counts the
+   * excluded ones as unscored rather than dropping them silently.
+   */
+  lineRanges?: { start: number; end: number }[];
 }
 
 /**
@@ -41,6 +50,12 @@ export interface CosmicRayConfigOptions {
  * `[cosmic-ray.operators]` section only parameterizes operators, it is NOT an
  * allowlist). To bound the mutant count on large files, supply `excludeOperators`
  * — `cr-filter-operators` marks matching mutants skipped (see the engine).
+ *
+ * `lineRanges` scopes to specific lines instead: cosmic-ray reads the section
+ * key as the `module-path` this config already declares (or its basename),
+ * so the same value written for `module-path` is reused as the key here.
+ * `cr-filter-lines` marks any mutant outside the listed ranges skipped (see
+ * the engine).
  */
 export function buildCosmicRayConfig(opts: CosmicRayConfigOptions): string {
   const lines = [
@@ -57,6 +72,14 @@ export function buildCosmicRayConfig(opts: CosmicRayConfigOptions): string {
       '',
       '[cosmic-ray.filters.operators-filter]',
       `exclude-operators = [${opts.excludeOperators.map((o) => JSON.stringify(o)).join(', ')}]`,
+    );
+  }
+  if (opts.lineRanges && opts.lineRanges.length > 0) {
+    const values = opts.lineRanges.map((r) => JSON.stringify(`${r.start}-${r.end}`)).join(', ');
+    lines.push(
+      '',
+      '[cosmic-ray.filters.line-filter.lines]',
+      `${JSON.stringify(opts.modulePath)} = [${values}]`,
     );
   }
   return `${lines.join('\n')}\n`;

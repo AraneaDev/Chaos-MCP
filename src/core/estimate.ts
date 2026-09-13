@@ -193,6 +193,16 @@ async function computeCount(opts: EstimateOptions): Promise<EstimateResult> {
         // degrade to the heuristic: it returns a confident `mutants: 0`, and the
         // timing projected from it is silently zero-cost. See the docblock on
         // `escapeCargoFileGlob` for the verified cargo-mutants 27.1.0 incident.
+        // `estimate_audit` has no `diffBase` parameter (`core/tool-schema.ts`
+        // declares only `filePath`/`withTiming`/`timeoutMs`), so there was never
+        // a caller that could reach a scoped count here. `EstimateOptions` used
+        // to carry a `diffScope` field wiring `--in-diff` into this argv anyway
+        // (IMPORTANT finding: "an option with no producer"), removed rather
+        // than wired, because wiring it properly means resolving a diff base and
+        // materialising a patch the way `audit/diff-scope.ts` does, and this
+        // module lives in `src/core`, which `knossos.json` forbids from
+        // importing `audit` at all. Reachable only from a direct
+        // `EstimateOptions` literal, entirely inside test files, is not "wired".
         ['mutants', '--list', '--file', escapeCargoFileGlob(opts.relFile)],
         {
           cwd: opts.workDir,
@@ -255,24 +265,36 @@ async function computeCount(opts: EstimateOptions): Promise<EstimateResult> {
  * language.
  *
  * The one sentence this replaced offered `lineScope`/`diffBase` to everyone.
- * Only StrykerJS honours either (`supportsLineScope` in engines/registry.ts):
- * an audit of a Rust, Python or PHP file returns `ignoredOptions: ["lineScope"]`
- * and runs whole-file regardless, so the estimate was recommending the one
- * remedy that provably does nothing — and, being the first two of three
+ * `lineScope` takes an ARBITRARY range (`file:12-18`) and only StrykerJS
+ * supports it (`supportsLineScope` in engines/registry.ts); an audit of a
+ * Rust, Python or PHP file returns `ignoredOptions: ["lineScope"]` and runs
+ * whole-file regardless, so the estimate was recommending the one remedy that
+ * provably does nothing for those languages, and, being the first of two
  * suggestions, the one a reader tries first.
+ *
+ * `diffBase`, in contrast, restricts a run to whatever a git diff changed
+ * (`supportsDiffScope`), which all four engines now honour, so it stays worth
+ * recommending even where `lineScope` does not.
  */
 function scopeDownAdvice(projectType: SupportedProjectType): string {
-  if (ENGINE_REGISTRY[projectType]?.supportsLineScope) {
+  const entry = ENGINE_REGISTRY[projectType];
+  if (entry?.supportsLineScope) {
     return 'narrow lineScope/diffBase, or use a larger budget';
   }
-  // cosmic-ray is the one whole-file engine with a scope knob of its own, and
-  // it is worth naming: `testSelection` cuts the per-mutant suite, which is the
-  // multiplied term.
+  const engineName = entry?.displayName ?? 'this engine';
+  // cosmic-ray is the one engine with a scope knob of its own beyond
+  // diffBase, and it is worth naming: `testSelection` cuts the per-mutant
+  // suite, which is the multiplied term.
   const lever = projectType === 'python' ? 'narrow cosmicray.testSelection, ' : '';
+  if (entry?.supportsDiffScope) {
+    return (
+      `${engineName} cannot take an arbitrary lineScope, but diffBase still narrows it to the ` +
+      `diff's changed lines: ${lever}raise timeoutMs, speed up the test suite, or split the file`
+    );
+  }
   return (
-    `${ENGINE_REGISTRY[projectType]?.displayName ?? 'this engine'} always runs whole-file, so ` +
-    `lineScope/diffBase cannot shrink it: ${lever}raise timeoutMs, speed up the test suite, or ` +
-    'split the file'
+    `${engineName} always runs whole-file, so lineScope/diffBase cannot shrink it: ${lever}raise ` +
+    'timeoutMs, speed up the test suite, or split the file'
   );
 }
 

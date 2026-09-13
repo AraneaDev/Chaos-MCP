@@ -204,6 +204,7 @@ export function parseCargoMutantsText(
   stdout: string,
   filePath: string,
   targetExists: boolean,
+  scopeKind: 'whole-file' | 'scoped' = 'whole-file',
 ): MutationResult {
   const lines = stdout.split('\n').filter((l) => l.trim());
   // Counts every printed result line, whatever its outcome. It is NOT used for
@@ -336,17 +337,19 @@ export function parseCargoMutantsText(
     survived: scored.survived,
     mutationScore: scored.mutationScore,
     vulnerabilities,
-    // cargo-mutants has no line-scoping mode — `supportsLineScope: false` in
-    // engines/registry.ts — so a report from it always enumerated the whole
-    // file. Say so structurally instead of leaving readers to infer it from
-    // the ABSENCE of a scope note: a whole-file run can still ACQUIRE one
-    // (handler.ts appends "diffBase scoping is not supported for rust; mutated
-    // the whole file" before the suppression phase), and the transitional
+    // cargo-mutants has no arbitrary line-scoping mode (`supportsLineScope:
+    // false` in engines/registry.ts), but `--in-diff` CAN restrict a run to a
+    // diff's changed lines (`supportsDiffScope: true`), and the caller says which
+    // this run was via `scopeKind`, the same signal a scoped TypeScript run
+    // stamps. Say so structurally instead of leaving readers to infer it from
+    // the ABSENCE of a scope note: a whole-file run can still ACQUIRE one (an
+    // untracked file, or a diff with nothing changed in it, still enumerates
+    // the whole file and says so via `scopeNote`), and the transitional
     // `scopeKind === undefined && !scopeNote` fallback reads that note as
     // evidence of scoping. Without this field the orphan counter and the
     // no-mutable-logic verdict both switch themselves off on every `diffBase`
     // run — the case they exist for.
-    scopeKind: 'whole-file',
+    scopeKind,
     ...(scored.incompetent !== undefined ? { incompetent: scored.incompetent } : {}),
   };
 }

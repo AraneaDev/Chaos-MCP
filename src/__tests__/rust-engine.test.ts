@@ -21,7 +21,7 @@ vi.mock('../utils/logger.js', () => ({
 
 import { runShell } from '../utils/exec.js';
 import { ExecFailureError } from '../utils/exec-error.js';
-import { RustEngine, resolveCargoJobs, escapeCargoFileGlob } from '../engines/rust.js';
+import { RustEngine, resolveCargoJobs, escapeCargoFileGlob, inDiffArgs } from '../engines/rust.js';
 import { displayMutationScore, hasNoMutableLogic } from '../core/score-semantics.js';
 
 const mockRunShell = vi.mocked(runShell);
@@ -1298,5 +1298,136 @@ describe('escapeCargoFileGlob', () => {
     // A backslash is the Windows path separator and must arrive intact.
     expect(escapeCargoFileGlob('src/bang!.rs')).toBe('src/bang!.rs');
     expect(escapeCargoFileGlob('src\\win\\mod.rs')).toBe('src\\win\\mod.rs');
+  });
+});
+
+/**
+ * `--in-diff` composes with `--file` rather than replacing it: a probe against
+ * a real cargo-mutants binary confirmed the flag takes a unified diff file
+ * with `b/`-prefixed paths, exactly what `git diff` writes, and what
+ * `diffScope: { kind: 'patch' }` points at. Only that one `DiffScope` kind is
+ * ours; `'git-base'` and `'ranges'` are built for other engines and must be
+ * ignored here rather than mishandled.
+ */
+describe('RustEngine: --in-diff diff scoping', () => {
+  let engine: RustEngine;
+  beforeEach(() => {
+    vi.clearAllMocks();
+    engine = new RustEngine();
+  });
+
+  it('passes --in-diff with the patch path when diffScope is a patch', async () => {
+    mockRunShell.mockResolvedValue(makeExecResult(MINIMAL_RUN));
+
+    await engine.run('src/test.rs', {
+      concurrency: 1,
+      diffScope: { kind: 'patch', path: '/sandbox/.chaos-mcp.in-diff.patch' },
+    });
+
+    expect(mockRunShell).toHaveBeenCalledWith(
+      'cargo',
+      ['mutants', '--file', 'src/test.rs', '--in-diff', '/sandbox/.chaos-mcp.in-diff.patch'],
+      expect.any(Object),
+    );
+  });
+
+  it('stamps scopeKind "scoped" for a diff-scoped run and "whole-file" otherwise (Task 8)', async () => {
+    // `parseCargoMutantsText`'s `scopeKind` now depends on whether THIS run was
+    // actually diff-scoped (`diffScope.kind === 'patch'`), the same signal a
+    // scoped TypeScript run stamps (`engines/typescript.ts`). Before this,
+    // cargo-mutants unconditionally stamped `'whole-file'` regardless of
+    // `--in-diff`, which reported a diffBase-scoped Rust run to suppression
+    // verification (`audit/suppression-io.ts`) as whole-file, keying it
+    // against the wrong scope.
+    mockRunShell.mockResolvedValue(makeExecResult(MINIMAL_RUN));
+
+    const scoped = await engine.run('src/test.rs', {
+      concurrency: 1,
+      diffScope: { kind: 'patch', path: '/sandbox/.chaos-mcp.in-diff.patch' },
+    });
+    expect(scoped.scopeKind).toBe('scoped');
+
+    const wholeFile = await engine.run('src/test.rs', { concurrency: 1 });
+    expect(wholeFile.scopeKind).toBe('whole-file');
+  });
+
+  it('composes --in-diff with -j when both apply', async () => {
+    mockRunShell.mockResolvedValue(makeExecResult(MINIMAL_RUN));
+
+    await engine.run('src/test.rs', {
+      concurrency: 4,
+      diffScope: { kind: 'patch', path: '/sandbox/.chaos-mcp.in-diff.patch' },
+    });
+
+    expect(mockRunShell).toHaveBeenCalledWith(
+      'cargo',
+      [
+        'mutants',
+        '--file',
+        'src/test.rs',
+        '--in-diff',
+        '/sandbox/.chaos-mcp.in-diff.patch',
+        '-j',
+        '4',
+      ],
+      expect.any(Object),
+    );
+  });
+
+  it('passes no --in-diff at all when diffScope is absent', async () => {
+    mockRunShell.mockResolvedValue(makeExecResult(MINIMAL_RUN));
+
+    await engine.run('src/test.rs', { concurrency: 1 });
+
+    expect(mockRunShell).toHaveBeenCalledWith(
+      'cargo',
+      ['mutants', '--file', 'src/test.rs'],
+      expect.any(Object),
+    );
+  });
+
+  it('ignores a ranges diffScope rather than mishandling it', async () => {
+    mockRunShell.mockResolvedValue(makeExecResult(MINIMAL_RUN));
+
+    await engine.run('src/test.rs', {
+      concurrency: 1,
+      diffScope: { kind: 'ranges', ranges: [{ start: 1, end: 5 }] },
+    });
+
+    expect(mockRunShell).toHaveBeenCalledWith(
+      'cargo',
+      ['mutants', '--file', 'src/test.rs'],
+      expect.any(Object),
+    );
+  });
+
+  it('ignores a git-base diffScope rather than mishandling it', async () => {
+    mockRunShell.mockResolvedValue(makeExecResult(MINIMAL_RUN));
+
+    await engine.run('src/test.rs', {
+      concurrency: 1,
+      diffScope: { kind: 'git-base', ref: 'chaos-base' },
+    });
+
+    expect(mockRunShell).toHaveBeenCalledWith(
+      'cargo',
+      ['mutants', '--file', 'src/test.rs'],
+      expect.any(Object),
+    );
+  });
+});
+
+describe('inDiffArgs', () => {
+  it('builds the flag and path pair for a patch scope', () => {
+    expect(inDiffArgs({ kind: 'patch', path: '/sandbox/x.patch' })).toEqual([
+      '--in-diff',
+      '/sandbox/x.patch',
+    ]);
+  });
+
+  it('returns nothing for a non-patch scope or an absent one', () => {
+    expect(inDiffArgs({ kind: 'git-base', ref: 'chaos-base' })).toEqual([]);
+    expect(inDiffArgs({ kind: 'ranges', ranges: [{ start: 1, end: 2 }] })).toEqual([]);
+    expect(inDiffArgs(undefined)).toEqual([]);
   });
 });

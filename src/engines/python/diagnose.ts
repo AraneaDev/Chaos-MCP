@@ -26,6 +26,14 @@ export interface ScorableRunCheck {
   testCommand: string;
   /** `pythonExcludeOperators` as supplied by the caller, if any. */
   excludeOperators?: string[] | undefined;
+  /**
+   * Whether this run was scoped to diff-changed lines (`diffScope` of kind
+   * 'ranges', non-empty). `cr-filter-lines` skips every mutant outside those
+   * ranges the same way `cr-filter-operators` skips by name, so an all-unscored
+   * run under diff scoping means "nothing to mutate on the changed lines", not
+   * a broken interpreter or an over-broad operator exclude list.
+   */
+  diffScoped?: boolean;
 }
 
 /**
@@ -41,9 +49,10 @@ export interface ScorableRunCheck {
  * The two unscorable outcomes have OPPOSITE causes and must not share a
  * diagnosis. `incompetent` means the mutated code was executed and the test
  * command produced no real pass/fail → interpreter/test-command. A null
- * `test_outcome` means the worker never ran a test at all → almost always
- * `cr-filter-operators` skipping everything (step 2.5). The guard used to
- * count both as "completed" and blame the interpreter either way, so a
+ * `test_outcome` means the worker never ran a test at all → either
+ * `cr-filter-operators` skipping everything by name (step 2.5), or
+ * `cr-filter-lines` skipping everything outside a diff scope too narrow to
+ * contain a mutable line (step 2.6; see `diffScoped`). The guard used to
  * too-broad `excludeOperators` produced a confidently wrong message that
  * sent the operator to look at a Python install that was fine.
  */
@@ -55,6 +64,7 @@ export function assertScorableRun({
   interpreter,
   testCommand,
   excludeOperators,
+  diffScoped,
 }: ScorableRunCheck): void {
   if (result.totalMutants === 0 && completed > 0) {
     // `incompetent` is optional on the public MutationResult shape.
@@ -67,6 +77,19 @@ export function assertScorableRun({
           `missing, or the test-command is wrong. Resolved interpreter: ` +
           `${describeInterpreter(interpreter)}. Resolved test-command: "${testCommand}". ` +
           `Verify it runs the suite from the project root before re-auditing.`,
+      );
+    }
+    if (diffScoped) {
+      throw new Error(
+        `cosmic-ray ran ${completed} mutant(s) on ${filePath} but scored none of them: ` +
+          `${unscored} came back with no test outcome at all. This run was scoped to the lines ` +
+          `changed in the diff, and \`cr-filter-lines\` skips every mutant outside them: there ` +
+          `is nothing to mutate on the changed lines. This is not a broken interpreter or test ` +
+          `command` +
+          ((excludeOperators?.length ?? 0) > 0
+            ? `; note this run also excluded operators matching ${JSON.stringify(excludeOperators)}, which may have contributed too`
+            : '') +
+          `.`,
       );
     }
     throw new Error(

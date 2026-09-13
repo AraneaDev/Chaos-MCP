@@ -111,4 +111,18 @@ describe('ENGINE_REGISTRY', () => {
       expect(entry.label.trim().length).toBeGreaterThan(0);
     }
   });
+
+  it('separates diff scoping from arbitrary line scoping', () => {
+    // Every engine can scope to a diff after this slice, but only StrykerJS can
+    // be told to mutate an arbitrary line range, which is what a verify run
+    // needs. Conflating the two promises the other three something they cannot
+    // do (see src/audit/run-id.ts).
+    for (const descriptor of Object.values(ENGINE_REGISTRY)) {
+      expect(descriptor.supportsDiffScope).toBe(true);
+    }
+    expect(ENGINE_REGISTRY.typescript.supportsLineScope).toBe(true);
+    expect(ENGINE_REGISTRY.python.supportsLineScope).toBe(false);
+    expect(ENGINE_REGISTRY.rust.supportsLineScope).toBe(false);
+    expect(ENGINE_REGISTRY.php.supportsLineScope).toBe(false);
+  });
 });

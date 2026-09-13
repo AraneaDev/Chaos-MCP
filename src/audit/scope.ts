@@ -14,7 +14,7 @@ import type { ChaosConfig } from '../utils/config-loader.js';
 import type { ToolArgs } from '../core/tool-args-validation.js';
 import { formatResultAsText, buildResultPayload } from '../core/format.js';
 import { evaluateGate } from '../core/gate.js';
-import { computeChangedRanges, type GitOptions } from '../utils/git-diff.js';
+import { computeChangedRanges, type GitOptions, type ResolvedDiffBase } from '../utils/git-diff.js';
 import { loadRun, workspaceFingerprint } from '../utils/run-cache.js';
 import {
   parseBaseline,
@@ -34,6 +34,13 @@ export type ScopeResolution =
   | {
       kind: 'scope';
       diffRanges?: { start: number; end: number }[];
+      /**
+       * The SAME base `diffRanges` was resolved against (`computeChangedRanges`,
+       * utils/git-diff.ts), threaded through to `auditFile` so materialisation
+       * never re-resolves `diffBase` on its own (see `MaterialiseInput.resolvedBase`).
+       * Present exactly when `diffRanges` is.
+       */
+      resolvedBase?: ResolvedDiffBase;
       scopeNote?: string;
       baselineKeys?: MutantKey[];
     };
@@ -249,8 +256,8 @@ async function resolveDiffScope(
         scopeNote: `${targetFile} is untracked in git vs ${diffBase}; mutated the whole file.`,
       };
     case 'ranges':
-      if (ENGINE_REGISTRY[projectType].supportsLineScope) {
-        return { kind: 'scope', diffRanges: diff.ranges };
+      if (ENGINE_REGISTRY[projectType].supportsDiffScope) {
+        return { kind: 'scope', diffRanges: diff.ranges, resolvedBase: diff.resolvedBase };
       }
       return {
         kind: 'scope',
@@ -431,6 +438,7 @@ export async function computeScope(
   gitCtx?: { signal?: AbortSignal; deadline?: AuditDeadline },
 ): Promise<ScopeResolution> {
   let diffRanges: { start: number; end: number }[] | undefined;
+  let resolvedBase: ResolvedDiffBase | undefined;
   let scopeNote: string | undefined;
 
   const diffBase = typeof earlyArgs.diffBase === 'string' ? earlyArgs.diffBase : undefined;
@@ -445,6 +453,7 @@ export async function computeScope(
     );
     if (diffScope.kind === 'result') return diffScope;
     diffRanges = diffScope.diffRanges;
+    resolvedBase = diffScope.resolvedBase;
     scopeNote = diffScope.scopeNote;
   }
 
@@ -547,5 +556,5 @@ export async function computeScope(
     // git and is not claimed to contain any particular mutant.
   }
 
-  return { kind: 'scope', diffRanges, scopeNote, baselineKeys };
+  return { kind: 'scope', diffRanges, resolvedBase, scopeNote, baselineKeys };
 }

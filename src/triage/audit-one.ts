@@ -15,10 +15,11 @@ import { resolve } from 'path';
 import { readFileSync } from 'fs';
 import { cpus } from 'node:os';
 import { auditFile } from '../audit/audit-file.js';
+import { MATERIALISATION_FALLBACK_PREFIX } from '../audit/diff-scope.js';
 import { createSandbox } from '../utils/sandbox.js';
 import type { EnvironmentInfo, SupportedProjectType } from '../utils/project-detector.js';
 import { ENGINE_REGISTRY, makeEngine, resolvePrebuildCommand } from '../engines/registry.js';
-import { computeChangedRanges } from '../utils/git-diff.js';
+import { computeChangedRanges, type ResolvedDiffBase } from '../utils/git-diff.js';
 import { resolveAuditTargetIn, type ResolvedTarget } from '../audit/target.js';
 import { loadSuppressions, verifySuppressions, type StoredEntry } from '../utils/suppression.js';
 import { applySuppressions } from '../audit/apply-suppressions.js';
@@ -138,9 +139,26 @@ export interface TriageFileDeps {
   primaryTarget?: { file: string; target: ResolvedTarget };
 }
 
-/** The line scope for one file, plus the note explaining it on the row. */
-interface DiffScope {
+/**
+ * The line scope for one file, plus the note explaining it on the row.
+ *
+ * Named `TriageDiffScope` rather than `DiffScope` (MINOR finding): the latter
+ * name is already exported from `engines/base.ts` for a different, unrelated
+ * shape (the value `RunOptions.diffScope` carries into an engine), and having
+ * two same-named, differently-shaped interfaces in the same codebase is a
+ * trap for the next reader even though neither file imports the other's.
+ */
+interface TriageDiffScope {
   lineRanges?: { start: number; end: number }[];
+  /**
+   * The base `lineRanges` was resolved against, carried alongside it so
+   * `auditFile` can materialise from the SAME resolution rather than
+   * re-deriving it from a raw `diffBase` string (CRITICAL finding: doing the
+   * latter is what let a diverged branch's Rust patch and PHP base come from
+   * a different commit than the ranges they were supposed to match). Present
+   * exactly when `lineRanges` is.
+   */
+  resolvedBase?: ResolvedDiffBase;
   scopeNote?: string;
 }
 
@@ -148,9 +166,9 @@ interface DiffScope {
  * Narrow a diff-scoped sweep down to the changed lines of ONE file.
  *
  * Whole-file (`{}`) for a sweep that is not diff-scoped. Languages whose engine
- * cannot take a line scope say so on the row: their score covers more than the
- * diff, and an unlabelled 60% would read as "your changed lines are 60%
- * covered".
+ * cannot take a diff scope (`supportsDiffScope`, engines/registry.ts) say so on
+ * the row: their score covers more than the diff, and an unlabelled 60% would
+ * read as "your changed lines are 60% covered".
  */
 async function resolveDiffScope(
   targetFile: string,
@@ -158,9 +176,9 @@ async function resolveDiffScope(
   projectType: SupportedProjectType,
   fileBudgetMs: number,
   deps: TriageFileDeps,
-): Promise<DiffScope> {
+): Promise<TriageDiffScope> {
   if (deps.diffBase === undefined) return {};
-  if (!ENGINE_REGISTRY[projectType].supportsLineScope) {
+  if (!ENGINE_REGISTRY[projectType].supportsDiffScope) {
     return { scopeNote: 'diff scoping unsupported for this language; whole file' };
   }
   const diff = await computeChangedRanges(targetFile, env.workspaceRoot, deps.diffBase, {
@@ -169,7 +187,11 @@ async function resolveDiffScope(
   });
   switch (diff.kind) {
     case 'ranges':
-      return { lineRanges: diff.ranges, scopeNote: 'scored on changed lines' };
+      return {
+        lineRanges: diff.ranges,
+        resolvedBase: diff.resolvedBase,
+        scopeNote: 'scored on changed lines',
+      };
     case 'untracked':
       return { scopeNote: 'untracked; whole file' };
     case 'git-failed':
@@ -259,6 +281,42 @@ interface RowInput {
 }
 
 /**
+ * Combine the PRE-run scope note (`resolveDiffScope`, above, for example "scored on
+ * changed lines", stamped before the engine ever runs) with whatever
+ * `result.scopeNote` carries AFTER the run (Finding 1).
+ *
+ * The two disagree exactly when materialisation fails inside `auditFile`:
+ * `resolveDiffScope` already committed to "scored on changed lines" because
+ * `computeChangedRanges` succeeded, but turning those ranges into an actual
+ * scoped run can still fail (a git call inside the sandbox times out, the PHP
+ * throwaway repo fails to build, …), and `auditFile` appends a fallback note
+ * to `result.scopeNote` when that happens and runs the WHOLE file instead.
+ * `buildTriageRow` used to read only `input.scopeNote`, so a row could say
+ * "scored on changed lines" while the score it carried was whole-file. That is a
+ * confident, wrong label, the exact failure this branch has had to fix twice
+ * already.
+ *
+ * The fallback is recognised by {@link MATERIALISATION_FALLBACK_PREFIX}, imported
+ * from the module that writes the note rather than restated here, so rewording
+ * the note cannot silently switch this check off. Matched by substring, not exact
+ * text: the parenthesised reason varies, and `auditFile` appends the note after an
+ * engine's own scope note, so it is not always the first thing in the string.
+ *
+ * When the fallback fired, the pre-run claim is dropped rather than
+ * concatenated onto it: the fallback text alone already says the honest
+ * thing ("… mutating the whole file instead"), and combining both would read
+ * as one row simultaneously claiming scoped and whole-file scoring.
+ */
+function combineScopeNotes(
+  preRunNote: string | undefined,
+  resultNote: string | undefined,
+): string | undefined {
+  if (resultNote?.includes(MATERIALISATION_FALLBACK_PREFIX)) return resultNote;
+  if (preRunNote && resultNote) return `${preRunNote} ${resultNote}`;
+  return preRunNote ?? resultNote;
+}
+
+/**
  * Assemble one leaderboard row: score, counts, partial-audit state, runId, and
  * (when asked for) inlined survivors.
  */
@@ -278,7 +336,8 @@ function buildTriageRow(input: RowInput, deps: TriageFileDeps): TriageRow {
   // Set by auditFile for every engine, so nothing engine-specific is needed
   // here: the row simply must not drop what the single-file audit reports.
   if (result.fidelityNote) row.fidelityNote = result.fidelityNote;
-  if (input.scopeNote) row.scopeNote = input.scopeNote;
+  const combinedScopeNote = combineScopeNotes(input.scopeNote, result.scopeNote);
+  if (combinedScopeNote) row.scopeNote = combinedScopeNote;
   // Carry partial-audit state onto the row so the leaderboard and the gate
   // can tell "scored 92% over the whole file" from "scored 92% over the
   // third of it we had time for".
@@ -578,6 +637,7 @@ export async function auditTriageFile(
         workDir: sandbox.workDir,
         prebuildCmd,
         lineRanges: scope.lineRanges,
+        resolvedDiffBase: scope.resolvedBase,
         // Task 6 abort + Task 8 memory stop share this one signal.
         signal: engineController.signal,
       });
@@ -642,6 +702,17 @@ export async function auditTriageFile(
     // before the engine started, in which case this is always false.
     if (isResourceExhausted(engineController?.signal.reason)) {
       return { exhausted: file };
+    }
+    // Diff-scope materialisation can exhaust what the per-file budget
+    // re-read above already approved (Finding 3): `auditFile` reports it
+    // with the same "Audit time budget exhausted <phase> after <n>ms."
+    // wording `handler.ts`'s `reserveEngineBudget` uses for the sibling
+    // phase-boundary checks. Fold it into the SAME `unaudited` bucket as a
+    // file whose budget ran out before it started (the `engineBudgetMs <
+    // MIN_ENGINE_BUDGET_MS` check above), rather than a per-file error: the
+    // sweep can still re-run for the remainder.
+    if (error instanceof Error && error.message.startsWith('Audit time budget exhausted')) {
+      return { unaudited: file };
     }
     // An in-flight cancel (subprocess killed by the abort signal →
     // ExecFailureError('ABORTED'), OR the signal flipped JUST as we entered
