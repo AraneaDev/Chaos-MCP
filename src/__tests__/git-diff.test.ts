@@ -234,22 +234,28 @@ describe('computeChangedRanges', () => {
     });
   });
 
-  it('uses --cached for the staged base (no merge-base call)', async () => {
+  it('uses --cached for the staged base (no merge-base call), resolving HEAD to a SHA', async () => {
     mockRunShell
-      .mockResolvedValueOnce(ok('true\n')) // rev-parse
+      .mockResolvedValueOnce(ok('true\n')) // rev-parse --is-inside-work-tree
       .mockResolvedValueOnce(ok('a.ts\n')) // ls-files
+      .mockResolvedValueOnce(ok('def456\n')) // rev-parse HEAD
       .mockResolvedValueOnce(ok('@@ -1,1 +1,1 @@\n')); // diff --cached
     const res = await computeChangedRanges('a.ts', '/w', 'staged');
     expect(res).toEqual({
       kind: 'ranges',
       ranges: [{ start: 1, end: 1 }],
       // `git diff --cached` with no tree-ish diffs the index against `HEAD`,
-      // so `HEAD`, never the `'staged'` sentinel, which is not a valid
-      // revision for `git show`/`git diff <ref>`, is the concrete base a
-      // materialiser must reproduce content from.
-      resolvedBase: { ref: 'HEAD', staged: true },
+      // so `HEAD` is the concrete base a materialiser must reproduce content
+      // from, never the `'staged'` sentinel, which is not a valid revision
+      // for `git show`/`git diff <ref>`. Resolved to an immutable SHA here
+      // (Finding 4), not left as the symbolic ref `HEAD`: materialisation
+      // reads this same base again, later and in a different process, and a
+      // symbolic ref can advance between the two reads.
+      resolvedBase: { ref: 'def456', staged: true },
     });
-    const diffCall = mockRunShell.mock.calls[2];
+    const revParseHead = mockRunShell.mock.calls[2];
+    expect(revParseHead[1]).toEqual(['rev-parse', 'HEAD']);
+    const diffCall = mockRunShell.mock.calls[3];
     expect(diffCall[1]).toEqual(['diff', '--cached', '-U0', '--', 'a.ts']);
   });
 

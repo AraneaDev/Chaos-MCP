@@ -225,8 +225,26 @@ export async function computeChangedRanges(
     // `git diff --cached` with no tree-ish compares the index to `HEAD`, so
     // `HEAD` is the concrete revision a materialiser must reproduce the base
     // content from, never the `'staged'` sentinel itself (see
-    // {@link ResolvedDiffBase}).
-    resolvedBase = { ref: 'HEAD', staged: true };
+    // {@link ResolvedDiffBase}). Resolved to an immutable SHA here, not left
+    // as the symbolic ref `HEAD` (Finding 4): materialisation
+    // (audit/diff-scope.ts) reads this same base again, later and in a
+    // different process, for PHP's `git show` and Rust's `git diff --cached`.
+    // A symbolic `HEAD` can advance between the two reads (another commit
+    // lands while the sweep is running); the materialiser would then
+    // reproduce a different base than the ranges below were computed
+    // against, and the row would report a score for lines it never
+    // reproduced. A SHA cannot move out from under it.
+    let headSha: string;
+    try {
+      headSha = (await git(['rev-parse', 'HEAD'])).stdout.trim();
+    } catch (err: unknown) {
+      // Same rule as the merge-base branch below: only a non-zero exit (an
+      // unborn branch, no commits yet) is evidence the ref itself is bad.
+      const failure = classifyGitFailure(err);
+      if (failure.kind !== 'exit') return failure;
+      return { kind: 'bad-ref', ref: 'HEAD' };
+    }
+    resolvedBase = { ref: headSha, staged: true };
   } else {
     let base: string;
     try {
