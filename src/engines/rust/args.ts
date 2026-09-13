@@ -72,7 +72,7 @@ export function escapeCargoFileGlob(filePath: string): string {
  * at. The other two `DiffScope` kinds, `'git-base'` (a ref, for Infection) and
  * `'ranges'` (explicit line ranges, for cosmic-ray), name inputs cargo-mutants
  * has no flag for, so they are deliberately ignored here rather than
- * mishandled — the run falls back to whole-file, the same as an absent
+ * mishandled: the run falls back to whole-file, the same as an absent
  * `diffScope` today.
  *
  * `--in-diff` composes with `--file`: the glob still selects which file's

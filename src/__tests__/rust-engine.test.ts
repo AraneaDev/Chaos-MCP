@@ -1304,12 +1304,12 @@ describe('escapeCargoFileGlob', () => {
 /**
  * `--in-diff` composes with `--file` rather than replacing it: a probe against
  * a real cargo-mutants binary confirmed the flag takes a unified diff file
- * with `b/`-prefixed paths — exactly what `git diff` writes, and what
+ * with `b/`-prefixed paths, exactly what `git diff` writes, and what
  * `diffScope: { kind: 'patch' }` points at. Only that one `DiffScope` kind is
  * ours; `'git-base'` and `'ranges'` are built for other engines and must be
  * ignored here rather than mishandled.
  */
-describe('RustEngine — --in-diff diff scoping', () => {
+describe('RustEngine: --in-diff diff scoping', () => {
   let engine: RustEngine;
   beforeEach(() => {
     vi.clearAllMocks();

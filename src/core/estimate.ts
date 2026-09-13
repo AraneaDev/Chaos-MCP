@@ -3,7 +3,7 @@ import type { EnvironmentInfo, SupportedProjectType } from '../utils/project-det
 import { estimateHeuristic } from './estimate-heuristic.js';
 import { invokeMutationTool, MutationToolStartupError } from '../utils/exec-classify.js';
 import { escapeCargoFileGlob, inDiffArgs } from '../engines/rust.js';
-import type { DiffScope } from '../audit/diff-scope.js';
+import type { DiffScope } from '../engines/base.js';
 import { ENGINE_REGISTRY } from '../engines/registry.js';
 import { runShell } from '../utils/exec.js';
 import { ExecFailureError } from '../utils/exec-error.js';
@@ -87,7 +87,7 @@ export interface EstimateOptions {
   /**
    * How this estimate is restricted to what a diff changed, in the same shape
    * a run uses (`RunOptions.diffScope`). Only the `'patch'` kind is honoured
-   * here — cargo-mutants `--list --in-diff <path>` turns the count from
+   * here: cargo-mutants `--list --in-diff <path>` turns the count from
    * approximate-over-the-whole-file into exact-over-the-changed-lines. The
    * other kinds are ignored, matching how the run path treats them.
    */
