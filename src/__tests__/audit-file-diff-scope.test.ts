@@ -108,6 +108,71 @@ describe('auditFile diff-scope wiring', () => {
     expect(out.scopeNote).toBe(note);
   });
 
+  it('deducts materialisation time from the budget the engine then runs under (Finding 3)', async () => {
+    // Before this fix, `auditFile` handed the FULL run budget to the
+    // materialiser and never charged what it used: a slow materialisation
+    // (or one that falls back after timing out) left `runOptions.timeoutMs`
+    // untouched, so the engine started its whole-file fallback run with the
+    // budget the caller's deadline no longer actually had.
+    const now = vi.spyOn(Date, 'now');
+    const t0 = 1_000_000;
+    now.mockReturnValueOnce(t0); // AuditDeadline constructed around materialisation
+    mockMaterialise.mockImplementation(async () => {
+      now.mockReturnValueOnce(t0 + 4_000); // materialisation "took" 4s
+      return { note: 'Diff scoping unavailable (timed out); mutating the whole file instead.' };
+    });
+    const run = vi.fn().mockResolvedValue(result());
+
+    await auditFile({
+      targetFile: 'src/x.rs',
+      env: env(),
+      projectType: 'rust',
+      engine: { run } as never,
+      args: { timeoutMs: 10_000 },
+      config: {},
+      workDir: '/tmp/sandbox',
+      prebuildCmd: null,
+      lineRanges: ranges,
+      resolvedDiffBase: { ref: 'HEAD', staged: false },
+    });
+
+    const options = run.mock.calls[0][1];
+    // 10_000 budgeted minus the 4_000 materialisation spent, not the
+    // untouched 10_000 the engine used to receive.
+    expect(options.timeoutMs).toBe(6_000);
+    now.mockRestore();
+  });
+
+  it('refuses to start the engine when materialisation exhausts the budget (Finding 3)', async () => {
+    const now = vi.spyOn(Date, 'now');
+    const t0 = 1_000_000;
+    now.mockReturnValueOnce(t0);
+    mockMaterialise.mockImplementation(async () => {
+      // Materialisation alone burns through the whole 10s budget.
+      now.mockReturnValueOnce(t0 + 10_000);
+      return { note: 'Diff scoping unavailable (timed out); mutating the whole file instead.' };
+    });
+    const run = vi.fn().mockResolvedValue(result());
+
+    await expect(
+      auditFile({
+        targetFile: 'src/x.rs',
+        env: env(),
+        projectType: 'rust',
+        engine: { run } as never,
+        args: { timeoutMs: 10_000 },
+        config: {},
+        workDir: '/tmp/sandbox',
+        prebuildCmd: null,
+        lineRanges: ranges,
+        resolvedDiffBase: { ref: 'HEAD', staged: false },
+      }),
+    ).rejects.toThrow(/Audit time budget exhausted during diff-scope materialisation/);
+
+    expect(run).not.toHaveBeenCalled();
+    now.mockRestore();
+  });
+
   it('leaves an unscoped run untouched: no diffBase, no materialisation', async () => {
     const run = vi.fn().mockResolvedValue(result());
 

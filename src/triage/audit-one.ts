@@ -705,6 +705,17 @@ export async function auditTriageFile(
     if (isResourceExhausted(engineController?.signal.reason)) {
       return { exhausted: file };
     }
+    // Diff-scope materialisation can exhaust what the per-file budget
+    // re-read above already approved (Finding 3): `auditFile` reports it
+    // with the same "Audit time budget exhausted <phase> after <n>ms."
+    // wording `handler.ts`'s `reserveEngineBudget` uses for the sibling
+    // phase-boundary checks. Fold it into the SAME `unaudited` bucket as a
+    // file whose budget ran out before it started (the `engineBudgetMs <
+    // MIN_ENGINE_BUDGET_MS` check above), rather than a per-file error: the
+    // sweep can still re-run for the remainder.
+    if (error instanceof Error && error.message.startsWith('Audit time budget exhausted')) {
+      return { unaudited: file };
+    }
     // An in-flight cancel (subprocess killed by the abort signal →
     // ExecFailureError('ABORTED'), OR the signal flipped JUST as we entered
     // this catch) must surface as 'Operation cancelled.' — NOT as the raw

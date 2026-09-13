@@ -188,6 +188,14 @@ async function runEngine(
     if (message.startsWith('Prebuild command failed in sandbox:')) {
       return { ok: false, result: toolError(message, resources) };
     }
+    // Diff-scope materialisation can exhaust what `reserveEngineBudget`
+    // already approved for the engine (Finding 3): `auditFile` reports it
+    // with the same "Audit time budget exhausted <phase> after <n>ms."
+    // wording the phase-boundary checks above use, so it surfaces the same
+    // way here too, not as a "Chaos Engine Halted" engine bug.
+    if (message.startsWith('Audit time budget exhausted')) {
+      return { ok: false, result: toolError(message, resources) };
+    }
     throw error;
   }
 }

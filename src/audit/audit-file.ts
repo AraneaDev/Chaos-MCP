@@ -20,6 +20,16 @@ import { buildRunOptions, type ProjectType } from './run-options.js';
 import { ENGINE_REGISTRY } from '../engines/registry.js';
 import { materialiseDiffScope } from './diff-scope.js';
 import type { ResolvedDiffBase } from '../utils/git-diff.js';
+import { AuditDeadline } from '../utils/deadline.js';
+
+/**
+ * Mirrors `MIN_ENGINE_BUDGET_MS` in `handler.ts` and `triage/audit-one.ts`,
+ * which apply the same floor at their own phase boundaries: below this, an
+ * engine cannot do anything useful before its own process/report overhead
+ * eats the budget, so the run is refused here rather than started
+ * token-funded (Finding 3).
+ */
+const MIN_ENGINE_BUDGET_MS = 1_000;
 
 /**
  * The single wording of the "this Python project has no test suite" refusal.
@@ -144,6 +154,19 @@ export async function auditFile(input: AuditFileInput): Promise<MutationResult> 
     resolvedDiffBase &&
     ENGINE_REGISTRY[projectType].supportsDiffScope
   ) {
+    // Charge materialisation against the SAME budget the engine is about to
+    // run under (Finding 3): left unmeasured, a slow or timed-out git
+    // sequence here spent real wall-clock time while `runOptions.timeoutMs`
+    // stayed untouched, so a whole-file fallback run then started with the
+    // FULL budget on top of what materialisation already used, promising the
+    // engine time the caller's deadline no longer has. `AuditDeadline` is the
+    // same elapsed-time primitive `handler.ts` and `triage/audit-one.ts`
+    // already deadline the surrounding phases with, reused here rather than a
+    // second hand-rolled `Date.now()` diff.
+    const materialiseDeadline =
+      typeof runOptions.timeoutMs === 'number'
+        ? new AuditDeadline(runOptions.timeoutMs)
+        : undefined;
     const materialised = await materialiseDiffScope({
       projectType,
       relFile: targetFile,
@@ -156,6 +179,23 @@ export async function auditFile(input: AuditFileInput): Promise<MutationResult> 
     });
     if (materialised.diffScope) runOptions.diffScope = materialised.diffScope;
     diffScopeNote = materialised.note;
+    if (materialiseDeadline) {
+      const remaining = materialiseDeadline.remainingMs();
+      if (remaining < MIN_ENGINE_BUDGET_MS) {
+        // Same wording family as `handler.ts`'s `reserveEngineBudget`
+        // ("Audit time budget exhausted <phase> after <n>ms.") so both
+        // callers recognise it as the SAME kind of exhaustion their own
+        // phase-boundary checks already produce, rather than a generic
+        // engine failure: `handler.ts` turns it into the identical tool
+        // error, and the triage sweep folds it into the `unaudited` bucket
+        // instead of a per-file error row.
+        throw new Error(
+          `Audit time budget exhausted during diff-scope materialisation after ` +
+            `${materialiseDeadline.elapsedMs()}ms.`,
+        );
+      }
+      runOptions.timeoutMs = remaining;
+    }
   }
   // Python only: when neither the tool args nor the config scoped the suite,
   // default to the target file's own test module(s). cosmic-ray otherwise runs
