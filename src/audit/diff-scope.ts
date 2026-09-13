@@ -114,9 +114,18 @@ const REAL_FS = {
   writeFile: (p: string, c: string) => writeFileSync(p, c, 'utf-8'),
 };
 
+/**
+ * The fixed opening of every fallback note. Exported because a triage row
+ * decides whether a run really was scoped by looking for it
+ * (`triage/audit-one.ts`), and two independent copies of this text would let a
+ * rewording here silently switch that check off, putting "scored on changed
+ * lines" back on a whole-file score.
+ */
+export const MATERIALISATION_FALLBACK_PREFIX = 'Diff scoping unavailable';
+
 /** Build a `note` for a scoping failure that always mentions the fallback. */
 function fallbackNote(reason: string): string {
-  return `Diff scoping unavailable (${reason}); mutating the whole file instead.`;
+  return `${MATERIALISATION_FALLBACK_PREFIX} (${reason}); mutating the whole file instead.`;
 }
 
 /**

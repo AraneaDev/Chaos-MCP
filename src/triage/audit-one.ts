@@ -15,6 +15,7 @@ import { resolve } from 'path';
 import { readFileSync } from 'fs';
 import { cpus } from 'node:os';
 import { auditFile } from '../audit/audit-file.js';
+import { MATERIALISATION_FALLBACK_PREFIX } from '../audit/diff-scope.js';
 import { createSandbox } from '../utils/sandbox.js';
 import type { EnvironmentInfo, SupportedProjectType } from '../utils/project-detector.js';
 import { ENGINE_REGISTRY, makeEngine, resolvePrebuildCommand } from '../engines/registry.js';
@@ -280,16 +281,7 @@ interface RowInput {
 }
 
 /**
- * The materialisation fallback note always contains this text (`fallbackNote`
- * in `audit/diff-scope.ts`). Matched by substring, not exact text: the
- * parenthesised reason varies, and `auditFile` appends the note after an
- * engine's own scope note rather than replacing it, so it is not always the
- * first thing in `result.scopeNote`.
- */
-const MATERIALISATION_FALLBACK_PREFIX = 'Diff scoping unavailable';
-
-/**
- * Combine the PRE-run scope note (`resolveDiffScope`, above — e.g. "scored on
+ * Combine the PRE-run scope note (`resolveDiffScope`, above, for example "scored on
  * changed lines", stamped before the engine ever runs) with whatever
  * `result.scopeNote` carries AFTER the run (Finding 1).
  *
@@ -300,9 +292,15 @@ const MATERIALISATION_FALLBACK_PREFIX = 'Diff scoping unavailable';
  * throwaway repo fails to build, …), and `auditFile` appends a fallback note
  * to `result.scopeNote` when that happens and runs the WHOLE file instead.
  * `buildTriageRow` used to read only `input.scopeNote`, so a row could say
- * "scored on changed lines" while the score it carried was whole-file — a
+ * "scored on changed lines" while the score it carried was whole-file. That is a
  * confident, wrong label, the exact failure this branch has had to fix twice
  * already.
+ *
+ * The fallback is recognised by {@link MATERIALISATION_FALLBACK_PREFIX}, imported
+ * from the module that writes the note rather than restated here, so rewording
+ * the note cannot silently switch this check off. Matched by substring, not exact
+ * text: the parenthesised reason varies, and `auditFile` appends the note after an
+ * engine's own scope note, so it is not always the first thing in the string.
  *
  * When the fallback fired, the pre-run claim is dropped rather than
  * concatenated onto it: the fallback text alone already says the honest

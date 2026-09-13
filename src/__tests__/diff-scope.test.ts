@@ -1,5 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
-import { materialiseDiffScope, SandboxRestoreFailedError } from '../audit/diff-scope.js';
+import {
+  materialiseDiffScope,
+  MATERIALISATION_FALLBACK_PREFIX,
+  SandboxRestoreFailedError,
+} from '../audit/diff-scope.js';
 import { ExecFailureError } from '../utils/exec-error.js';
 import type { ResolvedDiffBase } from '../utils/git-diff.js';
 
@@ -189,6 +193,10 @@ describe('materialiseDiffScope', () => {
     });
     expect(result.diffScope).toBeUndefined();
     expect(result.note).toMatch(/whole file/i);
+    // A triage row recognises a fallback by this exported prefix. If the note
+    // stopped carrying it, rows would silently go back to claiming "scored on
+    // changed lines" over a whole-file score.
+    expect(result.note?.startsWith(MATERIALISATION_FALLBACK_PREFIX)).toBe(true);
   });
 
   it('degrades to a note when the base content cannot be read', async () => {
