@@ -280,6 +280,45 @@ interface RowInput {
 }
 
 /**
+ * The materialisation fallback note always contains this text (`fallbackNote`
+ * in `audit/diff-scope.ts`). Matched by substring, not exact text: the
+ * parenthesised reason varies, and `auditFile` appends the note after an
+ * engine's own scope note rather than replacing it, so it is not always the
+ * first thing in `result.scopeNote`.
+ */
+const MATERIALISATION_FALLBACK_PREFIX = 'Diff scoping unavailable';
+
+/**
+ * Combine the PRE-run scope note (`resolveDiffScope`, above — e.g. "scored on
+ * changed lines", stamped before the engine ever runs) with whatever
+ * `result.scopeNote` carries AFTER the run (Finding 1).
+ *
+ * The two disagree exactly when materialisation fails inside `auditFile`:
+ * `resolveDiffScope` already committed to "scored on changed lines" because
+ * `computeChangedRanges` succeeded, but turning those ranges into an actual
+ * scoped run can still fail (a git call inside the sandbox times out, the PHP
+ * throwaway repo fails to build, …), and `auditFile` appends a fallback note
+ * to `result.scopeNote` when that happens and runs the WHOLE file instead.
+ * `buildTriageRow` used to read only `input.scopeNote`, so a row could say
+ * "scored on changed lines" while the score it carried was whole-file — a
+ * confident, wrong label, the exact failure this branch has had to fix twice
+ * already.
+ *
+ * When the fallback fired, the pre-run claim is dropped rather than
+ * concatenated onto it: the fallback text alone already says the honest
+ * thing ("… mutating the whole file instead"), and combining both would read
+ * as one row simultaneously claiming scoped and whole-file scoring.
+ */
+function combineScopeNotes(
+  preRunNote: string | undefined,
+  resultNote: string | undefined,
+): string | undefined {
+  if (resultNote?.includes(MATERIALISATION_FALLBACK_PREFIX)) return resultNote;
+  if (preRunNote && resultNote) return `${preRunNote} ${resultNote}`;
+  return preRunNote ?? resultNote;
+}
+
+/**
  * Assemble one leaderboard row: score, counts, partial-audit state, runId, and
  * (when asked for) inlined survivors.
  */
@@ -299,7 +338,8 @@ function buildTriageRow(input: RowInput, deps: TriageFileDeps): TriageRow {
   // Set by auditFile for every engine, so nothing engine-specific is needed
   // here: the row simply must not drop what the single-file audit reports.
   if (result.fidelityNote) row.fidelityNote = result.fidelityNote;
-  if (input.scopeNote) row.scopeNote = input.scopeNote;
+  const combinedScopeNote = combineScopeNotes(input.scopeNote, result.scopeNote);
+  if (combinedScopeNote) row.scopeNote = combinedScopeNote;
   // Carry partial-audit state onto the row so the leaderboard and the gate
   // can tell "scored 92% over the whole file" from "scored 92% over the
   // third of it we had time for".

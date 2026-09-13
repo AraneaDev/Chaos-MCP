@@ -380,4 +380,24 @@ describe('auditTriageFile: diffBase scoping honours supportsDiffScope, not suppo
       expect.objectContaining({ lineRanges: [{ start: 3, end: 3 }] }),
     );
   });
+
+  it('folds a materialisation fallback into the row instead of dropping it (Finding 1)', async () => {
+    // `computeChangedRanges` resolves ranges fine here (the ranges below prove
+    // it), so `resolveDiffScope` stamps "scored on changed lines" BEFORE
+    // `auditFile` ever runs. Simulate materialisation itself then failing
+    // INSIDE `auditFile` (a git call inside the sandbox timed out, say): the
+    // engine ran, but whole-file, and `auditFile` appended the fallback note
+    // to `result.scopeNote` (audit/audit-file.ts). The row must say so, not
+    // repeat the pre-run "scored on changed lines" claim the run never
+    // actually honoured.
+    const abs = pySourceFile('m.py', 'a = 1\nb = 2\nc = 3\n');
+    const fallback = 'Diff scoping unavailable (git show failed); mutating the whole file instead.';
+    auditFileMock.mockResolvedValueOnce(cleanResult({ scopeNote: fallback }));
+
+    const outcome = arms(await auditTriageFile(abs, deps({ rootCwd: repo, diffBase: 'HEAD' })));
+    if (!outcome.row) throw new Error(`expected a row, got ${JSON.stringify(outcome)}`);
+
+    expect(outcome.row.scopeNote).toBe(fallback);
+    expect(outcome.row.scopeNote).not.toContain('scored on changed lines');
+  });
 });
