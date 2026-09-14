@@ -85,7 +85,7 @@ export const CAPABILITIES: Record<SupportedProjectType, Record<Capability, Capab
     ...derived('python'),
     'related-test-selection': 'partial',
     'per-test-coverage': 'none',
-    'incremental-cache': 'none',
+    'incremental-cache': 'full',
     'run-cache-verify': 'partial',
     // cosmic-ray runs its mutants serially, so there is no pool to cap.
     // 'partial' rather than 'none': cosmic-ray having no pool is the tool's
@@ -138,7 +138,7 @@ export const CAPABILITIES: Record<SupportedProjectType, Record<Capability, Capab
     ...derived('php'),
     'related-test-selection': 'full',
     'per-test-coverage': 'full',
-    'incremental-cache': 'none',
+    'incremental-cache': 'partial',
     'run-cache-verify': 'partial',
     'inner-pool-cap': 'full',
     'per-mutant-timeout': 'none',

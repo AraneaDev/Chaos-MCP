@@ -24,7 +24,7 @@ import { invokeMutationTool, MutationToolStartupError } from '../utils/exec-clas
 import { log, warn, isVerbose } from '../utils/logger.js';
 import { buildVitestRelatedCommand } from '../utils/shell-quote.js';
 import { DEFAULT_TIMEOUT_MS } from '../utils/constants.js';
-import { harvestIncrementalFile, seedIncrementalFile } from '../utils/incremental-cache.js';
+import { harvestArtefact, invalidateArtefact, seedArtefact } from '../utils/reuse/store.js';
 import { MIN_BATCH_BUDGET_MS, planLineBatches, mergeBatchResults } from './typescript/batches.js';
 import { STRIKER_JSON_REPORT, resolveRunner, prepareStrykerConfig } from './typescript/config.js';
 import { buildMutateArg, buildStrykerArgs } from './typescript/args.js';
@@ -306,8 +306,11 @@ export class TypeScriptEngine extends BaseEngine {
     // the run — without that the sandbox teardown discards Stryker's
     // incremental file and the whole option is a no-op. See
     // utils/incremental-cache.ts.
-    const incrementalCachePath = options?.incremental ? options.incrementalCachePath : undefined;
-    if (incrementalCachePath) seedIncrementalFile(incrementalCachePath, cwd);
+    const reuse = options?.reuse;
+    const reusedIncremental =
+      options?.incremental === true &&
+      reuse?.key.kind === 'incremental' &&
+      seedArtefact(reuse.key, reuse.fingerprint, join(cwd, '.stryker-incremental.json'));
 
     if (isVerbose()) {
       log(`TypeScriptEngine: ${args.join(' ')}`);
@@ -321,6 +324,10 @@ export class TypeScriptEngine extends BaseEngine {
         executor: options?.executor,
       });
     } catch (error: unknown) {
+      if (reusedIncremental && reuse) {
+        invalidateArtefact(reuse.key);
+        return this.run(filePath, { ...options, reuse: undefined });
+      }
       // Throws for every failure except the recoverable non-zero exits (mutants
       // survived / score under `thresholds.break`), which fall through to
       // parseReport. The report-existence check is sound only because the stale
@@ -332,15 +339,27 @@ export class TypeScriptEngine extends BaseEngine {
     // Reached on both terminal paths that produced a run (clean exit and the
     // expected non-zero "mutants survived" exit); a run that threw above has no
     // state worth keeping.
-    if (incrementalCachePath) harvestIncrementalFile(incrementalCachePath, cwd);
+    if (options?.incremental === true && reuse) {
+      harvestArtefact(reuse.key, reuse.fingerprint, join(cwd, '.stryker-incremental.json'));
+    }
 
     // ── Dry run: nothing to parse ──
     // Reaching this point without a startup error means the suite ran clean,
     // so report that instead of trying (and failing) to parse a report.
-    if (options?.dryRun) return dryRunResult(filePath);
+    if (options?.dryRun) {
+      const result = dryRunResult(filePath);
+      if (reusedIncremental) result.scopeNote = 'Reused Stryker incremental file.';
+      return result;
+    }
 
     // ── Parse the JSON report ──
-    return this.parseReport(cwd, filePath, effectiveRanges ? 'scoped' : 'whole-file');
+    const result = this.parseReport(cwd, filePath, effectiveRanges ? 'scoped' : 'whole-file');
+    if (reusedIncremental) {
+      result.scopeNote = result.scopeNote
+        ? `${result.scopeNote} Reused Stryker incremental file.`
+        : 'Reused Stryker incremental file.';
+    }
+    return result;
   }
 
   /**

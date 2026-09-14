@@ -424,6 +424,7 @@ export async function handleToolCall(
             lineRanges: diffRanges,
             resolvedDiffBase: resolvedBase,
             signal: controller.signal,
+            verify: baselineKeys !== undefined,
           },
           resources.report(),
           ctx,

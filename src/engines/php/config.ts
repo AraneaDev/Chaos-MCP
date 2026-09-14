@@ -28,6 +28,8 @@ export const PHPUNIT_CONFIG_NAMES = [
 ];
 /** Sandbox-relative JSON log path we always read results from. */
 export const JSON_LOG_NAME = 'chaos-infection-log.json';
+/** Sandbox-relative directory containing reusable PHPUnit coverage reports. */
+export const PHP_COVERAGE_DIR_NAME = '.chaos-infection-coverage';
 
 /**
  * Top path segment of the audit target, used as the generated config's

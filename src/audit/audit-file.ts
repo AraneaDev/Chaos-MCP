@@ -7,7 +7,9 @@
  * protocol: it takes a plain input record and either returns a
  * {@link MutationResult} or throws.
  */
-import type { BaseEngine, MutationResult } from '../engines/base.js';
+import type { BaseEngine, MutationResult, ReuseKey } from '../engines/base.js';
+import { existsSync, readdirSync } from 'node:fs';
+import { relative, join } from 'node:path';
 import type { EnvironmentInfo } from '../utils/project-detector.js';
 import type { ChaosConfig } from '../utils/config-loader.js';
 import type { ToolArgs } from '../core/tool-args-validation.js';
@@ -21,6 +23,146 @@ import { ENGINE_REGISTRY } from '../engines/registry.js';
 import { materialiseDiffScope } from './diff-scope.js';
 import type { ResolvedDiffBase } from '../utils/git-diff.js';
 import { AuditDeadline } from '../utils/deadline.js';
+import { computeFingerprint } from '../utils/reuse/fingerprint.js';
+
+const REUSE_TOOL_VERSIONS: Record<ProjectType, string> = {
+  python: 'cosmic-ray 8.7.0',
+  php: 'infection 0.34.0',
+  rust: 'cargo-mutants no-reuse',
+  typescript: 'strykerjs 10',
+  unsupported: 'unsupported',
+};
+
+function workspaceFiles(root: string, include: (path: string) => boolean): string[] {
+  const result: string[] = [];
+  const visit = (directory: string): void => {
+    let entries;
+    try {
+      entries = readdirSync(directory, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (entry.name === 'node_modules' || entry.name === 'vendor' || entry.name === '.git')
+        continue;
+      const absolute = join(directory, entry.name);
+      if (entry.isDirectory()) visit(absolute);
+      else {
+        const relativePath = relative(root, absolute).replaceAll('\\', '/');
+        if (include(relativePath)) result.push(relativePath);
+      }
+    }
+  };
+  visit(root);
+  return result;
+}
+
+function existingPaths(root: string, paths: string[]): string[] {
+  return paths.filter((path) => existsSync(join(root, path)));
+}
+
+function reusePaths(
+  projectType: Exclude<ProjectType, 'unsupported'>,
+  root: string,
+  targetFile: string,
+  testSelection: string[] | undefined,
+): string[] {
+  if (projectType === 'php') {
+    return [
+      ...workspaceFiles(root, (path) => path.endsWith('.php')),
+      ...existingPaths(root, [
+        'phpunit.xml',
+        'phpunit.xml.dist',
+        'phpunit.dist.xml',
+        'phpunit.yml',
+        'phpunit.yml.dist',
+        'phpunit.dist.yml',
+        'phpunit.php',
+        'composer.json',
+        'composer.lock',
+        'infection.json',
+        'infection.json5',
+      ]),
+    ];
+  }
+  if (projectType === 'python') {
+    const tests =
+      testSelection && testSelection.length > 0
+        ? testSelection
+        : workspaceFiles(root, (path) => /(^|\/)(test_[^/]*|[^/]*_test)\.py$/.test(path));
+    return [
+      targetFile,
+      ...workspaceFiles(root, (path) => path.endsWith('.py')),
+      ...tests,
+      ...existingPaths(root, ['pyproject.toml', 'tox.ini', 'pytest.ini', 'setup.cfg']),
+      ...workspaceFiles(root, (path) =>
+        /(?:^|\/)(?:requirements[^/]*\.txt|poetry\.lock|Pipfile\.lock)$/.test(path),
+      ),
+    ];
+  }
+  return [
+    targetFile,
+    ...workspaceFiles(root, (path) => /\.[cm]?[jt]sx?$/.test(path)),
+    ...workspaceFiles(root, (path) =>
+      /^(?:package(?:-lock)?\.json|pnpm-lock\.yaml|yarn\.lock|tsconfig[^/]*\.json)$/.test(path),
+    ),
+  ];
+}
+
+export function phpReuseKey(workspaceRoot: string): ReuseKey {
+  return { workspaceRoot, engine: 'php', target: 'project', kind: 'coverage' };
+}
+
+export async function computePhpReuseFingerprint(
+  workspaceRoot: string,
+): Promise<string | undefined> {
+  return computeFingerprint({
+    workspaceRoot,
+    paths: reusePaths('php', workspaceRoot, '', undefined),
+    extra: { tool: REUSE_TOOL_VERSIONS.php, coverage: 'project' },
+  });
+}
+
+async function attachReuse(
+  runOptions: ReturnType<typeof buildRunOptions>,
+  projectType: Exclude<ProjectType, 'unsupported'>,
+  workspaceRoot: string,
+  targetFile: string,
+): Promise<void> {
+  if (projectType === 'rust') return;
+  const key: ReuseKey =
+    projectType === 'php'
+      ? phpReuseKey(workspaceRoot)
+      : {
+          workspaceRoot,
+          engine: projectType,
+          target: targetFile,
+          kind: projectType === 'python' ? 'session' : 'incremental',
+        };
+  const fingerprint = await computeFingerprint({
+    workspaceRoot,
+    paths: reusePaths(projectType, workspaceRoot, targetFile, runOptions.pythonTestSelection),
+    extra:
+      projectType === 'php'
+        ? { tool: REUSE_TOOL_VERSIONS.php, coverage: 'project' }
+        : {
+            tool: REUSE_TOOL_VERSIONS[projectType],
+            options: JSON.stringify({
+              testRunner: runOptions.testRunner,
+              testRunnerTrusted: runOptions.testRunnerTrusted,
+              pythonTestSelection: runOptions.pythonTestSelection,
+              pythonExcludeOperators: runOptions.pythonExcludeOperators,
+              phpThreads: runOptions.phpThreads,
+              phpTestFrameworkOptions: runOptions.phpTestFrameworkOptions,
+              phpOnlyCoveringTestCases: runOptions.phpOnlyCoveringTestCases,
+              diffScope: runOptions.diffScope,
+              lineRanges: runOptions.lineRanges,
+              lineScope: runOptions.lineScope,
+            }),
+          },
+  });
+  if (fingerprint !== undefined) runOptions.reuse = { key, fingerprint };
+}
 
 /**
  * Mirrors `MIN_ENGINE_BUDGET_MS` in `handler.ts` and `triage/audit-one.ts`,
@@ -94,6 +236,8 @@ export interface AuditFileInput {
   resolvedDiffBase?: ResolvedDiffBase;
   /** Abort signal forwarded from the MCP request context; kills in-flight subprocesses. */
   signal?: AbortSignal;
+  /** True when this is a verify run against a stored baseline. */
+  verify?: boolean;
 }
 
 /**
@@ -117,6 +261,14 @@ export async function auditFile(input: AuditFileInput): Promise<MutationResult> 
     resolvedDiffBase,
   } = input;
   const runOptions = buildRunOptions(args, config, env, workDir, projectType, targetFile);
+  if (
+    input.verify &&
+    projectType === 'typescript' &&
+    args.incremental === undefined &&
+    config.stryker?.incremental === undefined
+  ) {
+    runOptions.incremental = true;
+  }
   // `length > 0`, not just truthiness: an EMPTY array is truthy, and every
   // consumer downstream reads "no ranges" as "the whole file" — StrykerJS's
   // `buildMutateArg` drops the `:start-end` suffix and hands the engine the
@@ -225,6 +377,7 @@ export async function auditFile(input: AuditFileInput): Promise<MutationResult> 
       if (isVerbose()) log(`PythonEngine: auto-scoped test-command to ${auto.join(' ')}`);
     }
   }
+  await attachReuse(runOptions, projectType, env.workspaceRoot, targetFile);
   // Thread the abort signal from the MCP request context into the engine run so
   // in-flight subprocesses are killed when the caller cancels.
   if (input.signal) runOptions.signal = input.signal;

@@ -44,6 +44,10 @@ import {
 import { resolveAuditTargetIn, supportedTypeOf } from './audit/target.js';
 import type { SupportedProjectType } from './utils/project-detector.js';
 import { isBaselineFailureMessage } from './utils/baseline-failure.js';
+import { createSandbox } from './utils/sandbox.js';
+import { createExecutionSession } from './utils/execution.js';
+import { computePhpReuseFingerprint, phpReuseKey } from './audit/audit-file.js';
+import { producePhpCoverage } from './triage/php-coverage.js';
 
 const DEFAULT_MAX_FILES = 25;
 
@@ -89,6 +93,66 @@ const RESOURCE_EXHAUSTED_ROW_MESSAGE =
  * plus the fact that contention was already ruled out by a clean retry.
  */
 const RETRIED_BASELINE_FAILURE_NOTE = '(Retried once at file concurrency 1; failed again.)';
+
+async function prepareSweepPhpCoverage(
+  files: string[],
+  rootCwd: string,
+  cfg: ChaosConfig,
+  resources: ResourceContext,
+  deadline: AuditDeadline,
+  ctx?: ToolContext,
+): Promise<void> {
+  const file = files.find((candidate) => supportedTypeOf(candidate) === 'php');
+  if (!file) return;
+  const target = resolveAuditTargetIn(rootCwd, file);
+  if (!target || target.projectType !== 'php') return;
+  const fingerprint = await computePhpReuseFingerprint(target.env.workspaceRoot);
+  if (!fingerprint) return;
+  const remaining = deadline.remainingMs(TRIAGE_CLEANUP_RESERVE_MS);
+  if (remaining < MIN_RETRY_BUDGET_MS) return;
+
+  const deadlineSignal = AbortSignal.timeout(remaining);
+  const signal = ctx?.signal ? AbortSignal.any([ctx.signal, deadlineSignal]) : deadlineSignal;
+  if ((await resources.watchdog.admit(resources.perFileCostBytes, signal)) === 'cancelled') return;
+  const controller = new AbortController();
+  const abort = () => controller.abort(signal.reason);
+  signal.addEventListener('abort', abort, { once: true });
+  const handle = resources.watchdog.register(controller, resources.perFileCostBytes);
+  let sandbox: Awaited<ReturnType<typeof createSandbox>> | undefined;
+  let executor: Awaited<ReturnType<typeof createExecutionSession>> | undefined;
+  try {
+    sandbox = await createSandbox(file, target.env.workspaceRoot, undefined, {
+      signal: controller.signal,
+      dependencies: cfg.sandbox?.dependencies,
+    });
+    executor =
+      cfg.container?.mode && cfg.container.mode !== 'native'
+        ? await createExecutionSession(
+            'php',
+            sandbox.workDir,
+            target.env.workspaceRoot,
+            cfg.sandbox?.dependencies ?? 'link-entries',
+            cfg.container,
+            controller.signal,
+          )
+        : undefined;
+    await producePhpCoverage({
+      workDir: sandbox.workDir,
+      key: phpReuseKey(target.env.workspaceRoot),
+      fingerprint,
+      timeoutMs: deadline.remainingMs(TRIAGE_CLEANUP_RESERVE_MS),
+      signal: controller.signal,
+      executor,
+    });
+  } catch {
+    // Coverage is an optimisation. Every file can still run its normal audit.
+  } finally {
+    await executor?.dispose();
+    sandbox?.cleanup();
+    signal.removeEventListener('abort', abort);
+    handle.release();
+  }
+}
 
 /**
  * One file queued for the single requeue pass, and why: the watchdog stopped
@@ -370,6 +434,11 @@ export async function handleTriageCall(
           ctx?.reportProgress?.(++done, total, `audited ${done}/${total}`);
         },
       };
+
+      // PHP coverage is project-wide, so generate it once before any PHP files
+      // enter the parallel pool. A failed or budget-exhausted producer simply
+      // leaves those files on their normal fresh-run path.
+      await prepareSweepPhpCoverage(files, rootCwd, cfg, resources, deadline, ctx);
 
       // Second abort check: skip the pool entirely if already cancelled before we start.
       // (Task 6, mirrors the pre-discovery check above.)
