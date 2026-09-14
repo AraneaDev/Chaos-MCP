@@ -27,6 +27,59 @@ export function quoteCommandArg(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
+/** Split a POSIX-style option string into the argv tokens it represents. */
+export function splitCommandArgs(value: string): string[] {
+  const args: string[] = [];
+  let token = '';
+  let started = false;
+  let quote: "'" | '"' | undefined;
+
+  const push = (): void => {
+    if (!started) return;
+    args.push(token);
+    token = '';
+    started = false;
+  };
+
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index];
+    if (quote === "'") {
+      if (char === "'") quote = undefined;
+      else token += char;
+      started = true;
+      continue;
+    }
+    if (quote === '"') {
+      if (char === '"') {
+        quote = undefined;
+        started = true;
+      } else if (char === '\\' && index + 1 < value.length) {
+        token += value[++index];
+        started = true;
+      } else {
+        token += char;
+        started = true;
+      }
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      started = true;
+    } else if (char === '\\' && index + 1 < value.length) {
+      token += value[++index];
+      started = true;
+    } else if (/\s/.test(char)) {
+      push();
+    } else {
+      token += char;
+      started = true;
+    }
+  }
+  if (quote !== undefined) throw new Error('Unterminated quote in PHP test framework options.');
+  push();
+  return args;
+}
+
 /**
  * Flags that pin each mutant's test run to ONE vitest worker.
  *

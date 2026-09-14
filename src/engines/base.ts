@@ -1,6 +1,9 @@
 import { ExecFailureError } from '../utils/exec-error.js';
 import { MutationToolStartupError } from '../utils/exec-classify.js';
 import type { ExecutionSession } from '../utils/execution.js';
+import type { ReuseKey } from '../utils/reuse/store.js';
+
+export type { ReuseKey } from '../utils/reuse/store.js';
 
 /** How a single engine should be pointed at the already-computed diff. */
 export type DiffScope =
@@ -182,6 +185,9 @@ export function survivorVulnerability(
  * Options for tuning a mutation testing run.
  */
 export interface RunOptions {
+  /** A sound, content-fingerprinted artefact reuse decision. */
+  reuse?: { key: ReuseKey; fingerprint: string };
+
   /** Internal per-audit native/container execution session. */
   executor?: ExecutionSession;
 

@@ -12,7 +12,11 @@ import {
   resolveGatedPrebuild,
 } from '../audit/run-options.js';
 import { auditFile } from '../audit/audit-file.js';
-import { buildVitestRelatedCommand, quoteCommandArg } from '../utils/shell-quote.js';
+import {
+  buildVitestRelatedCommand,
+  quoteCommandArg,
+  splitCommandArgs,
+} from '../utils/shell-quote.js';
 import { resolvePrebuildCommand } from '../engines/registry.js';
 import type { EnvironmentInfo } from '../utils/project-detector.js';
 
@@ -327,6 +331,20 @@ describe('buildRunOptions', () => {
     // The common case must not regress into needless quoting.
     expect(quoteCommandArg('src/utils/math-helpers_2.ts')).toBe('src/utils/math-helpers_2.ts');
     expect(quoteCommandArg('./src/app.ts')).toBe('./src/app.ts');
+  });
+
+  it('splits PHP framework options while preserving quoted values', () => {
+    expect(splitCommandArgs('--filter "Foo Test" --testsuite=unit')).toEqual([
+      '--filter',
+      'Foo Test',
+      '--testsuite=unit',
+    ]);
+    expect(splitCommandArgs("--filter 'Foo Test' --exclude Foo\\ Test")).toEqual([
+      '--filter',
+      'Foo Test',
+      '--exclude',
+      'Foo Test',
+    ]);
   });
 
   it('does not invent a scoped command for native or non-Vitest runners', () => {

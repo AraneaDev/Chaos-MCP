@@ -12,15 +12,18 @@
  * The helpers are re-exported here because that is the surface the test suite
  * already imports; the split moved where they live, not what the module offers.
  */
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { BaseEngine, RunOptions, MutationResult } from './base.js';
 import { invokeMutationTool } from '../utils/exec-classify.js';
 import { ExecFailureError } from '../utils/exec-error.js';
 import { log, isVerbose } from '../utils/logger.js';
 import { DEFAULT_TIMEOUT_MS } from '../utils/constants.js';
+import { AuditDeadline } from '../utils/deadline.js';
+import { splitCommandArgs } from '../utils/shell-quote.js';
 import {
   JSON_LOG_NAME,
+  PHP_COVERAGE_DIR_NAME,
   PHPUNIT_CONFIG_NAMES,
   PROJECT_CONFIG_NAMES,
   WARNING_FIDELITY_NOTE,
@@ -29,12 +32,14 @@ import {
 } from './php/config.js';
 import { explainMissingJsonLog } from './php/failures.js';
 import { parseInfectionJsonLog } from './php/report.js';
+import { harvestArtefact, invalidateArtefact, seedArtefact } from '../utils/reuse/store.js';
 
 export {
   inferSourceDir,
   buildInfectionConfig,
   phpunitFailsOnWarning,
   WARNING_FIDELITY_NOTE,
+  PHP_COVERAGE_DIR_NAME,
 } from './php/config.js';
 export {
   infectionDiagnostics,
@@ -64,7 +69,52 @@ export class PhpEngine extends BaseEngine {
   async run(filePath: string, options?: RunOptions): Promise<MutationResult> {
     const cwd = options?.workDir ?? process.cwd();
     const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    const reuse = options?.reuse;
+    const runDeadline = reuse ? new AuditDeadline(timeoutMs) : undefined;
     const { hasProjectConfig, jsonLogPath, env } = prepareInfectionWorkspace(cwd, filePath);
+    const coveragePath = join(cwd, PHP_COVERAGE_DIR_NAME);
+    const reusedCoverage =
+      reuse?.key.kind === 'coverage' && seedArtefact(reuse.key, reuse.fingerprint, coveragePath);
+    let generatedCoverage = false;
+
+    // Infection removes its temporary coverage directory after each run. When
+    // a fingerprint is available, make the first run's coverage persistent so
+    // the next run can skip the initial test suite too.
+    if (reuse && !reusedCoverage) {
+      const phpunit = existsSync(join(cwd, 'vendor', 'bin', 'phpunit'))
+        ? './vendor/bin/phpunit'
+        : 'phpunit';
+      const xmlPath = join(coveragePath, 'coverage-xml');
+      try {
+        mkdirSync(xmlPath, { recursive: true });
+        await invokeMutationTool(
+          'Infection',
+          phpunit,
+          [
+            '--exclude-source-from-xml-coverage',
+            `--coverage-xml=${xmlPath}`,
+            `--log-junit=${join(coveragePath, 'junit.xml')}`,
+            ...(options?.phpTestFrameworkOptions
+              ? splitCommandArgs(options.phpTestFrameworkOptions)
+              : []),
+          ],
+          {
+            cwd,
+            timeoutMs: Math.max(1, runDeadline?.remainingMs() ?? timeoutMs),
+            env: { ...env, XDEBUG_MODE: 'coverage' },
+            signal: options?.signal,
+            executor: options?.executor,
+          },
+        );
+        generatedCoverage = true;
+      } catch {
+        try {
+          rmSync(coveragePath, { recursive: true, force: true });
+        } catch {
+          // A failed producer only removes the optimisation.
+        }
+      }
+    }
 
     // Prefer the vendored binary; fall back to a global `infection` on PATH.
     const vendored = join(cwd, 'vendor', 'bin', 'infection');
@@ -101,6 +151,9 @@ export class PhpEngine extends BaseEngine {
     if (options?.phpOnlyCoveringTestCases !== false) {
       args.push('--only-covering-test-cases');
     }
+    if (reusedCoverage || generatedCoverage) {
+      args.push(`--coverage=${coveragePath}`, '--skip-initial-tests');
+    }
     if (options?.phpTestFrameworkOptions) {
       args.push(`--test-framework-options=${options.phpTestFrameworkOptions}`);
     }
@@ -128,7 +181,7 @@ export class PhpEngine extends BaseEngine {
     try {
       const res = await invokeMutationTool('Infection', bin, args, {
         cwd,
-        timeoutMs,
+        timeoutMs: Math.max(1, runDeadline?.remainingMs() ?? timeoutMs),
         env,
         signal: options?.signal,
         executor: options?.executor,
@@ -148,6 +201,10 @@ export class PhpEngine extends BaseEngine {
       // is the normal survivors case AS LONG AS the JSON log was produced. If no
       // log exists, the initial (coverage) run failed — surface the likely cause.
       if (!existsSync(jsonLogPath)) {
+        if (reusedCoverage && reuse) {
+          invalidateArtefact(reuse.key);
+          return this.run(filePath, { ...options, reuse: undefined });
+        }
         throw explainMissingJsonLog(execErr, cwd, hasProjectConfig);
       }
     }
@@ -178,6 +235,14 @@ export class PhpEngine extends BaseEngine {
     // clean run has no survivor to doubt.
     if (result.survived > 0 && !this.projectFailsOnWarning(cwd)) {
       result.fidelityNote = WARNING_FIDELITY_NOTE;
+    }
+    if (reuse && existsSync(coveragePath)) {
+      harvestArtefact(reuse.key, reuse.fingerprint, coveragePath);
+    }
+    if (reusedCoverage) {
+      result.scopeNote = result.scopeNote
+        ? `${result.scopeNote} Reused Infection coverage.`
+        : 'Reused Infection coverage.';
     }
     return result;
   }

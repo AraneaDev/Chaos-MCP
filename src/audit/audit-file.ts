@@ -7,13 +7,19 @@
  * protocol: it takes a plain input record and either returns a
  * {@link MutationResult} or throws.
  */
-import type { BaseEngine, MutationResult } from '../engines/base.js';
+import type { BaseEngine, MutationResult, ReuseKey } from '../engines/base.js';
+import { existsSync, readdirSync } from 'node:fs';
+import { relative, join } from 'node:path';
 import type { EnvironmentInfo } from '../utils/project-detector.js';
 import type { ChaosConfig } from '../utils/config-loader.js';
 import type { ToolArgs } from '../core/tool-args-validation.js';
 import { DEAD_HARNESS_NOTE, looksLikeDeadHarness } from '../core/score-semantics.js';
-import { createExecutionSession } from '../utils/execution.js';
-import { runShellCommand } from '../utils/exec.js';
+import {
+  createExecutionSession,
+  defaultContainerImage,
+  type ExecutionSession,
+} from '../utils/execution.js';
+import { runShell, runShellCommand } from '../utils/exec.js';
 import { log, isVerbose } from '../utils/logger.js';
 import { findPythonTestSelection, workspaceHasPythonTests } from '../core/test-file.js';
 import { buildRunOptions, type ProjectType } from './run-options.js';
@@ -21,6 +27,203 @@ import { ENGINE_REGISTRY } from '../engines/registry.js';
 import { materialiseDiffScope } from './diff-scope.js';
 import type { ResolvedDiffBase } from '../utils/git-diff.js';
 import { AuditDeadline } from '../utils/deadline.js';
+import { computeFingerprint } from '../utils/reuse/fingerprint.js';
+
+const TOOL_IDENTITY_TIMEOUT_MS = 10_000;
+
+function workspaceFiles(root: string, include: (path: string) => boolean): string[] {
+  const result: string[] = [];
+  const visit = (directory: string): void => {
+    let entries;
+    try {
+      entries = readdirSync(directory, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (entry.name === 'node_modules' || entry.name === 'vendor' || entry.name === '.git')
+        continue;
+      const absolute = join(directory, entry.name);
+      if (entry.isDirectory()) visit(absolute);
+      else {
+        const relativePath = relative(root, absolute).replaceAll('\\', '/');
+        if (include(relativePath)) result.push(relativePath);
+      }
+    }
+  };
+  visit(root);
+  return result;
+}
+
+function existingPaths(root: string, paths: string[]): string[] {
+  return paths.filter((path) => existsSync(join(root, path)));
+}
+
+function reusePaths(
+  projectType: Exclude<ProjectType, 'unsupported'>,
+  root: string,
+  targetFile: string,
+  testSelection: string[] | undefined,
+): string[] {
+  if (projectType === 'php') {
+    return [
+      ...workspaceFiles(root, (path) => path.endsWith('.php')),
+      ...existingPaths(root, [
+        'phpunit.xml',
+        'phpunit.xml.dist',
+        'phpunit.dist.xml',
+        'phpunit.yml',
+        'phpunit.yml.dist',
+        'phpunit.dist.yml',
+        'phpunit.php',
+        'composer.json',
+        'composer.lock',
+        'infection.json',
+        'infection.json5',
+      ]),
+    ];
+  }
+  if (projectType === 'python') {
+    const tests =
+      testSelection && testSelection.length > 0
+        ? testSelection
+        : workspaceFiles(root, (path) => /(^|\/)(test_[^/]*|[^/]*_test)\.py$/.test(path));
+    return [
+      targetFile,
+      ...workspaceFiles(root, (path) => path.endsWith('.py')),
+      ...tests,
+      ...existingPaths(root, ['pyproject.toml', 'tox.ini', 'pytest.ini', 'setup.cfg']),
+      ...workspaceFiles(root, (path) =>
+        /(?:^|\/)(?:requirements[^/]*\.txt|poetry\.lock|Pipfile\.lock)$/.test(path),
+      ),
+    ];
+  }
+  return [
+    targetFile,
+    ...workspaceFiles(root, (path) => /\.[cm]?[jt]sx?$/.test(path)),
+    ...workspaceFiles(root, (path) =>
+      /^(?:package(?:-lock)?\.json|pnpm-lock\.yaml|yarn\.lock|tsconfig[^/]*\.json)$/.test(path),
+    ),
+  ];
+}
+
+export function phpReuseKey(workspaceRoot: string): ReuseKey {
+  return { workspaceRoot, engine: 'php', target: 'project', kind: 'coverage' };
+}
+
+export async function computePhpReuseFingerprint(
+  workspaceRoot: string,
+  phpTestFrameworkOptions?: string,
+  toolIdentity?: string,
+): Promise<string | undefined> {
+  if (!toolIdentity) return undefined;
+  return computeFingerprint({
+    workspaceRoot,
+    paths: reusePaths('php', workspaceRoot, '', undefined),
+    extra: {
+      tool: toolIdentity,
+      coverage: 'project',
+      phpTestFrameworkOptions: phpTestFrameworkOptions ?? '',
+    },
+  });
+}
+
+/** Resolve the mutation tool identity from the environment that will execute it. */
+export async function resolveMutationToolIdentity(
+  projectType: Exclude<ProjectType, 'unsupported' | 'rust'>,
+  workDir: string,
+  config: ChaosConfig,
+  executor: ExecutionSession | undefined,
+  signal?: AbortSignal,
+): Promise<string | undefined> {
+  const run = executor
+    ? (command: string, args: string[]) =>
+        executor.run(command, args, {
+          cwd: workDir,
+          timeoutMs: TOOL_IDENTITY_TIMEOUT_MS,
+          signal,
+        })
+    : (command: string, args: string[]) =>
+        runShell(command, args, {
+          cwd: workDir,
+          timeoutMs: TOOL_IDENTITY_TIMEOUT_MS,
+          signal,
+          killTree: true,
+        });
+  const command =
+    projectType === 'php'
+      ? existsSync(join(workDir, 'vendor', 'bin', 'infection'))
+        ? './vendor/bin/infection'
+        : 'infection'
+      : projectType === 'typescript'
+        ? executor?.kind === 'container'
+          ? 'stryker'
+          : 'npx'
+        : 'cosmic-ray';
+  const args =
+    projectType === 'typescript' && executor?.kind !== 'container'
+      ? ['--no-install', 'stryker', '--version']
+      : ['--version'];
+  try {
+    const result = await run(command, args);
+    const version = `${result.stdout}\n${result.stderr}`.trim().replace(/\s+/g, ' ');
+    if (!version) return undefined;
+    const environment =
+      executor?.kind === 'container'
+        ? `container:${config.container?.images?.[projectType] ?? defaultContainerImage(projectType)}`
+        : 'native';
+    return `${environment}:${command}:${version}`;
+  } catch {
+    return undefined;
+  }
+}
+
+async function attachReuse(
+  runOptions: ReturnType<typeof buildRunOptions>,
+  projectType: Exclude<ProjectType, 'unsupported'>,
+  workspaceRoot: string,
+  targetFile: string,
+  toolIdentity: string | undefined,
+): Promise<void> {
+  if (projectType === 'rust') return;
+  const key: ReuseKey =
+    projectType === 'php'
+      ? phpReuseKey(workspaceRoot)
+      : {
+          workspaceRoot,
+          engine: projectType,
+          target: targetFile,
+          kind: projectType === 'python' ? 'session' : 'incremental',
+        };
+  if (!toolIdentity) return;
+  const fingerprint = await computeFingerprint({
+    workspaceRoot,
+    paths: reusePaths(projectType, workspaceRoot, targetFile, runOptions.pythonTestSelection),
+    extra:
+      projectType === 'php'
+        ? {
+            tool: toolIdentity,
+            coverage: 'project',
+            phpTestFrameworkOptions: runOptions.phpTestFrameworkOptions ?? '',
+          }
+        : {
+            tool: toolIdentity,
+            options: JSON.stringify({
+              testRunner: runOptions.testRunner,
+              testRunnerTrusted: runOptions.testRunnerTrusted,
+              pythonTestSelection: runOptions.pythonTestSelection,
+              pythonExcludeOperators: runOptions.pythonExcludeOperators,
+              phpThreads: runOptions.phpThreads,
+              phpTestFrameworkOptions: runOptions.phpTestFrameworkOptions,
+              phpOnlyCoveringTestCases: runOptions.phpOnlyCoveringTestCases,
+              diffScope: runOptions.diffScope,
+              lineRanges: runOptions.lineRanges,
+              lineScope: runOptions.lineScope,
+            }),
+          },
+  });
+  if (fingerprint !== undefined) runOptions.reuse = { key, fingerprint };
+}
 
 /**
  * Mirrors `MIN_ENGINE_BUDGET_MS` in `handler.ts` and `triage/audit-one.ts`,
@@ -94,6 +297,8 @@ export interface AuditFileInput {
   resolvedDiffBase?: ResolvedDiffBase;
   /** Abort signal forwarded from the MCP request context; kills in-flight subprocesses. */
   signal?: AbortSignal;
+  /** True when this is a verify run against a stored baseline. */
+  verify?: boolean;
 }
 
 /**
@@ -117,6 +322,14 @@ export async function auditFile(input: AuditFileInput): Promise<MutationResult> 
     resolvedDiffBase,
   } = input;
   const runOptions = buildRunOptions(args, config, env, workDir, projectType, targetFile);
+  if (
+    input.verify &&
+    projectType === 'typescript' &&
+    args.incremental === undefined &&
+    config.stryker?.incremental === undefined
+  ) {
+    runOptions.incremental = true;
+  }
   // `length > 0`, not just truthiness: an EMPTY array is truthy, and every
   // consumer downstream reads "no ranges" as "the whole file" — StrykerJS's
   // `buildMutateArg` drops the `:start-end` suffix and hands the engine the
@@ -229,19 +442,25 @@ export async function auditFile(input: AuditFileInput): Promise<MutationResult> 
   // in-flight subprocesses are killed when the caller cancels.
   if (input.signal) runOptions.signal = input.signal;
 
-  const containerMode = config.container?.mode;
+  const configuredContainerMode =
+    config.container?.modes?.[projectType] ?? config.container?.mode ?? 'native';
   const executor =
-    containerMode && containerMode !== 'native'
-      ? await createExecutionSession(
+    configuredContainerMode === 'native'
+      ? undefined
+      : await createExecutionSession(
           projectType,
           workDir,
           env.workspaceRoot,
           config.sandbox?.dependencies ?? 'link-entries',
           config.container,
           input.signal,
-        )
-      : undefined;
+        );
   if (executor) runOptions.executor = executor;
+  const toolIdentity =
+    projectType === 'rust'
+      ? undefined
+      : await resolveMutationToolIdentity(projectType, workDir, config, executor, input.signal);
+  await attachReuse(runOptions, projectType, env.workspaceRoot, targetFile, toolIdentity);
 
   try {
     if (prebuildCmd !== null) {

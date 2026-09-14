@@ -640,6 +640,7 @@ export async function auditTriageFile(
         resolvedDiffBase: scope.resolvedBase,
         // Task 6 abort + Task 8 memory stop share this one signal.
         signal: engineController.signal,
+        verify: false,
       });
     } finally {
       sandbox.cleanup();
