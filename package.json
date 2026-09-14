@@ -36,7 +36,7 @@
   },
   "scripts": {
     "build": "tsc && npm run postbuild",
-    "postbuild": "node -e \"const fs=require('fs');const p='./build/index.js';let c=fs.readFileSync(p,'utf-8');if(!c.startsWith('#!/usr/bin/env node')){fs.writeFileSync(p,'#!/usr/bin/env node\\n'+c);console.log('Shebang restored')}\" && node -e \"if(process.platform!=='win32')require('child_process').execSync('chmod +x ./build/index.js')\"",
+    "postbuild": "node -e \"const fs=require('fs');const p='./build/index.js';let c=fs.readFileSync(p,'utf-8');if(!c.startsWith('#!/usr/bin/env node')){fs.writeFileSync(p,'#!/usr/bin/env node\\n'+c);console.log('Shebang restored')}if(process.platform!=='win32')fs.chmodSync(p,0o755)\"",
     "start": "node ./build/index.js",
     "prepare": "npm run build",
     "prepublishOnly": "npm run build && npm run check",

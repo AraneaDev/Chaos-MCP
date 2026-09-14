@@ -105,6 +105,20 @@ describe('estimateHeuristic', () => {
     expect(estimateHeuristic(src, 'php').mutants).toBe(2);
   });
 
+  it('strips PHP tags only for the PHP syntax family', () => {
+    // The PHP-tag cleanup is family-specific. The non-PHP path must leave the
+    // same characters alone, otherwise a future language using `<?` as source
+    // syntax would silently lose a comparison and conditional from its
+    // estimate. The exact totals pin both branches of `family === 'php'`.
+    expect(estimateHeuristic('<?php 1?>2', 'php')).toEqual({ mutants: 2, constructs: 2 });
+    // Both tag delimiters remain visible to the C-family estimator: two
+    // comparisons (`<`, `>`), two conditionals (`?`), and two numbers.
+    expect(estimateHeuristic('<?php 1?>2', 'typescript')).toEqual({
+      mutants: 8,
+      constructs: 6,
+    });
+  });
+
   it('is monotonic — more constructs yield more mutants', () => {
     const small = `return a + b;`;
     const big = `return a + b + c + d + e;`;
