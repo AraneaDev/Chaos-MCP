@@ -68,10 +68,10 @@ export class PhpEngine extends BaseEngine {
   async run(filePath: string, options?: RunOptions): Promise<MutationResult> {
     const cwd = options?.workDir ?? process.cwd();
     const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-    const runDeadline = new AuditDeadline(timeoutMs);
+    const reuse = options?.reuse;
+    const runDeadline = reuse ? new AuditDeadline(timeoutMs) : undefined;
     const { hasProjectConfig, jsonLogPath, env } = prepareInfectionWorkspace(cwd, filePath);
     const coveragePath = join(cwd, PHP_COVERAGE_DIR_NAME);
-    const reuse = options?.reuse;
     const reusedCoverage =
       reuse?.key.kind === 'coverage' && seedArtefact(reuse.key, reuse.fingerprint, coveragePath);
     let generatedCoverage = false;
@@ -97,7 +97,7 @@ export class PhpEngine extends BaseEngine {
           ],
           {
             cwd,
-            timeoutMs: Math.max(1, runDeadline.remainingMs()),
+            timeoutMs: Math.max(1, runDeadline?.remainingMs() ?? timeoutMs),
             env: { ...env, XDEBUG_MODE: 'coverage' },
             signal: options?.signal,
             executor: options?.executor,
@@ -178,7 +178,7 @@ export class PhpEngine extends BaseEngine {
     try {
       const res = await invokeMutationTool('Infection', bin, args, {
         cwd,
-        timeoutMs: Math.max(1, runDeadline.remainingMs()),
+        timeoutMs: Math.max(1, runDeadline?.remainingMs() ?? timeoutMs),
         env,
         signal: options?.signal,
         executor: options?.executor,
