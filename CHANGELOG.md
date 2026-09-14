@@ -2,6 +2,37 @@
 
 All notable changes to Chaos-MCP are documented in this file.
 
+## [5.0.0](https://github.com/AraneaDev/Chaos-MCP/compare/v4.3.0...v5.0.0) (2026-09-14)
+
+### Release highlights
+
+* Python container images now ship cosmic-ray 8.7.0.
+* Rust mutation runs no longer execute a cargo check prebuild, and per-mutant timeout and cleanup options are honored.
+* Rust output includes replacement text, columns, and classified mutators while preserving the existing mutator string byte-for-byte.
+* `diffBase` now scopes mutation runs on all four engines.
+* Sound mutation result reuse avoids repeat work when the source and configuration fingerprint match.
+* TypeScript triage batches eligible groups and falls back to per-file audits when a group fails, times out, or is cancelled.
+* Resource governance sizes mutation work from available memory and stops over-budget runs.
+
+### Features
+
+* batch triage and improve output fidelity ([21a3615](https://github.com/AraneaDev/Chaos-MCP/commit/21a36159cc1883a0adf9dbed8c75a8c72563c21d))
+* honour diffBase on Python, Rust and PHP ([#70](https://github.com/AraneaDev/Chaos-MCP/issues/70)) ([82df222](https://github.com/AraneaDev/Chaos-MCP/commit/82df2224cfffe2fe25713be018173d37a4653a50))
+* **report:** preserve Rust and Python output fidelity ([3cb2ba1](https://github.com/AraneaDev/Chaos-MCP/commit/3cb2ba12842b36ebd1d67842a0241bd24617b062))
+* **reuse:** add sound mutation artefact reuse ([#72](https://github.com/AraneaDev/Chaos-MCP/issues/72)) ([c09b32a](https://github.com/AraneaDev/Chaos-MCP/commit/c09b32ad3dce43584a4ad9fabe5d8bc6cab082cf))
+* **rust:** honour cargo-mutants cleanup options ([b42b08f](https://github.com/AraneaDev/Chaos-MCP/commit/b42b08ff0f0ebd3905f90add4e1028a63a5fc303))
+* **triage:** batch eligible TypeScript sweep files ([84d74c8](https://github.com/AraneaDev/Chaos-MCP/commit/84d74c8eb8f7dfcbcdad373f630849bc8c23f44c))
+
+
+### Bug Fixes
+
+* address CodeRabbit review findings ([29e0345](https://github.com/AraneaDev/Chaos-MCP/commit/29e0345f1ae1df7d367f1188ced7f9cd5c1ad35e))
+
+
+### Miscellaneous Chores
+
+* release 5.0.0 ([e28265b](https://github.com/AraneaDev/Chaos-MCP/commit/e28265bd3c37bfe4d65577da860a7d07289f0447))
+
 ## [4.3.0](https://github.com/AraneaDev/Chaos-MCP/compare/v4.2.2...v4.3.0) (2026-09-12)
 
 
