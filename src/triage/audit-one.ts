@@ -148,7 +148,7 @@ export interface TriageFileDeps {
  * two same-named, differently-shaped interfaces in the same codebase is a
  * trap for the next reader even though neither file imports the other's.
  */
-interface TriageDiffScope {
+export interface TriageDiffScope {
   lineRanges?: { start: number; end: number }[];
   /**
    * The base `lineRanges` was resolved against, carried alongside it so
@@ -170,7 +170,7 @@ interface TriageDiffScope {
  * the row: their score covers more than the diff, and an unlabelled 60% would
  * read as "your changed lines are 60% covered".
  */
-async function resolveDiffScope(
+export async function resolveDiffScope(
   targetFile: string,
   env: EnvironmentInfo,
   projectType: SupportedProjectType,
@@ -441,6 +441,39 @@ function suppressionsFor(workspaceRoot: string, deps: TriageFileDeps): Map<strin
   return loaded;
 }
 
+/** Apply the common per-file suppression and row projection to an engine result. */
+export function buildTriageRowForResult(
+  file: string,
+  target: ResolvedTarget,
+  result: MutationResult,
+  scope: TriageDiffScope,
+  deps: TriageFileDeps,
+): TriageRow {
+  const suppressionMap = suppressionsFor(target.env.workspaceRoot, deps);
+  const verdict = verifySuppressions(
+    target.env.workspaceRoot,
+    target.relFromRoot,
+    suppressionMap.get(target.relFromRoot),
+  );
+  const sup = applySuppressions(result, verdict);
+  return buildTriageRow(
+    {
+      file,
+      result: sup.result,
+      relFromRoot: target.relFromRoot,
+      workspaceRoot: target.env.workspaceRoot,
+      projectType: target.projectType,
+      scopeNote: scope.scopeNote,
+      suppressedCount: sup.suppressedCount,
+      driftedSuppressions: sup.drifted,
+      unverifiedSuppressions: verdict.unverified,
+      relocatedSuppressions: sup.relocated.length,
+      orphanedSuppressions: isWholeFileRun(result) ? sup.orphaned : 0,
+    },
+    deps,
+  );
+}
+
 /**
  * The smallest slice of the sweep's budget worth starting an engine with.
  *
@@ -552,8 +585,10 @@ export async function auditTriageFile(
     if (!target) {
       return { error: { file, error: `Unsupported file type for ${file}` } };
     }
-    const { projectType, env, relFromRoot, targetFile } = target;
-    const suppressionMap = suppressionsFor(env.workspaceRoot, deps);
+    const { projectType, env, targetFile } = target;
+    // Memoize before provisioning. A sweep should still read its suppression
+    // file once per workspace when sandbox setup fails for every file.
+    suppressionsFor(env.workspaceRoot, deps);
     const engine = makeEngine(projectType);
 
     // `undefined`, not a value off the args bag: triage has never accepted a
@@ -646,54 +681,7 @@ export async function auditTriageFile(
       sandbox.cleanup();
     }
 
-    // Apply equivalent-mutant suppression before building the row. The key is
-    // relFromRoot — byte-identical to the key used by audit_code_resilience (Key
-    // Contract) so suppressions added via audit are honored in triage.
-    //
-    // Verification happens here, once per audited file, against the memoized
-    // per-workspace entries: the suppressions FILE is still read once per
-    // workspace, never once per file.
-    const verdict = verifySuppressions(
-      env.workspaceRoot,
-      relFromRoot,
-      suppressionMap.get(relFromRoot),
-    );
-    const sup = applySuppressions(result, verdict);
-
-    return {
-      row: buildTriageRow(
-        {
-          file,
-          result: sup.result,
-          relFromRoot,
-          // Same `env` the suppressions, the sandbox and the diff scope were
-          // resolved against, so the minted runId is fingerprinted for the
-          // workspace `relFromRoot` is actually relative to (audit M10).
-          workspaceRoot: env.workspaceRoot,
-          projectType,
-          scopeNote: scope.scopeNote,
-          suppressedCount: sup.suppressedCount,
-          driftedSuppressions: sup.drifted,
-          unverifiedSuppressions: verdict.unverified,
-          // The COUNT only. A leaderboard over hundreds of files would drown in
-          // the per-entry tier-3 notes; those belong to a single-file audit,
-          // where there is room to act on them.
-          relocatedSuppressions: sup.relocated.length,
-          // Gated on the PRE-suppression `result`, not `sup.result`.
-          // `applySuppressions` returns a new object and never reassigns this
-          // one, so `result` is still the engine's own snapshot — which
-          // matters because filtering CAN synthesise a `scopeNote`
-          // (`apply-suppressions.ts`, when suppression drives `totalMutants`
-          // to 0) and `isWholeFileRun`'s fallback branch reads `scopeNote`.
-          // Gating on the filtered result would flip the scope answer and mask
-          // a real orphan in exactly the case this counter exists for.
-          // `applyAndCountSuppressions` evaluates it on the same pre-filter
-          // snapshot for the same reason, so the two tools cannot disagree.
-          orphanedSuppressions: isWholeFileRun(result) ? sup.orphaned : 0,
-        },
-        deps,
-      ),
-    };
+    return { row: buildTriageRowForResult(file, target, result, scope, deps) };
   } catch (error: unknown) {
     // A memory stop must never read as a user cancel, so this is checked
     // BEFORE the cancel handling below (Task 8): the killed child process

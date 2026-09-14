@@ -50,6 +50,8 @@ export interface TriageRow {
   relocatedSuppressions?: number;
   /** Whether this file met the minScore gate threshold (only present when minScore is set). */
   passed?: boolean;
+  /** True when this row came from an eligible grouped TypeScript run. */
+  grouped?: boolean;
   /** True when the file has no mutable logic (zero mutants, no scope note); score is "n/a" (audit M3). */
   noMutableLogic?: boolean;
   /**

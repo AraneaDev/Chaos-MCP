@@ -44,6 +44,10 @@ export interface StrykerMutantRecord {
   statusReason?: string;
 }
 
+function reportPathKey(file: string): string {
+  return file.replaceAll('\\', '/').replace(/^\.\//, '');
+}
+
 /**
  * Mutant statuses that are SCORED: they form the denominator, and
  * `Killed`/`Timeout` also form the numerator (a timeout means the mutant was
@@ -137,6 +141,32 @@ function collectMutants(raw: StrykerJsonReport): {
     }
   }
   return { mutants, sourceById };
+}
+
+/**
+ * Score each requested file in a multi-file report independently. The report
+ * must be a complete partition of the requested files, otherwise callers can
+ * safely contain the grouped run by falling back to single-file audits.
+ */
+export function parseStrykerReportByFile(
+  raw: StrykerJsonReport,
+  files: string[],
+  scopeKind: 'whole-file' | 'scoped' = 'whole-file',
+): Map<string, MutationResult> | undefined {
+  if (!raw || typeof raw.files !== 'object' || raw.files === null) return undefined;
+  const requested = new Map(files.map((file) => [reportPathKey(file), file]));
+  const reportEntries = Object.keys(raw.files);
+  if (reportEntries.length !== requested.size) return undefined;
+  for (const key of reportEntries) {
+    if (!requested.has(reportPathKey(key))) return undefined;
+  }
+  const results = new Map<string, MutationResult>();
+  for (const key of reportEntries) {
+    const file = requested.get(reportPathKey(key));
+    if (!file || results.has(file)) return undefined;
+    results.set(file, scoreStrykerReport({ files: { [key]: raw.files[key] } }, file, scopeKind));
+  }
+  return results.size === files.length ? results : undefined;
 }
 
 /**

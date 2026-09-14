@@ -664,6 +664,7 @@ export const TRIAGE_TOOL_DEFINITION = {
             rejectedSuppressions: { type: 'integer' },
             relocatedSuppressions: { type: 'integer' },
             passed: { type: 'boolean' },
+            grouped: { type: 'boolean' },
             // Present (false) only when the file's audit was truncated by the
             // time budget; its score then covers only the completed batches.
             complete: { type: 'boolean' },
