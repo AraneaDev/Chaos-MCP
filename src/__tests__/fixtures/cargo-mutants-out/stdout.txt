@@ -1,0 +1,8 @@
+Found 8 mutants to test
+ok       Unmutated baseline in 17s build + 9s test
+ INFO Auto-set test timeout to 47s
+TIMEOUT  src/notify.rs:10:5: replace maybe_send with () in 4s build + 47s test
+TIMEOUT  src/notify.rs:11:8: delete ! in maybe_send in 22s build + 47s test
+TIMEOUT  src/notify.rs:18:5: replace send with () in 1s build + 47s test
+TIMEOUT  src/notify.rs:53:5: replace test -> anyhow::Result<i32> with Ok(0) in 0s build + 47s test
+8 mutants tested in 3m: 4 caught, 4 timeouts

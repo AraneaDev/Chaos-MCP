@@ -2871,9 +2871,9 @@ describe('handleToolCall', () => {
     expect(mockRun).toHaveBeenCalled();
   });
 
-  // ─── Rust smart prebuild tests ─────────────────────────────────────────
+  // ─── Rust prebuild tests ───────────────────────────────────────────────
 
-  it('uses cargo check as default prebuild for Rust projects', async () => {
+  it('does not run a cold auto-prebuild for Rust projects', async () => {
     const { RustEngine } = await import('../engines/rust.js');
     const MockRustEngine = vi.mocked(RustEngine);
 
@@ -2897,7 +2897,7 @@ describe('handleToolCall', () => {
       workspaceRoot: '/workspace',
     });
 
-    // Cargo.toml must exist for smart prebuild to trigger
+    // Cargo.toml may exist, but Rust has no cold auto-prebuild.
     mockExistsSync.mockImplementation((p) => String(p).endsWith('Cargo.toml'));
 
     mockRunShellCommand.mockResolvedValue({
@@ -2910,26 +2910,11 @@ describe('handleToolCall', () => {
     const request = makeRequest('audit_code_resilience', { filePath: 'src/main.rs' });
     await handleToolCall(request);
 
-    expect(mockRunShellCommand).toHaveBeenCalledWith(
-      'cargo check',
-      expect.objectContaining({
-        cwd: '/tmp/chaos-mcp-sandbox',
-        timeoutMs: expect.any(Number),
-        killTree: true,
-      }),
-    );
-    expect(mockRunShellCommand.mock.calls[0][1]?.timeoutMs).toBeGreaterThanOrEqual(297000);
+    expect(mockRunShellCommand).not.toHaveBeenCalled();
     expect(mockRun).toHaveBeenCalled();
   });
 
-  it('governs the auto Rust prebuild with the same inner-pool caps the mutation tool gets', async () => {
-    // Regression for the finding that the auto-prebuild (`cargo check`) ran
-    // ungoverned: it is a cold compile of every dependency (the sandbox
-    // excludes target/), cargo parallelises it across every core, and it runs
-    // INSIDE the governed window where the watchdog may then stop the run it
-    // just paid for. The prebuild must receive the same CARGO_BUILD_JOBS cap
-    // the mutation invocation gets, merged over (not replacing) the inherited
-    // environment.
+  it('does not invoke an auto-prebuild even when Cargo.toml exists', async () => {
     const { RustEngine } = await import('../engines/rust.js');
     const MockRustEngine = vi.mocked(RustEngine);
 
@@ -2953,7 +2938,7 @@ describe('handleToolCall', () => {
       workspaceRoot: '/workspace',
     });
 
-    // Cargo.toml must exist for smart prebuild to trigger.
+    // Cargo.toml exists, but no auto-prebuild is configured.
     mockExistsSync.mockImplementation((p) => String(p).endsWith('Cargo.toml'));
 
     mockRunShellCommand.mockResolvedValue({
@@ -2966,19 +2951,11 @@ describe('handleToolCall', () => {
     const request = makeRequest('audit_code_resilience', { filePath: 'src/main.rs' });
     await handleToolCall(request);
 
-    expect(mockRunShellCommand).toHaveBeenCalledWith('cargo check', expect.any(Object));
-    const prebuildEnv = mockRunShellCommand.mock.calls[0][1]?.env;
-    // Today's code hands the prebuild no env at all (undefined): this is the
-    // assertion that fails against that behaviour.
-    expect(prebuildEnv).toBeDefined();
-    expect(prebuildEnv?.CARGO_BUILD_JOBS).toBeDefined();
-    // The merge must be OVER process.env, not a replacement of it: a bare
-    // innerEnv would strip PATH and cargo would fail to launch at all.
-    expect(prebuildEnv?.PATH).toBe(process.env.PATH);
+    expect(mockRunShellCommand).not.toHaveBeenCalled();
     expect(mockRun).toHaveBeenCalled();
   });
 
-  it('skips smart prebuild for Rust when Cargo.toml is absent', async () => {
+  it('does not run a Rust prebuild when Cargo.toml is absent', async () => {
     const { RustEngine } = await import('../engines/rust.js');
     const MockRustEngine = vi.mocked(RustEngine);
 
@@ -3318,9 +3295,9 @@ describe('handleToolCall', () => {
     expect(mockRun).not.toHaveBeenCalled();
   });
 
-  // ─── Rust auto prebuild verbose logging ──────────────────────────────
+  // ─── Rust prebuild verbose logging ───────────────────────────────────
 
-  it('logs [auto (rust)] when smart prebuild kicks in for Rust projects with verbose', async () => {
+  it('does not log an auto-prebuild for Rust projects with verbose', async () => {
     mockIsVerbose.mockReturnValue(true);
 
     const mockRun = vi.fn().mockResolvedValue({
@@ -3354,9 +3331,8 @@ describe('handleToolCall', () => {
     const request = makeRequest('audit_code_resilience', { filePath: 'src/main.rs' });
     await handleToolCall(request);
 
-    // Rust has no packageManager so autoLabel falls back to projectType 'rust'
-    expect(mockLog).toHaveBeenCalledWith(expect.stringContaining('[auto (rust)]'));
-    expect(mockLog).toHaveBeenCalledWith(expect.stringContaining('cargo check'));
+    expect(mockLog).not.toHaveBeenCalledWith(expect.stringContaining('[auto (rust)]'));
+    expect(mockLog).not.toHaveBeenCalledWith(expect.stringContaining('cargo check'));
   });
 
   // ─── handleToolCall verbose logging branches ──────────────────────────

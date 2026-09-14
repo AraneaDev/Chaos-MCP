@@ -138,6 +138,41 @@ describe('auditFile container execution', () => {
     );
   });
 
+  it('honours a per-language container mode without a top-level mode', async () => {
+    const session = fakeSession();
+    vi.mocked(createExecutionSession).mockResolvedValue(session);
+    const run = vi.fn().mockResolvedValue({ ...result, target: 'src/App.php' });
+    const engine = { run } as unknown as BaseEngine;
+    const container = { modes: { php: 'container' as const } };
+
+    await auditFile({
+      targetFile: 'src/App.php',
+      env: {
+        projectType: 'php',
+        testRunner: 'phpunit',
+        detectedRunner: 'phpunit',
+        packageManager: 'composer',
+        workspaceRoot: '/workspace',
+      },
+      projectType: 'php',
+      engine,
+      args: {},
+      config: { container },
+      workDir: '/tmp/sandbox',
+      prebuildCmd: null,
+    });
+
+    expect(createExecutionSession).toHaveBeenCalledWith(
+      'php',
+      '/tmp/sandbox',
+      '/workspace',
+      'link-entries',
+      container,
+      undefined,
+    );
+    expect(run).toHaveBeenCalledWith('src/App.php', expect.objectContaining({ executor: session }));
+  });
+
   it('runs prebuild in the container and disposes after engine failure', async () => {
     const session = fakeSession();
     vi.mocked(createExecutionSession).mockResolvedValue(session);

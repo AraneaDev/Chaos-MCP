@@ -602,7 +602,7 @@ export const KNOWN_COSMICRAY_KEYS = new Set([
 ]);
 
 /** Valid keys within a CargoMutantsConfig section. */
-export const KNOWN_RUST_KEYS = new Set(['timeoutMs', 'concurrency']);
+export const KNOWN_RUST_KEYS = new Set(['timeoutMs', 'perMutantTimeoutMs', 'concurrency']);
 
 /** Valid keys within an InfectionConfig section. */
 export const KNOWN_INFECTION_KEYS = new Set([

@@ -123,6 +123,12 @@ export function ignoredOptionsFor(projectType: ProjectType, args: ToolArgs): str
   const descriptor = ENGINE_REGISTRY[projectType as SupportedProjectType];
   // StrykerJS (configKey 'stryker') honours every option in the list.
   if (descriptor?.configKey === 'stryker') return [];
+  if (projectType === 'rust') {
+    return STRYKER_ONLY_OPTIONS.filter((opt) => {
+      if (opt === 'concurrency' || opt === 'dryRun' || opt === 'perMutantTimeoutMs') return false;
+      return args[opt] !== undefined;
+    });
+  }
   return STRYKER_ONLY_OPTIONS.filter((opt) => {
     if (args[opt] === undefined) return false;
     if (opt === 'concurrency') return descriptor?.honorsConcurrency === false;
@@ -316,7 +322,9 @@ export function buildRunOptions(
       : undefined,
     perMutantTimeoutMs: resolvePositiveMs(
       args.perMutantTimeoutMs,
-      cfg.stryker?.perMutantTimeoutMs ?? cfg.perMutantTimeoutMs,
+      projectType === 'rust'
+        ? (cfg.rust?.perMutantTimeoutMs ?? cfg.perMutantTimeoutMs)
+        : (cfg.stryker?.perMutantTimeoutMs ?? cfg.perMutantTimeoutMs),
     ),
     // `ignorePatterns` is deliberately NOT forwarded: it governs what the
     // SANDBOX COPY excludes and is consumed by createSandbox directly (see

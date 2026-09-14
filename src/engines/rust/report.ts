@@ -9,6 +9,7 @@
  */
 import { type MutationResult, formatMutationScore, survivorVulnerability } from '../base.js';
 import { escapeCargoFileGlob } from './args.js';
+import { joinToStructured, type StructuredMutant, type StructuredSummary } from './structured.js';
 
 /**
  * Authoritative per-outcome counts extracted from cargo-mutants' final summary
@@ -95,6 +96,86 @@ export interface ScoredCounts {
   mutationScore: string;
   /** Only present when non-zero, matching the `MutationResult` spread below. */
   incompetent?: number;
+}
+
+/** Parse a cargo-mutants --list response without running any mutants. */
+export function countCargoMutantsList(stdout: string, filePath: string): MutationResult {
+  const lines = stdout
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  const entries = lines.filter((line) => /:\d+(?::\d+)?:/.test(line));
+  const count =
+    entries.length > 0
+      ? entries.length
+      : lines.filter((line) => !/^found\s+\d+/i.test(line)).length;
+  return {
+    target: filePath,
+    totalMutants: count,
+    killed: 0,
+    survived: 0,
+    mutationScore: 'n/a',
+    vulnerabilities: [],
+  };
+}
+
+function sourceOffset(source: string, line: number, column: number): number | undefined {
+  const lines = source.split('\n');
+  if (line < 1 || line > lines.length || column < 1) return undefined;
+  let offset = 0;
+  for (let index = 1; index < line; index++) offset += Array.from(lines[index - 1]).length + 1;
+  const chars = Array.from(lines[line - 1]);
+  if (column - 1 > chars.length) return undefined;
+  return offset + column - 1;
+}
+
+/** Slice a cargo-mutants span, whose columns are 1-based Unicode scalar positions. */
+export function sliceCargoSource(source: string, mutant: StructuredMutant): string | undefined {
+  const start = sourceOffset(source, mutant.span.startLine, mutant.span.startColumn);
+  const end = sourceOffset(source, mutant.span.endLine, mutant.span.endColumn);
+  if (start === undefined || end === undefined || end < start) return undefined;
+  return Array.from(source).slice(start, end).join('');
+}
+
+/** Enrich stdout survivors, or return the original result when structured data cannot join. */
+export function enrichCargoMutantsResult(
+  result: MutationResult,
+  structured: StructuredMutant[] | undefined,
+  structuredSummary: StructuredSummary | undefined,
+  source: string | undefined,
+  stdoutSummary: CargoSummary | null,
+): MutationResult {
+  if (!structured || !structuredSummary || !source || !stdoutSummary) return result;
+  if (
+    structuredSummary.caught !== stdoutSummary.caught ||
+    structuredSummary.missed !== stdoutSummary.missed ||
+    structuredSummary.timeout !== stdoutSummary.timeout ||
+    structuredSummary.unviable !== stdoutSummary.unviable
+  ) {
+    return result;
+  }
+  const candidates = result.vulnerabilities.map((v) => ({
+    file: result.target,
+    line: v.line,
+    description: v.mutator,
+  }));
+  const joined = joinToStructured(candidates, structured);
+  if (!joined) return result;
+  const vulnerabilities = result.vulnerabilities.map((v, index) => {
+    const mutant = joined.get(candidates[index]);
+    const original = mutant ? sliceCargoSource(source, mutant) : undefined;
+    if (!mutant || original === undefined) return undefined;
+    return {
+      ...v,
+      column: mutant.column,
+      genre: mutant.genre,
+      original,
+      mutated: mutant.replacement,
+    };
+  });
+  return vulnerabilities.some((v) => v === undefined)
+    ? result
+    : { ...result, vulnerabilities: vulnerabilities as MutationResult['vulnerabilities'] };
 }
 
 /**

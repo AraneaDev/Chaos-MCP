@@ -180,7 +180,7 @@ export interface EngineDescriptor {
    * `MUTATOR_SEMANTICS` is also treated as `'unknown'`; the caller re-checks, so
    * this direction never has to import the table upward.
    */
-  canonicalizeMutator?: (rawMutator: string, changeText?: string) => string;
+  canonicalizeMutator?: (rawMutator: string, changeText?: string, genre?: string) => string;
 
   /**
    * Whether `estimate_audit` can report an EXACT mutant count for this language,
@@ -335,7 +335,6 @@ export const ENGINE_REGISTRY: Record<SupportedProjectType, EngineDescriptor> = {
     // The same policy `RustEngine` applies to a single-file audit, so a sweep
     // never asks cargo for more jobs than a lone audit would.
     defaultWorkers: (cpuCount) => resolveCargoJobs(undefined, cpuCount),
-    prebuild: { marker: 'Cargo.toml', command: 'cargo check' },
     dependencyDirs: DEPENDENCY_DIRS.rust,
     syntaxFamily: 'c',
     displayName: 'cargo-mutants',
@@ -442,7 +441,7 @@ export function resolvePrebuildCommand(
   // every audit, so the rule stays mode-independent. The environment the sandbox
   // gets is already populated either way; callers who genuinely need a rebuild
   // can pass an explicit prebuildCommand. Rust (`cargo check`) declares
-  // its auto-prebuild in the engine registry. (PHP has none — Infection needs no build.)
+  // the registry has no Rust auto-prebuild. (PHP has none - Infection needs no build.)
   const prebuild = ENGINE_REGISTRY[projectType as SupportedProjectType]?.prebuild;
   if (prebuild && existsSync(join(env.workspaceRoot, prebuild.marker))) {
     return prebuild.command;

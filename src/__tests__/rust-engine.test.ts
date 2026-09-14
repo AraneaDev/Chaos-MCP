@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -21,8 +21,15 @@ vi.mock('../utils/logger.js', () => ({
 
 import { runShell } from '../utils/exec.js';
 import { ExecFailureError } from '../utils/exec-error.js';
-import { RustEngine, resolveCargoJobs, escapeCargoFileGlob, inDiffArgs } from '../engines/rust.js';
+import {
+  RustEngine,
+  resolveCargoJobs,
+  escapeCargoFileGlob,
+  inDiffArgs,
+  timeoutArgs,
+} from '../engines/rust.js';
 import { displayMutationScore, hasNoMutableLogic } from '../core/score-semantics.js';
+import { isBaselineCompileFailure } from '../engines/rust/failures.js';
 
 const mockRunShell = vi.mocked(runShell);
 
@@ -95,6 +102,116 @@ describe('RustEngine', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     engine = new RustEngine();
+  });
+
+  it('converts per-mutant milliseconds to a positive whole-second timeout', () => {
+    expect(timeoutArgs(undefined)).toEqual([]);
+    expect(timeoutArgs(30_000)).toEqual(['--timeout', '30']);
+    expect(timeoutArgs(30_001)).toEqual(['--timeout', '31']);
+    expect(timeoutArgs(1)).toEqual(['--timeout', '1']);
+  });
+
+  it('compares the baseline with the effective rounded timeout', async () => {
+    mockRunShell.mockResolvedValue(
+      makeExecResult('Unmutated baseline in 3s build + 2.6s test\n1 mutant tested: 1 caught'),
+    );
+
+    const result = await engine.run('src/math.rs', { perMutantTimeoutMs: 2_501 });
+
+    expect(result.fidelityNote).toBeUndefined();
+  });
+
+  it('warns when the configured timeout is below the measured baseline test time', async () => {
+    mockRunShell.mockResolvedValue(
+      makeExecResult('Unmutated baseline in 3s build + 2.5s test\n1 mutant tested: 1 caught'),
+    );
+
+    const result = await engine.run('src/math.rs', { perMutantTimeoutMs: 1000 });
+
+    expect(result.fidelityNote).toContain('perMutantTimeoutMs');
+    expect(result.fidelityNote).toContain('score may be inflated');
+  });
+
+  it('reports a cargo-mutants baseline compile failure specifically', async () => {
+    mockRunShell.mockRejectedValue(
+      makeExecFailure({
+        exit: 2,
+        stderr: 'error: could not compile `fixture` due to previous error',
+      }),
+    );
+
+    await expect(engine.run('src/math.rs')).rejects.toThrow(/baseline compile failure/);
+  });
+
+  it('anchors baseline failure markers to the beginning of an output line', () => {
+    expect(isBaselineCompileFailure('worker baseline_error_handler completed')).toBe(false);
+    expect(isBaselineCompileFailure('info\nunmutated baseline failed')).toBe(true);
+    expect(isBaselineCompileFailure('warning\n  error: could not compile `fixture`')).toBe(true);
+  });
+
+  it('maps dryRun to cargo mutants --list without scoring a mutation run', async () => {
+    mockRunShell.mockResolvedValue(
+      makeExecResult('src/math.rs:10:5: replace > with >=\nsrc/math.rs:20:5: delete ! in f'),
+    );
+    const result = await engine.run('src/math.rs', {
+      dryRun: true,
+      concurrency: 1,
+      diffScope: { kind: 'patch', path: '/tmp/change.patch' },
+    });
+    expect(mockRunShell.mock.calls[0][1]).toEqual([
+      'mutants',
+      '--list',
+      '--file',
+      'src/math.rs',
+      '--in-diff',
+      '/tmp/change.patch',
+    ]);
+    expect(result).toMatchObject({ totalMutants: 2, killed: 0, survived: 0, mutationScore: 'n/a' });
+  });
+
+  it('reads joinable structured output from a unique per-run directory', async () => {
+    const root = makeSandbox(['src/notify.rs']);
+    writeFileSync(
+      join(root, 'src/notify.rs'),
+      readFileSync(
+        join(process.cwd(), 'src/__tests__/fixtures/cargo-mutants-out/source/notify.rs'),
+      ),
+    );
+    mockRunShell.mockImplementation(async (_command, args) => {
+      const output = String(args[args.indexOf('--output') + 1]);
+      mkdirSync(join(output, 'mutants.out'), { recursive: true });
+      copyFileSync(
+        join(
+          process.cwd(),
+          'src/__tests__/fixtures/cargo-mutants-out/missed/mutants.out/mutants.json',
+        ),
+        join(output, 'mutants.out/mutants.json'),
+      );
+      copyFileSync(
+        join(
+          process.cwd(),
+          'src/__tests__/fixtures/cargo-mutants-out/missed/mutants.out/outcomes.json',
+        ),
+        join(output, 'mutants.out/outcomes.json'),
+      );
+      return makeExecResult(
+        'MISSED   src/notify.rs:11:8: delete ! in maybe_send in 0s build + 0s test\n' +
+          '1 mutant tested in 13s: 1 missed',
+      );
+    });
+
+    const result = await engine.run('src/notify.rs', { workDir: root, concurrency: 1 });
+
+    expect(result.vulnerabilities[0]).toMatchObject({
+      column: 8,
+      original: '!',
+      mutated: '',
+    });
+    const args = mockRunShell.mock.calls[0][1] as string[];
+    expect(args).toContain('--output');
+    expect(args[args.indexOf('--output') + 1]).toMatch(
+      new RegExp(`${root}/\\.chaos-cargo-mutants-`),
+    );
   });
 
   it('parses cargo-mutants text output when all mutants are caught', async () => {
@@ -470,7 +587,13 @@ describe('RustEngine', () => {
 
     expect(executor.run).toHaveBeenCalledWith(
       'cargo',
-      ['mutants', '--file', 'src/test.rs'],
+      [
+        'mutants',
+        '--output',
+        expect.stringContaining('chaos-cargo-mutants-'),
+        '--file',
+        'src/test.rs',
+      ],
       expect.objectContaining({ cwd: '/sb' }),
     );
     expect(mockRunShell).not.toHaveBeenCalled();
@@ -568,7 +691,13 @@ describe('RustEngine', () => {
 
     expect(mockRunShell).toHaveBeenCalledWith(
       'cargo',
-      ['mutants', '--file', 'src/parser/token[[]0[]].rs'],
+      [
+        'mutants',
+        '--output',
+        expect.stringContaining('chaos-cargo-mutants-'),
+        '--file',
+        'src/parser/token[[]0[]].rs',
+      ],
       expect.any(Object),
     );
   });
@@ -675,7 +804,7 @@ describe('RustEngine', () => {
     await expect(engine.run('src/test.rs')).rejects.toThrow(/no parseable output/);
     await expect(engine.run('src/test.rs')).rejects.toThrow(/build failure/);
     // Pin the remediation hint so its string literal is covered.
-    await expect(engine.run('src/test.rs')).rejects.toThrow(/run `cargo test`/);
+    await expect(engine.run('src/test.rs')).rejects.toThrow(/Fix the baseline before retrying/);
   });
 
   it('rethrows an ABORTED exec failure untouched so isCancel still sees it', async () => {
@@ -712,7 +841,7 @@ describe('RustEngine', () => {
     );
 
     await expect(engine.run('src/test.rs')).rejects.toThrow(/no parseable output/);
-    await expect(engine.run('src/test.rs')).rejects.toThrow(/run `cargo test`/);
+    await expect(engine.run('src/test.rs')).rejects.toThrow(/Fix the baseline before retrying/);
     await expect(engine.run('src/test.rs')).rejects.toThrow(/1 failed/);
   });
 
@@ -728,7 +857,7 @@ describe('RustEngine', () => {
     mockRunShell.mockRejectedValue(failure);
 
     await expect(engine.run('src/test.rs')).rejects.toThrow(/no parseable output/);
-    await expect(engine.run('src/test.rs')).rejects.toThrow(/run `cargo test`/);
+    await expect(engine.run('src/test.rs')).rejects.toThrow(/Fix the baseline before retrying/);
     // The `?? ''` fallback must render as nothing at all — not as placeholder
     // text that reads like real stderr the caller should go looking for.
     await expect(engine.run('src/test.rs')).rejects.toThrow(/stderr: $/);
@@ -820,7 +949,13 @@ describe('RustEngine', () => {
     await engine.run('src/deeply/nested/module.rs', { workDir: '/tmp/x', concurrency: 1 });
     expect(mockRunShell).toHaveBeenCalledWith(
       'cargo',
-      ['mutants', '--file', 'src/deeply/nested/module.rs'],
+      [
+        'mutants',
+        '--output',
+        expect.stringContaining('chaos-cargo-mutants-'),
+        '--file',
+        'src/deeply/nested/module.rs',
+      ],
       expect.objectContaining({ cwd: '/tmp/x' }),
     );
   });
@@ -904,11 +1039,25 @@ describe('RustEngine', () => {
     );
 
     await engine.run('src/x.rs', { concurrency: 4, workDir: '/tmp' });
-    expect(mockRunShell.mock.calls[0][1]).toEqual(['mutants', '--file', 'src/x.rs', '-j', '4']);
+    expect(mockRunShell.mock.calls[0][1]).toEqual([
+      'mutants',
+      '--output',
+      expect.stringContaining('chaos-cargo-mutants-'),
+      '--file',
+      'src/x.rs',
+      '-j',
+      '4',
+    ]);
 
     mockRunShell.mockClear();
     await engine.run('src/x.rs', { concurrency: 1, workDir: '/tmp' });
-    expect(mockRunShell.mock.calls[0][1]).toEqual(['mutants', '--file', 'src/x.rs']);
+    expect(mockRunShell.mock.calls[0][1]).toEqual([
+      'mutants',
+      '--output',
+      expect.stringContaining('chaos-cargo-mutants-'),
+      '--file',
+      'src/x.rs',
+    ]);
   });
 
   it('passes the inner-pool cap to cargo', async () => {
@@ -1326,7 +1475,15 @@ describe('RustEngine: --in-diff diff scoping', () => {
 
     expect(mockRunShell).toHaveBeenCalledWith(
       'cargo',
-      ['mutants', '--file', 'src/test.rs', '--in-diff', '/sandbox/.chaos-mcp.in-diff.patch'],
+      [
+        'mutants',
+        '--output',
+        expect.stringContaining('chaos-cargo-mutants-'),
+        '--file',
+        'src/test.rs',
+        '--in-diff',
+        '/sandbox/.chaos-mcp.in-diff.patch',
+      ],
       expect.any(Object),
     );
   });
@@ -1363,6 +1520,8 @@ describe('RustEngine: --in-diff diff scoping', () => {
       'cargo',
       [
         'mutants',
+        '--output',
+        expect.stringContaining('chaos-cargo-mutants-'),
         '--file',
         'src/test.rs',
         '--in-diff',
@@ -1381,7 +1540,13 @@ describe('RustEngine: --in-diff diff scoping', () => {
 
     expect(mockRunShell).toHaveBeenCalledWith(
       'cargo',
-      ['mutants', '--file', 'src/test.rs'],
+      [
+        'mutants',
+        '--output',
+        expect.stringContaining('chaos-cargo-mutants-'),
+        '--file',
+        'src/test.rs',
+      ],
       expect.any(Object),
     );
   });
@@ -1396,7 +1561,13 @@ describe('RustEngine: --in-diff diff scoping', () => {
 
     expect(mockRunShell).toHaveBeenCalledWith(
       'cargo',
-      ['mutants', '--file', 'src/test.rs'],
+      [
+        'mutants',
+        '--output',
+        expect.stringContaining('chaos-cargo-mutants-'),
+        '--file',
+        'src/test.rs',
+      ],
       expect.any(Object),
     );
   });
@@ -1411,7 +1582,13 @@ describe('RustEngine: --in-diff diff scoping', () => {
 
     expect(mockRunShell).toHaveBeenCalledWith(
       'cargo',
-      ['mutants', '--file', 'src/test.rs'],
+      [
+        'mutants',
+        '--output',
+        expect.stringContaining('chaos-cargo-mutants-'),
+        '--file',
+        'src/test.rs',
+      ],
       expect.any(Object),
     );
   });

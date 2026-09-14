@@ -853,7 +853,7 @@ describe('detectEnvironment', () => {
     expect(result.detectedRunner).toBe('bun');
   });
 
-  it('detects Rust project with nextest', () => {
+  it('uses cargo test even when nextest configuration exists', () => {
     mockExistsSync.mockImplementation((p) => {
       const path = String(p);
       return path.endsWith('Cargo.toml') || path.endsWith('nextest.toml');
@@ -861,7 +861,7 @@ describe('detectEnvironment', () => {
 
     const result = detectEnvironment('src/main.rs');
     expect(result.projectType).toBe('rust');
-    expect(result.testRunner).toBe('cargo nextest run');
+    expect(result.testRunner).toBe('cargo test');
   });
 
   it('populates detectedRunner for node:test project', () => {
@@ -1084,20 +1084,20 @@ describe('detectRustTestRunner', () => {
     });
   });
 
-  it('detects cargo-nextest from nextest.toml', () => {
+  it('does not adopt cargo-nextest from nextest.toml', () => {
     mockExistsSync.mockImplementation((p) => {
       return String(p) === join('/workspace', 'nextest.toml');
     });
 
-    expect(detectRustTestRunner('/workspace')).toBe('cargo nextest run');
+    expect(detectRustTestRunner('/workspace')).toBe('cargo test');
   });
 
-  it('detects cargo-nextest from .config/nextest.toml', () => {
+  it('does not adopt cargo-nextest from .config/nextest.toml', () => {
     mockExistsSync.mockImplementation((p) => {
       return String(p) === join('/workspace', '.config', 'nextest.toml');
     });
 
-    expect(detectRustTestRunner('/workspace')).toBe('cargo nextest run');
+    expect(detectRustTestRunner('/workspace')).toBe('cargo test');
   });
 
   it('returns cargo test when criterion is in Cargo.toml dev-dependencies', () => {
@@ -1115,12 +1115,12 @@ describe('detectRustTestRunner', () => {
     expect(detectRustTestRunner('/workspace')).toBe('cargo test');
   });
 
-  it('detectRawRustRunner returns same as detectRustTestRunner', () => {
+  it('keeps the raw runner aligned with cargo test', () => {
     mockExistsSync.mockImplementation((p) => {
       return String(p) === join('/workspace', 'nextest.toml');
     });
 
-    expect(detectRawRustRunner('/workspace')).toBe('cargo nextest run');
+    expect(detectRawRustRunner('/workspace')).toBe('cargo test');
   });
 
   it('detects criterion in Cargo.toml via detectEnvironment', () => {

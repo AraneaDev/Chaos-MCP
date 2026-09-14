@@ -31,18 +31,18 @@ import type { AuditDeadline } from '../utils/deadline.js';
  */
 export type ScopeResolution =
   | { kind: 'result'; result: CallToolResult }
+  | ({ kind: 'scope'; scopeNote?: string; baselineKeys?: MutantKey[] } & ScopeFields);
+
+type ScopeFields =
   | {
-      kind: 'scope';
-      diffRanges?: { start: number; end: number }[];
-      /**
-       * The SAME base `diffRanges` was resolved against (`computeChangedRanges`,
-       * utils/git-diff.ts), threaded through to `auditFile` so materialisation
-       * never re-resolves `diffBase` on its own (see `MaterialiseInput.resolvedBase`).
-       * Present exactly when `diffRanges` is.
-       */
-      resolvedBase?: ResolvedDiffBase;
-      scopeNote?: string;
-      baselineKeys?: MutantKey[];
+      /** The changed ranges and the exact base they were resolved against. */
+      diffRanges: { start: number; end: number }[];
+      resolvedBase: ResolvedDiffBase;
+    }
+  | {
+      /** No diff scope was materialized, so neither half of the pair exists. */
+      diffRanges?: undefined;
+      resolvedBase?: undefined;
     };
 
 /**
@@ -437,8 +437,7 @@ export async function computeScope(
   relFile: string,
   gitCtx?: { signal?: AbortSignal; deadline?: AuditDeadline },
 ): Promise<ScopeResolution> {
-  let diffRanges: { start: number; end: number }[] | undefined;
-  let resolvedBase: ResolvedDiffBase | undefined;
+  let diffFields: ScopeFields = {};
   let scopeNote: string | undefined;
 
   const diffBase = typeof earlyArgs.diffBase === 'string' ? earlyArgs.diffBase : undefined;
@@ -452,8 +451,12 @@ export async function computeScope(
       gitCtx,
     );
     if (diffScope.kind === 'result') return diffScope;
-    diffRanges = diffScope.diffRanges;
-    resolvedBase = diffScope.resolvedBase;
+    if (diffScope.diffRanges !== undefined) {
+      diffFields = {
+        diffRanges: diffScope.diffRanges,
+        resolvedBase: diffScope.resolvedBase,
+      };
+    }
     scopeNote = diffScope.scopeNote;
   }
 
@@ -556,5 +559,9 @@ export async function computeScope(
     // git and is not claimed to contain any particular mutant.
   }
 
-  return { kind: 'scope', diffRanges, resolvedBase, scopeNote, baselineKeys };
+  const scopeFields =
+    diffFields.diffRanges === undefined
+      ? { diffRanges: undefined, resolvedBase: undefined }
+      : diffFields;
+  return { kind: 'scope', ...scopeFields, scopeNote, baselineKeys };
 }

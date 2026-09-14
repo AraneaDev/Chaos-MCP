@@ -63,6 +63,13 @@ export function buildMutateArg(
   return filePath;
 }
 
+/** Build a comma-separated mutate list, preserving each file's own scope. */
+export function buildMutateArgs(
+  files: { file: string; ranges?: { start: number; end: number }[] }[],
+): string {
+  return files.map(({ file, ranges }) => buildMutateArg(file, ranges)).join(',');
+}
+
 /**
  * Build the full StrykerJS argv (launcher included at index 0).
  *

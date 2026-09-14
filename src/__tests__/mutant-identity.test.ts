@@ -28,6 +28,12 @@ describe('normalizeChange', () => {
 });
 
 describe('changeOf', () => {
+  it('never lets a column change a mutant identity', () => {
+    const withoutColumn = { original: 'x', mutated: 'true' };
+    const withColumn = { ...withoutColumn, column: 7 };
+    expect(changeOf(withColumn)).toBe(changeOf(withoutColumn));
+  });
+
   it('joins both halves with an arrow (StrykerJS shape)', () => {
     expect(changeOf({ original: 'a > 0', mutated: 'true' })).toBe('a > 0 → true');
   });

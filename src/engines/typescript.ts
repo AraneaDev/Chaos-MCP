@@ -27,17 +27,21 @@ import { DEFAULT_TIMEOUT_MS } from '../utils/constants.js';
 import { harvestArtefact, invalidateArtefact, seedArtefact } from '../utils/reuse/store.js';
 import { MIN_BATCH_BUDGET_MS, planLineBatches, mergeBatchResults } from './typescript/batches.js';
 import { STRIKER_JSON_REPORT, resolveRunner, prepareStrykerConfig } from './typescript/config.js';
-import { buildMutateArg, buildStrykerArgs } from './typescript/args.js';
+import { buildMutateArg, buildMutateArgs, buildStrykerArgs } from './typescript/args.js';
 import {
   StrykerTimeoutError,
   classifyStrykerFailure,
   dryRunResult,
 } from './typescript/failures.js';
-import { type StrykerJsonReport, scoreStrykerReport } from './typescript/report.js';
+import {
+  parseStrykerReportByFile,
+  type StrykerJsonReport,
+  scoreStrykerReport,
+} from './typescript/report.js';
 
 export { planLineBatches, mergeBatchResults } from './typescript/batches.js';
 export { writeStrykerRuntimeConfig, prepareStrykerConfig } from './typescript/config.js';
-export { buildStrykerArgs } from './typescript/args.js';
+export { buildMutateArg, buildMutateArgs, buildStrykerArgs } from './typescript/args.js';
 export {
   StrykerTimeoutError,
   classifyStrykerFailure,
@@ -132,6 +136,76 @@ export function assertStrykerInstalled(options?: RunOptions): void {
 }
 
 export class TypeScriptEngine extends BaseEngine {
+  /** Run one Stryker invocation for several files and split its report by file. */
+  async runGroup(
+    files: { file: string; ranges?: { start: number; end: number }[] }[],
+    options?: RunOptions,
+  ): Promise<Map<string, MutationResult>> {
+    if (files.length < 2) throw new Error('A TypeScript group needs at least two files.');
+    assertStrykerInstalled(options);
+    const cwd = options?.workDir ?? process.cwd();
+    const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    const mutateArg = buildMutateArgs(files);
+    const runtimeConfig = prepareStrykerConfig(cwd, options);
+    const args = buildStrykerArgs(resolveRunner(options), mutateArg, runtimeConfig, options);
+    const reportPath = join(cwd, STRIKER_JSON_REPORT);
+    try {
+      rmSync(reportPath, { force: true });
+    } catch {
+      // A stale report cannot be allowed to masquerade as this grouped run.
+    }
+    const reuse = options?.reuse;
+    const reusedIncremental =
+      options?.incremental === true &&
+      reuse?.key.kind === 'incremental' &&
+      seedArtefact(reuse.key, reuse.fingerprint, join(cwd, '.stryker-incremental.json'));
+    try {
+      await invokeMutationTool('StrykerJS', args[0], args.slice(1), {
+        cwd,
+        timeoutMs,
+        signal: options?.signal,
+        executor: options?.executor,
+      });
+    } catch (error: unknown) {
+      if (reusedIncremental && reuse) {
+        invalidateArtefact(reuse.key);
+        return this.runGroup(files, { ...options, reuse: undefined });
+      }
+      classifyStrykerFailure(
+        error,
+        files.map((entry) => entry.file).join(','),
+        existsSync(reportPath),
+      );
+    }
+    if (options?.incremental === true && reuse) {
+      harvestArtefact(reuse.key, reuse.fingerprint, join(cwd, '.stryker-incremental.json'));
+    }
+    if (options?.dryRun) return new Map();
+    if (!existsSync(reportPath)) {
+      throw new Error(`Stryker JSON report not found at ${reportPath}.`);
+    }
+    let raw: StrykerJsonReport;
+    try {
+      raw = JSON.parse(readFileSync(reportPath, 'utf-8')) as StrykerJsonReport;
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Failed to parse Stryker JSON report: ${message}`);
+    }
+    const grouped = parseStrykerReportByFile(
+      raw,
+      files.map((entry) => entry.file),
+      'whole-file',
+      new Map(
+        files.map((entry) => [
+          entry.file,
+          entry.ranges && entry.ranges.length > 0 ? 'scoped' : 'whole-file',
+        ]),
+      ),
+    );
+    if (!grouped) throw new Error('Stryker report could not be attributed to every grouped file.');
+    return grouped;
+  }
+
   /**
    * Runs the audit, retrying once on the command runner when the native vitest
    * runner fails the dry run. See {@link shouldFallBackToCommandRunner}.
