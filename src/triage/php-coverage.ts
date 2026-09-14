@@ -11,6 +11,7 @@ export interface PhpCoverageInput {
   key: ReuseKey;
   fingerprint: string;
   timeoutMs: number;
+  testFrameworkOptions?: string;
   signal?: AbortSignal;
   executor?: ExecutionSession;
 }
@@ -27,7 +28,12 @@ export async function producePhpCoverage(input: PhpCoverageInput): Promise<boole
     await invokeMutationTool(
       'Infection',
       phpunit,
-      [`--coverage-xml=${xmlPath}`, `--log-junit=${join(coveragePath, 'junit.xml')}`],
+      [
+        '--exclude-source-from-xml-coverage',
+        `--coverage-xml=${xmlPath}`,
+        `--log-junit=${join(coveragePath, 'junit.xml')}`,
+        ...(input.testFrameworkOptions ? [input.testFrameworkOptions] : []),
+      ],
       {
         cwd: input.workDir,
         timeoutMs: input.timeoutMs,

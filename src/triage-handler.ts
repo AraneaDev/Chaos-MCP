@@ -141,6 +141,7 @@ async function prepareSweepPhpCoverage(
       key: phpReuseKey(target.env.workspaceRoot),
       fingerprint,
       timeoutMs: deadline.remainingMs(TRIAGE_CLEANUP_RESERVE_MS),
+      testFrameworkOptions: cfg.infection?.testFrameworkOptions,
       signal: controller.signal,
       executor,
     });

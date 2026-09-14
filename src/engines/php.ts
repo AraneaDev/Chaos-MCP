@@ -19,6 +19,7 @@ import { invokeMutationTool } from '../utils/exec-classify.js';
 import { ExecFailureError } from '../utils/exec-error.js';
 import { log, isVerbose } from '../utils/logger.js';
 import { DEFAULT_TIMEOUT_MS } from '../utils/constants.js';
+import { AuditDeadline } from '../utils/deadline.js';
 import {
   JSON_LOG_NAME,
   PHP_COVERAGE_DIR_NAME,
@@ -67,6 +68,7 @@ export class PhpEngine extends BaseEngine {
   async run(filePath: string, options?: RunOptions): Promise<MutationResult> {
     const cwd = options?.workDir ?? process.cwd();
     const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    const runDeadline = new AuditDeadline(timeoutMs);
     const { hasProjectConfig, jsonLogPath, env } = prepareInfectionWorkspace(cwd, filePath);
     const coveragePath = join(cwd, PHP_COVERAGE_DIR_NAME);
     const reuse = options?.reuse;
@@ -87,10 +89,15 @@ export class PhpEngine extends BaseEngine {
         await invokeMutationTool(
           'Infection',
           phpunit,
-          [`--coverage-xml=${xmlPath}`, `--log-junit=${join(coveragePath, 'junit.xml')}`],
+          [
+            '--exclude-source-from-xml-coverage',
+            `--coverage-xml=${xmlPath}`,
+            `--log-junit=${join(coveragePath, 'junit.xml')}`,
+            ...(options?.phpTestFrameworkOptions ? [options.phpTestFrameworkOptions] : []),
+          ],
           {
             cwd,
-            timeoutMs,
+            timeoutMs: Math.max(1, runDeadline.remainingMs()),
             env: { ...env, XDEBUG_MODE: 'coverage' },
             signal: options?.signal,
             executor: options?.executor,
@@ -171,7 +178,7 @@ export class PhpEngine extends BaseEngine {
     try {
       const res = await invokeMutationTool('Infection', bin, args, {
         cwd,
-        timeoutMs,
+        timeoutMs: Math.max(1, runDeadline.remainingMs()),
         env,
         signal: options?.signal,
         executor: options?.executor,
