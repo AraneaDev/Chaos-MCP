@@ -4,6 +4,15 @@ All notable changes to Chaos-MCP are documented in this file.
 
 ## [5.0.0](https://github.com/AraneaDev/Chaos-MCP/compare/v4.3.0...v5.0.0) (2026-09-14)
 
+### Release highlights
+
+* Python container images now ship cosmic-ray 8.7.0.
+* Rust mutation runs no longer execute a cargo check prebuild, and per-mutant timeout and cleanup options are honored.
+* Rust output includes replacement text, columns, and classified mutators while preserving the existing mutator string byte-for-byte.
+* `diffBase` now scopes mutation runs on all four engines.
+* Sound mutation result reuse avoids repeat work when the source and configuration fingerprint match.
+* TypeScript triage batches eligible groups and falls back to per-file audits when a group fails, times out, or is cancelled.
+* Resource governance sizes mutation work from available memory and stops over-budget runs.
 
 ### Features
 
