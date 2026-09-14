@@ -22,10 +22,11 @@ import { BaseEngine, RunOptions, MutationResult } from './base.js';
 import { invokeMutationTool } from '../utils/exec-classify.js';
 import { log, isVerbose } from '../utils/logger.js';
 import { DEFAULT_TIMEOUT_MS } from '../utils/constants.js';
-import { resolveCargoJobs, escapeCargoFileGlob, inDiffArgs } from './rust/args.js';
-import { parseCargoMutantsText } from './rust/report.js';
+import { resolveCargoJobs, escapeCargoFileGlob, inDiffArgs, timeoutArgs } from './rust/args.js';
+import { countCargoMutantsList, parseCargoMutantsText } from './rust/report.js';
+import { isBaselineCompileFailure } from './rust/failures.js';
 
-export { resolveCargoJobs, escapeCargoFileGlob, inDiffArgs } from './rust/args.js';
+export { resolveCargoJobs, escapeCargoFileGlob, inDiffArgs, timeoutArgs } from './rust/args.js';
 export {
   type CargoSummary,
   type ScoredCounts,
@@ -34,6 +35,7 @@ export {
   stripCargoTiming,
   noMutantsError,
   parseCargoMutantsText,
+  countCargoMutantsList,
 } from './rust/report.js';
 
 /**
@@ -43,7 +45,7 @@ export {
  * Requires `cargo-mutants` to be installed: `cargo install cargo-mutants`.
  *
  * Note: Line-level scoping is not supported by cargo-mutants' `--file` flag.
- * The `lineScope` option is silently ignored for Rust targets.
+ * The `lineScope` option is reported as ignored for Rust targets.
  */
 export class RustEngine extends BaseEngine {
   async run(filePath: string, options?: RunOptions): Promise<MutationResult> {
@@ -83,7 +85,14 @@ export class RustEngine extends BaseEngine {
     // diff touched. Reads only `diffScope.kind === 'patch'` (see inDiffArgs);
     // an absent or non-patch diffScope adds nothing, so an unscoped run stays
     // byte-identical to before diff scoping existed.
-    const args = ['mutants', '--file', fileGlob, ...inDiffArgs(options?.diffScope)];
+    const args = [
+      'mutants',
+      ...(options?.dryRun ? ['--list'] : []),
+      '--file',
+      fileGlob,
+      ...inDiffArgs(options?.diffScope),
+      ...timeoutArgs(options?.perMutantTimeoutMs),
+    ];
     if (jobs > 1) args.push('-j', String(jobs));
 
     if (isVerbose()) {
@@ -144,10 +153,15 @@ export class RustEngine extends BaseEngine {
       // let it through to the text parser and report a useless zero-mutant
       // result instead of the accurate "baseline test suite failed" diagnosis.
       // `!stdout ||` guards the case where stdout is absent entirely.
+      if (isBaselineCompileFailure(`${stdout}\n${stderr}`)) {
+        throw new Error(
+          `cargo-mutants baseline compile failure: ${stderr?.slice(0, 500) || stdout.slice(0, 500)}`,
+        );
+      }
       if (!stdout || !stdout.trim()) {
         throw new Error(
           `cargo-mutants failed (exit ${execErr.exit}) with no parseable output. ` +
-            `This usually means the baseline test suite itself failed \u2014 run \`cargo test\` and fix those first. ` +
+            `This usually means the baseline test suite itself failed. Fix the baseline before retrying. ` +
             `stderr: ${execErr.stderr?.slice(0, 500) ?? ''}`,
         );
       }
@@ -157,16 +171,32 @@ export class RustEngine extends BaseEngine {
       log(`cargo-mutants stderr: ${stderr.slice(0, 500)}`);
     }
 
+    if (options?.dryRun) {
+      return countCargoMutantsList(stdout, filePath);
+    }
+
     // Text only: `run` never asks for structured output (`--output` writes
     // `mutants.out/outcomes.json` to DISK; stdout is always human-readable), so
     // there is nothing to attempt a JSON parse on. The old JSON branch was
     // unreachable, validated a shape `outcomes.json` does not have anyway, and
     // cost a throwaway multi-MB `JSON.parse` on every run (audit L7).
-    return parseCargoMutantsText(
+    const parsed = parseCargoMutantsText(
       stdout,
       filePath,
       targetExists,
       options?.diffScope?.kind === 'patch' ? 'scoped' : 'whole-file',
     );
+    const baseline = stdout.match(/Unmutated baseline in [\d.]+s build \+ ([\d.]+)s test/i);
+    const baselineTestMs = baseline ? Math.ceil(Number.parseFloat(baseline[1]) * 1000) : undefined;
+    if (
+      options?.perMutantTimeoutMs !== undefined &&
+      baselineTestMs !== undefined &&
+      options.perMutantTimeoutMs < baselineTestMs
+    ) {
+      parsed.fidelityNote =
+        `perMutantTimeoutMs (${options.perMutantTimeoutMs}ms) is below the baseline test time ` +
+        `${baselineTestMs}ms; the score may be inflated because cargo-mutants counts timeouts as killed.`;
+    }
+    return parsed;
   }
 }

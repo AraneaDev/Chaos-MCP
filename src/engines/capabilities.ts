@@ -116,7 +116,7 @@ export const CAPABILITIES: Record<SupportedProjectType, Record<Capability, Capab
     'incremental-cache': 'none',
     'run-cache-verify': 'partial',
     'inner-pool-cap': 'full',
-    'per-mutant-timeout': 'none',
+    'per-mutant-timeout': 'full',
     'partial-results-on-timeout': 'none',
     'baseline-timing': 'full',
     cancellation: 'full',
@@ -127,7 +127,9 @@ export const CAPABILITIES: Record<SupportedProjectType, Record<Capability, Capab
     'column-info': 'none',
     'mutator-names': 'partial',
     'mutator-filtering': 'none',
-    'dry-run': 'none',
+    // cargo-mutants --list enumerates mutants but does not validate the suite
+    // the way StrykerJS's dry run does, so this remains partial.
+    'dry-run': 'partial',
     estimate: 'full',
     'missing-tool-preflight': 'partial',
     container: 'full',

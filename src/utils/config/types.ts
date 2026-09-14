@@ -61,6 +61,8 @@ export interface CosmicRayConfig {
 export interface CargoMutantsConfig {
   /** Timeout override for cargo-mutants runs (ms). */
   timeoutMs?: number;
+  /** Per-mutant test timeout forwarded to cargo-mutants (ms). */
+  perMutantTimeoutMs?: number;
   /** Parallel job count forwarded to cargo-mutants `-j` (integer 1–64). */
   concurrency?: number;
 }
@@ -188,8 +190,8 @@ export interface ChaosConfig {
   /**
    * Allow an explicit `prebuildCommand` tool argument to run an arbitrary shell
    * command in the sandbox. Disabled by default because the command can reach
-   * outside the sandbox (audit Med#10). Auto-detected prebuilds (cargo check)
-   * are unaffected by this flag. Can also be enabled via
+   * outside the sandbox (audit Med#10). Auto-detected prebuilds, when an engine
+   * declares one, are unaffected by this flag. Can also be enabled via
    * the `CHAOS_MCP_ALLOW_PREBUILD` environment variable.
    */
   allowPrebuild?: boolean;

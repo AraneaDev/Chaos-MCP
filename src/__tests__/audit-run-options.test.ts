@@ -101,13 +101,9 @@ describe('resolveGatedPrebuild', () => {
     expect(decision.ok).toBe(true);
   });
 
-  it('does not gate a prebuild the server chose for itself', () => {
-    // The gate is on the CALLER's command, not on any prebuild at all. Rust declares an
-    // auto-prebuild (`cargo check`, keyed on Cargo.toml), and refusing it would break
-    // ordinary Rust audits outright while the gate is closed — which is the default. So
-    // the refusal has to depend on the argument having been SUPPLIED, not merely on a
-    // command existing. Without a workspace that triggers an engine default, this case
-    // is unreachable and the `prebuildExplicit &&` conjunct is untestable.
+  it('does not invent an auto-prebuild for Rust', () => {
+    // Rust no longer declares a cold auto-prebuild. Explicit commands remain
+    // subject to the opt-in gate above.
     const rustWs = mkdtempSync(join(tmpdir(), 'chaos-prebuild-'));
     try {
       writeFileSync(join(rustWs, 'Cargo.toml'), '[package]\nname = "x"\n');
@@ -115,7 +111,7 @@ describe('resolveGatedPrebuild', () => {
 
       expect(decision.ok).toBe(true);
       if (!decision.ok) return;
-      expect(decision.prebuildCmd).toBe('cargo check');
+      expect(decision.prebuildCmd).toBeNull();
     } finally {
       rmSync(rustWs, { recursive: true, force: true });
     }

@@ -21,7 +21,13 @@ vi.mock('../utils/logger.js', () => ({
 
 import { runShell } from '../utils/exec.js';
 import { ExecFailureError } from '../utils/exec-error.js';
-import { RustEngine, resolveCargoJobs, escapeCargoFileGlob, inDiffArgs } from '../engines/rust.js';
+import {
+  RustEngine,
+  resolveCargoJobs,
+  escapeCargoFileGlob,
+  inDiffArgs,
+  timeoutArgs,
+} from '../engines/rust.js';
 import { displayMutationScore, hasNoMutableLogic } from '../core/score-semantics.js';
 
 const mockRunShell = vi.mocked(runShell);
@@ -95,6 +101,55 @@ describe('RustEngine', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     engine = new RustEngine();
+  });
+
+  it('converts per-mutant milliseconds to a positive whole-second timeout', () => {
+    expect(timeoutArgs(undefined)).toEqual([]);
+    expect(timeoutArgs(30_000)).toEqual(['--timeout', '30']);
+    expect(timeoutArgs(30_001)).toEqual(['--timeout', '31']);
+    expect(timeoutArgs(1)).toEqual(['--timeout', '1']);
+  });
+
+  it('warns when the configured timeout is below the measured baseline test time', async () => {
+    mockRunShell.mockResolvedValue(
+      makeExecResult('Unmutated baseline in 3s build + 2.5s test\n1 mutant tested: 1 caught'),
+    );
+
+    const result = await engine.run('src/math.rs', { perMutantTimeoutMs: 1000 });
+
+    expect(result.fidelityNote).toContain('perMutantTimeoutMs');
+    expect(result.fidelityNote).toContain('score may be inflated');
+  });
+
+  it('reports a cargo-mutants baseline compile failure specifically', async () => {
+    mockRunShell.mockRejectedValue(
+      makeExecFailure({
+        exit: 2,
+        stderr: 'error: could not compile `fixture` due to previous error',
+      }),
+    );
+
+    await expect(engine.run('src/math.rs')).rejects.toThrow(/baseline compile failure/);
+  });
+
+  it('maps dryRun to cargo mutants --list without scoring a mutation run', async () => {
+    mockRunShell.mockResolvedValue(
+      makeExecResult('src/math.rs:10:5: replace > with >=\nsrc/math.rs:20:5: delete ! in f'),
+    );
+    const result = await engine.run('src/math.rs', {
+      dryRun: true,
+      concurrency: 1,
+      diffScope: { kind: 'patch', path: '/tmp/change.patch' },
+    });
+    expect(mockRunShell.mock.calls[0][1]).toEqual([
+      'mutants',
+      '--list',
+      '--file',
+      'src/math.rs',
+      '--in-diff',
+      '/tmp/change.patch',
+    ]);
+    expect(result).toMatchObject({ totalMutants: 2, killed: 0, survived: 0, mutationScore: 'n/a' });
   });
 
   it('parses cargo-mutants text output when all mutants are caught', async () => {
@@ -675,7 +730,7 @@ describe('RustEngine', () => {
     await expect(engine.run('src/test.rs')).rejects.toThrow(/no parseable output/);
     await expect(engine.run('src/test.rs')).rejects.toThrow(/build failure/);
     // Pin the remediation hint so its string literal is covered.
-    await expect(engine.run('src/test.rs')).rejects.toThrow(/run `cargo test`/);
+    await expect(engine.run('src/test.rs')).rejects.toThrow(/Fix the baseline before retrying/);
   });
 
   it('rethrows an ABORTED exec failure untouched so isCancel still sees it', async () => {
@@ -712,7 +767,7 @@ describe('RustEngine', () => {
     );
 
     await expect(engine.run('src/test.rs')).rejects.toThrow(/no parseable output/);
-    await expect(engine.run('src/test.rs')).rejects.toThrow(/run `cargo test`/);
+    await expect(engine.run('src/test.rs')).rejects.toThrow(/Fix the baseline before retrying/);
     await expect(engine.run('src/test.rs')).rejects.toThrow(/1 failed/);
   });
 
@@ -728,7 +783,7 @@ describe('RustEngine', () => {
     mockRunShell.mockRejectedValue(failure);
 
     await expect(engine.run('src/test.rs')).rejects.toThrow(/no parseable output/);
-    await expect(engine.run('src/test.rs')).rejects.toThrow(/run `cargo test`/);
+    await expect(engine.run('src/test.rs')).rejects.toThrow(/Fix the baseline before retrying/);
     // The `?? ''` fallback must render as nothing at all — not as placeholder
     // text that reads like real stderr the caller should go looking for.
     await expect(engine.run('src/test.rs')).rejects.toThrow(/stderr: $/);

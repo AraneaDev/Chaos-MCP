@@ -63,8 +63,8 @@ describe('resources', () => {
       expect(data[key].configKey).toBe(entry.configKey);
       expect(data[key].autoPrebuild).toBe(Boolean(entry.prebuild));
     }
-    // Rust declares an auto-prebuild; TS and Python do not.
-    expect(data.rust.autoPrebuild).toBe(true);
+    // No supported engine declares a cold auto-prebuild.
+    expect(data.rust.autoPrebuild).toBe(false);
     expect(data.typescript.autoPrebuild).toBe(false);
     // Derivation, not coincidence: every rendered engine name is the registry's.
     for (const [key, entry] of Object.entries(ENGINE_REGISTRY)) {

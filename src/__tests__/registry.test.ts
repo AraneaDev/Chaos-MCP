@@ -43,13 +43,10 @@ describe('ENGINE_REGISTRY', () => {
     expect(ENGINE_REGISTRY.php.honorsConcurrency).toBe(true);
   });
 
-  it('defines auto-prebuild ONLY for the compiled languages (rust)', () => {
+  it('does not define a cold auto-prebuild for Rust', () => {
     expect(ENGINE_REGISTRY.typescript.prebuild).toBeUndefined();
     expect(ENGINE_REGISTRY.python.prebuild).toBeUndefined();
-    expect(ENGINE_REGISTRY.rust.prebuild).toEqual({
-      marker: 'Cargo.toml',
-      command: 'cargo check',
-    });
+    expect(ENGINE_REGISTRY.rust.prebuild).toBeUndefined();
     expect(ENGINE_REGISTRY.php.prebuild).toBeUndefined();
   });
 

@@ -97,6 +97,27 @@ export interface ScoredCounts {
   incompetent?: number;
 }
 
+/** Parse a cargo-mutants --list response without running any mutants. */
+export function countCargoMutantsList(stdout: string, filePath: string): MutationResult {
+  const lines = stdout
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  const entries = lines.filter((line) => /:\d+(?::\d+)?:/.test(line));
+  const count =
+    entries.length > 0
+      ? entries.length
+      : lines.filter((line) => !/^found\s+\d+/i.test(line)).length;
+  return {
+    target: filePath,
+    totalMutants: count,
+    killed: 0,
+    survived: 0,
+    mutationScore: 'n/a',
+    vulnerabilities: [],
+  };
+}
+
 /**
  * Turn cargo-mutants' four outcome counts into the scored fields of a
  * {@link MutationResult}.

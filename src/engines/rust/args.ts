@@ -7,6 +7,12 @@
  */
 import type { DiffScope } from '../base.js';
 
+/** Convert the configured millisecond timeout to cargo-mutants seconds. */
+export function timeoutArgs(perMutantTimeoutMs: number | undefined): string[] {
+  if (perMutantTimeoutMs === undefined) return [];
+  return ['--timeout', String(Math.max(1, Math.ceil(perMutantTimeoutMs / 1000)))];
+}
+
 /**
  * Resolve the cargo-mutants `-j` job count. Explicit `concurrency` (from a tool
  * arg or `rust.concurrency` config, already validated to 1–64) is honored as-is.
