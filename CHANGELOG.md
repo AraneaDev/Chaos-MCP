@@ -2,6 +2,13 @@
 
 All notable changes to Chaos-MCP are documented in this file.
 
+## [5.0.1](https://github.com/AraneaDev/Chaos-MCP/compare/v5.0.0...v5.0.1) (2026-09-14)
+
+
+### Bug Fixes
+
+* harden self-audit build and estimator coverage ([#75](https://github.com/AraneaDev/Chaos-MCP/issues/75)) ([e6db43a](https://github.com/AraneaDev/Chaos-MCP/commit/e6db43a7720857e5aa07b58227603dca706e419c))
+
 ## [5.0.0](https://github.com/AraneaDev/Chaos-MCP/compare/v4.3.0...v5.0.0) (2026-09-14)
 
 ### Release highlights
