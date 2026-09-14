@@ -70,7 +70,7 @@ function configSchemaJson(): string {
   const keys = {
     defaultTimeoutMs: 'integer ms — per-run mutation timeout.',
     defaultMaxFiles: 'integer ≥ 1 — cap on how many files triage scans (default 25).',
-    perMutantTimeoutMs: 'integer ms — per-mutant timeout (StrykerJS and cargo-mutants).',
+    perMutantTimeoutMs: 'integer ms - per-mutant timeout (StrykerJS and cargo-mutants).',
     testRunner: 'string — test runner override when auto-detection is inconclusive.',
     concurrency: 'integer 1–64 — global worker count for engines that support it (StrykerJS).',
     // Kept (rather than dropped) so an operator who already has the key in a

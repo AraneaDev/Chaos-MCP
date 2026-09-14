@@ -441,7 +441,7 @@ export function resolvePrebuildCommand(
   // every audit, so the rule stays mode-independent. The environment the sandbox
   // gets is already populated either way; callers who genuinely need a rebuild
   // can pass an explicit prebuildCommand. Rust (`cargo check`) declares
-  // the registry has no Rust auto-prebuild. (PHP has none — Infection needs no build.)
+  // the registry has no Rust auto-prebuild. (PHP has none - Infection needs no build.)
   const prebuild = ENGINE_REGISTRY[projectType as SupportedProjectType]?.prebuild;
   if (prebuild && existsSync(join(env.workspaceRoot, prebuild.marker))) {
     return prebuild.command;
