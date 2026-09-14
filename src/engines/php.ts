@@ -20,6 +20,7 @@ import { ExecFailureError } from '../utils/exec-error.js';
 import { log, isVerbose } from '../utils/logger.js';
 import { DEFAULT_TIMEOUT_MS } from '../utils/constants.js';
 import { AuditDeadline } from '../utils/deadline.js';
+import { splitCommandArgs } from '../utils/shell-quote.js';
 import {
   JSON_LOG_NAME,
   PHP_COVERAGE_DIR_NAME,
@@ -93,7 +94,9 @@ export class PhpEngine extends BaseEngine {
             '--exclude-source-from-xml-coverage',
             `--coverage-xml=${xmlPath}`,
             `--log-junit=${join(coveragePath, 'junit.xml')}`,
-            ...(options?.phpTestFrameworkOptions ? [options.phpTestFrameworkOptions] : []),
+            ...(options?.phpTestFrameworkOptions
+              ? splitCommandArgs(options.phpTestFrameworkOptions)
+              : []),
           ],
           {
             cwd,

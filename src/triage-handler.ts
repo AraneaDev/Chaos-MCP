@@ -46,7 +46,11 @@ import type { SupportedProjectType } from './utils/project-detector.js';
 import { isBaselineFailureMessage } from './utils/baseline-failure.js';
 import { createSandbox } from './utils/sandbox.js';
 import { createExecutionSession } from './utils/execution.js';
-import { computePhpReuseFingerprint, phpReuseKey } from './audit/audit-file.js';
+import {
+  computePhpReuseFingerprint,
+  phpReuseKey,
+  resolveMutationToolIdentity,
+} from './audit/audit-file.js';
 import { producePhpCoverage } from './triage/php-coverage.js';
 
 const DEFAULT_MAX_FILES = 25;
@@ -106,8 +110,6 @@ async function prepareSweepPhpCoverage(
   if (!file) return;
   const target = resolveAuditTargetIn(rootCwd, file);
   if (!target || target.projectType !== 'php') return;
-  const fingerprint = await computePhpReuseFingerprint(target.env.workspaceRoot);
-  if (!fingerprint) return;
   const remaining = deadline.remainingMs(TRIAGE_CLEANUP_RESERVE_MS);
   if (remaining < MIN_RETRY_BUDGET_MS) return;
 
@@ -125,17 +127,27 @@ async function prepareSweepPhpCoverage(
       signal: controller.signal,
       dependencies: cfg.sandbox?.dependencies,
     });
-    executor =
-      cfg.container?.mode && cfg.container.mode !== 'native'
-        ? await createExecutionSession(
-            'php',
-            sandbox.workDir,
-            target.env.workspaceRoot,
-            cfg.sandbox?.dependencies ?? 'link-entries',
-            cfg.container,
-            controller.signal,
-          )
-        : undefined;
+    executor = await createExecutionSession(
+      'php',
+      sandbox.workDir,
+      target.env.workspaceRoot,
+      cfg.sandbox?.dependencies ?? 'link-entries',
+      cfg.container,
+      controller.signal,
+    );
+    const toolIdentity = await resolveMutationToolIdentity(
+      'php',
+      sandbox.workDir,
+      cfg,
+      executor,
+      controller.signal,
+    );
+    const fingerprint = await computePhpReuseFingerprint(
+      target.env.workspaceRoot,
+      cfg.infection?.testFrameworkOptions,
+      toolIdentity,
+    );
+    if (!fingerprint) return;
     await producePhpCoverage({
       workDir: sandbox.workDir,
       key: phpReuseKey(target.env.workspaceRoot),

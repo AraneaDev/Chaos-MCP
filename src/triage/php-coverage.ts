@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import type { ExecutionSession } from '../utils/execution.js';
 import { invokeMutationTool } from '../utils/exec-classify.js';
 import { harvestArtefact, type ReuseKey } from '../utils/reuse/store.js';
+import { splitCommandArgs } from '../utils/shell-quote.js';
 
 export const PHP_COVERAGE_DIR_NAME = '.chaos-infection-coverage';
 
@@ -32,7 +33,7 @@ export async function producePhpCoverage(input: PhpCoverageInput): Promise<boole
         '--exclude-source-from-xml-coverage',
         `--coverage-xml=${xmlPath}`,
         `--log-junit=${join(coveragePath, 'junit.xml')}`,
-        ...(input.testFrameworkOptions ? [input.testFrameworkOptions] : []),
+        ...(input.testFrameworkOptions ? splitCommandArgs(input.testFrameworkOptions) : []),
       ],
       {
         cwd: input.workDir,

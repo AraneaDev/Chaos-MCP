@@ -90,4 +90,20 @@ describe('reuse store', () => {
     writeFileSync(join(entryPath, version, 'metadata.json'), '{broken');
     expect(seedArtefact(key, 'fp1', join(sandbox, 'x'), store)).toBe(false);
   });
+
+  it('prunes superseded versions after publishing a replacement', () => {
+    const src = join(sandbox, 'session.sqlite');
+    writeFileSync(src, 'SESSION 1');
+    harvestArtefact(key, 'fp1', src, store);
+    writeFileSync(src, 'SESSION 2');
+    harvestArtefact(key, 'fp2', src, store);
+
+    const entry = readdirSync(store).find((name) => !name.endsWith('.lock'));
+    expect(entry).toBeDefined();
+    if (entry === undefined) return;
+    const versions = readdirSync(join(store, entry)).filter((name) => /^[0-9a-f-]{36}$/.test(name));
+    expect(versions).toHaveLength(1);
+    expect(seedArtefact(key, 'fp2', join(sandbox, 'replacement'), store)).toBe(true);
+    expect(readFileSync(join(sandbox, 'replacement'), 'utf8')).toBe('SESSION 2');
+  });
 });

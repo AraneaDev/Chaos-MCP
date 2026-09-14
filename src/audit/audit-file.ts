@@ -14,8 +14,12 @@ import type { EnvironmentInfo } from '../utils/project-detector.js';
 import type { ChaosConfig } from '../utils/config-loader.js';
 import type { ToolArgs } from '../core/tool-args-validation.js';
 import { DEAD_HARNESS_NOTE, looksLikeDeadHarness } from '../core/score-semantics.js';
-import { createExecutionSession } from '../utils/execution.js';
-import { runShellCommand } from '../utils/exec.js';
+import {
+  createExecutionSession,
+  defaultContainerImage,
+  type ExecutionSession,
+} from '../utils/execution.js';
+import { runShell, runShellCommand } from '../utils/exec.js';
 import { log, isVerbose } from '../utils/logger.js';
 import { findPythonTestSelection, workspaceHasPythonTests } from '../core/test-file.js';
 import { buildRunOptions, type ProjectType } from './run-options.js';
@@ -25,13 +29,7 @@ import type { ResolvedDiffBase } from '../utils/git-diff.js';
 import { AuditDeadline } from '../utils/deadline.js';
 import { computeFingerprint } from '../utils/reuse/fingerprint.js';
 
-const REUSE_TOOL_VERSIONS: Record<ProjectType, string> = {
-  python: 'cosmic-ray 8.7.0',
-  php: 'infection 0.34.0',
-  rust: 'cargo-mutants no-reuse',
-  typescript: 'strykerjs 10',
-  unsupported: 'unsupported',
-};
+const TOOL_IDENTITY_TIMEOUT_MS = 10_000;
 
 function workspaceFiles(root: string, include: (path: string) => boolean): string[] {
   const result: string[] = [];
@@ -115,12 +113,69 @@ export function phpReuseKey(workspaceRoot: string): ReuseKey {
 
 export async function computePhpReuseFingerprint(
   workspaceRoot: string,
+  phpTestFrameworkOptions?: string,
+  toolIdentity?: string,
 ): Promise<string | undefined> {
+  if (!toolIdentity) return undefined;
   return computeFingerprint({
     workspaceRoot,
     paths: reusePaths('php', workspaceRoot, '', undefined),
-    extra: { tool: REUSE_TOOL_VERSIONS.php, coverage: 'project' },
+    extra: {
+      tool: toolIdentity,
+      coverage: 'project',
+      phpTestFrameworkOptions: phpTestFrameworkOptions ?? '',
+    },
   });
+}
+
+/** Resolve the mutation tool identity from the environment that will execute it. */
+export async function resolveMutationToolIdentity(
+  projectType: Exclude<ProjectType, 'unsupported' | 'rust'>,
+  workDir: string,
+  config: ChaosConfig,
+  executor: ExecutionSession | undefined,
+  signal?: AbortSignal,
+): Promise<string | undefined> {
+  const run = executor
+    ? (command: string, args: string[]) =>
+        executor.run(command, args, {
+          cwd: workDir,
+          timeoutMs: TOOL_IDENTITY_TIMEOUT_MS,
+          signal,
+        })
+    : (command: string, args: string[]) =>
+        runShell(command, args, {
+          cwd: workDir,
+          timeoutMs: TOOL_IDENTITY_TIMEOUT_MS,
+          signal,
+          killTree: true,
+        });
+  const command =
+    projectType === 'php'
+      ? existsSync(join(workDir, 'vendor', 'bin', 'infection'))
+        ? './vendor/bin/infection'
+        : 'infection'
+      : projectType === 'typescript'
+        ? executor?.kind === 'container'
+          ? 'stryker'
+          : 'npx'
+        : 'cosmic-ray';
+  const args =
+    projectType === 'typescript' && executor?.kind !== 'container'
+      ? ['--no-install', 'stryker', '--version']
+      : ['--version'];
+  try {
+    const result = await run(command, args);
+    const version = `${result.stdout}\n${result.stderr}`.trim().replace(/\s+/g, ' ');
+    if (!version) return undefined;
+    const environment =
+      executor?.kind === 'container'
+        ? `container:${config.container?.images?.[projectType] ?? defaultContainerImage(projectType)}`
+        : 'native';
+    return `${environment}:${command}:${version}`;
+  } catch {
+    return undefined;
+  }
 }
 
 async function attachReuse(
@@ -128,6 +183,7 @@ async function attachReuse(
   projectType: Exclude<ProjectType, 'unsupported'>,
   workspaceRoot: string,
   targetFile: string,
+  toolIdentity: string | undefined,
 ): Promise<void> {
   if (projectType === 'rust') return;
   const key: ReuseKey =
@@ -139,14 +195,19 @@ async function attachReuse(
           target: targetFile,
           kind: projectType === 'python' ? 'session' : 'incremental',
         };
+  if (!toolIdentity) return;
   const fingerprint = await computeFingerprint({
     workspaceRoot,
     paths: reusePaths(projectType, workspaceRoot, targetFile, runOptions.pythonTestSelection),
     extra:
       projectType === 'php'
-        ? { tool: REUSE_TOOL_VERSIONS.php, coverage: 'project' }
+        ? {
+            tool: toolIdentity,
+            coverage: 'project',
+            phpTestFrameworkOptions: runOptions.phpTestFrameworkOptions ?? '',
+          }
         : {
-            tool: REUSE_TOOL_VERSIONS[projectType],
+            tool: toolIdentity,
             options: JSON.stringify({
               testRunner: runOptions.testRunner,
               testRunnerTrusted: runOptions.testRunnerTrusted,
@@ -377,24 +438,29 @@ export async function auditFile(input: AuditFileInput): Promise<MutationResult> 
       if (isVerbose()) log(`PythonEngine: auto-scoped test-command to ${auto.join(' ')}`);
     }
   }
-  await attachReuse(runOptions, projectType, env.workspaceRoot, targetFile);
   // Thread the abort signal from the MCP request context into the engine run so
   // in-flight subprocesses are killed when the caller cancels.
   if (input.signal) runOptions.signal = input.signal;
 
-  const containerMode = config.container?.mode;
+  const configuredContainerMode =
+    config.container?.modes?.[projectType] ?? config.container?.mode ?? 'native';
   const executor =
-    containerMode && containerMode !== 'native'
-      ? await createExecutionSession(
+    configuredContainerMode === 'native'
+      ? undefined
+      : await createExecutionSession(
           projectType,
           workDir,
           env.workspaceRoot,
           config.sandbox?.dependencies ?? 'link-entries',
           config.container,
           input.signal,
-        )
-      : undefined;
+        );
   if (executor) runOptions.executor = executor;
+  const toolIdentity =
+    projectType === 'rust'
+      ? undefined
+      : await resolveMutationToolIdentity(projectType, workDir, config, executor, input.signal);
+  await attachReuse(runOptions, projectType, env.workspaceRoot, targetFile, toolIdentity);
 
   try {
     if (prebuildCmd !== null) {

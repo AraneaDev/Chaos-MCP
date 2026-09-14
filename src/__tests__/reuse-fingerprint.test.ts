@@ -1,5 +1,6 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { computeFingerprint } from '../utils/reuse/fingerprint.js';
+import { computePhpReuseFingerprint, resolveMutationToolIdentity } from '../audit/audit-file.js';
 
 function gitStub(opts: { lsFiles: string; status?: string; failing?: boolean }) {
   return async (args: string[]) => {
@@ -81,5 +82,41 @@ describe('computeFingerprint', () => {
       readFile: () => undefined,
     });
     expect(fp).toBeUndefined();
+  });
+});
+
+describe('reuse identity and PHP fingerprint inputs', () => {
+  it('uses the selected native tool command output as its identity', async () => {
+    const run = vi.fn().mockResolvedValue({ stdout: 'StrykerJS 10.4.0', stderr: '' });
+    const identity = await resolveMutationToolIdentity(
+      'typescript',
+      '/work',
+      {},
+      { kind: 'native', workDir: '/work', run, runCommand: vi.fn(), dispose: vi.fn() },
+    );
+
+    expect(identity).toBe('native:npx:StrykerJS 10.4.0');
+    expect(run).toHaveBeenCalledWith(
+      'npx',
+      ['--no-install', 'stryker', '--version'],
+      expect.objectContaining({ cwd: '/work' }),
+    );
+  });
+
+  it('changes the PHP fingerprint when the test framework options change', async () => {
+    const unit = await computePhpReuseFingerprint(
+      process.cwd(),
+      '--testsuite=unit',
+      'native:infection:Infection 0.34.0',
+    );
+    const integration = await computePhpReuseFingerprint(
+      process.cwd(),
+      '--testsuite=integration',
+      'native:infection:Infection 0.34.0',
+    );
+
+    expect(unit).toBeDefined();
+    expect(integration).toBeDefined();
+    expect(integration).not.toBe(unit);
   });
 });
