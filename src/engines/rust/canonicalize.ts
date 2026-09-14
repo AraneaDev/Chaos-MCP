@@ -121,9 +121,27 @@ function classifyDescription(description: string): string | undefined {
  * `'unknown'` rather than guessing: an invented category ships a confident
  * severity and a why-sentence describing a mutation that did not happen.
  */
-export function canonicalizeRustMutator(rawMutator: string, changeText?: string): string {
+function classifyGenre(genre: string, sourceText?: string): string | undefined {
+  if (genre === 'UnaryOperator') return 'UnaryOperator';
+  if (genre === 'MatchArm') return 'MatchArm';
+  if (genre === 'FnValue') return 'ReturnValue';
+  if (genre === 'BinaryOperator' && sourceText) {
+    const operator = sourceText.match(new RegExp(`^\\s*(${OPERATOR})\\s*$`))?.[1];
+    return operator ? operatorCategory(operator) : undefined;
+  }
+  if (genre === 'MatchGuard') return 'ConditionalExpression';
+  return undefined;
+}
+
+export function canonicalizeRustMutator(
+  rawMutator: string,
+  changeText?: string,
+  genre?: string,
+): string {
   const fromMutator = classifyDescription(rawMutator);
   if (fromMutator !== undefined) return fromMutator;
+  const fromGenre = genre ? classifyGenre(genre, changeText) : undefined;
+  if (fromGenre !== undefined) return fromGenre;
   if (changeText === undefined) return 'unknown';
   return classifyDescription(changeText) ?? 'unknown';
 }

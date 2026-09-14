@@ -97,9 +97,11 @@ export const CAPABILITIES: Record<SupportedProjectType, Record<Capability, Capab
     cancellation: 'full',
     suppressions: 'full',
     'dead-harness-warning': 'full',
+    // cosmic-ray's NO_TEST means no mutation was produced, not no test
+    // coverage, so coverage.py cannot provide a sound replacement here.
     'no-coverage-reporting': 'none',
     'replacement-text': 'full',
-    'column-info': 'none',
+    'column-info': 'full',
     'mutator-names': 'full',
     'mutator-filtering': 'partial',
     'dry-run': 'none',
@@ -120,12 +122,14 @@ export const CAPABILITIES: Record<SupportedProjectType, Record<Capability, Capab
     'partial-results-on-timeout': 'none',
     'baseline-timing': 'full',
     cancellation: 'full',
-    suppressions: 'partial',
+    suppressions: 'full',
     'dead-harness-warning': 'full',
+    // cargo-mutants has no coverage phase, so missed cannot be split into
+    // unreached versus reached-but-not-caught mutants from a sound source.
     'no-coverage-reporting': 'none',
-    'replacement-text': 'none',
-    'column-info': 'none',
-    'mutator-names': 'partial',
+    'replacement-text': 'full',
+    'column-info': 'full',
+    'mutator-names': 'full',
     'mutator-filtering': 'none',
     // cargo-mutants --list enumerates mutants but does not validate the suite
     // the way StrykerJS's dry run does, so this remains partial.
@@ -151,6 +155,8 @@ export const CAPABILITIES: Record<SupportedProjectType, Record<Capability, Capab
     'dead-harness-warning': 'full',
     'no-coverage-reporting': 'full',
     'replacement-text': 'full',
+    // Infection's JSON has no column and its HTML column is only the first
+    // non-blank character on a line, not the mutation position.
     'column-info': 'none',
     'mutator-names': 'full',
     'mutator-filtering': 'none',

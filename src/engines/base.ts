@@ -40,6 +40,13 @@ export interface Vulnerability {
   original?: string;
   /** Replacement code or mutation description (best-effort; may be absent). */
   mutated?: string;
+  /**
+   * Display-only 1-based column. Engines normalize their native positions to
+   * this base; it is deliberately excluded from suppression identity.
+   */
+  column?: number;
+  /** Structured engine genre used internally for canonical mutator enrichment. */
+  genre?: string;
 }
 
 /**

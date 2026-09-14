@@ -180,7 +180,7 @@ export interface EngineDescriptor {
    * `MUTATOR_SEMANTICS` is also treated as `'unknown'`; the caller re-checks, so
    * this direction never has to import the table upward.
    */
-  canonicalizeMutator?: (rawMutator: string, changeText?: string) => string;
+  canonicalizeMutator?: (rawMutator: string, changeText?: string, genre?: string) => string;
 
   /**
    * Whether `estimate_audit` can report an EXACT mutant count for this language,

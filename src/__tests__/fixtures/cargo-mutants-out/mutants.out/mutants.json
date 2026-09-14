@@ -1,0 +1,162 @@
+[
+  {
+    "diff": "--- src/notify.rs\n+++ replace maybe_send with ()\n@@ -2,21 +2,17 @@\n use std::time::Duration;\n \n /// Fire a webhook notification for a decision, if the policy asks for one.\n ///\n /// Doctrine (same as previews): this layer must NEVER delay or break\n /// enforcement. Hard 3-second timeout, every error swallowed. Slack being\n /// down cannot make Termaxa hang or fail a decision that was already made.\n pub fn maybe_send(policy: &Policy, decision: &str, command: &str, reason: &str, source: &str) {\n-    let Some(cfg) = &policy.notify else { return };\n-    if !cfg.on.iter().any(|d| d.eq_ignore_ascii_case(decision)) {\n-        return;\n-    }\n-    send(cfg, decision, command, reason, source);\n+    () /* ~ changed by cargo-mutants ~ */\n }\n \n fn send(cfg: &Notify, decision: &str, command: &str, reason: &str, source: &str) {\n     let emoji = match decision {\n         \"deny\" => \"🛑\",\n         \"ask\" => \"⚠️\",\n         _ => \"✅\",\n     };\n",
+    "file": "src/notify.rs",
+    "function": {
+      "function_name": "maybe_send",
+      "return_type": "",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 15
+        },
+        "start": {
+          "column": 1,
+          "line": 4
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "src/notify.rs:10:5: replace maybe_send with ()",
+    "package": "termaxa",
+    "replacement": "()",
+    "span": {
+      "end": {
+        "column": 50,
+        "line": 14
+      },
+      "start": {
+        "column": 5,
+        "line": 10
+      }
+    }
+  },
+  {
+    "diff": "--- src/notify.rs\n+++ delete ! in maybe_send\n@@ -3,17 +3,17 @@\n \n /// Fire a webhook notification for a decision, if the policy asks for one.\n ///\n /// Doctrine (same as previews): this layer must NEVER delay or break\n /// enforcement. Hard 3-second timeout, every error swallowed. Slack being\n /// down cannot make Termaxa hang or fail a decision that was already made.\n pub fn maybe_send(policy: &Policy, decision: &str, command: &str, reason: &str, source: &str) {\n     let Some(cfg) = &policy.notify else { return };\n-    if !cfg.on.iter().any(|d| d.eq_ignore_ascii_case(decision)) {\n+    if  /* ~ changed by cargo-mutants ~ */cfg.on.iter().any(|d| d.eq_ignore_ascii_case(decision)) {\n         return;\n     }\n     send(cfg, decision, command, reason, source);\n }\n \n fn send(cfg: &Notify, decision: &str, command: &str, reason: &str, source: &str) {\n     let emoji = match decision {\n         \"deny\" => \"🛑\",\n",
+    "file": "src/notify.rs",
+    "function": {
+      "function_name": "maybe_send",
+      "return_type": "",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 15
+        },
+        "start": {
+          "column": 1,
+          "line": 4
+        }
+      }
+    },
+    "genre": "UnaryOperator",
+    "name": "src/notify.rs:11:8: delete ! in maybe_send",
+    "package": "termaxa",
+    "replacement": "",
+    "span": {
+      "end": {
+        "column": 9,
+        "line": 11
+      },
+      "start": {
+        "column": 8,
+        "line": 11
+      }
+    }
+  },
+  {
+    "diff": "--- src/notify.rs\n+++ replace send with ()\n@@ -10,43 +10,17 @@\n     let Some(cfg) = &policy.notify else { return };\n     if !cfg.on.iter().any(|d| d.eq_ignore_ascii_case(decision)) {\n         return;\n     }\n     send(cfg, decision, command, reason, source);\n }\n \n fn send(cfg: &Notify, decision: &str, command: &str, reason: &str, source: &str) {\n-    let emoji = match decision {\n-        \"deny\" => \"🛑\",\n-        \"ask\" => \"⚠️\",\n-        _ => \"✅\",\n-    };\n-    let cwd = std::env::current_dir()\n-        .map(|p| p.display().to_string())\n-        .unwrap_or_default();\n-    let text = format!(\n-        \"{} *termaxa {}* [{}]\\n`{}`\\n{}\\n_{}_\",\n-        emoji,\n-        decision.to_uppercase(),\n-        source,\n-        command,\n-        reason,\n-        cwd\n-    );\n-    let body = serde_json::json!({ \"text\": text }).to_string();\n-\n-    let agent = ureq::AgentBuilder::new()\n-        .timeout(Duration::from_secs(3))\n-        .build();\n-    // Fire and forget: success or failure, the decision already stands.\n-    let _ = agent\n-        .post(&cfg.webhook)\n-        .set(\"Content-Type\", \"application/json\")\n-        .send_string(&body);\n+    () /* ~ changed by cargo-mutants ~ */\n }\n \n /// `termaxa notify --test`: send a probe and report LOUDLY.\n ///\n /// The normal notification path is fire-and-forget by design, which means a\n /// misconfigured webhook fails silently. This command is the counterweight:\n /// explicit, verbose, and honest about what happened.\n pub fn test(policy: &Policy) -> anyhow::Result<i32> {\n",
+    "file": "src/notify.rs",
+    "function": {
+      "function_name": "send",
+      "return_type": "",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 45
+        },
+        "start": {
+          "column": 1,
+          "line": 17
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "src/notify.rs:18:5: replace send with ()",
+    "package": "termaxa",
+    "replacement": "()",
+    "span": {
+      "end": {
+        "column": 29,
+        "line": 44
+      },
+      "start": {
+        "column": 5,
+        "line": 18
+      }
+    }
+  },
+  {
+    "diff": "--- src/notify.rs\n+++ delete match arm \"deny\" in send\n@@ -11,17 +11,17 @@\n     if !cfg.on.iter().any(|d| d.eq_ignore_ascii_case(decision)) {\n         return;\n     }\n     send(cfg, decision, command, reason, source);\n }\n \n fn send(cfg: &Notify, decision: &str, command: &str, reason: &str, source: &str) {\n     let emoji = match decision {\n-        \"deny\" => \"🛑\",\n+         /* ~ changed by cargo-mutants ~ */\n         \"ask\" => \"⚠️\",\n         _ => \"✅\",\n     };\n     let cwd = std::env::current_dir()\n         .map(|p| p.display().to_string())\n         .unwrap_or_default();\n     let text = format!(\n         \"{} *termaxa {}* [{}]\\n`{}`\\n{}\\n_{}_\",\n",
+    "file": "src/notify.rs",
+    "function": {
+      "function_name": "send",
+      "return_type": "",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 45
+        },
+        "start": {
+          "column": 1,
+          "line": 17
+        }
+      }
+    },
+    "genre": "MatchArm",
+    "name": "src/notify.rs:19:9: delete match arm \"deny\" in send",
+    "package": "termaxa",
+    "replacement": "",
+    "span": {
+      "end": {
+        "column": 23,
+        "line": 19
+      },
+      "start": {
+        "column": 9,
+        "line": 19
+      }
+    }
+  },
+  {
+    "diff": "--- src/notify.rs\n+++ delete match arm \"ask\" in send\n@@ -12,17 +12,17 @@\n         return;\n     }\n     send(cfg, decision, command, reason, source);\n }\n \n fn send(cfg: &Notify, decision: &str, command: &str, reason: &str, source: &str) {\n     let emoji = match decision {\n         \"deny\" => \"🛑\",\n-        \"ask\" => \"⚠️\",\n+         /* ~ changed by cargo-mutants ~ */\n         _ => \"✅\",\n     };\n     let cwd = std::env::current_dir()\n         .map(|p| p.display().to_string())\n         .unwrap_or_default();\n     let text = format!(\n         \"{} *termaxa {}* [{}]\\n`{}`\\n{}\\n_{}_\",\n         emoji,\n",
+    "file": "src/notify.rs",
+    "function": {
+      "function_name": "send",
+      "return_type": "",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 45
+        },
+        "start": {
+          "column": 1,
+          "line": 17
+        }
+      }
+    },
+    "genre": "MatchArm",
+    "name": "src/notify.rs:20:9: delete match arm \"ask\" in send",
+    "package": "termaxa",
+    "replacement": "",
+    "span": {
+      "end": {
+        "column": 23,
+        "line": 20
+      },
+      "start": {
+        "column": 9,
+        "line": 20
+      }
+    }
+  }
+]

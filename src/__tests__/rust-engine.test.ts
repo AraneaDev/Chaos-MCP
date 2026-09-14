@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -150,6 +150,51 @@ describe('RustEngine', () => {
       '/tmp/change.patch',
     ]);
     expect(result).toMatchObject({ totalMutants: 2, killed: 0, survived: 0, mutationScore: 'n/a' });
+  });
+
+  it('reads joinable structured output from a unique per-run directory', async () => {
+    const root = makeSandbox(['src/notify.rs']);
+    writeFileSync(
+      join(root, 'src/notify.rs'),
+      readFileSync(
+        join(process.cwd(), 'src/__tests__/fixtures/cargo-mutants-out/source/notify.rs'),
+      ),
+    );
+    mockRunShell.mockImplementation(async (_command, args) => {
+      const output = String(args[args.indexOf('--output') + 1]);
+      mkdirSync(join(output, 'mutants.out'), { recursive: true });
+      copyFileSync(
+        join(
+          process.cwd(),
+          'src/__tests__/fixtures/cargo-mutants-out/missed/mutants.out/mutants.json',
+        ),
+        join(output, 'mutants.out/mutants.json'),
+      );
+      copyFileSync(
+        join(
+          process.cwd(),
+          'src/__tests__/fixtures/cargo-mutants-out/missed/mutants.out/outcomes.json',
+        ),
+        join(output, 'mutants.out/outcomes.json'),
+      );
+      return makeExecResult(
+        'MISSED   src/notify.rs:11:8: delete ! in maybe_send in 0s build + 0s test\n' +
+          '1 mutant tested in 13s: 1 missed',
+      );
+    });
+
+    const result = await engine.run('src/notify.rs', { workDir: root, concurrency: 1 });
+
+    expect(result.vulnerabilities[0]).toMatchObject({
+      column: 8,
+      original: '!',
+      mutated: '',
+    });
+    const args = mockRunShell.mock.calls[0][1] as string[];
+    expect(args).toContain('--output');
+    expect(args[args.indexOf('--output') + 1]).toMatch(
+      new RegExp(`${root}/\\.chaos-cargo-mutants-`),
+    );
   });
 
   it('parses cargo-mutants text output when all mutants are caught', async () => {
@@ -525,7 +570,13 @@ describe('RustEngine', () => {
 
     expect(executor.run).toHaveBeenCalledWith(
       'cargo',
-      ['mutants', '--file', 'src/test.rs'],
+      [
+        'mutants',
+        '--output',
+        expect.stringContaining('chaos-cargo-mutants-'),
+        '--file',
+        'src/test.rs',
+      ],
       expect.objectContaining({ cwd: '/sb' }),
     );
     expect(mockRunShell).not.toHaveBeenCalled();
@@ -623,7 +674,13 @@ describe('RustEngine', () => {
 
     expect(mockRunShell).toHaveBeenCalledWith(
       'cargo',
-      ['mutants', '--file', 'src/parser/token[[]0[]].rs'],
+      [
+        'mutants',
+        '--output',
+        expect.stringContaining('chaos-cargo-mutants-'),
+        '--file',
+        'src/parser/token[[]0[]].rs',
+      ],
       expect.any(Object),
     );
   });
@@ -875,7 +932,13 @@ describe('RustEngine', () => {
     await engine.run('src/deeply/nested/module.rs', { workDir: '/tmp/x', concurrency: 1 });
     expect(mockRunShell).toHaveBeenCalledWith(
       'cargo',
-      ['mutants', '--file', 'src/deeply/nested/module.rs'],
+      [
+        'mutants',
+        '--output',
+        expect.stringContaining('chaos-cargo-mutants-'),
+        '--file',
+        'src/deeply/nested/module.rs',
+      ],
       expect.objectContaining({ cwd: '/tmp/x' }),
     );
   });
@@ -959,11 +1022,25 @@ describe('RustEngine', () => {
     );
 
     await engine.run('src/x.rs', { concurrency: 4, workDir: '/tmp' });
-    expect(mockRunShell.mock.calls[0][1]).toEqual(['mutants', '--file', 'src/x.rs', '-j', '4']);
+    expect(mockRunShell.mock.calls[0][1]).toEqual([
+      'mutants',
+      '--output',
+      expect.stringContaining('chaos-cargo-mutants-'),
+      '--file',
+      'src/x.rs',
+      '-j',
+      '4',
+    ]);
 
     mockRunShell.mockClear();
     await engine.run('src/x.rs', { concurrency: 1, workDir: '/tmp' });
-    expect(mockRunShell.mock.calls[0][1]).toEqual(['mutants', '--file', 'src/x.rs']);
+    expect(mockRunShell.mock.calls[0][1]).toEqual([
+      'mutants',
+      '--output',
+      expect.stringContaining('chaos-cargo-mutants-'),
+      '--file',
+      'src/x.rs',
+    ]);
   });
 
   it('passes the inner-pool cap to cargo', async () => {
@@ -1381,7 +1458,15 @@ describe('RustEngine: --in-diff diff scoping', () => {
 
     expect(mockRunShell).toHaveBeenCalledWith(
       'cargo',
-      ['mutants', '--file', 'src/test.rs', '--in-diff', '/sandbox/.chaos-mcp.in-diff.patch'],
+      [
+        'mutants',
+        '--output',
+        expect.stringContaining('chaos-cargo-mutants-'),
+        '--file',
+        'src/test.rs',
+        '--in-diff',
+        '/sandbox/.chaos-mcp.in-diff.patch',
+      ],
       expect.any(Object),
     );
   });
@@ -1418,6 +1503,8 @@ describe('RustEngine: --in-diff diff scoping', () => {
       'cargo',
       [
         'mutants',
+        '--output',
+        expect.stringContaining('chaos-cargo-mutants-'),
         '--file',
         'src/test.rs',
         '--in-diff',
@@ -1436,7 +1523,13 @@ describe('RustEngine: --in-diff diff scoping', () => {
 
     expect(mockRunShell).toHaveBeenCalledWith(
       'cargo',
-      ['mutants', '--file', 'src/test.rs'],
+      [
+        'mutants',
+        '--output',
+        expect.stringContaining('chaos-cargo-mutants-'),
+        '--file',
+        'src/test.rs',
+      ],
       expect.any(Object),
     );
   });
@@ -1451,7 +1544,13 @@ describe('RustEngine: --in-diff diff scoping', () => {
 
     expect(mockRunShell).toHaveBeenCalledWith(
       'cargo',
-      ['mutants', '--file', 'src/test.rs'],
+      [
+        'mutants',
+        '--output',
+        expect.stringContaining('chaos-cargo-mutants-'),
+        '--file',
+        'src/test.rs',
+      ],
       expect.any(Object),
     );
   });
@@ -1466,7 +1565,13 @@ describe('RustEngine: --in-diff diff scoping', () => {
 
     expect(mockRunShell).toHaveBeenCalledWith(
       'cargo',
-      ['mutants', '--file', 'src/test.rs'],
+      [
+        'mutants',
+        '--output',
+        expect.stringContaining('chaos-cargo-mutants-'),
+        '--file',
+        'src/test.rs',
+      ],
       expect.any(Object),
     );
   });

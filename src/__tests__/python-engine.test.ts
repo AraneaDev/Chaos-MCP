@@ -630,6 +630,25 @@ describe('PythonEngine (cosmic-ray)', () => {
       return r.vulnerabilities[0];
     };
 
+    it('normalizes cosmic-ray 0-based columns to the shared 1-based display base', () => {
+      const withColumn = JSON.stringify([
+        { mutations: [{ operator_name: 'core/Op', start_pos: [12, 7] }] },
+        { test_outcome: 'survived', diff: '-x\n+x' },
+      ]);
+      const withoutColumn = JSON.stringify([
+        { mutations: [{ operator_name: 'core/Op', start_pos: [13] }] },
+        { test_outcome: 'survived', diff: '-x\n+x' },
+      ]);
+
+      expect(parseCosmicRayDump(withColumn, 'm.py').result.vulnerabilities[0]).toMatchObject({
+        line: 12,
+        column: 8,
+      });
+      expect(
+        parseCosmicRayDump(withoutColumn, 'm.py').result.vulnerabilities[0],
+      ).not.toHaveProperty('column');
+    });
+
     it('takes the FIRST removed and first added line as the change', () => {
       // A real cosmic-ray diff has several context and hunk lines. Only the
       // first -/+ pair is the mutation itself; later ones are surrounding
