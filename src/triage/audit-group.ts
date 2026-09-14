@@ -58,23 +58,42 @@ export async function auditTriageGroup(
   ) {
     return { kind: 'contain', reason: 'TypeScript engine does not support grouped runs' };
   }
-  const remaining = deps.deadline.remainingMs(deps.cleanupReserveMs);
-  if (remaining < 1_000) return { kind: 'contain', reason: 'group time budget exhausted' };
   const perFileBudget = resolveAuditTimeoutMs(deps.args, deps.cfg, 'typescript');
-  const groupTimeout = Math.min(remaining, perFileBudget * unit.files.length);
   const scopeByFile = new Map<string, TriageDiffScope>();
   for (const file of unit.files) {
     const target = targets.get(file);
     if (!target) return { kind: 'contain', reason: `missing target for ${file}` };
+    const remaining = deps.deadline.remainingMs(deps.cleanupReserveMs);
+    if (remaining < 1_000) return { kind: 'contain', reason: 'group time budget exhausted' };
+    const scopeTimeout = Math.min(remaining, perFileBudget * unit.files.length);
+    const scopeDeadline = AbortSignal.timeout(remaining);
+    const scopeSignal = deps.ctx?.signal
+      ? AbortSignal.any([deps.ctx.signal, scopeDeadline])
+      : scopeDeadline;
     scopeByFile.set(
       file,
-      await resolveDiffScope(target.targetFile, target.env, 'typescript', groupTimeout, deps),
+      await resolveDiffScope(
+        target.targetFile,
+        target.env,
+        'typescript',
+        scopeTimeout,
+        deps,
+        scopeSignal,
+      ),
     );
   }
 
+  const remaining = deps.deadline.remainingMs(deps.cleanupReserveMs);
+  if (remaining < 1_000) return { kind: 'contain', reason: 'group time budget exhausted' };
+  const groupTimeout = Math.min(remaining, perFileBudget * unit.files.length);
   const controller = new AbortController();
-  const abort = () => controller.abort(deps.ctx?.signal?.reason);
+  const deadlineSignal = AbortSignal.timeout(remaining);
+  const abort = () =>
+    controller.abort(
+      deadlineSignal.aborted ? deadlineSignal.reason : (deps.ctx?.signal?.reason ?? undefined),
+    );
   deps.ctx?.signal?.addEventListener('abort', abort, { once: true });
+  deadlineSignal.addEventListener('abort', abort, { once: true });
   const handle = deps.watchdog?.register(
     controller,
     (deps.perFileCostBytes ?? 0) * unit.files.length,
@@ -103,20 +122,22 @@ export async function auditTriageGroup(
     runOptions.timeoutMs = groupTimeout;
     runOptions.signal = controller.signal;
     const sortedFiles = unit.files.slice().sort();
-    runOptions.reuse = {
-      key: {
-        workspaceRoot: first.env.workspaceRoot,
-        engine: 'typescript',
-        target: `group:${sortedFiles.join('\0')}`,
-        kind: 'incremental',
-      },
-      fingerprint:
-        (await computeFingerprint({
+    const fingerprint = await computeFingerprint({
+      workspaceRoot: first.env.workspaceRoot,
+      paths: sortedFiles,
+      extra: { runner: unit.runner, group: sortedFiles.join('\0') },
+    });
+    if (fingerprint !== undefined) {
+      runOptions.reuse = {
+        key: {
           workspaceRoot: first.env.workspaceRoot,
-          paths: sortedFiles,
-          extra: { runner: unit.runner, group: sortedFiles.join('\0') },
-        })) ?? '',
-    };
+          engine: 'typescript',
+          target: `group:${sortedFiles.join('\0')}`,
+          kind: 'incremental',
+        },
+        fingerprint,
+      };
+    }
     const mode = deps.cfg.container?.modes?.typescript ?? deps.cfg.container?.mode ?? 'native';
     executor =
       mode === 'native'
@@ -154,6 +175,7 @@ export async function auditTriageGroup(
     sandbox?.cleanup();
     handle?.release();
     deps.ctx?.signal?.removeEventListener('abort', abort);
+    deadlineSignal.removeEventListener('abort', abort);
   }
 }
 

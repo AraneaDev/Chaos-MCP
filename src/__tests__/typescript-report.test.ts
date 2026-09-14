@@ -53,4 +53,22 @@ describe('parseStrykerReportByFile', () => {
       parseStrykerReportByFile(raw, ['a.ts'], 'scoped')?.get('a.ts'),
     );
   });
+
+  it('assigns scope kind independently for grouped files', () => {
+    const first = report('a.ts', '1', 'Survived');
+    const second = report('b.ts', '2', 'Killed');
+    const combined: StrykerJsonReport = { files: { ...first.files, ...second.files } };
+    const grouped = parseStrykerReportByFile(
+      combined,
+      ['a.ts', 'b.ts'],
+      'whole-file',
+      new Map([
+        ['a.ts', 'scoped'],
+        ['b.ts', 'whole-file'],
+      ]),
+    );
+
+    expect(grouped?.get('a.ts')?.scopeKind).toBe('scoped');
+    expect(grouped?.get('b.ts')?.scopeKind).toBe('whole-file');
+  });
 });

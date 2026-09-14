@@ -194,7 +194,13 @@ export class TypeScriptEngine extends BaseEngine {
     const grouped = parseStrykerReportByFile(
       raw,
       files.map((entry) => entry.file),
-      files.some((entry) => entry.ranges && entry.ranges.length > 0) ? 'scoped' : 'whole-file',
+      'whole-file',
+      new Map(
+        files.map((entry) => [
+          entry.file,
+          entry.ranges && entry.ranges.length > 0 ? 'scoped' : 'whole-file',
+        ]),
+      ),
     );
     if (!grouped) throw new Error('Stryker report could not be attributed to every grouped file.');
     return grouped;

@@ -29,6 +29,7 @@ import {
   timeoutArgs,
 } from '../engines/rust.js';
 import { displayMutationScore, hasNoMutableLogic } from '../core/score-semantics.js';
+import { isBaselineCompileFailure } from '../engines/rust/failures.js';
 
 const mockRunShell = vi.mocked(runShell);
 
@@ -110,6 +111,16 @@ describe('RustEngine', () => {
     expect(timeoutArgs(1)).toEqual(['--timeout', '1']);
   });
 
+  it('compares the baseline with the effective rounded timeout', async () => {
+    mockRunShell.mockResolvedValue(
+      makeExecResult('Unmutated baseline in 3s build + 2.6s test\n1 mutant tested: 1 caught'),
+    );
+
+    const result = await engine.run('src/math.rs', { perMutantTimeoutMs: 2_501 });
+
+    expect(result.fidelityNote).toBeUndefined();
+  });
+
   it('warns when the configured timeout is below the measured baseline test time', async () => {
     mockRunShell.mockResolvedValue(
       makeExecResult('Unmutated baseline in 3s build + 2.5s test\n1 mutant tested: 1 caught'),
@@ -130,6 +141,12 @@ describe('RustEngine', () => {
     );
 
     await expect(engine.run('src/math.rs')).rejects.toThrow(/baseline compile failure/);
+  });
+
+  it('anchors baseline failure markers to the beginning of an output line', () => {
+    expect(isBaselineCompileFailure('worker baseline_error_handler completed')).toBe(false);
+    expect(isBaselineCompileFailure('info\nunmutated baseline failed')).toBe(true);
+    expect(isBaselineCompileFailure('warning\n  error: could not compile `fixture`')).toBe(true);
   });
 
   it('maps dryRun to cargo mutants --list without scoring a mutation run', async () => {

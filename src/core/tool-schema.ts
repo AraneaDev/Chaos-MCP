@@ -258,7 +258,7 @@ export const TOOL_DEFINITION = {
         exclusiveMinimum: 0,
         maximum: MAX_TIMEOUT_MS,
         description:
-          'Maximum time in milliseconds per individual mutant test (StrykerJS only). ' +
+          'Maximum time in milliseconds per individual mutant test (StrykerJS and Rust). ' +
           'Distinct from timeoutMs (total run cap). Use this to prevent a single slow mutant ' +
           'from hanging the entire mutation run. Default: StrykerJS default (~5000ms). ' +
           `Must be <= ${MAX_TIMEOUT_MS} (the largest delay a timer accepts). ` +

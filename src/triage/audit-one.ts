@@ -148,19 +148,19 @@ export interface TriageFileDeps {
  * two same-named, differently-shaped interfaces in the same codebase is a
  * trap for the next reader even though neither file imports the other's.
  */
-export interface TriageDiffScope {
-  lineRanges?: { start: number; end: number }[];
-  /**
-   * The base `lineRanges` was resolved against, carried alongside it so
-   * `auditFile` can materialise from the SAME resolution rather than
-   * re-deriving it from a raw `diffBase` string (CRITICAL finding: doing the
-   * latter is what let a diverged branch's Rust patch and PHP base come from
-   * a different commit than the ranges they were supposed to match). Present
-   * exactly when `lineRanges` is.
-   */
-  resolvedBase?: ResolvedDiffBase;
-  scopeNote?: string;
-}
+export type TriageDiffScope =
+  | {
+      /** The changed ranges and the exact base they were resolved against. */
+      lineRanges: { start: number; end: number }[];
+      resolvedBase: ResolvedDiffBase;
+      scopeNote?: string;
+    }
+  | {
+      /** No diff scope was materialized, so neither half of the pair exists. */
+      lineRanges?: undefined;
+      resolvedBase?: undefined;
+      scopeNote?: string;
+    };
 
 /**
  * Narrow a diff-scoped sweep down to the changed lines of ONE file.
@@ -176,13 +176,14 @@ export async function resolveDiffScope(
   projectType: SupportedProjectType,
   fileBudgetMs: number,
   deps: TriageFileDeps,
+  signal?: AbortSignal,
 ): Promise<TriageDiffScope> {
   if (deps.diffBase === undefined) return {};
   if (!ENGINE_REGISTRY[projectType].supportsDiffScope) {
     return { scopeNote: 'diff scoping unsupported for this language; whole file' };
   }
   const diff = await computeChangedRanges(targetFile, env.workspaceRoot, deps.diffBase, {
-    signal: deps.ctx?.signal,
+    signal: signal ?? deps.ctx?.signal,
     timeoutMs: fileBudgetMs,
   });
   switch (diff.kind) {

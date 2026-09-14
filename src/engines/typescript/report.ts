@@ -152,6 +152,7 @@ export function parseStrykerReportByFile(
   raw: StrykerJsonReport,
   files: string[],
   scopeKind: 'whole-file' | 'scoped' = 'whole-file',
+  scopeKindByFile?: ReadonlyMap<string, 'whole-file' | 'scoped'>,
 ): Map<string, MutationResult> | undefined {
   if (!raw || typeof raw.files !== 'object' || raw.files === null) return undefined;
   const requested = new Map(files.map((file) => [reportPathKey(file), file]));
@@ -164,7 +165,14 @@ export function parseStrykerReportByFile(
   for (const key of reportEntries) {
     const file = requested.get(reportPathKey(key));
     if (!file || results.has(file)) return undefined;
-    results.set(file, scoreStrykerReport({ files: { [key]: raw.files[key] } }, file, scopeKind));
+    results.set(
+      file,
+      scoreStrykerReport(
+        { files: { [key]: raw.files[key] } },
+        file,
+        scopeKindByFile?.get(file) ?? scopeKind,
+      ),
+    );
   }
   return results.size === files.length ? results : undefined;
 }

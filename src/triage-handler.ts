@@ -599,7 +599,8 @@ export async function handleTriageCall(
       // `items.length` (utils/pool.ts), so a one-file sweep runs serially
       // even when the budget says 2, and there is still no contention to
       // blame a baseline failure on.
-      const firstPassWasParallel = Math.min(files.length, resources.budget.fileConcurrency) > 1;
+      const firstPassWasParallel =
+        Math.min(sweepUnits.length, resources.budget.fileConcurrency) > 1;
       const retryTargets: RetryTarget[] = outcomes.flatMap((outcome, index): RetryTarget[] => {
         if ('exhausted' in outcome) {
           return [{ file: files[index], index, reason: 'exhausted' }];

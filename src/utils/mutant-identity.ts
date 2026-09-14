@@ -13,7 +13,10 @@
  * domain module) and the domain layer (`audit/apply-suppressions.ts`) can depend
  * on it without forming a cycle.
  */
-import type { Vulnerability } from '../engines/base.js';
+export interface ChangeFields {
+  original?: string;
+  mutated?: string;
+}
 
 /**
  * Longest each side of a change string may be.
@@ -57,7 +60,7 @@ export function normalizeChange(text: string): string {
  * the two drifted (no arrow, no cap) and made the documented `change` argument
  * unmatchable; do not reintroduce a second renderer.
  */
-export function changeOf(v: Pick<Vulnerability, 'original' | 'mutated'>): string | undefined {
+export function changeOf(v: ChangeFields): string | undefined {
   const o = v.original === undefined ? '' : normalizeChange(v.original);
   const m = v.mutated === undefined ? '' : normalizeChange(v.mutated);
   if (o && m) return `${o} → ${m}`;

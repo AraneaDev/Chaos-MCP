@@ -42,3 +42,4 @@ fn send(cfg: &Notify, decision: &str, command: &str, reason: &str, source: &str)
         .post(&cfg.webhook)
         .set("Content-Type", "application/json")
         .send_string(&body);
+}

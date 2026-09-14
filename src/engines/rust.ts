@@ -23,7 +23,13 @@ import { BaseEngine, RunOptions, MutationResult } from './base.js';
 import { invokeMutationTool } from '../utils/exec-classify.js';
 import { log, isVerbose } from '../utils/logger.js';
 import { DEFAULT_TIMEOUT_MS } from '../utils/constants.js';
-import { resolveCargoJobs, escapeCargoFileGlob, inDiffArgs, timeoutArgs } from './rust/args.js';
+import {
+  resolveCargoJobs,
+  escapeCargoFileGlob,
+  inDiffArgs,
+  effectiveTimeoutMs,
+  timeoutArgs,
+} from './rust/args.js';
 import {
   countCargoMutantsList,
   enrichCargoMutantsResult,
@@ -33,7 +39,13 @@ import {
 import { isBaselineCompileFailure } from './rust/failures.js';
 import { readStructuredOutput, readStructuredSummary } from './rust/structured.js';
 
-export { resolveCargoJobs, escapeCargoFileGlob, inDiffArgs, timeoutArgs } from './rust/args.js';
+export {
+  resolveCargoJobs,
+  escapeCargoFileGlob,
+  inDiffArgs,
+  effectiveTimeoutMs,
+  timeoutArgs,
+} from './rust/args.js';
 export {
   type CargoSummary,
   type ScoredCounts,
@@ -213,13 +225,14 @@ export class RustEngine extends BaseEngine {
       const baselineTestMs = baseline
         ? Math.ceil(Number.parseFloat(baseline[1]) * 1000)
         : undefined;
+      const effectivePerMutantTimeoutMs = effectiveTimeoutMs(options?.perMutantTimeoutMs);
       if (
-        options?.perMutantTimeoutMs !== undefined &&
+        effectivePerMutantTimeoutMs !== undefined &&
         baselineTestMs !== undefined &&
-        options.perMutantTimeoutMs < baselineTestMs
+        effectivePerMutantTimeoutMs < baselineTestMs
       ) {
         parsed.fidelityNote =
-          `perMutantTimeoutMs (${options.perMutantTimeoutMs}ms) is below the baseline test time ` +
+          `perMutantTimeoutMs (${effectivePerMutantTimeoutMs}ms effective) is below the baseline test time ` +
           `${baselineTestMs}ms; the score may be inflated because cargo-mutants counts timeouts as killed.`;
       }
       let source: string | undefined;

@@ -184,7 +184,7 @@ export interface ChaosConfig {
   /** Mutator names to exclude by default (StrykerJS only). */
   mutatorDenylist?: string[];
 
-  /** Default per-mutant timeout in milliseconds (StrykerJS only). */
+  /** Default per-mutant timeout in milliseconds for StrykerJS and Rust; omitted uses each engine's default. */
   perMutantTimeoutMs?: number;
 
   /**
