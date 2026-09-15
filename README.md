@@ -62,13 +62,36 @@ npm install
 npm run build      # compiles to build/index.js
 ```
 
-Register it with an MCP client (Claude Code example):
+Register it with an MCP client. The command must point at the built entrypoint
+with an absolute path.
+
+#### Codex
 
 ```bash
-claude mcp add chaos-mcp -- node /absolute/path/to/ChaosMCP/build/index.js
+codex mcp add chaos-mcp -- node /absolute/path/to/Chaos-MCP/build/index.js
+```
+
+#### Claude Code
+
+```bash
+claude mcp add chaos-mcp -- node /absolute/path/to/Chaos-MCP/build/index.js
 ```
 
 > **Planned (not available yet):** once published, install will be `npm install -g chaos-mcp` or run on demand via `npx chaos-mcp`. These do not work until the package ships to npm.
+
+### Installation pitfalls
+
+- This is currently a source install: the npm package is not published, so
+  `npm install -g chaos-mcp` and `npx chaos-mcp` do not work yet.
+- The build requires Node 24.11.0 or newer. In a restricted sandbox,
+  `npm run build` can fail only at its final child-process `chmod`; rerun
+  `node_modules/.bin/tsc` and then `chmod +x build/index.js` if that happens.
+- Native mutation engines are installed in the target project, not by Chaos-MCP.
+  Install only the engine for the language being audited, or configure the
+  pinned container runner.
+- MCP clients launch the server with a fixed working directory. To audit
+  projects outside it, set `CHAOS_ALLOWED_ROOTS` in the registration; use
+  absolute paths in both the server command and that variable.
 
 ### Prerequisites: language mutation tools
 
