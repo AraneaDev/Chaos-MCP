@@ -4,6 +4,17 @@
     ".": {
       "release-type": "node",
       "changelog-path": "CHANGELOG.md",
+      "changelog-sections": [
+        { "type": "feat",     "section": "Features" },
+        { "type": "fix",      "section": "Fixes" },
+        { "type": "perf",     "section": "Performance" },
+        { "type": "docs",     "section": "Documentation" },
+        { "type": "test",     "section": "Tests" },
+        { "type": "ci",       "section": "Continuous integration" },
+        { "type": "refactor", "section": "Refactoring" },
+        { "type": "style",    "section": "Style", "hidden": true },
+        { "type": "chore",    "section": "Chores", "hidden": true }
+      ],
       "include-component-in-tag": false,
       "extra-files": [
         {
