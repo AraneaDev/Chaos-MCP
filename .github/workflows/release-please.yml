@@ -32,7 +32,12 @@ jobs:
         id: release
         uses: googleapis/release-please-action@v5
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          # A Release PR opened with the built-in GITHUB_TOKEN arrives with no checks
+          # on it, because GitHub does not start workflows for that token, and main
+          # requires those checks. RELEASE_PLEASE_TOKEN raises the event as a real
+          # account so the Release PR gets its own CI. Without the secret this still
+          # works, but the Release PR then has to be closed and reopened once.
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
 
       # Everything below runs ONLY on the merge that cut a release. Because the
       # tag/release are made with GITHUB_TOKEN, no separate tag-triggered
