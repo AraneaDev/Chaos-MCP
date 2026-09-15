@@ -1,5 +1,11 @@
 {
   "version": 1,
+  "ignores": [
+    "scripts/meta-test.js",
+    "scripts/audit-self.js",
+    "scripts/update-parity-baseline.mjs",
+    "scripts/restamp-suppressions.mjs"
+  ],
   "boundaries": [
     { "name": "core", "path_prefix": "src/core" },
     { "name": "utils", "path_prefix": "src/utils" },
