@@ -1,0 +1,34 @@
+[
+  {
+    "diff": "--- src/notify.rs\n+++ delete ! in maybe_send\n@@ -3,17 +3,17 @@\n \n /// Fire a webhook notification for a decision, if the policy asks for one.\n ///\n /// Doctrine (same as previews): this layer must NEVER delay or break\n /// enforcement. Hard 3-second timeout, every error swallowed. Slack being\n /// down cannot make Termaxa hang or fail a decision that was already made.\n pub fn maybe_send(policy: &Policy, decision: &str, command: &str, reason: &str, source: &str) {\n     let Some(cfg) = &policy.notify else { return };\n-    if !cfg.on.iter().any(|d| d.eq_ignore_ascii_case(decision)) {\n+    if  /* ~ changed by cargo-mutants ~ */cfg.on.iter().any(|d| d.eq_ignore_ascii_case(decision)) {\n         return;\n     }\n     send(cfg, decision, command, reason, source);\n }\n \n fn send(cfg: &Notify, decision: &str, command: &str, reason: &str, source: &str) {\n     let emoji = match decision {\n         \"deny\" => \"🛑\",\n",
+    "file": "src/notify.rs",
+    "function": {
+      "function_name": "maybe_send",
+      "return_type": "",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 15
+        },
+        "start": {
+          "column": 1,
+          "line": 4
+        }
+      }
+    },
+    "genre": "UnaryOperator",
+    "name": "src/notify.rs:11:8: delete ! in maybe_send",
+    "package": "termaxa",
+    "replacement": "",
+    "span": {
+      "end": {
+        "column": 9,
+        "line": 11
+      },
+      "start": {
+        "column": 8,
+        "line": 11
+      }
+    }
+  }
+]

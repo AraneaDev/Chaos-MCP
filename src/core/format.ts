@@ -40,6 +40,7 @@ const CHANGES_CAP = 3;
 interface LineAcc {
   mutators: Record<string, number>;
   changes: Set<string>;
+  mutatorGenres: Record<string, string[]>;
 }
 
 /**
@@ -93,21 +94,25 @@ interface CompactedGroups {
   groups: LineGroup[];
   /** line → every distinct change string seen on it, before the display cap. */
   uncapped: Map<number, string[]>;
+  /** line → raw mutator → structured genres, kept out of rendered groups. */
+  genres: Map<number, Record<string, string[]>>;
 }
 
 /** Group accumulated line entries into sorted {line, mutators, changes?} groups. */
 function groupByLine(byLine: Map<number, LineAcc>): CompactedGroups {
   const uncapped = new Map<number, string[]>();
+  const genres = new Map<number, Record<string, string[]>>();
   const groups = [...byLine.entries()]
     .sort((a, b) => a[0] - b[0])
     .map(([line, acc]) => {
       const group: LineGroup = { line, mutators: acc.mutators };
+      if (Object.keys(acc.mutatorGenres).length > 0) genres.set(line, acc.mutatorGenres);
       if (acc.changes.size > 0) uncapped.set(line, [...acc.changes]);
       const changes = capChanges(acc.changes);
       if (changes) group.changes = changes;
       return group;
     });
-  return { groups, uncapped };
+  return { groups, uncapped, genres };
 }
 
 function compactSurvivors(result: MutationResult): {
@@ -130,10 +135,19 @@ function compactSurvivors(result: MutationResult): {
     // next to a live `.filter`), so reporting a bare line number would wrongly
     // imply the whole line is uncovered.
     const target = isNoCoverage(v) ? noCoverageByLine : survivorsByLine;
-    const acc = target.get(v.line) ?? { mutators: {}, changes: new Set<string>() };
+    const acc = target.get(v.line) ?? {
+      mutators: {},
+      changes: new Set<string>(),
+      mutatorGenres: {},
+    };
     acc.mutators[v.mutator] = (acc.mutators[v.mutator] ?? 0) + 1;
     const change = buildChange(v.original, v.mutated);
     if (change) acc.changes.add(change);
+    if (v.genre) {
+      const genres = acc.mutatorGenres[v.mutator] ?? [];
+      if (!genres.includes(v.genre)) genres.push(v.genre);
+      acc.mutatorGenres[v.mutator] = genres;
+    }
     target.set(v.line, acc);
   }
 
@@ -159,6 +173,7 @@ function enrichGroups(
   groups: LineGroup[],
   enrich: EnrichContext,
   uncapped: Map<number, string[]>,
+  genres: Map<number, Record<string, string[]>>,
 ): { groups: EnrichedGroup[]; worst: Severity; hasUnknown: boolean } {
   const enriched: EnrichedGroup[] = groups.map((g) => ({
     ...g,
@@ -170,6 +185,7 @@ function enrichGroups(
       // a caller ever builds groups without going through `compactSurvivors`.
       changes: uncapped.get(g.line) ?? g.changes,
       mutators: g.mutators,
+      mutatorGenres: genres.get(g.line),
       projectType: enrich.projectType,
       sourceLines: enrich.sourceLines,
     }),
@@ -308,8 +324,13 @@ function prepareGroups(result: MutationResult, opts: PrepareGroupsOpts): Prepare
   let worstSeverity: Severity | undefined;
   let enrichNote: string | undefined;
   if (enrich) {
-    const s = enrichGroups(survivors, enrich, compact.survivors.uncapped);
-    const n = enrichGroups(noCoverage, enrich, compact.noCoverage.uncapped);
+    const s = enrichGroups(survivors, enrich, compact.survivors.uncapped, compact.survivors.genres);
+    const n = enrichGroups(
+      noCoverage,
+      enrich,
+      compact.noCoverage.uncapped,
+      compact.noCoverage.genres,
+    );
     survivors = s.groups;
     noCoverage = n.groups;
     if (survivors.length > 0 || noCoverage.length > 0) {

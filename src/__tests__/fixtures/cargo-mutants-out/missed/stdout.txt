@@ -1,0 +1,5 @@
+Found 1 mutant to test
+ok       Unmutated baseline in 12s build + 0s test
+ INFO Auto-set test timeout to 20s
+MISSED   src/notify.rs:11:8: delete ! in maybe_send in 0s build + 0s test
+1 mutant tested in 13s: 1 missed

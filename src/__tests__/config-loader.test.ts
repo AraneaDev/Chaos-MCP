@@ -260,10 +260,12 @@ describe('loadConfig', () => {
 
   it('loads rust engine-specific config', () => {
     mockExistsSync.mockReturnValue(true);
-    mockReadFileSync.mockReturnValue(JSON.stringify({ rust: { timeoutMs: 600000 } }));
+    mockReadFileSync.mockReturnValue(
+      JSON.stringify({ rust: { timeoutMs: 600000, perMutantTimeoutMs: 15000 } }),
+    );
 
     const config = loadConfig('/tmp/config.json');
-    expect(config.rust).toEqual({ timeoutMs: 600000 });
+    expect(config.rust).toEqual({ timeoutMs: 600000, perMutantTimeoutMs: 15000 });
   });
 
   it('loads a config with both global and engine-specific overrides', () => {
@@ -877,6 +879,16 @@ describe('rust (cargo-mutants) config section', () => {
     const bad = validateConfig('/tmp/config.json');
     expect(bad.config.rust?.concurrency).toBeUndefined();
     expect(bad.warnings.some((w) => w.includes('rust.concurrency'))).toBe(true);
+  });
+
+  it('parses rust.perMutantTimeoutMs and drops non-positive values', () => {
+    mockReadFileSync.mockReturnValue(JSON.stringify({ rust: { perMutantTimeoutMs: 15000 } }));
+    expect(validateConfig('/tmp/config.json').config.rust?.perMutantTimeoutMs).toBe(15000);
+
+    mockReadFileSync.mockReturnValue(JSON.stringify({ rust: { perMutantTimeoutMs: 0 } }));
+    const invalid = validateConfig('/tmp/config.json');
+    expect(invalid.config.rust?.perMutantTimeoutMs).toBeUndefined();
+    expect(invalid.warnings.some((w) => w.includes('rust.perMutantTimeoutMs'))).toBe(true);
   });
 });
 

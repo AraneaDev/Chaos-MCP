@@ -1,0 +1,109 @@
+{
+  "outcomes": [
+    {
+      "scenario": "Baseline",
+      "summary": "Success",
+      "log_path": "log/baseline.log",
+      "diff_path": null,
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 12.20600845,
+          "process_status": "Success",
+          "argv": [
+            "/root/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=termaxa@0.15.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.101008874,
+          "process_status": "Success",
+          "argv": [
+            "/root/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=termaxa@0.15.0",
+            "__chaos_missing_test__"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/notify.rs:11:8: delete ! in maybe_send",
+          "package": "termaxa",
+          "file": "src/notify.rs",
+          "function": {
+            "function_name": "maybe_send",
+            "return_type": "",
+            "span": {
+              "start": {
+                "line": 4,
+                "column": 1
+              },
+              "end": {
+                "line": 15,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 11,
+              "column": 8
+            },
+            "end": {
+              "line": 11,
+              "column": 9
+            }
+          },
+          "replacement": "",
+          "genre": "UnaryOperator"
+        }
+      },
+      "summary": "MissedMutant",
+      "log_path": "log/src__notify.rs_line_11_col_8.log",
+      "diff_path": "diff/src__notify.rs_line_11_col_8.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.759661185,
+          "process_status": "Success",
+          "argv": [
+            "/root/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=termaxa@0.15.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 0.101507786,
+          "process_status": "Success",
+          "argv": [
+            "/root/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=termaxa@0.15.0",
+            "__chaos_missing_test__"
+          ]
+        }
+      ]
+    }
+  ],
+  "total_mutants": 1,
+  "missed": 1,
+  "caught": 0,
+  "timeout": 0,
+  "unviable": 0,
+  "success": 0,
+  "start_time": "2026-09-14T11:29:10.123449686Z",
+  "end_time": "2026-09-14T11:29:24.274934829Z",
+  "cargo_mutants_version": "27.1.0"
+}

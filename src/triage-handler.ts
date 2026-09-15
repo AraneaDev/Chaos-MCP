@@ -35,6 +35,8 @@ import {
   type TriageFileDeps,
   type TriageAuditOutcome,
 } from './triage/audit-one.js';
+import { auditTriageGroup, groupRows } from './triage/audit-group.js';
+import { planSweepUnits, type SweepUnit, type GroupCandidate } from './triage/grouping.js';
 import { AuditDeadline } from './utils/deadline.js';
 import {
   createResourceContext,
@@ -51,6 +53,7 @@ import {
   phpReuseKey,
   resolveMutationToolIdentity,
 } from './audit/audit-file.js';
+import { makeEngine } from './engines/registry.js';
 import { producePhpCoverage } from './triage/php-coverage.js';
 
 const DEFAULT_MAX_FILES = 25;
@@ -385,6 +388,25 @@ export async function handleTriageCall(
           .filter((t): t is SupportedProjectType => t !== null),
       ),
     );
+    const groupCandidates: GroupCandidate[] = files.map((file) => {
+      const target = file === files[0] ? primaryTarget : resolveAuditTargetIn(rootCwd, file);
+      const projectType = target?.projectType ?? 'unsupported';
+      const runner =
+        projectType === 'typescript'
+          ? (cfg.stryker?.testRunner ?? cfg.testRunner ?? target?.env.testRunner ?? 'command')
+          : (target?.env.testRunner ?? 'unknown');
+      return {
+        file,
+        workspaceRoot: target?.env.workspaceRoot ?? rootCwd,
+        projectType,
+        runner,
+      };
+    });
+    const groupingSupported =
+      typeof (makeEngine('typescript') as { runGroup?: unknown }).runGroup === 'function';
+    const sweepUnits = groupingSupported
+      ? planSweepUnits(groupCandidates)
+      : files.map((file): SweepUnit => ({ kind: 'single', file }));
     // The engine-worker cap this sweep would use with no memory pressure at
     // all. `undefined` when the pool is serial, matching the existing "no cap
     // needed for one file at a time" rule `buildPerFileArgs` already applies;
@@ -469,12 +491,13 @@ export async function handleTriageCall(
       // this same closure): `deadline.remainingMs` shrinks as the sweep
       // proceeds, and `AbortSignal.timeout` needs the CURRENT remaining
       // duration, not the one computed when the sweep started.
-      const admit = () => {
+      const admit = (unit: SweepUnit) => {
         const remainingMs = deadline.remainingMs(TRIAGE_CLEANUP_RESERVE_MS);
         if (remainingMs <= 0) return Promise.resolve('cancelled' as const);
         const deadlineSignal = AbortSignal.timeout(remainingMs);
         const signal = ctx?.signal ? AbortSignal.any([ctx.signal, deadlineSignal]) : deadlineSignal;
-        return resources.watchdog.admit(perFileCost, signal);
+        const cost = unit.kind === 'group' ? perFileCost * unit.files.length : perFileCost;
+        return resources.watchdog.admit(cost, signal);
       };
 
       // Governance lowers `poolSize` down to `resources.budget.fileConcurrency`
@@ -486,16 +509,59 @@ export async function handleTriageCall(
       // ranking. Read out with `Array.from` rather than `.map`: `.map` skips a
       // hole entirely (it never invokes the callback for an unassigned
       // index), which would leave the hole in the result too.
-      const rawOutcomes = await mapPool(
-        files,
+      const unitResults = await mapPool(
+        sweepUnits,
         resources.budget.fileConcurrency,
-        (file) => auditTriageFile(file, deps),
+        async (unit): Promise<TriageAuditOutcome[]> => {
+          if (unit.kind === 'single') return [await auditTriageFile(unit.file, deps)];
+          const grouped = await auditTriageGroup(unit, deps);
+          if (grouped.kind === 'split') {
+            const rows = groupRows(unit, grouped, deps);
+            return unit.files.map((file) => {
+              const row = rows.get(file);
+              if (!row) return { error: { file, error: 'Grouped result was missing a file row.' } };
+              deps.onProgress();
+              return { row };
+            });
+          }
+          // Containment is deliberately sequential. Each member now uses the
+          // existing single-file path and receives its own admission and
+          // watchdog charge. The group admission is released before these
+          // individual admissions can affect later work.
+          const fallback: TriageAuditOutcome[] = [];
+          for (const file of unit.files) {
+            if ((await admit({ kind: 'single', file })) === 'cancelled') {
+              fallback.push({ unaudited: file });
+              continue;
+            }
+            fallback.push(await auditTriageFile(file, deps));
+          }
+          return fallback;
+        },
         { admit },
       );
-      const outcomes: TriageAuditOutcome[] = Array.from(
-        { length: files.length },
-        (_, i) => rawOutcomes[i] ?? { unaudited: files[i] },
-      );
+      const outcomes: TriageAuditOutcome[] = Array.from({ length: files.length }, () => ({
+        unaudited: '',
+      }));
+      let outcomeIndex = 0;
+      for (const unit of sweepUnits) {
+        const result = unitResults[sweepUnits.indexOf(unit)];
+        if (result === undefined) {
+          for (const file of unit.kind === 'single' ? [unit.file] : unit.files) {
+            outcomes[outcomeIndex++] = { unaudited: file };
+          }
+          continue;
+        }
+        if (result instanceof Error) {
+          for (const file of unit.kind === 'single' ? [unit.file] : unit.files) {
+            outcomes[outcomeIndex++] = {
+              error: { file, error: result?.message ?? 'Unknown error' },
+            };
+          }
+          continue;
+        }
+        for (const outcome of result) outcomes[outcomeIndex++] = outcome;
+      }
 
       // Defensive post-run cancellation check (Finding 6), the sibling of the one
       // in estimate-handler.ts.
@@ -533,7 +599,8 @@ export async function handleTriageCall(
       // `items.length` (utils/pool.ts), so a one-file sweep runs serially
       // even when the budget says 2, and there is still no contention to
       // blame a baseline failure on.
-      const firstPassWasParallel = Math.min(files.length, resources.budget.fileConcurrency) > 1;
+      const firstPassWasParallel =
+        Math.min(sweepUnits.length, resources.budget.fileConcurrency) > 1;
       const retryTargets: RetryTarget[] = outcomes.flatMap((outcome, index): RetryTarget[] => {
         if ('exhausted' in outcome) {
           return [{ file: files[index], index, reason: 'exhausted' }];
@@ -567,9 +634,9 @@ export async function handleTriageCall(
         // eslint-disable-next-line @typescript-eslint/no-empty-function
         const retryDeps: TriageFileDeps = { ...deps, onProgress: () => {} };
         const retried = await mapPool(
-          retryTargets.map((t) => t.file),
+          retryTargets.map((t) => ({ kind: 'single' as const, file: t.file })),
           1,
-          (file) => auditTriageFile(file, retryDeps),
+          (unit) => auditTriageFile(unit.file, retryDeps),
           { admit },
         );
         retryTargets.forEach((target, i) => {
@@ -586,6 +653,7 @@ export async function handleTriageCall(
           // that instead exhausts memory or runs unaudited falls through to
           // the generic assignment below and reports as that outcome, and a
           // retry that SUCCEEDS falls through too and is scored normally.
+          if (outcome instanceof Error) return;
           if (target.reason === 'baseline-failure' && 'error' in outcome) {
             outcomes[target.index] = {
               error: {

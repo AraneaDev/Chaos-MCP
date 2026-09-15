@@ -10,6 +10,7 @@ import {
   resolveAuditTimeoutMs,
   isPrebuildAllowed,
   resolveGatedPrebuild,
+  ignoredOptionsFor,
 } from '../audit/run-options.js';
 import { auditFile } from '../audit/audit-file.js';
 import {
@@ -514,6 +515,21 @@ describe('buildRunOptions', () => {
         .perMutantTimeoutMs,
     ).toBe(20);
     expect(buildRunOptions({}, {}, env(), '/sb', 'typescript').perMutantTimeoutMs).toBeUndefined();
+    expect(
+      buildRunOptions(
+        {},
+        { rust: { perMutantTimeoutMs: 30 } },
+        env({ projectType: 'rust' }),
+        '/sb',
+        'rust',
+      ).perMutantTimeoutMs,
+    ).toBe(30);
+  });
+
+  it('does not report Rust timeout or dry-run options as ignored', () => {
+    expect(
+      ignoredOptionsFor('rust', { perMutantTimeoutMs: 5000, dryRun: true, incremental: true }),
+    ).toEqual(['incremental']);
   });
 
   it('selects the engine-specific config section by project type', () => {
@@ -582,11 +598,9 @@ describe('resolvePrebuildCommand', () => {
     ).toBeNull();
   });
 
-  it('returns "cargo check" for Rust when Cargo.toml exists', () => {
+  it('does not add a cold Rust prebuild when Cargo.toml exists', () => {
     mockExistsSync.mockImplementation((p) => String(p).endsWith('Cargo.toml'));
-    expect(resolvePrebuildCommand(undefined, env({ projectType: 'rust' }), 'rust')).toBe(
-      'cargo check',
-    );
+    expect(resolvePrebuildCommand(undefined, env({ projectType: 'rust' }), 'rust')).toBeNull();
   });
 
   it('returns null for a plain TypeScript or pip Python project', () => {
@@ -644,11 +658,11 @@ describe('resolveGatedPrebuild — explicit-argument extraction', () => {
     expect(res.ok).toBe(false);
   });
 
-  it('does NOT gate the registry auto-prebuild, which is not caller-supplied', () => {
+  it('does not gate a removed Rust registry prebuild', () => {
     mockExistsSync.mockImplementation((p) => String(p).endsWith('Cargo.toml'));
     expect(resolveGatedPrebuild({}, env({ projectType: 'rust' }), 'rust', {})).toEqual({
       ok: true,
-      prebuildCmd: 'cargo check',
+      prebuildCmd: null,
     });
   });
 });

@@ -43,7 +43,9 @@ interface CosmicRayMutationSpec {
  * falls back, which loses precision but does not collide across operators/lines
  * the way a fully-empty record does.
  */
-function readMutationSpec(source: unknown): { line: number; operator: string } | undefined {
+function readMutationSpec(
+  source: unknown,
+): { line: number; operator: string; column?: number } | undefined {
   if (typeof source !== 'object' || source === null) return undefined;
   const spec = source as CosmicRayMutationSpec;
   const operator = typeof spec.operator_name === 'string' ? spec.operator_name : undefined;
@@ -51,8 +53,18 @@ function readMutationSpec(source: unknown): { line: number; operator: string } |
     Array.isArray(spec.start_pos) && typeof spec.start_pos[0] === 'number'
       ? spec.start_pos[0]
       : undefined;
+  // parso's start_pos is 1-based for lines and 0-based for columns. Rust's
+  // cargo-mutants spans are 1-based for both, so normalize Python columns to
+  // the same display base. A missing column remains missing.
+  const column =
+    Array.isArray(spec.start_pos) &&
+    typeof spec.start_pos[1] === 'number' &&
+    Number.isInteger(spec.start_pos[1]) &&
+    spec.start_pos[1] >= 0
+      ? spec.start_pos[1] + 1
+      : undefined;
   if (operator === undefined && line === undefined) return undefined;
-  return { line: line ?? 0, operator: operator ?? 'Mutation' };
+  return { line: line ?? 0, operator: operator ?? 'Mutation', column };
 }
 
 /**
@@ -68,7 +80,11 @@ function readMutationSpec(source: unknown): { line: number; operator: string } |
  *
  * @throws {CosmicRayDumpShapeError} when neither shape is present.
  */
-function resolveSurvivorLocation(item: unknown): { line: number; operator: string } {
+function resolveSurvivorLocation(item: unknown): {
+  line: number;
+  operator: string;
+  column?: number;
+} {
   const nested = Array.isArray((item as { mutations?: unknown })?.mutations)
     ? ((item as { mutations: unknown[] }).mutations[0] as unknown)
     : undefined;
@@ -147,7 +163,7 @@ export function parseCosmicRayDump(
       killed++;
     } else if (outcome === 'survived') {
       survived++;
-      const { line, operator } = resolveSurvivorLocation(item);
+      const { line, operator, column } = resolveSurvivorLocation(item);
       const { original, mutated } = extractDiffChange(result.diff ?? '');
       const vuln: Vulnerability = {
         line,
@@ -159,6 +175,7 @@ export function parseCosmicRayDump(
       };
       if (original !== undefined) vuln.original = original;
       if (mutated !== undefined) vuln.mutated = mutated;
+      if (column !== undefined) vuln.column = column;
       vulnerabilities.push(vuln);
     } else if (outcome === 'incompetent') {
       // Uncompilable mutation — excluded from the denominator, not a test gap.

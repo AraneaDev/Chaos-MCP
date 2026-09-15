@@ -40,6 +40,13 @@ export interface Vulnerability {
   original?: string;
   /** Replacement code or mutation description (best-effort; may be absent). */
   mutated?: string;
+  /**
+   * Display-only 1-based column. Engines normalize their native positions to
+   * this base; it is deliberately excluded from suppression identity.
+   */
+  column?: number;
+  /** Structured engine genre used internally for canonical mutator enrichment. */
+  genre?: string;
 }
 
 /**
@@ -294,8 +301,9 @@ export interface RunOptions {
    * If true, run only the dry-run phase (no mutation testing) to validate
    * that the test suite passes before introducing mutants.
    *
-   * **Supported by:** StrykerJS (via `--dryRun` / exit after dry-run).
-   * **Ignored by:** Other engines.
+   * **Supported by:** StrykerJS (via `--dryRun`) and cargo-mutants (via
+   * `--list`, which enumerates mutants without running the suite).
+   * **Ignored by:** cosmic-ray and Infection.
    */
   dryRun?: boolean;
 
@@ -341,8 +349,9 @@ export interface RunOptions {
    * Per-mutant timeout in milliseconds — how long an individual mutant's
    * test run is allowed before being considered a timeout (and killed).
    *
-   * **Supported by:** StrykerJS (via `--timeoutMs`).
-   * **Ignored by:** cosmic-ray, cargo-mutants.
+   * **Supported by:** StrykerJS (via `--timeoutMs`) and cargo-mutants (via
+   * `--timeout`, converted to whole seconds).
+   * **Ignored by:** cosmic-ray and Infection.
    *
    * Distinct from {@link timeoutMs} (total run cap). Use this to prevent
    * a single slow mutant from hanging the entire mutation run.

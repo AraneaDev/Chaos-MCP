@@ -292,9 +292,10 @@ export function canonicalizeMutator(
   rawMutator: string,
   projectType: SupportedProjectType,
   changeText?: string,
+  genre?: string,
 ): string {
   const category =
-    ENGINE_REGISTRY[projectType]?.canonicalizeMutator?.(rawMutator, changeText) ?? 'unknown';
+    ENGINE_REGISTRY[projectType]?.canonicalizeMutator?.(rawMutator, changeText, genre) ?? 'unknown';
   // `Object.hasOwn`, not `in`: `'constructor' in MUTATOR_SEMANTICS` is TRUE
   // through the prototype chain, and the lookup then yields `Object` — an
   // object with no `.severity`, which propagates `undefined` into
@@ -337,6 +338,8 @@ export interface EnrichGroupInput {
    * prefer that shape for any engine that can.
    */
   changes?: string[];
+  /** Structured per-mutator genres, when an engine provides them. */
+  mutatorGenres?: Record<string, string[]>;
   projectType: SupportedProjectType;
   sourceLines?: string[];
 }
@@ -358,16 +361,19 @@ export function enrichGroup(input: EnrichGroupInput): Enrichment {
   const changeText = input.changes?.join(' ');
   let best: { category: string; semantic: MutatorSemantic } | undefined;
   for (const rawMutator of Object.keys(input.mutators)) {
-    const category = canonicalizeMutator(rawMutator, input.projectType, changeText);
-    // `Object.hasOwn` before the read: a category of `'constructor'` (or
-    // `'toString'`) resolves through the prototype chain to a truthy value that
-    // has no `.severity`, so `!semantic` would not reject it and the group would
-    // ship with `severity: undefined` — dropped by JSON.stringify while the
-    // outputSchema declares it present (audit: prototype-chain lookup).
-    if (!Object.hasOwn(MUTATOR_SEMANTICS, category)) continue;
-    const semantic = MUTATOR_SEMANTICS[category];
-    if (!best || SEVERITY_RANK[semantic.severity] > SEVERITY_RANK[best.semantic.severity]) {
-      best = { category, semantic };
+    const genres = input.mutatorGenres?.[rawMutator] ?? [undefined];
+    for (const genre of genres) {
+      const category = canonicalizeMutator(rawMutator, input.projectType, changeText, genre);
+      // `Object.hasOwn` before the read: a category of `'constructor'` (or
+      // `'toString'`) resolves through the prototype chain to a truthy value that
+      // has no `.severity`, so `!semantic` would not reject it and the group would
+      // ship with `severity: undefined` - dropped by JSON.stringify while the
+      // outputSchema declares it present (audit: prototype-chain lookup).
+      if (!Object.hasOwn(MUTATOR_SEMANTICS, category)) continue;
+      const semantic = MUTATOR_SEMANTICS[category];
+      if (!best || SEVERITY_RANK[semantic.severity] > SEVERITY_RANK[best.semantic.severity]) {
+        best = { category, semantic };
+      }
     }
   }
 

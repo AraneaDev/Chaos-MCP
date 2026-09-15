@@ -1,0 +1,556 @@
+{
+  "outcomes": [
+    {
+      "scenario": "Baseline",
+      "summary": "Success",
+      "log_path": "log/baseline.log",
+      "diff_path": null,
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 17.634489216,
+          "process_status": "Success",
+          "argv": [
+            "/root/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=termaxa@0.15.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 9.221278821,
+          "process_status": "Success",
+          "argv": [
+            "/root/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=termaxa@0.15.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/notify.rs:10:5: replace maybe_send with ()",
+          "package": "termaxa",
+          "file": "src/notify.rs",
+          "function": {
+            "function_name": "maybe_send",
+            "return_type": "",
+            "span": {
+              "start": {
+                "line": 4,
+                "column": 1
+              },
+              "end": {
+                "line": 15,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 10,
+              "column": 5
+            },
+            "end": {
+              "line": 14,
+              "column": 50
+            }
+          },
+          "replacement": "()",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "Timeout",
+      "log_path": "log/src__notify.rs_line_10_col_5.log",
+      "diff_path": "diff/src__notify.rs_line_10_col_5.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 4.380320964,
+          "process_status": "Success",
+          "argv": [
+            "/root/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=termaxa@0.15.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 47.036817664,
+          "process_status": "Timeout",
+          "argv": [
+            "/root/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=termaxa@0.15.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/notify.rs:11:8: delete ! in maybe_send",
+          "package": "termaxa",
+          "file": "src/notify.rs",
+          "function": {
+            "function_name": "maybe_send",
+            "return_type": "",
+            "span": {
+              "start": {
+                "line": 4,
+                "column": 1
+              },
+              "end": {
+                "line": 15,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 11,
+              "column": 8
+            },
+            "end": {
+              "line": 11,
+              "column": 9
+            }
+          },
+          "replacement": "",
+          "genre": "UnaryOperator"
+        }
+      },
+      "summary": "Timeout",
+      "log_path": "log/src__notify.rs_line_11_col_8.log",
+      "diff_path": "diff/src__notify.rs_line_11_col_8.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 22.36899505,
+          "process_status": "Success",
+          "argv": [
+            "/root/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=termaxa@0.15.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 47.053297864,
+          "process_status": "Timeout",
+          "argv": [
+            "/root/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=termaxa@0.15.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/notify.rs:19:9: delete match arm \"deny\" in send",
+          "package": "termaxa",
+          "file": "src/notify.rs",
+          "function": {
+            "function_name": "send",
+            "return_type": "",
+            "span": {
+              "start": {
+                "line": 17,
+                "column": 1
+              },
+              "end": {
+                "line": 45,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 19,
+              "column": 9
+            },
+            "end": {
+              "line": 19,
+              "column": 23
+            }
+          },
+          "replacement": "",
+          "genre": "MatchArm"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__notify.rs_line_19_col_9.log",
+      "diff_path": "diff/src__notify.rs_line_19_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 1.156595591,
+          "process_status": "Success",
+          "argv": [
+            "/root/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=termaxa@0.15.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 2.254539255,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/root/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=termaxa@0.15.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/notify.rs:20:9: delete match arm \"ask\" in send",
+          "package": "termaxa",
+          "file": "src/notify.rs",
+          "function": {
+            "function_name": "send",
+            "return_type": "",
+            "span": {
+              "start": {
+                "line": 17,
+                "column": 1
+              },
+              "end": {
+                "line": 45,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 20,
+              "column": 9
+            },
+            "end": {
+              "line": 20,
+              "column": 23
+            }
+          },
+          "replacement": "",
+          "genre": "MatchArm"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__notify.rs_line_20_col_9.log",
+      "diff_path": "diff/src__notify.rs_line_20_col_9.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.854417967,
+          "process_status": "Success",
+          "argv": [
+            "/root/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=termaxa@0.15.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 2.305751882,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/root/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=termaxa@0.15.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/notify.rs:18:5: replace send with ()",
+          "package": "termaxa",
+          "file": "src/notify.rs",
+          "function": {
+            "function_name": "send",
+            "return_type": "",
+            "span": {
+              "start": {
+                "line": 17,
+                "column": 1
+              },
+              "end": {
+                "line": 45,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 18,
+              "column": 5
+            },
+            "end": {
+              "line": 44,
+              "column": 29
+            }
+          },
+          "replacement": "()",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "Timeout",
+      "log_path": "log/src__notify.rs_line_18_col_5.log",
+      "diff_path": "diff/src__notify.rs_line_18_col_5.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 1.909799732,
+          "process_status": "Success",
+          "argv": [
+            "/root/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=termaxa@0.15.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 47.054423394,
+          "process_status": "Timeout",
+          "argv": [
+            "/root/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=termaxa@0.15.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/notify.rs:53:5: replace test -> anyhow::Result<i32> with Ok(1)",
+          "package": "termaxa",
+          "file": "src/notify.rs",
+          "function": {
+            "function_name": "test",
+            "return_type": "-> anyhow::Result<i32>",
+            "span": {
+              "start": {
+                "line": 47,
+                "column": 1
+              },
+              "end": {
+                "line": 90,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 53,
+              "column": 5
+            },
+            "end": {
+              "line": 89,
+              "column": 6
+            }
+          },
+          "replacement": "Ok(1)",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__notify.rs_line_53_col_5_001.log",
+      "diff_path": "diff/src__notify.rs_line_53_col_5_001.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 1.256737955,
+          "process_status": "Success",
+          "argv": [
+            "/root/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=termaxa@0.15.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 2.254996224,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/root/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=termaxa@0.15.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/notify.rs:53:5: replace test -> anyhow::Result<i32> with Ok(-1)",
+          "package": "termaxa",
+          "file": "src/notify.rs",
+          "function": {
+            "function_name": "test",
+            "return_type": "-> anyhow::Result<i32>",
+            "span": {
+              "start": {
+                "line": 47,
+                "column": 1
+              },
+              "end": {
+                "line": 90,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 53,
+              "column": 5
+            },
+            "end": {
+              "line": 89,
+              "column": 6
+            }
+          },
+          "replacement": "Ok(-1)",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "CaughtMutant",
+      "log_path": "log/src__notify.rs_line_53_col_5_002.log",
+      "diff_path": "diff/src__notify.rs_line_53_col_5_002.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.860891166,
+          "process_status": "Success",
+          "argv": [
+            "/root/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=termaxa@0.15.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 2.256364082,
+          "process_status": {
+            "Failure": 101
+          },
+          "argv": [
+            "/root/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=termaxa@0.15.0"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": {
+        "Mutant": {
+          "name": "src/notify.rs:53:5: replace test -> anyhow::Result<i32> with Ok(0)",
+          "package": "termaxa",
+          "file": "src/notify.rs",
+          "function": {
+            "function_name": "test",
+            "return_type": "-> anyhow::Result<i32>",
+            "span": {
+              "start": {
+                "line": 47,
+                "column": 1
+              },
+              "end": {
+                "line": 90,
+                "column": 2
+              }
+            }
+          },
+          "span": {
+            "start": {
+              "line": 53,
+              "column": 5
+            },
+            "end": {
+              "line": 89,
+              "column": 6
+            }
+          },
+          "replacement": "Ok(0)",
+          "genre": "FnValue"
+        }
+      },
+      "summary": "Timeout",
+      "log_path": "log/src__notify.rs_line_53_col_5.log",
+      "diff_path": "diff/src__notify.rs_line_53_col_5.diff",
+      "phase_results": [
+        {
+          "phase": "Build",
+          "duration": 0.953370129,
+          "process_status": "Success",
+          "argv": [
+            "/root/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--no-run",
+            "--verbose",
+            "--package=termaxa@0.15.0"
+          ]
+        },
+        {
+          "phase": "Test",
+          "duration": 47.049742625,
+          "process_status": "Timeout",
+          "argv": [
+            "/root/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+            "test",
+            "--verbose",
+            "--package=termaxa@0.15.0"
+          ]
+        }
+      ]
+    }
+  ],
+  "total_mutants": 8,
+  "missed": 0,
+  "caught": 4,
+  "timeout": 4,
+  "unviable": 0,
+  "success": 0,
+  "start_time": "2026-09-14T11:11:38.525526561Z",
+  "end_time": "2026-09-14T11:14:13.695266154Z",
+  "cargo_mutants_version": "27.1.0"
+}
