@@ -988,6 +988,10 @@ The suite runs on every push/PR to `main` via [CI](./.github/workflows/ci.yml) (
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for detailed development setup and contribution guidelines.
 
+## Further reading
+
+- [AI writes the tests. Mutation testing checks if they work.](https://tim-schipper.nl/en/blog/ai-generated-tests-mutation-testing)
+
 ## License
 
 MIT. See [LICENSE](LICENSE) for details.
@@ -1003,4 +1007,5 @@ MIT. See [LICENSE](LICENSE) for details.
 
 ---
 
-Built by [Aranea Development](https://aranea-development.nl).
+Built by [Tim Schipper](https://tim-schipper.nl/en) and released as open source under
+[Aranea Development](https://aranea-development.nl).
