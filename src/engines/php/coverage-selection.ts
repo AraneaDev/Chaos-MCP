@@ -22,7 +22,7 @@ export function parsePhpCoverageSelection(
     const option = args[index];
     if (SELECTOR_OPTIONS.has(option)) {
       const value = args[index + 1];
-      if (value === undefined || value === '' || value.startsWith('-')) {
+      if (value === undefined || value === '') {
         throw new Error(`PHP coverage selector ${option} is missing a value.`);
       }
       index += 2;

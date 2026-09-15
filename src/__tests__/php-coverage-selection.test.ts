@@ -16,6 +16,14 @@ describe('parsePhpCoverageSelection', () => {
     expect(selection.args).toEqual(['--testsuite', 'unit']);
   });
 
+  it('accepts a leading-hyphen value in separated form', () => {
+    expect(parsePhpCoverageSelection('--filter -legacy')).toEqual({
+      raw: '--filter -legacy',
+      args: ['--filter', '-legacy'],
+      scope: 'selected',
+    });
+  });
+
   it.each(['--filter=CalculatorTest', '--group unit', '--exclude-group slow'])(
     'accepts %s',
     (raw) => {
