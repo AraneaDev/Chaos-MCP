@@ -412,6 +412,14 @@ export interface RunOptions {
   phpThreads?: string;
 
   /**
+   * Narrowing options forwarded to the PHP test framework only while Infection
+   * selects tests for its coverage pass.
+   *
+   * **PHP (Infection) only.**
+   */
+  phpCoverageTestFrameworkOptions?: string;
+
+  /**
    * Extra options forwarded to Infection's PHP test framework via
    * `--test-framework-options` (e.g. "--testsuite=unit").
    *

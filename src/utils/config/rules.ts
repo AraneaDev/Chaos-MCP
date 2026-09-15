@@ -1,5 +1,6 @@
 import { MAX_TIMEOUT_MS } from '../constants.js';
 import type { SupportedProjectType } from '../project-detector.js';
+import { parsePhpCoverageSelection } from '../../engines/php/coverage-selection.js';
 import type { EngineConfigKey } from './types.js';
 
 /**
@@ -252,6 +253,22 @@ const dependenciesRule: FieldRule = {
       : `must be one of "link-entries", "copy", or "share", got ${JSON.stringify(v)}`,
 };
 
+const coverageTestFrameworkOptionsRule: FieldRule = {
+  key: 'coverageTestFrameworkOptions',
+  check: (value) => {
+    if (typeof value !== 'string') return false;
+    try {
+      return parsePhpCoverageSelection(value) !== undefined;
+    } catch {
+      return false;
+    }
+  },
+  describe: (value) => {
+    if (coverageTestFrameworkOptionsRule.check(value)) return undefined;
+    return 'must be a string containing only the narrowing controls --testsuite, --filter, --group, or --exclude-group';
+  },
+};
+
 /**
  * The `resources.watchdog` / `resources.admissionFloorBytes` /
  * `resources.criticalFloorBytes` rules, shared verbatim by
@@ -376,6 +393,7 @@ export const SECTION_FIELD_RULES: Readonly<Record<string, FieldRule>> = {
     // HISTORICAL GAP: `""` is dropped by the parser but reported as valid.
     describe: (v) => (typeof v !== 'string' ? `must be a string, got ${typeof v}` : undefined),
   },
+  coverageTestFrameworkOptions: coverageTestFrameworkOptionsRule,
   onlyCoveringTestCases: {
     key: 'onlyCoveringTestCases',
     check: (v) => typeof v === 'boolean',
@@ -609,6 +627,7 @@ export const KNOWN_INFECTION_KEYS = new Set([
   'timeoutMs',
   'threads',
   'testFrameworkOptions',
+  'coverageTestFrameworkOptions',
   'onlyCoveringTestCases',
 ]);
 

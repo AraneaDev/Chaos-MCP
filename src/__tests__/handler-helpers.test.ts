@@ -348,6 +348,24 @@ describe('buildRunOptions', () => {
     ]);
   });
 
+  it('keeps PHP coverage selection separate from mutation test framework options', () => {
+    const options = buildRunOptions(
+      {},
+      {
+        infection: {
+          coverageTestFrameworkOptions: '--testsuite=unit',
+          testFrameworkOptions: '--filter=MutationTests',
+        },
+      },
+      env({ projectType: 'php', testRunner: 'phpunit' }),
+      '/sb',
+      'php',
+    );
+
+    expect(options.phpCoverageTestFrameworkOptions).toBe('--testsuite=unit');
+    expect(options.phpTestFrameworkOptions).toBe('--filter=MutationTests');
+  });
+
   it('does not invent a scoped command for native or non-Vitest runners', () => {
     expect(
       buildRunOptions(
