@@ -14,6 +14,7 @@ on:
       - '**/*.test.*'
       - '**/*.spec.*'
       - '.github/**'
+      - 'release-please-config.json'
   # release-please only ever runs on a push to main, so a release PR that goes
   # stale, or a run that failed, has no way back without a new commit. This
   # gives it one.
