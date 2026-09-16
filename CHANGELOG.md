@@ -2,6 +2,13 @@
 
 All notable changes to Chaos-MCP are documented in this file.
 
+## [5.1.1](https://github.com/AraneaDev/Chaos-MCP/compare/v5.1.0...v5.1.1) (2026-09-16)
+
+
+### Continuous integration
+
+* **release:** allow Release Please to be run by hand ([#90](https://github.com/AraneaDev/Chaos-MCP/issues/90)) ([664f876](https://github.com/AraneaDev/Chaos-MCP/commit/664f8764c27640ccda7e9b3bd485560a30e2e46e))
+
 ## [5.1.0](https://github.com/AraneaDev/Chaos-MCP/compare/v5.0.3...v5.1.0) (2026-09-16)
 
 
