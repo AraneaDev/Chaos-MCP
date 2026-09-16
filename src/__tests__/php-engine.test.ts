@@ -15,6 +15,16 @@ vi.mock('../utils/logger.js', () => ({
   // in parseInfectionJsonLog would write to the runner's stderr unmocked.
   warn: vi.fn(),
 }));
+vi.mock('../utils/reuse/store.js', async () => {
+  const actual =
+    await vi.importActual<typeof import('../utils/reuse/store.js')>('../utils/reuse/store.js');
+  return {
+    ...actual,
+    harvestArtefact: vi.fn(),
+    invalidateArtefact: vi.fn(),
+    seedArtefact: vi.fn(),
+  };
+});
 
 vi.mock('fs', async () => {
   const actual = await vi.importActual<typeof import('fs')>('fs');
@@ -31,6 +41,7 @@ vi.mock('fs', async () => {
 import { existsSync, writeFileSync, readFileSync, mkdirSync, rmSync } from 'fs';
 import { invokeMutationTool, MutationToolStartupError } from '../utils/exec-classify.js';
 import { ExecFailureError } from '../utils/exec-error.js';
+import { seedArtefact } from '../utils/reuse/store.js';
 import {
   PhpEngine,
   parseInfectionJsonLog,
@@ -48,6 +59,7 @@ const mockWrite = vi.mocked(writeFileSync);
 const mockRead = vi.mocked(readFileSync);
 const mockMkdir = vi.mocked(mkdirSync);
 const mockRm = vi.mocked(rmSync);
+const mockSeed = vi.mocked(seedArtefact);
 
 // A minimal Infection JSON log: 3 killed, 1 timed-out, 1 escaped → killed 4, survived 1.
 const SAMPLE_LOG = JSON.stringify({
@@ -70,6 +82,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockExists.mockReturnValue(false);
   mockWrite.mockReturnValue(undefined);
+  mockSeed.mockReturnValue(false);
 });
 
 describe('phpunitFailsOnWarning', () => {
@@ -1232,6 +1245,76 @@ describe('PhpEngine.run', () => {
     await engine.run('src/Calculator.php', { workDir: '/sb' });
     const args = mockInvoke.mock.calls[0][2] as string[];
     expect(args.some((a) => a.startsWith('--test-framework-options='))).toBe(false);
+  });
+
+  it('runs selected coverage before Infection and keeps mutation options independent', async () => {
+    mockExists.mockImplementation((p) => String(p).endsWith('chaos-infection-log.json'));
+    mockRead.mockImplementation((p: unknown) =>
+      String(p).endsWith('junit.xml') ? '<testsuites tests="1" />' : SAMPLE_LOG,
+    );
+    mockInvoke.mockResolvedValue({ stdout: '', stderr: '', exit: 0, signal: null });
+
+    const result = await new PhpEngine().run('src/Calculator.php', {
+      workDir: '/sb',
+      phpCoverageTestFrameworkOptions: '--testsuite=unit',
+      phpTestFrameworkOptions: '--testsuite=mutation',
+    });
+
+    expect(mockInvoke).toHaveBeenCalledTimes(2);
+    const coverageArgs = mockInvoke.mock.calls[0][2] as string[];
+    expect(coverageArgs).toContain('--testsuite=unit');
+    expect(coverageArgs).not.toContain('--test-framework-options=--testsuite=mutation');
+    const mutationArgs = mockInvoke.mock.calls[1][2] as string[];
+    expect(mutationArgs).toContain('--test-framework-options=--testsuite=mutation');
+    expect(mutationArgs).not.toContain('--testsuite=unit');
+    expect(result).toMatchObject({
+      coverageScope: 'selected',
+      coverageNote: 'Coverage was generated from explicitly selected PHPUnit tests.',
+    });
+  });
+
+  it('reuses matching selected coverage instead of regenerating it', async () => {
+    mockSeed.mockReturnValue(true);
+    mockExists.mockImplementation((p) => String(p).endsWith('chaos-infection-log.json'));
+    mockRead.mockReturnValue(SAMPLE_LOG);
+    mockInvoke.mockResolvedValue({ stdout: '', stderr: '', exit: 0, signal: null });
+
+    const result = await new PhpEngine().run('src/Calculator.php', {
+      workDir: '/sb',
+      timeoutMs: 1_000,
+      phpCoverageTestFrameworkOptions: '--testsuite=unit',
+      reuse: {
+        key: { workspaceRoot: '/project', engine: 'php', target: '.', kind: 'coverage' },
+        fingerprint: 'fp',
+      },
+    });
+
+    expect(mockInvoke).toHaveBeenCalledTimes(1);
+    expect(mockInvoke.mock.calls[0][1]).toBe('infection');
+    expect(result.coverageScope).toBe('selected');
+  });
+
+  it('shares the timeout budget between selected coverage and mutation', async () => {
+    mockExists.mockImplementation((p) => String(p).endsWith('chaos-infection-log.json'));
+    mockRead.mockImplementation((p: unknown) =>
+      String(p).endsWith('junit.xml') ? '<testsuites tests="1" />' : SAMPLE_LOG,
+    );
+    mockInvoke.mockResolvedValue({ stdout: '', stderr: '', exit: 0, signal: null });
+    const now = vi.spyOn(Date, 'now');
+    now.mockReturnValueOnce(1_000).mockReturnValueOnce(1_000).mockReturnValueOnce(1_050);
+
+    try {
+      await new PhpEngine().run('src/Calculator.php', {
+        workDir: '/sb',
+        timeoutMs: 1_000,
+        phpCoverageTestFrameworkOptions: '--testsuite=unit',
+      });
+    } finally {
+      now.mockRestore();
+    }
+
+    expect(mockInvoke.mock.calls[0][3]?.timeoutMs).toBe(1_000);
+    expect(mockInvoke.mock.calls[1][3]?.timeoutMs).toBe(950);
   });
 
   it('passes --only-covering-test-cases by default', async () => {

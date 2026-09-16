@@ -338,6 +338,7 @@ export function buildRunOptions(
     // PHP (Infection) only: worker count + test-framework passthrough, sourced
     // from the infection config section; ignored by the other engines.
     phpThreads: cfg.infection?.threads !== undefined ? String(cfg.infection.threads) : undefined,
+    phpCoverageTestFrameworkOptions: cfg.infection?.coverageTestFrameworkOptions,
     phpTestFrameworkOptions: cfg.infection?.testFrameworkOptions,
     phpOnlyCoveringTestCases: cfg.infection?.onlyCoveringTestCases,
     // Memory-budget caps for the mutation tool's OWN inner worker pool, built by

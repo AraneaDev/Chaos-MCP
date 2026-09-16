@@ -231,6 +231,17 @@ describe('TOOL_DEFINITION phase-1 additions', () => {
       enum: ['time_budget_exhausted'],
     });
   });
+
+  it('fully types PHP coverage metadata as optional output fields', () => {
+    const props = TOOL_DEFINITION.outputSchema?.properties as Record<string, unknown>;
+    expect(props.coverageScope).toEqual({
+      type: 'string',
+      enum: ['project', 'selected'],
+    });
+    expect(props.coverageNote).toEqual({ type: 'string' });
+    const required = (TOOL_DEFINITION.outputSchema as unknown as { required?: string[] }).required;
+    expect(required ?? []).not.toContain('coverageScope');
+  });
 });
 
 describe('TOOL_DEFINITION phase-3 additions', () => {
@@ -253,6 +264,17 @@ describe('TOOL_DEFINITION phase-3 additions', () => {
     };
     expect(ranking.items?.properties?.runId).toBeDefined();
     expect(ranking.items?.properties?.suppressedCount).toBeDefined();
+  });
+
+  it('triage ranking items expose PHP coverage metadata', () => {
+    const ranking = (TRIAGE_TOOL_DEFINITION.outputSchema?.properties?.ranking ?? {}) as {
+      items?: { properties?: Record<string, unknown> };
+    };
+    expect(ranking.items?.properties?.coverageScope).toEqual({
+      type: 'string',
+      enum: ['project', 'selected'],
+    });
+    expect(ranking.items?.properties?.coverageNote).toEqual({ type: 'string' });
   });
 });
 
@@ -491,6 +513,8 @@ describe('audit outputSchema ↔ ResultPayload parity', () => {
     noCoverageFiltered: true,
     scopeNote: true,
     fidelityNote: true,
+    coverageScope: true,
+    coverageNote: true,
     enrichNote: true,
     note: true,
     runId: true,

@@ -12,7 +12,7 @@
  * The helpers are re-exported here because that is the surface the test suite
  * already imports; the split moved where they live, not what the module offers.
  */
-import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { BaseEngine, RunOptions, MutationResult } from './base.js';
 import { invokeMutationTool } from '../utils/exec-classify.js';
@@ -20,7 +20,6 @@ import { ExecFailureError } from '../utils/exec-error.js';
 import { log, isVerbose } from '../utils/logger.js';
 import { DEFAULT_TIMEOUT_MS } from '../utils/constants.js';
 import { AuditDeadline } from '../utils/deadline.js';
-import { splitCommandArgs } from '../utils/shell-quote.js';
 import {
   JSON_LOG_NAME,
   PHP_COVERAGE_DIR_NAME,
@@ -33,6 +32,8 @@ import {
 import { explainMissingJsonLog } from './php/failures.js';
 import { parseInfectionJsonLog } from './php/report.js';
 import { harvestArtefact, invalidateArtefact, seedArtefact } from '../utils/reuse/store.js';
+import { producePhpCoverage } from './php/coverage.js';
+import { parsePhpCoverageSelection } from './php/coverage-selection.js';
 
 export {
   inferSourceDir,
@@ -70,50 +71,28 @@ export class PhpEngine extends BaseEngine {
     const cwd = options?.workDir ?? process.cwd();
     const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const reuse = options?.reuse;
-    const runDeadline = reuse ? new AuditDeadline(timeoutMs) : undefined;
+    const runDeadline =
+      reuse || options?.phpCoverageTestFrameworkOptions ? new AuditDeadline(timeoutMs) : undefined;
     const { hasProjectConfig, jsonLogPath, env } = prepareInfectionWorkspace(cwd, filePath);
     const coveragePath = join(cwd, PHP_COVERAGE_DIR_NAME);
     const reusedCoverage =
       reuse?.key.kind === 'coverage' && seedArtefact(reuse.key, reuse.fingerprint, coveragePath);
     let generatedCoverage = false;
 
-    // Infection removes its temporary coverage directory after each run. When
-    // a fingerprint is available, make the first run's coverage persistent so
-    // the next run can skip the initial test suite too.
-    if (reuse && !reusedCoverage) {
-      const phpunit = existsSync(join(cwd, 'vendor', 'bin', 'phpunit'))
-        ? './vendor/bin/phpunit'
-        : 'phpunit';
-      const xmlPath = join(coveragePath, 'coverage-xml');
-      try {
-        mkdirSync(xmlPath, { recursive: true });
-        await invokeMutationTool(
-          'Infection',
-          phpunit,
-          [
-            '--exclude-source-from-xml-coverage',
-            `--coverage-xml=${xmlPath}`,
-            `--log-junit=${join(coveragePath, 'junit.xml')}`,
-            ...(options?.phpTestFrameworkOptions
-              ? splitCommandArgs(options.phpTestFrameworkOptions)
-              : []),
-          ],
-          {
-            cwd,
-            timeoutMs: Math.max(1, runDeadline?.remainingMs() ?? timeoutMs),
-            env: { ...env, XDEBUG_MODE: 'coverage' },
-            signal: options?.signal,
-            executor: options?.executor,
-          },
-        );
-        generatedCoverage = true;
-      } catch {
-        try {
-          rmSync(coveragePath, { recursive: true, force: true });
-        } catch {
-          // A failed producer only removes the optimisation.
-        }
-      }
+    const coverageSelection = parsePhpCoverageSelection(options?.phpCoverageTestFrameworkOptions);
+    if (!reusedCoverage && (reuse || coverageSelection)) {
+      const coverage = await producePhpCoverage({
+        workDir: cwd,
+        key: reuse?.key,
+        fingerprint: reuse?.fingerprint,
+        timeoutMs: Math.max(1, runDeadline?.remainingMs() ?? timeoutMs),
+        testFrameworkOptions: options?.phpTestFrameworkOptions,
+        coverageSelection,
+        env,
+        signal: options?.signal,
+        executor: options?.executor,
+      });
+      generatedCoverage = coverage.generated;
     }
 
     // Prefer the vendored binary; fall back to a global `infection` on PATH.
@@ -243,6 +222,10 @@ export class PhpEngine extends BaseEngine {
       result.scopeNote = result.scopeNote
         ? `${result.scopeNote} Reused Infection coverage.`
         : 'Reused Infection coverage.';
+    }
+    result.coverageScope = coverageSelection ? 'selected' : 'project';
+    if (coverageSelection) {
+      result.coverageNote = 'Coverage was generated from explicitly selected PHPUnit tests.';
     }
     return result;
   }

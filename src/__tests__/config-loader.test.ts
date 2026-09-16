@@ -840,6 +840,70 @@ describe('infection config section', () => {
     });
   });
 
+  it('parses coverageTestFrameworkOptions without dropping it', () => {
+    mockReadFileSync.mockReturnValue(
+      JSON.stringify({ infection: { coverageTestFrameworkOptions: '--testsuite=unit' } }),
+    );
+
+    expect(loadConfig('/tmp/config.json')).toMatchObject({
+      infection: {
+        coverageTestFrameworkOptions: '--testsuite=unit',
+      },
+    });
+  });
+
+  it('validates an allowed coverage test selector', () => {
+    mockReadFileSync.mockReturnValue(
+      JSON.stringify({ infection: { coverageTestFrameworkOptions: '--group unit' } }),
+    );
+
+    const { config, warnings } = validateConfig('/tmp/config.json');
+
+    expect(config.infection?.coverageTestFrameworkOptions).toBe('--group unit');
+    expect(warnings).toEqual([]);
+  });
+
+  it('warns about and drops a non-string coverage test selector', () => {
+    mockReadFileSync.mockReturnValue(
+      JSON.stringify({ infection: { coverageTestFrameworkOptions: 123 } }),
+    );
+
+    const { config, warnings } = validateConfig('/tmp/config.json');
+
+    expect(config.infection).toBeUndefined();
+    expect(
+      warnings.some(
+        (warning) =>
+          warning.includes('infection.coverageTestFrameworkOptions') &&
+          warning.includes('--testsuite') &&
+          warning.includes('--filter') &&
+          warning.includes('--group') &&
+          warning.includes('--exclude-group'),
+      ),
+    ).toBe(true);
+  });
+
+  it('warns about and drops a non-narrowing coverage test option', () => {
+    mockReadFileSync.mockReturnValue(
+      JSON.stringify({ infection: { coverageTestFrameworkOptions: '--colors=never' } }),
+    );
+
+    const { config, warnings } = validateConfig('/tmp/config.json');
+
+    expect(config.infection).toBeUndefined();
+    expect(
+      warnings.some(
+        (warning) =>
+          warning.includes('infection.coverageTestFrameworkOptions') &&
+          warning.includes('--testsuite') &&
+          warning.includes('--filter') &&
+          warning.includes('--group') &&
+          warning.includes('--exclude-group'),
+      ),
+    ).toBe(true);
+    expect(loadConfig('/tmp/config.json').infection).toBeUndefined();
+  });
+
   it('accepts threads: "max"', () => {
     mockReadFileSync.mockReturnValue(JSON.stringify({ infection: { threads: 'max' } }));
     expect(loadConfig('/tmp/config.json').infection).toEqual({ threads: 'max' });

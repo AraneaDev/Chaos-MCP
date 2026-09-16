@@ -86,6 +86,18 @@ describe('formatResultAsText — advisory lines', () => {
     expect(text).toContain('Scope: no changed lines');
     expect(formatResultAsText(result())).not.toContain('Scope:');
   });
+
+  it('prints the selected coverage scope and note', () => {
+    const text = formatResultAsText(
+      result({
+        coverageScope: 'selected',
+        coverageNote: 'Coverage was generated from explicitly selected PHPUnit tests.',
+      }),
+    );
+    expect(text).toContain(
+      'Coverage: selected — Coverage was generated from explicitly selected PHPUnit tests.',
+    );
+  });
 });
 
 describe('formatResultAsText — no-coverage section', () => {

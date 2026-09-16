@@ -77,6 +77,8 @@ export interface InfectionConfig {
   threads?: number | 'max';
   /** Extra options forwarded to the PHP test framework (e.g. "--testsuite=unit"). */
   testFrameworkOptions?: string;
+  /** Narrowing options used only while selecting tests for the coverage pass. */
+  coverageTestFrameworkOptions?: string;
   /**
    * Whether to pass Infection's `--only-covering-test-cases`, which runs only
    * the test CASES covering a mutated line instead of every covering test FILE.

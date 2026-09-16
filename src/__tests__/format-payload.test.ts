@@ -192,6 +192,8 @@ describe('buildResultPayload — optional field assembly', () => {
     'batchesCompleted',
     'batchesPlanned',
     'stoppedReason',
+    'coverageScope',
+    'coverageNote',
     'suggestedTestFile',
     'ignoredOptions',
     'runId',
@@ -252,6 +254,21 @@ describe('buildResultPayload — optional field assembly', () => {
     expect(payload.gate).toEqual({ minScore: 80, passed: false });
     expect(payload.note).toContain('2 equivalent mutant(s) suppressed');
     expect(payload.note).toContain('4 mutant(s) were excluded as incompetent');
+  });
+
+  it('carries selected PHP coverage metadata and omits it from ordinary results', () => {
+    const selected = buildResultPayload(
+      result({
+        coverageScope: 'selected',
+        coverageNote: 'Coverage was generated from explicitly selected PHPUnit tests.',
+      }),
+    );
+    expect(selected.coverageScope).toBe('selected');
+    expect(selected.coverageNote).toBe(
+      'Coverage was generated from explicitly selected PHPUnit tests.',
+    );
+    expect(buildResultPayload(result())).not.toHaveProperty('coverageScope');
+    expect(buildResultPayload(result())).not.toHaveProperty('coverageNote');
   });
 
   it('treats an EMPTY ignoredOptions list as nothing to report', () => {
