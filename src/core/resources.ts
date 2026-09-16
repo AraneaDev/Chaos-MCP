@@ -95,7 +95,10 @@ function configSchemaJson(): string {
     cosmicray: 'object — cosmic-ray (Python)-specific overrides.',
     rust: 'object — cargo-mutants-specific overrides.',
     infection:
-      'object — Infection (PHP)-specific overrides (timeoutMs, threads, testFrameworkOptions).',
+      'object — Infection (PHP)-specific overrides (timeoutMs, threads, testFrameworkOptions, ' +
+      'coverageTestFrameworkOptions). For example: { "coverageTestFrameworkOptions": "--testsuite=unit" }. ' +
+      'Only --testsuite, --filter, --group, and --exclude-group narrowing controls are accepted; ' +
+      'selected coverage never falls back to the full suite and scores do not represent tests outside the selection.',
     container:
       'object — shared OCI execution backend: mode ("native"|"container"|"auto"), runtime ' +
       '("docker"|"podman"), network, cpus, memoryMb, pidsLimit, startupTimeoutMs, ' +

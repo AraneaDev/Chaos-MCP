@@ -138,6 +138,8 @@ describe('resources', () => {
     // `run-options.ts` never sources the config key. The entry must now say so.
     expect(d.mutatorAllowlist).toContain('NOT SUPPORTED');
     expect(d.mutatorAllowlist).toContain('mutatorDenylist');
+    expect(d.infection).toContain('coverageTestFrameworkOptions');
+    expect(d.infection).toContain('--testsuite=unit');
   });
 
   it('describes every part of the multi-line container key', () => {

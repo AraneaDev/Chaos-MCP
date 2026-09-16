@@ -419,6 +419,8 @@ export const TOOL_DEFINITION = {
       // missing here, so a client binding fields from this schema never
       // surfaced the warning at all.
       fidelityNote: { type: 'string' },
+      coverageScope: { type: 'string', enum: ['project', 'selected'] },
+      coverageNote: { type: 'string' },
       enrichNote: { type: 'string' },
       runId: { type: 'string' },
       suppressedCount: { type: 'integer' },
@@ -647,6 +649,8 @@ export const TRIAGE_TOOL_DEFINITION = {
             noCoverage: { type: 'integer' },
             // Optional per-row fields.
             scopeNote: { type: 'string' },
+            coverageScope: { type: 'string', enum: ['project', 'selected'] },
+            coverageNote: { type: 'string' },
             // Declared so a client binding fields off this schema can SEE the
             // advisory: an undeclared field is one a generated type drops, and
             // this is the one that says the score beside it may not be a
