@@ -29,6 +29,23 @@ export interface PhpCoverageResult {
 const diagnosticOf = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
+function xmlAttributeNumber(tag: string, name: string): number | undefined {
+  const value = tag.match(new RegExp(`\\b${name}\\s*=\\s*["'](\\d+)["']`, 'i'))?.[1];
+  return value === undefined ? undefined : Number(value);
+}
+
+/** PHPUnit may put its JUnit test count on the root or on child suites. */
+function junitHasTests(junit: string): boolean {
+  const root = junit.match(/<testsuites\b[^>]*>/i)?.[0];
+  const rootTests = root === undefined ? undefined : xmlAttributeNumber(root, 'tests');
+  if (rootTests !== undefined) return rootTests > 0;
+
+  const suiteCounts = [...junit.matchAll(/<testsuite\b[^>]*>/gi)]
+    .map((match) => xmlAttributeNumber(match[0], 'tests'))
+    .filter((count): count is number => count !== undefined);
+  return suiteCounts.some((count) => count > 0) || /<testcase\b/i.test(junit);
+}
+
 /** Generate and optionally persist the PHPUnit coverage used by PHP audits. */
 export async function producePhpCoverage(input: PhpCoverageInput): Promise<PhpCoverageResult> {
   const coverageSelection = input.coverageSelection;
@@ -69,8 +86,7 @@ export async function producePhpCoverage(input: PhpCoverageInput): Promise<PhpCo
     );
     if (coverageSelection) {
       const junit = readFileSync(junitPath, 'utf8');
-      const aggregate = junit.match(/<testsuites\b[^>]*>/i)?.[0];
-      if (aggregate && /\btests\s*=\s*["']0["']/i.test(aggregate)) {
+      if (!junitHasTests(junit)) {
         throw new Error('coverageTestFrameworkOptions collected zero tests.');
       }
     }

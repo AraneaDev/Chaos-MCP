@@ -129,6 +129,32 @@ describe('producePhpCoverage', () => {
     expect(mockHarvest).not.toHaveBeenCalled();
   });
 
+  it('rejects zero tests when PHPUnit reports the count only on a child suite', async () => {
+    mockRead.mockReturnValue('<testsuites><testsuite name="missing" tests="0"/></testsuites>');
+
+    await expect(
+      producePhpCoverage({
+        workDir: '/sb',
+        timeoutMs: 1_000,
+        coverageSelection: parsePhpCoverageSelection('--testsuite=missing'),
+      }),
+    ).rejects.toThrow(/coverageTestFrameworkOptions.*zero tests/i);
+  });
+
+  it('accepts a nonzero child suite count when the root has no count', async () => {
+    mockRead.mockReturnValue('<testsuites><testsuite name="unit" tests="1"/></testsuites>');
+
+    await expect(
+      producePhpCoverage({
+        workDir: '/sb',
+        key,
+        fingerprint: 'fp',
+        timeoutMs: 1_000,
+        coverageSelection: parsePhpCoverageSelection('--testsuite=unit'),
+      }),
+    ).resolves.toEqual({ generated: true, scope: 'selected' });
+  });
+
   it('does not treat an empty nested suite as zero selected tests', async () => {
     mockRead.mockReturnValue(
       '<testsuites tests="1"><testsuite name="empty" tests="0"/><testsuite name="unit" tests="1"/></testsuites>',
