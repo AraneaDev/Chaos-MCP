@@ -72,7 +72,7 @@ class CalculatorTest extends TestCase {
         name: 'chaos/e2e-fixture',
         require: {},
         'require-dev': { 'phpunit/phpunit': '^10 || ^11', 'infection/infection': '^0.27 || ^0.29' },
-        autoload: { 'psr-4': { 'App\\\\': 'src/' } },
+        autoload: { 'psr-4': { 'App\\': 'src/' } },
         config: { 'allow-plugins': { 'infection/extension-installer': true } },
       },
       null,
