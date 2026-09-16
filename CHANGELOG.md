@@ -2,6 +2,14 @@
 
 All notable changes to Chaos-MCP are documented in this file.
 
+## [5.0.3](https://github.com/AraneaDev/Chaos-MCP/compare/v5.0.2...v5.0.3) (2026-09-16)
+
+
+### Continuous integration
+
+* **pr-title:** share one commit-style rule between CI and the hook ([#84](https://github.com/AraneaDev/Chaos-MCP/issues/84)) ([9bdf5c4](https://github.com/AraneaDev/Chaos-MCP/commit/9bdf5c4ed11a1254c7bddeb58bcd2c9df6a0feb0))
+* **release:** run every required lane on release pull requests too ([#86](https://github.com/AraneaDev/Chaos-MCP/issues/86)) ([71c22d0](https://github.com/AraneaDev/Chaos-MCP/commit/71c22d0eb50e15a62c8e0ea8bf776cbbe730a1cb))
+
 ## [5.0.2](https://github.com/AraneaDev/Chaos-MCP/compare/v5.0.1...v5.0.2) (2026-09-15)
 
 
