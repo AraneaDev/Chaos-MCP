@@ -2,6 +2,18 @@
 
 All notable changes to Chaos-MCP are documented in this file.
 
+## [5.1.0](https://github.com/AraneaDev/Chaos-MCP/compare/v5.0.3...v5.1.0) (2026-09-16)
+
+
+### Features
+
+* **php:** add scoped coverage selection ([#89](https://github.com/AraneaDev/Chaos-MCP/issues/89)) ([f6f8531](https://github.com/AraneaDev/Chaos-MCP/commit/f6f8531534d971c0e76401c0d941b29cf337ebc2))
+
+
+### Continuous integration
+
+* **pr-title:** check out the base branch, not the pull request's pinned base commit ([#87](https://github.com/AraneaDev/Chaos-MCP/issues/87)) ([21cfe0b](https://github.com/AraneaDev/Chaos-MCP/commit/21cfe0b559051a682620aba62786cac12a7a1a29))
+
 ## [5.0.3](https://github.com/AraneaDev/Chaos-MCP/compare/v5.0.2...v5.0.3) (2026-09-16)
 
 
