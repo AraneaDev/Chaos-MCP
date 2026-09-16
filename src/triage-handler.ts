@@ -54,7 +54,8 @@ import {
   resolveMutationToolIdentity,
 } from './audit/audit-file.js';
 import { makeEngine } from './engines/registry.js';
-import { producePhpCoverage } from './triage/php-coverage.js';
+import { producePhpCoverage } from './engines/php/coverage.js';
+import { parsePhpCoverageSelection } from './engines/php/coverage-selection.js';
 
 const DEFAULT_MAX_FILES = 25;
 
@@ -113,6 +114,7 @@ async function prepareSweepPhpCoverage(
   if (!file) return;
   const target = resolveAuditTargetIn(rootCwd, file);
   if (!target || target.projectType !== 'php') return;
+  const coverageSelection = parsePhpCoverageSelection(cfg.infection?.coverageTestFrameworkOptions);
   const remaining = deadline.remainingMs(TRIAGE_CLEANUP_RESERVE_MS);
   if (remaining < MIN_RETRY_BUDGET_MS) return;
 
@@ -150,17 +152,19 @@ async function prepareSweepPhpCoverage(
       cfg.infection?.testFrameworkOptions,
       toolIdentity,
     );
-    if (!fingerprint) return;
+    if (!fingerprint && !coverageSelection) return;
     await producePhpCoverage({
       workDir: sandbox.workDir,
       key: phpReuseKey(target.env.workspaceRoot),
       fingerprint,
       timeoutMs: deadline.remainingMs(TRIAGE_CLEANUP_RESERVE_MS),
       testFrameworkOptions: cfg.infection?.testFrameworkOptions,
+      coverageSelection,
       signal: controller.signal,
       executor,
     });
-  } catch {
+  } catch (error) {
+    if (coverageSelection) throw error;
     // Coverage is an optimisation. Every file can still run its normal audit.
   } finally {
     await executor?.dispose();

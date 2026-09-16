@@ -63,6 +63,10 @@ export interface MutationResult {
   survived: number;
   /** Formatted mutation score, e.g. "87.50%" */
   mutationScore: string;
+  /** Coverage scope used by a PHP run, when applicable. */
+  coverageScope?: 'project' | 'selected';
+  /** Explanation of a selected PHP coverage scope, when applicable. */
+  coverageNote?: string;
   /** Details of each surviving mutant */
   vulnerabilities: Vulnerability[];
   /**

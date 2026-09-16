@@ -1234,6 +1234,32 @@ describe('PhpEngine.run', () => {
     expect(args.some((a) => a.startsWith('--test-framework-options='))).toBe(false);
   });
 
+  it('runs selected coverage before Infection and keeps mutation options independent', async () => {
+    mockExists.mockImplementation((p) => String(p).endsWith('chaos-infection-log.json'));
+    mockRead.mockImplementation((p: unknown) =>
+      String(p).endsWith('junit.xml') ? '<testsuites tests="1" />' : SAMPLE_LOG,
+    );
+    mockInvoke.mockResolvedValue({ stdout: '', stderr: '', exit: 0, signal: null });
+
+    const result = await new PhpEngine().run('src/Calculator.php', {
+      workDir: '/sb',
+      phpCoverageTestFrameworkOptions: '--testsuite=unit',
+      phpTestFrameworkOptions: '--testsuite=mutation',
+    });
+
+    expect(mockInvoke).toHaveBeenCalledTimes(2);
+    const coverageArgs = mockInvoke.mock.calls[0][2] as string[];
+    expect(coverageArgs).toContain('--testsuite=unit');
+    expect(coverageArgs).not.toContain('--test-framework-options=--testsuite=mutation');
+    const mutationArgs = mockInvoke.mock.calls[1][2] as string[];
+    expect(mutationArgs).toContain('--test-framework-options=--testsuite=mutation');
+    expect(mutationArgs).not.toContain('--testsuite=unit');
+    expect(result).toMatchObject({
+      coverageScope: 'selected',
+      coverageNote: 'Coverage was generated from explicitly selected PHPUnit tests.',
+    });
+  });
+
   it('passes --only-covering-test-cases by default', async () => {
     // The speed fix: Infection's default re-runs every covering test FILE per
     // mutant. Without this arg a file with expensive covering tests pays for
