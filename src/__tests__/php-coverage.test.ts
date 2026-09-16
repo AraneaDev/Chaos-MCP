@@ -78,7 +78,15 @@ describe('producePhpCoverage', () => {
         '--filter',
         'CalculatorTest with data set',
       ],
-      expect.objectContaining({ cwd: '/sb', timeoutMs: 1_000 }),
+      expect.objectContaining({
+        cwd: '/sb',
+        timeoutMs: 1_000,
+        env: expect.objectContaining({
+          TMPDIR: '/sb/.chaos-infection-tmp',
+          TMP: '/sb/.chaos-infection-tmp',
+          TEMP: '/sb/.chaos-infection-tmp',
+        }),
+      }),
     );
     expect(result).toEqual({ generated: true, scope: 'selected' });
     expect(mockHarvest).toHaveBeenCalledWith(key, 'fp', '/sb/.chaos-infection-coverage');
@@ -119,6 +127,23 @@ describe('producePhpCoverage', () => {
     await expect(run).rejects.toThrow(/coverageTestFrameworkOptions.*zero tests/i);
     await expect(run).rejects.not.toThrow(/widen/i);
     expect(mockHarvest).not.toHaveBeenCalled();
+  });
+
+  it('does not treat an empty nested suite as zero selected tests', async () => {
+    mockRead.mockReturnValue(
+      '<testsuites tests="1"><testsuite name="empty" tests="0"/><testsuite name="unit" tests="1"/></testsuites>',
+    );
+
+    await expect(
+      producePhpCoverage({
+        workDir: '/sb',
+        key,
+        fingerprint: 'fp',
+        timeoutMs: 1_000,
+        coverageSelection: parsePhpCoverageSelection('--testsuite=unit'),
+      }),
+    ).resolves.toEqual({ generated: true, scope: 'selected' });
+    expect(mockHarvest).toHaveBeenCalledWith(key, 'fp', '/sb/.chaos-infection-coverage');
   });
 
   it('keeps unconfigured producer failures best-effort and project-scoped', async () => {

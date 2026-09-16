@@ -16,6 +16,7 @@ export interface PhpCoverageInput {
   timeoutMs: number;
   testFrameworkOptions?: string;
   coverageSelection?: PhpCoverageSelection;
+  env?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
   executor?: ExecutionSession;
 }
@@ -35,10 +36,12 @@ export async function producePhpCoverage(input: PhpCoverageInput): Promise<PhpCo
   const coveragePath = join(input.workDir, PHP_COVERAGE_DIR_NAME);
   const xmlPath = join(coveragePath, 'coverage-xml');
   const junitPath = join(coveragePath, 'junit.xml');
+  const infectionTmp = join(input.workDir, '.chaos-infection-tmp');
   const phpunit = existsSync(join(input.workDir, 'vendor', 'bin', 'phpunit'))
     ? './vendor/bin/phpunit'
     : 'phpunit';
   try {
+    mkdirSync(infectionTmp, { recursive: true });
     mkdirSync(xmlPath, { recursive: true });
     await invokeMutationTool(
       'Infection',
@@ -53,14 +56,21 @@ export async function producePhpCoverage(input: PhpCoverageInput): Promise<PhpCo
       {
         cwd: input.workDir,
         timeoutMs: input.timeoutMs,
-        env: { ...process.env, XDEBUG_MODE: 'coverage' },
+        env: {
+          ...(input.env ?? process.env),
+          TMPDIR: infectionTmp,
+          TMP: infectionTmp,
+          TEMP: infectionTmp,
+          XDEBUG_MODE: 'coverage',
+        },
         signal: input.signal,
         executor: input.executor,
       },
     );
     if (coverageSelection) {
       const junit = readFileSync(junitPath, 'utf8');
-      if (/\btests\s*=\s*["']0["']/.test(junit)) {
+      const aggregate = junit.match(/<testsuites\b[^>]*>/i)?.[0];
+      if (aggregate && /\btests\s*=\s*["']0["']/i.test(aggregate)) {
         throw new Error('coverageTestFrameworkOptions collected zero tests.');
       }
     }

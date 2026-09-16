@@ -71,7 +71,8 @@ export class PhpEngine extends BaseEngine {
     const cwd = options?.workDir ?? process.cwd();
     const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const reuse = options?.reuse;
-    const runDeadline = reuse ? new AuditDeadline(timeoutMs) : undefined;
+    const runDeadline =
+      reuse || options?.phpCoverageTestFrameworkOptions ? new AuditDeadline(timeoutMs) : undefined;
     const { hasProjectConfig, jsonLogPath, env } = prepareInfectionWorkspace(cwd, filePath);
     const coveragePath = join(cwd, PHP_COVERAGE_DIR_NAME);
     const reusedCoverage =
@@ -79,7 +80,7 @@ export class PhpEngine extends BaseEngine {
     let generatedCoverage = false;
 
     const coverageSelection = parsePhpCoverageSelection(options?.phpCoverageTestFrameworkOptions);
-    if ((reuse && !reusedCoverage) || coverageSelection) {
+    if (!reusedCoverage && (reuse || coverageSelection)) {
       const coverage = await producePhpCoverage({
         workDir: cwd,
         key: reuse?.key,
@@ -87,6 +88,7 @@ export class PhpEngine extends BaseEngine {
         timeoutMs: Math.max(1, runDeadline?.remainingMs() ?? timeoutMs),
         testFrameworkOptions: options?.phpTestFrameworkOptions,
         coverageSelection,
+        env,
         signal: options?.signal,
         executor: options?.executor,
       });
