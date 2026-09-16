@@ -151,6 +151,7 @@ async function prepareSweepPhpCoverage(
       target.env.workspaceRoot,
       cfg.infection?.testFrameworkOptions,
       toolIdentity,
+      cfg.infection?.coverageTestFrameworkOptions,
     );
     if (!fingerprint && !coverageSelection) return;
     await producePhpCoverage({

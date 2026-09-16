@@ -491,6 +491,8 @@ describe('audit outputSchema ↔ ResultPayload parity', () => {
     noCoverageFiltered: true,
     scopeNote: true,
     fidelityNote: true,
+    coverageScope: true,
+    coverageNote: true,
     enrichNote: true,
     note: true,
     runId: true,

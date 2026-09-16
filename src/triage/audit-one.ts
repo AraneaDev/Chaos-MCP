@@ -337,6 +337,8 @@ function buildTriageRow(input: RowInput, deps: TriageFileDeps): TriageRow {
   // Set by auditFile for every engine, so nothing engine-specific is needed
   // here: the row simply must not drop what the single-file audit reports.
   if (result.fidelityNote) row.fidelityNote = result.fidelityNote;
+  if (result.coverageScope) row.coverageScope = result.coverageScope;
+  if (result.coverageNote) row.coverageNote = result.coverageNote;
   const combinedScopeNote = combineScopeNotes(input.scopeNote, result.scopeNote);
   if (combinedScopeNote) row.scopeNote = combinedScopeNote;
   // Carry partial-audit state onto the row so the leaderboard and the gate

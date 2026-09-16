@@ -550,6 +550,11 @@ export function formatResultAsText(
   if (opts.resources) lines.push(formatResourcesLine(opts.resources));
   if (result.scopeNote) lines.push(`Scope: ${result.scopeNote}`);
   if (result.fidelityNote) lines.push(`Warning: ${result.fidelityNote}`);
+  if (result.coverageScope) {
+    lines.push(
+      `Coverage: ${result.coverageScope}${result.coverageNote ? ` — ${result.coverageNote}` : ''}`,
+    );
+  }
   // Surface unscoreable mutants in text format too (audit L6) so a caller
   // asking for human-readable output can see why total < generated.
   if (result.incompetent && result.incompetent > 0) {
@@ -654,6 +659,8 @@ export interface ResultPayload {
    */
   workspace?: string;
   mutationScore: string;
+  coverageScope?: 'project' | 'selected';
+  coverageNote?: string;
   summary: { total: number; killed: number; survived: number; worstSeverity?: Severity };
   survivors: LineGroup[];
   noCoverage: LineGroup[];
@@ -833,6 +840,8 @@ export function buildResultPayload(
   if (prepared.enrichNote) payload.enrichNote = prepared.enrichNote;
   if (result.scopeNote) payload.scopeNote = result.scopeNote;
   if (result.fidelityNote) payload.fidelityNote = result.fidelityNote;
+  if (result.coverageScope) payload.coverageScope = result.coverageScope;
+  if (result.coverageNote) payload.coverageNote = result.coverageNote;
   if (result.complete !== undefined) payload.complete = result.complete;
   if (result.batchesCompleted !== undefined) payload.batchesCompleted = result.batchesCompleted;
   if (result.batchesPlanned !== undefined) payload.batchesPlanned = result.batchesPlanned;

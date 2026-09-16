@@ -115,6 +115,7 @@ export async function computePhpReuseFingerprint(
   workspaceRoot: string,
   phpTestFrameworkOptions?: string,
   toolIdentity?: string,
+  phpCoverageTestFrameworkOptions?: string,
 ): Promise<string | undefined> {
   if (!toolIdentity) return undefined;
   return computeFingerprint({
@@ -124,6 +125,7 @@ export async function computePhpReuseFingerprint(
       tool: toolIdentity,
       coverage: 'project',
       phpTestFrameworkOptions: phpTestFrameworkOptions ?? '',
+      coverageTestFrameworkOptions: phpCoverageTestFrameworkOptions ?? '',
     },
   });
 }
@@ -196,17 +198,18 @@ async function attachReuse(
           kind: projectType === 'python' ? 'session' : 'incremental',
         };
   if (!toolIdentity) return;
-  const fingerprint = await computeFingerprint({
-    workspaceRoot,
-    paths: reusePaths(projectType, workspaceRoot, targetFile, runOptions.pythonTestSelection),
-    extra:
-      projectType === 'php'
-        ? {
-            tool: toolIdentity,
-            coverage: 'project',
-            phpTestFrameworkOptions: runOptions.phpTestFrameworkOptions ?? '',
-          }
-        : {
+  const fingerprint =
+    projectType === 'php'
+      ? await computePhpReuseFingerprint(
+          workspaceRoot,
+          runOptions.phpTestFrameworkOptions,
+          toolIdentity,
+          runOptions.phpCoverageTestFrameworkOptions,
+        )
+      : await computeFingerprint({
+          workspaceRoot,
+          paths: reusePaths(projectType, workspaceRoot, targetFile, runOptions.pythonTestSelection),
+          extra: {
             tool: toolIdentity,
             options: JSON.stringify({
               testRunner: runOptions.testRunner,
@@ -221,7 +224,7 @@ async function attachReuse(
               lineScope: runOptions.lineScope,
             }),
           },
-  });
+        });
   if (fingerprint !== undefined) runOptions.reuse = { key, fingerprint };
 }
 

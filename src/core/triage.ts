@@ -12,6 +12,8 @@ export interface TriageRow {
   survived: number;
   noCoverage: number;
   scopeNote?: string;
+  coverageScope?: 'project' | 'selected';
+  coverageNote?: string;
   /**
    * Advisory that this row's own numbers may not be a measurement, carried
    * from {@link MutationResult.fidelityNote}. Per ROW, not per sweep: one
@@ -329,7 +331,8 @@ export function formatTriageAsText(payload: TriagePayload): string {
         r.complete === false
           ? `  (partial: ${r.batchesCompleted ?? '?'}/${r.batchesPlanned ?? '?'} batches)`
           : '';
-      lines.push(`  ${r.mutationScore}  ${r.survived}/${r.total}  ${r.file}${partial}`);
+      const coverage = r.coverageScope === 'selected' ? ' (coverage: selected)' : '';
+      lines.push(`  ${r.mutationScore}  ${r.survived}/${r.total}  ${r.file}${coverage}${partial}`);
     }
   } else if (discovered === 0) {
     lines.push(
@@ -337,6 +340,9 @@ export function formatTriageAsText(payload: TriagePayload): string {
         ? 'No changed supported source files found vs the diff base.'
         : 'No supported source files found under the given paths.',
     );
+  }
+  for (const note of [...new Set(rows.map((r) => r.coverageNote).filter(Boolean))]) {
+    lines.push(`Coverage: ${note}`);
   }
   // Deduplicated: a dead harness usually trips every row in the sweep, and one
   // warning repeated twenty-five times buries the table it is about.

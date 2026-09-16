@@ -119,4 +119,22 @@ describe('reuse identity and PHP fingerprint inputs', () => {
     expect(integration).toBeDefined();
     expect(integration).not.toBe(unit);
   });
+
+  it('changes the PHP fingerprint when the coverage selector changes', async () => {
+    const project = await computePhpReuseFingerprint(
+      process.cwd(),
+      undefined,
+      'native:infection:Infection 0.34.0',
+    );
+    const selected = await computePhpReuseFingerprint(
+      process.cwd(),
+      undefined,
+      'native:infection:Infection 0.34.0',
+      '--testsuite=unit',
+    );
+
+    expect(project).toBeDefined();
+    expect(selected).toBeDefined();
+    expect(selected).not.toBe(project);
+  });
 });

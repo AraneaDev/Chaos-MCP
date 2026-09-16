@@ -158,6 +158,20 @@ describe('buildTriageRow — optional keys are absent, not undefined', () => {
     expect(row.fidelityNote).toBe(note);
   });
 
+  it('carries selected PHP coverage metadata onto the row', async () => {
+    auditFileMock.mockResolvedValue(
+      cleanResult({
+        coverageScope: 'selected',
+        coverageNote: 'Coverage was generated from explicitly selected PHPUnit tests.',
+      }),
+    );
+
+    const row = await rowFor(sourceFile('z.ts'));
+
+    expect(row.coverageScope).toBe('selected');
+    expect(row.coverageNote).toBe('Coverage was generated from explicitly selected PHPUnit tests.');
+  });
+
   it('no longer labels Python as diff-scoping-unsupported now that diffBase is honoured (Task 8)', async () => {
     // Before Task 8, `resolveDiffScope`'s early return gated on
     // `supportsLineScope` (false for Python) and produced this note WITHOUT

@@ -228,6 +228,20 @@ describe('formatTriageAsText', () => {
     expect(line('complete.ts')).toBe('  90.00%  1/10  complete.ts');
   });
 
+  it('marks selected coverage rows and emits each coverage note once', () => {
+    const note = 'Coverage was generated from explicitly selected PHPUnit tests.';
+    const text = textOf([
+      triageRow({ file: 'a.php', coverageScope: 'selected', coverageNote: note }),
+      triageRow({ file: 'b.php', coverageScope: 'selected', coverageNote: note }),
+    ]);
+
+    expect(text).toContain('a.php (coverage: selected)');
+    expect(text).toContain('b.php (coverage: selected)');
+    expect(
+      text.match(/Coverage was generated from explicitly selected PHPUnit tests\./g),
+    ).toHaveLength(1);
+  });
+
   it('renders "?" for batch counts an engine did not report', () => {
     // Non-StrykerJS engines mark a run partial without batching it. Blanking
     // the `?` fallback yields "(partial: / batches)", which reads as a
