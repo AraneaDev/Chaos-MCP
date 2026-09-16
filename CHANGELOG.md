@@ -2,6 +2,21 @@
 
 All notable changes to Chaos-MCP are documented in this file.
 
+## [5.0.2](https://github.com/AraneaDev/Chaos-MCP/compare/v5.0.1...v5.0.2) (2026-09-15)
+
+
+### Documentation
+
+* add Codex installation guidance ([#77](https://github.com/AraneaDev/Chaos-MCP/issues/77)) ([cac1159](https://github.com/AraneaDev/Chaos-MCP/commit/cac115948a3c49f62e3f1d0eba9ba0f879d5c9bd))
+* **readme:** credit the author and link the write-up ([#79](https://github.com/AraneaDev/Chaos-MCP/issues/79)) ([c324f1c](https://github.com/AraneaDev/Chaos-MCP/commit/c324f1cd877eb91dc5458dbd6ed091342f78d7f3))
+
+
+### Continuous integration
+
+* **release:** format the changelog sections the way prettier wants them ([#83](https://github.com/AraneaDev/Chaos-MCP/issues/83)) ([cc82295](https://github.com/AraneaDev/Chaos-MCP/commit/cc82295301b2aadef9d1dcbc9d61d527d469b034))
+* **release:** let RELEASE_PLEASE_TOKEN raise the release event when it exists ([#82](https://github.com/AraneaDev/Chaos-MCP/issues/82)) ([159cacf](https://github.com/AraneaDev/Chaos-MCP/commit/159cacfefc847f1e046f75ce3c4bdeb513367198))
+* **release:** list the changelog sections the other tools use ([#80](https://github.com/AraneaDev/Chaos-MCP/issues/80)) ([7b0c9bc](https://github.com/AraneaDev/Chaos-MCP/commit/7b0c9bc430967694035cbc67cd04f23e6a0641e8))
+
 ## [5.0.1](https://github.com/AraneaDev/Chaos-MCP/compare/v5.0.0...v5.0.1) (2026-09-14)
 
 
