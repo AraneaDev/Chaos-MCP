@@ -15,6 +15,7 @@
         { "type": "style", "section": "Style", "hidden": true },
         { "type": "chore", "section": "Chores", "hidden": true }
       ],
+      "exclude-paths": ["README.md", "CHANGELOG.md", "docs", "test", "tests", ".github", "assets"],
       "include-component-in-tag": false,
       "extra-files": [
         {

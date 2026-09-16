@@ -21,12 +21,12 @@
 > puts before everything else in the _Theogony_. Order came out of it, not the other way round.
 > The name means "gap" or "chasm", which is also what this tool is looking for.
 
-Chaos-MCP is an [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server that
-exposes three tools: `audit_code_resilience` (audit a single file), `triage_test_coverage`
-(rank a whole tree weakest-first), and `estimate_audit` (a cheap pre-flight mutant count and
-timing estimate). They run isolated mutation testing against your source to find weaknesses in
-the local test suite. It deliberately injects logical faults, such as changing `>` to `>=`, and
-checks whether your tests catch them. Surviving mutants mark the gaps.
+**TL;DR:** Chaos-MCP measures whether your tests catch realistic code changes. Its MCP tools
+create isolated sandboxes, inject logical mutations such as changing `>` to `>=`, run the test
+suite, and report the mutants that survive.
+
+It exposes `audit_code_resilience` for one file, `triage_test_coverage` for a whole tree, and
+`estimate_audit` for a quick mutant count and timing estimate.
 
 > **Status:** pre-release. Chaos-MCP is **not yet published to npm**. The source is public on
 > [GitHub](https://github.com/AraneaDev/Chaos-MCP), so install from source (see
@@ -676,7 +676,7 @@ Tool call arguments override config defaults.
 | `container`              | `object`                          | `{ "mode": "native" }`               | Optional shared OCI execution backend for TypeScript, Python, Rust, and PHP                                                             |
 | `sandbox`                | `object`                          | `{ "dependencies": "link-entries" }` | Sandbox provisioning. `dependencies` chooses how `node_modules`, `.venv`/`venv` and `vendor` are materialised , see below               |
 | `resources`              | `object`                          | computed from the machine            | Memory governance. `watchdog` (default `true`) stops the newest run before a sweep can take the machine down; set `false` to disable the sampler while sizing and admission still apply. `admissionFloorBytes` (default `max(1 GiB, 15% of the effective limit)`) is the memory that must stay free before another file starts. `criticalFloorBytes` (default `max(512 MiB, 7% of the effective limit)`) is the level below which the newest run is stopped |
-| `stryker`                | `object`                          | –                                    | StrykerJS settings for TypeScript/JavaScript targets. `testRunner` overrides runner detection , see below                               |
+| `stryker`                | `object`                          | –                                    | StrykerJS settings for TypeScript/JavaScript targets. `testRunner` overrides runner detection, see below                                |
 
 ### Overriding the StrykerJS test runner
 
