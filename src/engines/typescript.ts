@@ -23,6 +23,11 @@ import { BaseEngine, RunOptions, MutationResult } from './base.js';
 import { invokeMutationTool, MutationToolStartupError } from '../utils/exec-classify.js';
 import { log, warn, isVerbose } from '../utils/logger.js';
 import { buildVitestRelatedCommand } from '../utils/shell-quote.js';
+import {
+  MAX_NATIVE_VITEST_MAJOR,
+  MIN_NATIVE_VITEST_MAJOR,
+  unsupportedNativeVitestMajor,
+} from '../utils/detectors/typescript.js';
 import { DEFAULT_TIMEOUT_MS } from '../utils/constants.js';
 import { harvestArtefact, invalidateArtefact, seedArtefact } from '../utils/reuse/store.js';
 import { MIN_BATCH_BUDGET_MS, planLineBatches, mergeBatchResults } from './typescript/batches.js';
@@ -94,6 +99,36 @@ function shouldFallBackToCommandRunner(error: unknown, options?: RunOptions): bo
   if (options?.testRunnerTrusted === true) return false;
   const message = error instanceof Error ? error.message : String(error);
   return DRY_RUN_FAILURE_MARKERS.some((marker) => message.includes(marker));
+}
+
+/**
+ * Say so when the native vitest runner is about to drive a vitest major nobody
+ * has verified it against.
+ *
+ * Detection already routes such a workspace to the command runner, so reaching
+ * here means the operator pinned `testRunner: 'vitest'` in their own config and
+ * bypassed that routing. Pinning it stays their call, consistent with
+ * {@link shouldFallBackToCommandRunner}, which also refuses to override a
+ * trusted runner. Silence is not their call: on vitest 5 the runner reports
+ * every mutant as Survived with no error and a passing dry run, so without this
+ * line the operator reads a total false-positive flood as a real finding.
+ *
+ * Only `runOnce` needs it. A native-runner run is never batched, because
+ * `dispatch` only splits into batches when the resolved runner is `command`.
+ */
+function warnOnUnverifiedNativeVitest(resolvedRunner: string, cwd: string): void {
+  if (resolvedRunner !== 'vitest') return;
+  const major = unsupportedNativeVitestMajor(cwd);
+  if (major === null) return;
+  warn(
+    `vitest ${major} is installed, but @stryker-mutator/vitest-runner is only verified ` +
+      `against vitest ${MIN_NATIVE_VITEST_MAJOR}-${MAX_NATIVE_VITEST_MAJOR}. On an ` +
+      'unverified major it can report every mutant as Survived without raising an error, ' +
+      'so these results may be a false-positive flood rather than real coverage holes. ' +
+      'Chaos-MCP would have used the command runner here; it is running the native vitest ' +
+      'runner only because testRunner is pinned to "vitest" in config. Remove that pin to ' +
+      'get the slower but trustworthy path.',
+  );
 }
 
 /**
@@ -346,6 +381,8 @@ export class TypeScriptEngine extends BaseEngine {
     const resolvedRunner = resolveRunner(options);
     const cwd = options?.workDir ?? process.cwd();
     const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+
+    warnOnUnverifiedNativeVitest(resolvedRunner, cwd);
 
     const effectiveRanges =
       options?.lineRanges ?? (options?.lineScope ? [options.lineScope] : undefined);

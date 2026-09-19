@@ -26,6 +26,7 @@ import { MutationToolStartupError } from '../utils/exec-classify.js';
 import { warn } from '../utils/logger.js';
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import type { PathLike, PathOrFileDescriptor } from 'fs';
+import { join } from 'path';
 import {
   TypeScriptEngine,
   StrykerTimeoutError,
@@ -1673,6 +1674,43 @@ describe('TypeScriptEngine', () => {
     mockRunShell.mockRejectedValue('plain string failure');
 
     await expect(engine.run('src/test.ts')).rejects.toThrow(/Stryker execution failed/);
+  });
+
+  // ─── Unverified vitest major on an operator-pinned native runner ─────────
+  //
+  // Detection maps an unsupported vitest major to the command runner before the
+  // engine ever sees it (see toStrykerRunner). An operator who pins
+  // `stryker.testRunner: 'vitest'` in their own config bypasses that mapping,
+  // and the codebase deliberately does not override an explicit instruction.
+  // What it must not do is stay silent, because the failure mode here produces
+  // no error at all: the dry run succeeds and every mutant comes back Survived.
+
+  it('warns when the pinned native vitest runner faces an unverified vitest major', async () => {
+    mockRunShell.mockResolvedValue(makeExecResult());
+    mockReadFileSync.mockImplementation((p) =>
+      String(p).endsWith(join('node_modules', 'vitest', 'package.json'))
+        ? JSON.stringify({ version: '5.0.1' })
+        : makeJsonReport([]),
+    );
+
+    await engine.run('src/math.ts', { testRunner: 'vitest', workDir: '/sb' });
+
+    const warned = vi.mocked(warn).mock.calls.map((c) => String(c[0]));
+    expect(warned.some((m) => /vitest 5/.test(m) && /command runner/i.test(m))).toBe(true);
+  });
+
+  it('stays quiet when the pinned native vitest runner faces a verified vitest major', async () => {
+    mockRunShell.mockResolvedValue(makeExecResult());
+    mockReadFileSync.mockImplementation((p) =>
+      String(p).endsWith(join('node_modules', 'vitest', 'package.json'))
+        ? JSON.stringify({ version: '4.1.11' })
+        : makeJsonReport([]),
+    );
+
+    await engine.run('src/math.ts', { testRunner: 'vitest', workDir: '/sb' });
+
+    const warned = vi.mocked(warn).mock.calls.map((c) => String(c[0]));
+    expect(warned.some((m) => /vitest-runner/.test(m))).toBe(false);
   });
 
   // ─── Mutation hardening ──────────────────────────────────────────────────
