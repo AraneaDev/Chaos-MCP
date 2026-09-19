@@ -19,6 +19,34 @@ export default defineConfig({
     environment: 'node',
     globals: false,
     globalSetup: ['tests/global-setup.ts'],
+    // Budget a test gets before Vitest calls it hung.
+    //
+    // The default 5s produced rare timeouts in the largest suite file
+    // (triage-handler.test.ts, 113 tests) whenever the machine was busy with
+    // something else, e.g. an npm install finishing in another terminal. Tests
+    // that normally finish in under 30ms reported "timed out in 5000ms", in
+    // consecutive runs, which is the shape of the whole worker process being
+    // descheduled rather than of any one test being slow.
+    //
+    // It was hunted before it was widened, and the number below comes out of
+    // what that hunt measured. Ruled out, each by reproduction rather than by
+    // argument: cache-directory size (a 268-entry run-cache moved the file's
+    // total test time 155ms -> 188ms), memory pressure (swap was never touched,
+    // MemAvailable never fell below 3.2GB), CPU starvation (all 8 cores pegged
+    // for a whole run: zero failures, slowest test 65ms), a cold transform cache
+    // (zero failures), heavy concurrent /tmp I/O (zero failures, slowest test
+    // 30ms), and the real `mintRunId` disk writes those tests perform (all 68
+    // write cycles together cost 2.6ms). The triage path contains no timer, no
+    // sleep and no deadline-polling loop, so nothing there can wait at all.
+    //
+    // That is what makes a wider budget honest here rather than a way of hiding
+    // a defect. Across 29,416 passing observations in 8 full runs the slowest
+    // healthy test was 1321ms and only 2 exceeded 1000ms, so no legitimate test
+    // lives anywhere near this number. And because nothing in the suite can
+    // deliberately wait, a genuine hang is unbounded: it still fails, just later.
+    // There is no failure mode that takes between 1.3s and 30s, which is exactly
+    // the band this widening gives away.
+    testTimeout: 30_000,
     // Reset every mock to a clean slate before each test.
     //
     // Vitest 4 split what vitest 3's `restoreMocks` did alone. In v3,
