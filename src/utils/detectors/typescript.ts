@@ -127,7 +127,38 @@ function installedVitestMajor(workspaceRoot: string): number | null {
  * The runner declares `vitest: >=2.0.0` as a peer. Below that, the native
  * runner is not supported and the command runner is the compatible path.
  */
-const MIN_NATIVE_VITEST_MAJOR = 2;
+export const MIN_NATIVE_VITEST_MAJOR = 2;
+
+/**
+ * Highest vitest major that `@stryker-mutator/vitest-runner` is VERIFIED to
+ * drive correctly.
+ *
+ * The runner's declared peer range is an open `vitest: >=2.0.0`, which is a
+ * claim rather than a guarantee, so this ceiling is measured instead. Above it
+ * the command runner is the compatible path.
+ *
+ * Why a ceiling exists at all: on vitest 5, `vitest-runner@10.0.0` reports every
+ * mutant as Survived. It does not throw, and the dry run SUCCEEDS, so no error
+ * classifier and no dry-run fallback can catch it. One fixture, one variable
+ * changed:
+ *
+ *     native runner,  vitest 4.1.11  ->  Killed, Killed, Survived, Killed, Killed
+ *     native runner,  vitest 5.0.1   ->  Survived x5
+ *     command runner, vitest 5.0.1   ->  Killed, Killed, Survived, Killed, Killed
+ *
+ * A survivor is a coverage hole in this tool's vocabulary, so the native runner
+ * turns a healthy vitest 5 suite into a total false-positive flood presented
+ * with full confidence. That is the one failure mode a mutation-testing tool
+ * must never have, and it outranks what the fallback costs: the command runner
+ * grades a black-box exit code, which forces `coverageAnalysis: 'off'` and
+ * re-runs the related-test set per mutant. Slower and correct beats fast and
+ * wrong.
+ *
+ * Raise this the same way the floor was relaxed, on measured evidence: run a
+ * fixture with a known Killed/Survived split on the new major and confirm the
+ * split survives the native runner.
+ */
+export const MAX_NATIVE_VITEST_MAJOR = 4;
 
 /**
  * Map a raw runner name to a Stryker-compatible value.
@@ -152,15 +183,34 @@ const MIN_NATIVE_VITEST_MAJOR = 2;
  *   - vitest 4.1.11 — this repo's own suite, plus src/__tests__/e2e-stryker.test.ts
  *   - vitest 3.2.7  — a standalone fixture: 4 killed, 1 survived, 80% score
  *
- * The floor that remains is the runner's own declared peer range, not a guess.
+ * What the range became is a measured window rather than a one-sided floor. The
+ * floor is the runner's own declared peer range; the ceiling is
+ * {@link MAX_NATIVE_VITEST_MAJOR}, which exists because the declared range is an
+ * open `>=2.0.0` that vitest 5 falsifies. Both ends now say the same thing: a
+ * major is supported when someone has run mutants through it, not when a peer
+ * range permits it.
  */
 function toStrykerRunner(raw: string, workspaceRoot: string): string {
   if (raw === 'bun' || raw === 'node:test') return 'command';
-  if (raw === 'vitest') {
-    const major = installedVitestMajor(workspaceRoot);
-    if (major !== null && major < MIN_NATIVE_VITEST_MAJOR) return 'command';
-  }
+  if (raw === 'vitest' && unsupportedNativeVitestMajor(workspaceRoot) !== null) return 'command';
   return raw;
+}
+
+/**
+ * The installed vitest MAJOR when it sits outside the range
+ * `@stryker-mutator/vitest-runner` is verified against, or null when it is in
+ * range or cannot be determined.
+ *
+ * Shared so the detector and the engine cannot drift: the detector routes an
+ * out-of-range workspace to the command runner, and the engine uses the same
+ * answer to warn an operator who pinned `testRunner: 'vitest'` in config and so
+ * bypassed that routing. Returning the number rather than a boolean is what lets
+ * the warning name the version the operator actually has.
+ */
+export function unsupportedNativeVitestMajor(workspaceRoot: string): number | null {
+  const major = installedVitestMajor(workspaceRoot);
+  if (major === null) return null;
+  return major < MIN_NATIVE_VITEST_MAJOR || major > MAX_NATIVE_VITEST_MAJOR ? major : null;
 }
 
 /**

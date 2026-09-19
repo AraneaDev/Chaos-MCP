@@ -341,6 +341,50 @@ describe('detectJsTestRunner', () => {
         expect(detectJsTestRunner('/workspace')).toBe('vitest');
       });
 
+      it('falls back to the command runner above the verified range (vitest 5)', () => {
+        // Measured, not assumed: `@stryker-mutator/vitest-runner@10.0.0` reports
+        // every mutant as Survived under vitest 5. The dry run SUCCEEDS and no
+        // error is raised, so nothing downstream can notice. One fixture, one
+        // variable changed:
+        //   native runner, vitest 4.1.11 -> Killed, Killed, Survived, Killed, Killed
+        //   native runner, vitest 5.0.1  -> Survived x5
+        //   command runner, vitest 5.0.1 -> Killed, Killed, Survived, Killed, Killed
+        // A survivor is a coverage hole in this tool's vocabulary, so the native
+        // runner turns a healthy vitest 5 suite into a total false-positive
+        // flood. The command runner costs per-mutant coverage analysis; it does
+        // not cost correctness.
+        mockReadFileSync.mockImplementation((p) => {
+          const s = String(p);
+          if (s === join('/workspace', 'node_modules', 'vitest', 'package.json')) {
+            return JSON.stringify({ version: '5.0.1' });
+          }
+          if (s === join('/workspace', 'package.json')) {
+            return JSON.stringify({ devDependencies: { vitest: '^5.0.1' } });
+          }
+          throw new Error('ENOENT');
+        });
+
+        expect(detectJsTestRunner('/workspace')).toBe('command');
+      });
+
+      it('falls back to the command runner on a vitest major beyond 5', () => {
+        // The gate is a ceiling, not an equality check on 5. A major nobody has
+        // tested against the runner is unverified by definition, so it takes the
+        // same safe path until someone measures it and raises the ceiling.
+        mockReadFileSync.mockImplementation((p) => {
+          const s = String(p);
+          if (s === join('/workspace', 'node_modules', 'vitest', 'package.json')) {
+            return JSON.stringify({ version: '6.2.0' });
+          }
+          if (s === join('/workspace', 'package.json')) {
+            return JSON.stringify({ devDependencies: { vitest: '^6.0.0' } });
+          }
+          throw new Error('ENOENT');
+        });
+
+        expect(detectJsTestRunner('/workspace')).toBe('command');
+      });
+
       it('keeps the native vitest runner when the installed vitest major is 2', () => {
         mockReadFileSync.mockImplementation((p) => {
           const s = String(p);
@@ -406,21 +450,29 @@ describe('detectJsTestRunner', () => {
       });
 
       it('reads a multi-digit vitest major, not just its first character', () => {
-        // `version.split('.')` — split on the empty string instead and version
-        // "12.0.0" reads as major 1, dropping a modern vitest onto the command
-        // runner it does not need.
+        // `version.split('.')`: split on the empty string instead and "40.0.0"
+        // reads as major 4, which sits INSIDE the supported range and hands a
+        // wholly unverified vitest to the native runner.
+        //
+        // The fixture is chosen so the two parses disagree. Version "12.0.0"
+        // used to serve here, back when the range had a floor and no ceiling; a
+        // first-character read made it major 1 and the assertion caught it. With
+        // a ceiling at MAX_NATIVE_VITEST_MAJOR both 1 and 12 fall outside the
+        // range, so 12 can no longer tell a correct parse from a broken one.
+        // "40.0.0" restores the discrimination on the other side of the range:
+        // 40 is above the ceiling, 4 is not.
         mockReadFileSync.mockImplementation((p) => {
           const s = String(p);
           if (s === join('/workspace', 'node_modules', 'vitest', 'package.json')) {
-            return JSON.stringify({ version: '12.0.0' });
+            return JSON.stringify({ version: '40.0.0' });
           }
           if (s === join('/workspace', 'package.json')) {
-            return JSON.stringify({ devDependencies: { vitest: '^12.0.0' } });
+            return JSON.stringify({ devDependencies: { vitest: '^40.0.0' } });
           }
           throw new Error('ENOENT');
         });
 
-        expect(detectJsTestRunner('/workspace')).toBe('vitest');
+        expect(detectJsTestRunner('/workspace')).toBe('command');
       });
 
       it('finds a vitest hoisted to a monorepo root (ancestor node_modules)', () => {
