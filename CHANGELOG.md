@@ -2,6 +2,14 @@
 
 All notable changes to Chaos-MCP are documented in this file.
 
+## [5.1.2](https://github.com/AraneaDev/Chaos-MCP/compare/v5.1.1...v5.1.2) (2026-09-19)
+
+
+### Fixes
+
+* ignore release configuration changes ([#94](https://github.com/AraneaDev/Chaos-MCP/issues/94)) ([c742b0f](https://github.com/AraneaDev/Chaos-MCP/commit/c742b0fb623114ee4f172d275bf00ccec3a40a99))
+* **typescript:** route vitest 5 projects to the command runner ([#96](https://github.com/AraneaDev/Chaos-MCP/issues/96)) ([9d7579d](https://github.com/AraneaDev/Chaos-MCP/commit/9d7579d18823b3db2ab60978ac1a57a925fb6378))
+
 ## [5.1.1](https://github.com/AraneaDev/Chaos-MCP/compare/v5.1.0...v5.1.1) (2026-09-16)
 
 
