@@ -2,6 +2,13 @@
 
 All notable changes to Chaos-MCP are documented in this file.
 
+## [5.1.4](https://github.com/AraneaDev/Chaos-MCP/compare/v5.1.3...v5.1.4) (2026-09-25)
+
+
+### Fixes
+
+* **triage:** stop the memory gate from stalling a sweep that has nothing running ([#101](https://github.com/AraneaDev/Chaos-MCP/issues/101)) ([0fe2fc0](https://github.com/AraneaDev/Chaos-MCP/commit/0fe2fc05d698d0980e7fe851bda52ee5cfa3e607))
+
 ## [5.1.3](https://github.com/AraneaDev/Chaos-MCP/compare/v5.1.2...v5.1.3) (2026-09-25)
 
 
