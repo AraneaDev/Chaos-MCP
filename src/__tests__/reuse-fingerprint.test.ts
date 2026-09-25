@@ -1,12 +1,16 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { computeFingerprint } from '../utils/reuse/fingerprint.js';
 import { computePhpReuseFingerprint, resolveMutationToolIdentity } from '../audit/audit-file.js';
 
-function gitStub(opts: { lsFiles: string; status?: string; failing?: boolean }) {
+function gitStub(opts: { lsFiles: string; modified?: string; failing?: boolean }) {
   return async (args: string[]) => {
     if (opts.failing) throw new Error('fatal: not a git repository');
+    if (args[0] === 'ls-files' && args[1] === '-m') return { stdout: opts.modified ?? '' };
     if (args[0] === 'ls-files') return { stdout: opts.lsFiles };
-    if (args[0] === 'status') return { stdout: opts.status ?? '' };
     return { stdout: '' };
   };
 }
@@ -40,7 +44,7 @@ describe('computeFingerprint', () => {
     const before = await computeFingerprint({ ...base, run: gitStub({ lsFiles: clean }) });
     const after = await computeFingerprint({
       ...base,
-      run: gitStub({ lsFiles: clean, status: ' M tests/test_calc.py\n' }),
+      run: gitStub({ lsFiles: clean, modified: 'tests/test_calc.py\n' }),
       readFile: () => 'edited content',
     });
     expect(after).not.toBe(before);
@@ -64,7 +68,7 @@ describe('computeFingerprint', () => {
     const a = await computeFingerprint({ ...base, run: gitStub({ lsFiles: clean }) });
     const b = await computeFingerprint({
       ...base,
-      run: gitStub({ lsFiles: clean, status: ' M README.md\n' }),
+      run: gitStub({ lsFiles: clean, modified: 'README.md\n' }),
       readFile: () => 'unrelated',
     });
     expect(a).toBe(b);
@@ -82,6 +86,77 @@ describe('computeFingerprint', () => {
       readFile: () => undefined,
     });
     expect(fp).toBeUndefined();
+  });
+});
+
+describe('computeFingerprint against a real git repository', () => {
+  let repo: string;
+
+  function git(...args: string[]) {
+    execFileSync('git', args, { cwd: repo, stdio: 'pipe' });
+  }
+
+  beforeEach(() => {
+    repo = mkdtempSync(join(tmpdir(), 'chaos-fingerprint-'));
+    git('init', '-q');
+    git('config', 'user.name', 'test');
+    git('config', 'user.email', 'test@example.invalid');
+    git('config', 'commit.gpgsign', 'false');
+    mkdirSync(join(repo, 'sub'));
+    writeFileSync(join(repo, 'sub', 'a.py'), 'x = 1\n');
+    git('add', '.');
+    git('commit', '-q', '-m', 'init');
+  });
+
+  afterEach(() => {
+    rmSync(repo, { recursive: true, force: true });
+  });
+
+  const inSub = () => ({ workspaceRoot: join(repo, 'sub'), paths: ['a.py'], extra: {} });
+
+  it('changes when a tracked file is edited in a workspace below the repo root', async () => {
+    const before = await computeFingerprint(inSub());
+    writeFileSync(join(repo, 'sub', 'a.py'), 'x = 2\n');
+    const after = await computeFingerprint(inSub());
+    expect(before).toBeDefined();
+    expect(after).toBeDefined();
+    expect(after).not.toBe(before);
+  });
+
+  it('changes when an edit is staged but not committed', async () => {
+    const before = await computeFingerprint(inSub());
+    writeFileSync(join(repo, 'sub', 'a.py'), 'x = 2\n');
+    git('add', 'sub/a.py');
+    const after = await computeFingerprint(inSub());
+    expect(after).toBeDefined();
+    expect(after).not.toBe(before);
+  });
+
+  it('hashes an untracked file by its content', async () => {
+    writeFileSync(join(repo, 'sub', 'b.py'), 'y = 1\n');
+    const input = { workspaceRoot: join(repo, 'sub'), paths: ['b.py'], extra: {} };
+    const before = await computeFingerprint(input);
+    writeFileSync(join(repo, 'sub', 'b.py'), 'y = 2\n');
+    const after = await computeFingerprint(input);
+    expect(before).toBeDefined();
+    expect(after).toBeDefined();
+    expect(after).not.toBe(before);
+  });
+
+  it('returns undefined when a covered tracked file has been deleted', async () => {
+    rmSync(join(repo, 'sub', 'a.py'));
+    expect(await computeFingerprint(inSub())).toBeUndefined();
+  });
+
+  it('changes when a tracked file is edited in a workspace at the repo root', async () => {
+    const input = { workspaceRoot: repo, paths: ['sub/a.py'], extra: {} };
+    const before = await computeFingerprint(input);
+    const unchanged = await computeFingerprint(input);
+    writeFileSync(join(repo, 'sub', 'a.py'), 'x = 2\n');
+    const after = await computeFingerprint(input);
+    expect(before).toBeDefined();
+    expect(unchanged).toBe(before);
+    expect(after).not.toBe(before);
   });
 });
 

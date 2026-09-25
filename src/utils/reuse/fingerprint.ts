@@ -44,17 +44,6 @@ function parseTrackedFiles(output: string): Map<string, string> {
   return tracked;
 }
 
-function statusPaths(output: string): Set<string> {
-  const paths = new Set<string>();
-  for (const line of output.split('\n')) {
-    if (line.length < 4) continue;
-    const path = line.slice(3);
-    const rename = path.lastIndexOf(' -> ');
-    paths.add(rename >= 0 ? path.slice(rename + 4) : path);
-  }
-  return paths;
-}
-
 /** A hex digest, or undefined when a sound fingerprint cannot be computed. */
 export async function computeFingerprint(input: FingerprintInput): Promise<string | undefined> {
   const paths = [...new Set(input.paths)].sort();
@@ -62,12 +51,17 @@ export async function computeFingerprint(input: FingerprintInput): Promise<strin
   const read = input.readFile ?? defaultReadFile;
 
   try {
-    const [lsFiles, status] = await Promise.all([
+    // Both calls print paths relative to the cwd, so they match `paths` even
+    // when the workspace is a subdirectory of the repository. `git status`
+    // prints repository-root-relative paths and never matched there.
+    // `ls-files -m` lists files whose worktree differs from the index,
+    // deletions included; staged edits already show up as a new index blob.
+    const [lsFiles, modified] = await Promise.all([
       run(['ls-files', '-s', '--', ...paths], input.workspaceRoot),
-      run(['status', '--porcelain', '--', ...paths], input.workspaceRoot),
+      run(['ls-files', '-m', '--', ...paths], input.workspaceRoot),
     ]);
     const tracked = parseTrackedFiles(lsFiles.stdout);
-    const changed = statusPaths(status.stdout);
+    const changed = new Set(modified.stdout.split('\n').filter((line) => line.length > 0));
     const hash = createHash('sha256');
     for (const path of paths) {
       hash.update(`path\0${path}\0`);
