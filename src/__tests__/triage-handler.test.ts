@@ -901,8 +901,14 @@ describe('handleTriageCall', () => {
 
       await handleTriageCall(req({ paths: ['src'], fileConcurrency: 1 }), undefined, ctx);
 
-      expect(ctx.reportProgress).toHaveBeenCalledTimes(1);
-      expect(ctx.reportProgress).toHaveBeenCalledWith(1, 3, 'audited 1/3');
+      // a.ts and b.ts both announce their start before the abort lands inside
+      // b.ts; c.ts never announces, and nothing after the abort completes.
+      const messages = ctx.reportProgress.mock.calls.map((c) => c[2] as string);
+      expect(messages).toEqual([
+        'auditing a.ts (0/3 done)',
+        'audited 1/3',
+        'auditing b.ts (1/3 done)',
+      ]);
     });
 
     it('reports a cancelled sandbox as a cancel, not a provisioning failure', async () => {
@@ -1641,14 +1647,15 @@ describe('handleTriageCall ctx: progress + cancellation', () => {
     const calls: [number, number | undefined, string | undefined][] = [];
     const ctx = {
       reportProgress: vi.fn((progress: number, total?: number, message?: string) => {
-        calls.push([progress, total, message]);
+        // Completions only: each file also announces its start.
+        if (message?.startsWith('audited ')) calls.push([progress, total, message]);
       }),
     };
 
     await handleTriageCall(req({ paths: ['src'] }), undefined, ctx);
 
-    // One call per file.
-    expect(ctx.reportProgress).toHaveBeenCalledTimes(3);
+    // One completion per file.
+    expect(calls).toHaveLength(3);
     // total is always 3 (the discovered file count).
     expect(calls.every(([, total]) => total === 3)).toBe(true);
     // done values are 1, 2, 3 (in some order — pool may interleave, but sequentially
@@ -1684,15 +1691,16 @@ describe('handleTriageCall ctx: progress + cancellation', () => {
 
     const calls: [number, number | undefined][] = [];
     const ctx = {
-      reportProgress: vi.fn((progress: number, total?: number) => {
-        calls.push([progress, total]);
+      reportProgress: vi.fn((progress: number, total?: number, message?: string) => {
+        // Completions only: each file also announces its start.
+        if (message?.startsWith('audited ')) calls.push([progress, total]);
       }),
     };
 
     const res = await handleTriageCall(req({ paths: ['src'] }), undefined, ctx);
 
-    // All three files errored, so reportProgress fires 3 times.
-    expect(ctx.reportProgress).toHaveBeenCalledTimes(3);
+    // All three files errored, so a completion is still reported 3 times.
+    expect(calls).toHaveLength(3);
     // Done values must be 1, 2, 3 (in that sequential order).
     const dones = calls.map(([d]) => d);
     expect(dones).toEqual([1, 2, 3]);

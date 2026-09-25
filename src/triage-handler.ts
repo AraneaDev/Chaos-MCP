@@ -102,6 +102,14 @@ const RESOURCE_EXHAUSTED_ROW_MESSAGE =
  */
 const RETRIED_BASELINE_FAILURE_NOTE = '(Retried once at file concurrency 1; failed again.)';
 
+/**
+ * How often a running sweep reports progress even when no file has started or
+ * finished. MCP clients abort a call that sends nothing for too long (Claude
+ * Code's idle limit is 30 minutes), and one grouped unit, a long file, or a
+ * wait on the memory gate can easily outlast a single-file audit.
+ */
+const PROGRESS_HEARTBEAT_MS = 30_000;
+
 async function prepareSweepPhpCoverage(
   files: string[],
   rootCwd: string,
@@ -364,6 +372,27 @@ export async function handleTriageCall(
     // concurrent pool is race-free (completions arrive one event-loop turn at a time).
     let done = 0;
     const total = files.length;
+    // MCP requires every progress value to be larger than the last. A file
+    // finishing reports the whole number `done`; a file starting and the
+    // heartbeat move halfway from the last value towards `done + 1`, so they
+    // always land strictly between two completions. Progress stops the moment
+    // the request is abandoned, for work nobody is waiting for.
+    let lastProgress = 0;
+    const reportProgress = (progress: number, message: string) => {
+      if (ctx?.signal?.aborted) return;
+      lastProgress = progress;
+      // The retry pass runs after every file has already been counted, so a
+      // heartbeat there can pass `total`; leave `total` off rather than claim
+      // more than 100%.
+      ctx?.reportProgress?.(progress, progress <= total ? total : undefined, message);
+    };
+    const reportActivity = (message: string) =>
+      reportProgress(lastProgress + (done + 1 - lastProgress) / 2, message);
+    const announce = (unitFiles: string[]) =>
+      reportActivity(`auditing ${unitFiles.join(', ')} (${done}/${total} done)`);
+    // Set when a unit ran out of time waiting on the memory gate, so the result
+    // can say memory, not only time, is why files went unaudited.
+    let heldForMemory = false;
 
     // Size this sweep to the memory the machine actually has (Task 8): never
     // RAISES what the CPU-only math already chose (poolSize / the per-file
@@ -430,6 +459,8 @@ export async function handleTriageCall(
       criticalFloorBytes: cfg.resources?.criticalFloorBytes,
     });
     resourcesForCatch = resources;
+    // eslint-disable-next-line @typescript-eslint/no-empty-function
+    let stopHeartbeat = () => {};
 
     try {
       // Estimated memory one file's engine run will hold: the engine's fixed
@@ -471,9 +502,18 @@ export async function handleTriageCall(
         // notifications for work nobody is waiting for, right up to 25/25.
         onProgress: () => {
           if (ctx?.signal?.aborted) return;
-          ctx?.reportProgress?.(++done, total, `audited ${done}/${total}`);
+          ++done;
+          reportProgress(done, `audited ${done}/${total}`);
         },
       };
+
+      const heartbeat = setInterval(
+        () => reportActivity(`still running, audited ${done}/${total}`),
+        PROGRESS_HEARTBEAT_MS,
+      );
+      // Never hold the process open for a progress timer.
+      heartbeat.unref?.();
+      stopHeartbeat = () => clearInterval(heartbeat);
 
       // PHP coverage is project-wide, so generate it once before any PHP files
       // enter the parallel pool. A failed or budget-exhausted producer simply
@@ -496,13 +536,15 @@ export async function handleTriageCall(
       // this same closure): `deadline.remainingMs` shrinks as the sweep
       // proceeds, and `AbortSignal.timeout` needs the CURRENT remaining
       // duration, not the one computed when the sweep started.
-      const admit = (unit: SweepUnit) => {
+      const admit = async (unit: SweepUnit) => {
         const remainingMs = deadline.remainingMs(TRIAGE_CLEANUP_RESERVE_MS);
-        if (remainingMs <= 0) return Promise.resolve('cancelled' as const);
+        if (remainingMs <= 0) return 'cancelled' as const;
         const deadlineSignal = AbortSignal.timeout(remainingMs);
         const signal = ctx?.signal ? AbortSignal.any([ctx.signal, deadlineSignal]) : deadlineSignal;
         const cost = unit.kind === 'group' ? perFileCost * unit.files.length : perFileCost;
-        return resources.watchdog.admit(cost, signal);
+        const admitted = await resources.watchdog.admit(cost, signal);
+        if (admitted === 'cancelled' && deadlineSignal.aborted) heldForMemory = true;
+        return admitted;
       };
 
       // Governance lowers `poolSize` down to `resources.budget.fileConcurrency`
@@ -518,6 +560,7 @@ export async function handleTriageCall(
         sweepUnits,
         resources.budget.fileConcurrency,
         async (unit): Promise<TriageAuditOutcome[]> => {
+          announce(unit.kind === 'single' ? [unit.file] : unit.files);
           if (unit.kind === 'single') return [await auditTriageFile(unit.file, deps)];
           const grouped = await auditTriageGroup(unit, deps);
           if (grouped.kind === 'split') {
@@ -539,6 +582,7 @@ export async function handleTriageCall(
               fallback.push({ unaudited: file });
               continue;
             }
+            announce([file]);
             fallback.push(await auditTriageFile(file, deps));
           }
           return fallback;
@@ -687,8 +731,10 @@ export async function handleTriageCall(
         minScore,
         outputFormat,
         resources.report(),
+        heldForMemory,
       );
     } finally {
+      stopHeartbeat();
       resources.dispose();
     }
   } catch (error: unknown) {
@@ -771,6 +817,7 @@ function triageResult(
   minScore: number | undefined,
   outputFormat: 'text' | 'json',
   resources?: ResourcesPayload,
+  heldForMemory = false,
 ): CallToolResult {
   const payload = buildTriagePayload(
     ranking,
@@ -781,6 +828,7 @@ function triageResult(
     minScore,
     unaudited,
     resources,
+    heldForMemory,
   );
   const text = outputFormat === 'text' ? formatTriageAsText(payload) : JSON.stringify(payload);
   return {

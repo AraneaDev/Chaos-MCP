@@ -104,9 +104,9 @@ export function createWatchdog(options: WatchdogOptions): Watchdog {
     if (snapshot.source === 'unavailable') return;
     while (waiting.length > 0) {
       const next = waiting[0];
-      if (snapshot.availableBytes - next.costBytes - reservedBytes < options.admissionBytes) {
-        break;
-      }
+      // The lease each admission below creates keeps `mayRunAlone` false for
+      // every later waiter in the same drain.
+      if (!fits(snapshot, next.costBytes) && !mayRunAlone(snapshot)) break;
       waiting.shift();
       next.cleanup?.();
       // Reserve THIS waiter's cost immediately, before resolving the next one
@@ -122,6 +122,27 @@ export function createWatchdog(options: WatchdogOptions): Watchdog {
       );
       next.resolve('admitted');
     }
+  }
+
+  function fits(snapshot: MemorySnapshot, costBytes: number): boolean {
+    return snapshot.availableBytes - costBytes - reservedBytes >= options.admissionBytes;
+  }
+
+  // A run that does not fit is still admitted when nothing this watchdog
+  // governs is live: waiting then only waits for memory no run of ours will
+  // ever release, so a sweep whose single unit costs more than the machine
+  // has free sat out its whole deadline with no child process alive. A lone
+  // run is no riskier than the single-file audit, which never waits at all,
+  // and the critical stop still aborts it if memory really runs out. Below
+  // the critical floor it would be stopped on the next tick, so it keeps
+  // waiting there. An unclaimed admission lease is a run about to start, so it
+  // counts as live: callers register the moment they are admitted.
+  function mayRunAlone(snapshot: MemorySnapshot): boolean {
+    return (
+      live.length === 0 &&
+      unclaimedLeasesByCost.size === 0 &&
+      snapshot.availableBytes >= options.criticalBytes
+    );
   }
 
   const timer = setInterval(() => api.tick(), options.intervalMs ?? DEFAULT_INTERVAL_MS);
@@ -173,10 +194,9 @@ export function createWatchdog(options: WatchdogOptions): Watchdog {
     admit(costBytes, signal) {
       const snapshot = options.probe();
       if (snapshot.source === 'unavailable') return Promise.resolve('admitted');
-      if (snapshot.availableBytes - costBytes - reservedBytes >= options.admissionBytes) {
-        return Promise.resolve('admitted');
-      }
+      if (fits(snapshot, costBytes)) return Promise.resolve('admitted');
       if (signal?.aborted) return Promise.resolve('cancelled');
+      if (waiting.length === 0 && mayRunAlone(snapshot)) return Promise.resolve('admitted');
 
       return new Promise((resolve) => {
         const entry: WaitingEntry = {
