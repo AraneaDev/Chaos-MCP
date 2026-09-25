@@ -562,6 +562,26 @@ export async function auditTriageFile(
   let handle: { release(): void } | undefined;
   let abortRequest: (() => void) | undefined;
   try {
+    // Linked to the request's own signal (a user cancel must still stop this
+    // file) but distinct from it, so a watchdog-triggered abort never flips
+    // `ctx.signal.aborted` and is never mistaken for a user cancel in the
+    // catch below. Mirrors the single-file audit's wiring in handler.ts
+    // (Task 7); `deps.watchdog` is undefined only for a caller exercising
+    // this function without a sweep behind it, in which case registration is
+    // a no-op and this file behaves exactly as it did before Task 8.
+    //
+    // Registered FIRST, synchronously on entry and before every early return:
+    // `register()` is what hands back the admission lease this file was
+    // admitted on, and the watchdog treats an unclaimed lease as a run about
+    // to start. Registering later (after the git calls in `resolveDiffScope`,
+    // and never on the early returns) left that lease charged for seconds, or
+    // for the rest of the sweep. It also puts the sandbox copy under the
+    // watchdog (IMPORTANT 5).
+    engineController = new AbortController();
+    abortRequest = () => engineController?.abort(ctx?.signal?.reason);
+    ctx?.signal?.addEventListener('abort', abortRequest, { once: true });
+    handle = deps.watchdog?.register(engineController, deps.perFileCostBytes);
+
     // Skip not-yet-started files quickly when already cancelled. (Task 6)
     if (ctx?.signal?.aborted) {
       return { error: { file, error: 'Operation cancelled.' } };
@@ -602,23 +622,6 @@ export async function auditTriageFile(
     // argument `resolveGatedPrebuild` gates everywhere else (audit Med#10).
     const prebuildCmd = resolvePrebuildCommand(undefined, env, projectType);
     const scope = await resolveDiffScope(targetFile, env, projectType, fileBudgetMs, deps);
-
-    // Linked to the request's own signal (a user cancel must still stop this
-    // file) but distinct from it, so a watchdog-triggered abort never flips
-    // `ctx.signal.aborted` and is never mistaken for a user cancel in the
-    // catch below. Mirrors the single-file audit's wiring in handler.ts
-    // (Task 7); `deps.watchdog` is undefined only for a caller exercising
-    // this function without a sweep behind it, in which case registration is
-    // a no-op and this file behaves exactly as it did before Task 8.
-    //
-    // Registered BEFORE sandbox creation (IMPORTANT 5) so a memory trip
-    // during the copy uses the same abort path as a cancel, registering only
-    // once the sandbox already existed left that whole phase outside the
-    // watchdog's reach.
-    engineController = new AbortController();
-    abortRequest = () => engineController?.abort(ctx?.signal?.reason);
-    ctx?.signal?.addEventListener('abort', abortRequest, { once: true });
-    handle = deps.watchdog?.register(engineController, deps.perFileCostBytes);
 
     // audit C1: await the async createSandbox; forward the GOVERNED signal
     // (linked to `ctx.signal` above) so a mid-copy cancel OR a watchdog trip

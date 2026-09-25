@@ -124,8 +124,12 @@ export interface TriagePayload {
    * for these, so the ranking does not describe them.
    */
   unaudited?: string[];
-  /** Machine-readable reason the sweep stopped early. */
-  stoppedReason?: 'time_budget_exhausted';
+  /**
+   * Machine-readable reason the sweep stopped early. `insufficient_memory`
+   * when at least one unaudited file ran out of time waiting on the memory
+   * admission gate rather than never being reached.
+   */
+  stoppedReason?: 'time_budget_exhausted' | 'insufficient_memory';
   /** Gate result — only present when minScore is supplied. A failing gate is never an error. */
   gate?: {
     minScore: number;
@@ -163,6 +167,7 @@ export function buildTriagePayload(
   minScore?: number,
   unaudited: string[] = [],
   resources?: ResourcesPayload,
+  heldForMemory = false,
 ): TriagePayload {
   const payload: TriagePayload = {
     mode: 'triage',
@@ -180,8 +185,13 @@ export function buildTriagePayload(
   if (unaudited.length > 0) {
     payload.summary.filesUnaudited = unaudited.length;
     payload.unaudited = unaudited;
-    payload.stoppedReason = 'time_budget_exhausted';
-    payload.note += ` ${unaudited.length} file(s) were not audited before the time budget ran out — raise totalTimeoutMs or narrow the paths.`;
+    if (heldForMemory) {
+      payload.stoppedReason = 'insufficient_memory';
+      payload.note += ` ${unaudited.length} file(s) were not audited: the time budget ran out while the memory gate held them back for lack of free memory. Free up memory, lower fileConcurrency, or raise totalTimeoutMs.`;
+    } else {
+      payload.stoppedReason = 'time_budget_exhausted';
+      payload.note += ` ${unaudited.length} file(s) were not audited before the time budget ran out — raise totalTimeoutMs or narrow the paths.`;
+    }
   }
   if (scopeNote) payload.scopeNote = scopeNote;
   // Aggregate the per-row un-applied suppressions into one sweep-level sentence
@@ -362,7 +372,9 @@ export function formatTriageAsText(payload: TriagePayload): string {
   }
   if (unaudited.length > 0) {
     lines.push(
-      `Not audited (time budget exhausted — raise totalTimeoutMs or narrow the paths): ${unaudited.length}`,
+      payload.stoppedReason === 'insufficient_memory'
+        ? `Not audited (held back for lack of free memory until the time budget ran out): ${unaudited.length}`
+        : `Not audited (time budget exhausted — raise totalTimeoutMs or narrow the paths): ${unaudited.length}`,
     );
     for (const f of unaudited) lines.push(`  ${f}`);
   }

@@ -34,6 +34,27 @@ export async function auditTriageGroup(
   unit: GroupUnit,
   deps: TriageFileDeps,
 ): Promise<GroupOutcome> {
+  // Registered on entry, before any early return, for the same reason as
+  // `auditTriageFile`: `register()` hands back the admission lease this unit
+  // was admitted on, and a lease left unclaimed keeps the watchdog from ever
+  // seeing the sweep as idle.
+  const controller = new AbortController();
+  const handle = deps.watchdog?.register(
+    controller,
+    (deps.perFileCostBytes ?? 0) * unit.files.length,
+  );
+  try {
+    return await runGroupUnit(unit, deps, controller);
+  } finally {
+    handle?.release();
+  }
+}
+
+async function runGroupUnit(
+  unit: GroupUnit,
+  deps: TriageFileDeps,
+  controller: AbortController,
+): Promise<GroupOutcome> {
   if (unit.files.length < 2) return { kind: 'contain', reason: 'group has fewer than two files' };
   const targets = new Map<string, ResolvedTarget>();
   for (const file of unit.files) {
@@ -86,7 +107,6 @@ export async function auditTriageGroup(
   const remaining = deps.deadline.remainingMs(deps.cleanupReserveMs);
   if (remaining < 1_000) return { kind: 'contain', reason: 'group time budget exhausted' };
   const groupTimeout = Math.min(remaining, perFileBudget * unit.files.length);
-  const controller = new AbortController();
   const deadlineSignal = AbortSignal.timeout(remaining);
   const abort = () =>
     controller.abort(
@@ -94,10 +114,6 @@ export async function auditTriageGroup(
     );
   deps.ctx?.signal?.addEventListener('abort', abort, { once: true });
   deadlineSignal.addEventListener('abort', abort, { once: true });
-  const handle = deps.watchdog?.register(
-    controller,
-    (deps.perFileCostBytes ?? 0) * unit.files.length,
-  );
   let sandbox: Awaited<ReturnType<typeof createSandbox>> | undefined;
   let executor: Awaited<ReturnType<typeof createExecutionSession>> | undefined;
   try {
@@ -173,7 +189,6 @@ export async function auditTriageGroup(
   } finally {
     await executor?.dispose();
     sandbox?.cleanup();
-    handle?.release();
     deps.ctx?.signal?.removeEventListener('abort', abort);
     deadlineSignal.removeEventListener('abort', abort);
   }

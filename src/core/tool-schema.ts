@@ -680,7 +680,7 @@ export const TRIAGE_TOOL_DEFINITION = {
       },
       errors: { type: 'array', items: { type: 'object' } },
       unaudited: { type: 'array', items: { type: 'string' } },
-      stoppedReason: { type: 'string', enum: ['time_budget_exhausted'] },
+      stoppedReason: { type: 'string', enum: ['time_budget_exhausted', 'insufficient_memory'] },
       scopeNote: { type: 'string' },
       note: { type: 'string' },
       // How this sweep sized itself to the machine's memory (Task 8), the same

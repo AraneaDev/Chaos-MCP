@@ -252,6 +252,65 @@ describe('watchdog', () => {
     expect(settled).toEqual(['a:admitted', 'b:admitted', 'c:admitted']);
   });
 
+  describe('with nothing else live', () => {
+    // A unit whose cost exceeds what is free, with no run of its own in flight,
+    // used to wait for memory that nothing it governs would ever release: the
+    // triage sweep sat on its deadline with no child process alive and never
+    // reported why. A lone run is no riskier than the single-file audit, which
+    // never waits at all; the critical stop still protects the machine.
+    const idleDog = (available: () => number) =>
+      createWatchdog({
+        probe: () => snap(available()),
+        criticalBytes: 0.5 * GIB,
+        admissionBytes: 1 * GIB,
+        now: () => 0,
+      });
+
+    it('admits a run whose cost exceeds what is free', async () => {
+      const dog = idleDog(() => 2.7 * GIB);
+      const controller = new AbortController();
+      const pending = dog.admit(6.5 * GIB, controller.signal);
+      controller.abort();
+      await expect(pending).resolves.toBe('admitted');
+    });
+
+    it('still waits while free memory is below the critical floor', async () => {
+      const dog = idleDog(() => 0.3 * GIB);
+      const controller = new AbortController();
+      const pending = dog.admit(1.5 * GIB, controller.signal);
+      controller.abort();
+      await expect(pending).resolves.toBe('cancelled');
+    });
+
+    it('admits a waiter the moment the last live run releases, even if it does not fit', async () => {
+      const dog = idleDog(() => 2.7 * GIB);
+      const running = dog.register(new AbortController(), 1.5 * GIB);
+      const controller = new AbortController();
+      const pending = dog.admit(6.5 * GIB, controller.signal);
+
+      running.release();
+      controller.abort();
+
+      await expect(pending).resolves.toBe('admitted');
+    });
+
+    it('admits only ONE oversized waiter per idle moment', async () => {
+      const dog = idleDog(() => 2.7 * GIB);
+      const running = dog.register(new AbortController(), 1.5 * GIB);
+      const first = new AbortController();
+      const second = new AbortController();
+      const a = dog.admit(6.5 * GIB, first.signal);
+      const b = dog.admit(6.5 * GIB, second.signal);
+
+      running.release();
+      first.abort();
+      second.abort();
+
+      await expect(a).resolves.toBe('admitted');
+      await expect(b).resolves.toBe('cancelled');
+    });
+  });
+
   it('sweeps an unclaimed admission lease on stop rather than leaking it (Finding 1)', async () => {
     // `a` is admitted (a lease is created) but its file never calls
     // `register()` at all, e.g. it turned out to be an unsupported project

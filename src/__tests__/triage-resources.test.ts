@@ -235,7 +235,10 @@ describe('triage_test_coverage resource governance', () => {
 
     // 3 files, never 4: b.ts's requeue must not report progress a second
     // time, or a 3-file sweep would print "audited 4/3".
-    expect(reportProgress).toHaveBeenCalledTimes(3);
+    const completions = reportProgress.mock.calls.filter((c) =>
+      String(c[2]).startsWith('audited '),
+    );
+    expect(completions).toHaveLength(3);
     expect(reportProgress).toHaveBeenLastCalledWith(3, 3, 'audited 3/3');
   });
 
