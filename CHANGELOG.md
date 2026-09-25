@@ -2,6 +2,13 @@
 
 All notable changes to Chaos-MCP are documented in this file.
 
+## [5.1.3](https://github.com/AraneaDev/Chaos-MCP/compare/v5.1.2...v5.1.3) (2026-09-25)
+
+
+### Fixes
+
+* **reuse:** match git status paths when the workspace is a repo subdirectory ([#99](https://github.com/AraneaDev/Chaos-MCP/issues/99)) ([f8e1c95](https://github.com/AraneaDev/Chaos-MCP/commit/f8e1c95288ee8f914881eca2092bec0438ceb227))
+
 ## [5.1.2](https://github.com/AraneaDev/Chaos-MCP/compare/v5.1.1...v5.1.2) (2026-09-19)
 
 
