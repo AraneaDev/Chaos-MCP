@@ -946,7 +946,10 @@ describe('RustEngine', () => {
     // Pin concurrency:1 so this assertion is deterministic regardless of the
     // host's CPU count (resolveCargoJobs would otherwise default to -j 2 on
     // machines with >=3 cores).
-    await engine.run('src/deeply/nested/module.rs', { workDir: '/tmp/x', concurrency: 1 });
+    await engine.run('src/deeply/nested/module.rs', {
+      workDir: '/nonexistent/chaos-rust-workdir',
+      concurrency: 1,
+    });
     expect(mockRunShell).toHaveBeenCalledWith(
       'cargo',
       [
@@ -956,7 +959,7 @@ describe('RustEngine', () => {
         '--file',
         'src/deeply/nested/module.rs',
       ],
-      expect.objectContaining({ cwd: '/tmp/x' }),
+      expect.objectContaining({ cwd: '/nonexistent/chaos-rust-workdir' }),
     );
   });
 
