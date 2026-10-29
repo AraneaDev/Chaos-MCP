@@ -43,7 +43,11 @@ jobs:
       matrix:
         language: [typescript, python, rust, php]
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # rust compiles cargo-mutants from source for amd64 and arm64, and arm64 runs
+    # under QEMU. Warm, the GHA cache makes that about a minute. Cold, it does not
+    # fit in 10 minutes, and since cache-to only writes on success, a cancelled
+    # build never warms the cache: the v5.1.5 images failed twice that way.
+    timeout-minutes: ${{ matrix.language == 'rust' && 45 || 10 }}
     steps:
       - uses: actions/checkout@v7
       - uses: docker/setup-qemu-action@v4
