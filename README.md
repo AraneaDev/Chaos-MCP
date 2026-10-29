@@ -103,7 +103,7 @@ a clear error naming the exact install command.
 
 | Language                | Engine                                                       | Install                                                                                                                                                                                                                                                                                                              |
 | ----------------------- | ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| TypeScript / JavaScript | [StrykerJS](https://stryker-mutator.io/)                     | `npm install --save-dev @stryker-mutator/core` (in the target project). For a vitest project, add `@stryker-mutator/vitest-runner` too, and Chaos-MCP will use it: vitest 2, 3 and 4 all run on the native runner, which enables per-mutant coverage. Anything else, vitest 5 included, falls back to Stryker's built-in command runner. |
+| TypeScript / JavaScript | [StrykerJS](https://stryker-mutator.io/)                     | `npm install --save-dev @stryker-mutator/core` (in the target project). For a vitest project, add `@stryker-mutator/vitest-runner` too, and Chaos-MCP will use it: vitest 2, 3 and 4 run on the native runner, which enables per-mutant coverage, and so does vitest 5 once `@stryker-mutator/vitest-runner` is 10.1.0 or later (install 10.1.1: 10.1.0 never reached npm). Anything else, vitest 5 with an older runner included, falls back to Stryker's built-in command runner. |
 | Python                  | [cosmic-ray](https://github.com/sixty-north/cosmic-ray)      | `pipx install cosmic-ray`, or `pip install cosmic-ray` inside a virtualenv                                                                                                                                                                                                                                           |
 | Rust                    | [cargo-mutants](https://github.com/sourcefrog/cargo-mutants) | `cargo install cargo-mutants`                                                                                                                                                                                                                                                                                        |
 | PHP                     | [Infection](https://infection.github.io/)                    | `composer require --dev infection/infection`, and enable a coverage driver (Xdebug or PCOV)                                                                                                                                                                                                                          |
@@ -684,18 +684,22 @@ Chaos-MCP detects the target's test runner from its config files, dependencies
 and `test` script, then maps it to something StrykerJS can drive. vitest 2, 3
 and 4 use StrykerJS's native `@stryker-mutator/vitest-runner`, which reports
 per-mutant coverage so only the tests that actually cover a mutant are run.
-Runners with no Stryker plugin (bun, `node:test`), and vitest outside the
-verified 2 to 4 window, fall back to Stryker's built-in command runner: it drives
-any framework as a black box, at the cost of re-running the whole related-test
-set for every mutant.
+vitest 5 uses it too, provided the installed runner is 10.1.0 or later.
+Runners with no Stryker plugin (bun, `node:test`), vitest outside the verified
+2 to 5 window, and vitest 5 with an older runner fall back to Stryker's built-in
+command runner: it drives any framework as a black box, at the cost of
+re-running the whole related-test set for every mutant.
 
-The upper end of that window is measured, not read off a peer range. The runner
-declares an open `vitest: >=2.0.0`, but on vitest 5 it reports **every mutant as
-Survived**: no error, and the dry run still succeeds. Since a survivor is how
+The window is measured, not read off a peer range. The runner declares an open
+`vitest: >=2.0.0`, but `vitest-runner` 10.0.0 on vitest 5 reports **every mutant
+as Survived**: no error, and the dry run still succeeds. Since a survivor is how
 this tool reports a coverage hole, that turns a healthy suite into a wall of
-false findings. vitest 5 projects therefore get the command runner, which was
-checked against the same fixture and returns the correct split. The window moves
-up again when a newer vitest is measured, not when a peer range permits it.
+false findings. StrykerJS 10.1.0 fixed it
+([stryker-js#6210](https://github.com/stryker-mutator/stryker-js/issues/6210)),
+and the fix was checked against a fixture with a known split: native 10.1.1 on
+vitest 5.0.5 returns the same killed and survived mutants as native 10.0.0 on
+vitest 4.1.11. The window moves up again when a newer vitest is measured, not
+when a peer range permits it.
 
 To override the detection, name the runner yourself:
 

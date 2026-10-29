@@ -1713,6 +1713,25 @@ describe('TypeScriptEngine', () => {
     expect(warned.some((m) => /vitest-runner/.test(m))).toBe(false);
   });
 
+  it('stays quiet when the pinned native vitest runner is new enough for vitest 5', async () => {
+    mockRunShell.mockResolvedValue(makeExecResult());
+    mockReadFileSync.mockImplementation((p) => {
+      const s = String(p);
+      if (s.endsWith(join('node_modules', 'vitest', 'package.json'))) {
+        return JSON.stringify({ version: '5.0.5' });
+      }
+      if (s.endsWith(join('node_modules', '@stryker-mutator', 'vitest-runner', 'package.json'))) {
+        return JSON.stringify({ version: '10.1.1' });
+      }
+      return makeJsonReport([]);
+    });
+
+    await engine.run('src/math.ts', { testRunner: 'vitest', workDir: '/sb' });
+
+    const warned = vi.mocked(warn).mock.calls.map((c) => String(c[0]));
+    expect(warned.some((m) => /vitest-runner/.test(m))).toBe(false);
+  });
+
   // ─── Mutation hardening ──────────────────────────────────────────────────
 
   it('passes the exact base Stryker CLI argument array', async () => {

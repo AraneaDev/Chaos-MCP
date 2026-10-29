@@ -98,27 +98,37 @@ function detectJsRunnerRaw(workspaceRoot: string): string {
 }
 
 /**
- * Read the MAJOR version of the vitest actually installed in the workspace,
- * or null when it can't be determined. Reads node_modules/vitest/package.json
- * — the version that will actually run — rather than the declared semver range,
+ * Read the version of a package actually installed in the workspace, or null
+ * when it can't be determined. Reads node_modules/<name>/package.json — the
+ * version that will actually run — rather than the declared semver range,
  * which may be a caret/range that doesn't pin a single major.
  */
-function installedVitestMajor(workspaceRoot: string): number | null {
-  // Walk up ancestor node_modules (Node's own resolution order) so a vitest
+function installedPackageVersion(workspaceRoot: string, name: string): string | null {
+  // Walk up ancestor node_modules (Node's own resolution order) so a package
   // hoisted to a monorepo/workspace root is still found — not just one installed
   // directly under workspaceRoot.
   let dir = workspaceRoot;
   for (;;) {
-    const pkg = readJsonSafe(join(dir, 'node_modules', 'vitest', 'package.json'));
-    const version = pkg && typeof pkg.version === 'string' ? pkg.version : null;
-    if (version !== null) {
-      const major = Number.parseInt(version.split('.')[0], 10);
-      return Number.isInteger(major) ? major : null;
-    }
+    const pkg = readJsonSafe(join(dir, 'node_modules', name, 'package.json'));
+    if (pkg && typeof pkg.version === 'string') return pkg.version;
     const parent = dirname(dir);
     if (parent === dir) return null;
     dir = parent;
   }
+}
+
+/** Leading numeric parts of a version string, `[major, minor]`, or null. */
+function majorMinor(version: string): [number, number] | null {
+  const [major, minor] = version.split('.').map((part) => Number.parseInt(part, 10));
+  return Number.isInteger(major) && Number.isInteger(minor) ? [major, minor] : null;
+}
+
+/** MAJOR version of the installed vitest, or null when it can't be determined. */
+function installedVitestMajor(workspaceRoot: string): number | null {
+  const version = installedPackageVersion(workspaceRoot, 'vitest');
+  if (version === null) return null;
+  const major = Number.parseInt(version.split('.')[0], 10);
+  return Number.isInteger(major) ? major : null;
 }
 
 /**
@@ -154,11 +164,48 @@ export const MIN_NATIVE_VITEST_MAJOR = 2;
  * re-runs the related-test set per mutant. Slower and correct beats fast and
  * wrong.
  *
- * Raise this the same way the floor was relaxed, on measured evidence: run a
- * fixture with a known Killed/Survived split on the new major and confirm the
- * split survives the native runner.
+ * Raised to 5 on measured evidence. StrykerJS 10.1.0 fixed the name filter
+ * (stryker-js#6210, #6214); on npm it ships as 10.1.1, since 10.1.0 never
+ * reached the registry. A 12-mutant fixture with `coverageAnalysis: 'perTest'`:
+ *
+ *     native runner 10.0.0, vitest 4.1.11  ->  10 Killed, 2 Survived
+ *     native runner 10.0.0, vitest 5.0.5   ->  12 Survived, testsCompleted 0
+ *     native runner 10.1.1, vitest 5.0.5   ->  10 Killed, 2 Survived (same two)
+ *
+ * The fix lives in the runner, not in vitest, so a vitest 5 workspace only gets
+ * the native runner when the installed runner is new enough; see
+ * {@link MIN_RUNNER_FOR_VITEST_MAJOR}.
+ *
+ * Raise this the same way, on measured evidence: run a fixture with a known
+ * Killed/Survived split on the new major and confirm the split survives the
+ * native runner.
  */
-export const MAX_NATIVE_VITEST_MAJOR = 4;
+export const MAX_NATIVE_VITEST_MAJOR = 5;
+
+/**
+ * Lowest `@stryker-mutator/vitest-runner` version, as `[major, minor]`, that
+ * drives a given vitest major correctly. A major missing here has no runner
+ * floor beyond the vitest window itself.
+ *
+ * vitest 5 changed `testNamePattern` to match the suite chain joined by `' > '`,
+ * and runners before 10.1.0 still joined names with a space, so the per-mutant
+ * filter matched nothing. A runner that cannot be found counts as too old: with
+ * no runner installed the native path cannot work anyway, and the command
+ * runner is the one that fails loudly instead of quietly.
+ */
+export const MIN_RUNNER_FOR_VITEST_MAJOR: Readonly<Record<number, readonly [number, number]>> = {
+  5: [10, 1],
+};
+
+/** Whether the installed vitest-runner meets the floor for `vitestMajor`. */
+function runnerSupportsVitestMajor(workspaceRoot: string, vitestMajor: number): boolean {
+  const floor = MIN_RUNNER_FOR_VITEST_MAJOR[vitestMajor];
+  if (floor === undefined) return true;
+  const version = installedPackageVersion(workspaceRoot, '@stryker-mutator/vitest-runner');
+  const installed = version === null ? null : majorMinor(version);
+  if (installed === null) return false;
+  return installed[0] > floor[0] || (installed[0] === floor[0] && installed[1] >= floor[1]);
+}
 
 /**
  * Map a raw runner name to a Stryker-compatible value.
@@ -198,8 +245,9 @@ function toStrykerRunner(raw: string, workspaceRoot: string): string {
 
 /**
  * The installed vitest MAJOR when it sits outside the range
- * `@stryker-mutator/vitest-runner` is verified against, or null when it is in
- * range or cannot be determined.
+ * `@stryker-mutator/vitest-runner` is verified against, or when the installed
+ * runner is older than that major needs, or null when it is in range or cannot
+ * be determined.
  *
  * Shared so the detector and the engine cannot drift: the detector routes an
  * out-of-range workspace to the command runner, and the engine uses the same
@@ -210,7 +258,8 @@ function toStrykerRunner(raw: string, workspaceRoot: string): string {
 export function unsupportedNativeVitestMajor(workspaceRoot: string): number | null {
   const major = installedVitestMajor(workspaceRoot);
   if (major === null) return null;
-  return major < MIN_NATIVE_VITEST_MAJOR || major > MAX_NATIVE_VITEST_MAJOR ? major : null;
+  if (major < MIN_NATIVE_VITEST_MAJOR || major > MAX_NATIVE_VITEST_MAJOR) return major;
+  return runnerSupportsVitestMajor(workspaceRoot, major) ? null : major;
 }
 
 /**
