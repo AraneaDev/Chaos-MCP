@@ -2,6 +2,13 @@
 
 All notable changes to Chaos-MCP are documented in this file.
 
+## [5.1.5](https://github.com/AraneaDev/Chaos-MCP/compare/v5.1.4...v5.1.5) (2026-10-29)
+
+
+### Fixes
+
+* **typescript:** use the native vitest runner on vitest 5 again, from vitest-runner 10.1 ([#103](https://github.com/AraneaDev/Chaos-MCP/issues/103)) ([02eb734](https://github.com/AraneaDev/Chaos-MCP/commit/02eb734e00a9960a6c780a4711f74ea3afd1aebb))
+
 ## [5.1.4](https://github.com/AraneaDev/Chaos-MCP/compare/v5.1.3...v5.1.4) (2026-09-25)
 
 
