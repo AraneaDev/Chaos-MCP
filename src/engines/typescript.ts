@@ -121,9 +121,10 @@ function warnOnUnverifiedNativeVitest(resolvedRunner: string, cwd: string): void
   const major = unsupportedNativeVitestMajor(cwd);
   if (major === null) return;
   warn(
-    `vitest ${major} is installed, but @stryker-mutator/vitest-runner is only verified ` +
-      `against vitest ${MIN_NATIVE_VITEST_MAJOR}-${MAX_NATIVE_VITEST_MAJOR}. On an ` +
-      'unverified major it can report every mutant as Survived without raising an error, ' +
+    `vitest ${major} is installed, but the installed @stryker-mutator/vitest-runner is not ` +
+      `verified against it (verified: vitest ${MIN_NATIVE_VITEST_MAJOR}-${MAX_NATIVE_VITEST_MAJOR}, ` +
+      'and vitest 5 needs vitest-runner 10.1.0 or later). On an unverified combination it ' +
+      'can report every mutant as Survived without raising an error, ' +
       'so these results may be a false-positive flood rather than real coverage holes. ' +
       'Chaos-MCP would have used the command runner here; it is running the native vitest ' +
       'runner only because testRunner is pinned to "vitest" in config. Remove that pin to ' +

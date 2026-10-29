@@ -341,7 +341,7 @@ describe('detectJsTestRunner', () => {
         expect(detectJsTestRunner('/workspace')).toBe('vitest');
       });
 
-      it('falls back to the command runner above the verified range (vitest 5)', () => {
+      it('falls back to the command runner on vitest 5 with a runner older than 10.1', () => {
         // Measured, not assumed: `@stryker-mutator/vitest-runner@10.0.0` reports
         // every mutant as Survived under vitest 5. The dry run SUCCEEDS and no
         // error is raised, so nothing downstream can notice. One fixture, one
@@ -358,6 +358,12 @@ describe('detectJsTestRunner', () => {
           if (s === join('/workspace', 'node_modules', 'vitest', 'package.json')) {
             return JSON.stringify({ version: '5.0.1' });
           }
+          if (
+            s ===
+            join('/workspace', 'node_modules', '@stryker-mutator', 'vitest-runner', 'package.json')
+          ) {
+            return JSON.stringify({ version: '10.0.0' });
+          }
           if (s === join('/workspace', 'package.json')) {
             return JSON.stringify({ devDependencies: { vitest: '^5.0.1' } });
           }
@@ -367,8 +373,69 @@ describe('detectJsTestRunner', () => {
         expect(detectJsTestRunner('/workspace')).toBe('command');
       });
 
+      it('keeps the native vitest runner on vitest 5 with runner 10.1.1', () => {
+        // Measured on a 12-mutant fixture: native 10.1.1 on vitest 5.0.5 returns
+        // the same 10 Killed / 2 Survived split as native 10.0.0 on vitest 4.1.11.
+        mockReadFileSync.mockImplementation((p) => {
+          const s = String(p);
+          if (s === join('/workspace', 'node_modules', 'vitest', 'package.json')) {
+            return JSON.stringify({ version: '5.0.5' });
+          }
+          if (
+            s ===
+            join('/workspace', 'node_modules', '@stryker-mutator', 'vitest-runner', 'package.json')
+          ) {
+            return JSON.stringify({ version: '10.1.1' });
+          }
+          if (s === join('/workspace', 'package.json')) {
+            return JSON.stringify({ devDependencies: { vitest: '^5.0.5' } });
+          }
+          throw new Error('ENOENT');
+        });
+
+        expect(detectJsTestRunner('/workspace')).toBe('vitest');
+      });
+
+      it('compares the runner minor numerically, not as a string (10.10 is newer than 10.1)', () => {
+        mockReadFileSync.mockImplementation((p) => {
+          const s = String(p);
+          if (s === join('/workspace', 'node_modules', 'vitest', 'package.json')) {
+            return JSON.stringify({ version: '5.0.5' });
+          }
+          if (
+            s ===
+            join('/workspace', 'node_modules', '@stryker-mutator', 'vitest-runner', 'package.json')
+          ) {
+            return JSON.stringify({ version: '10.10.0' });
+          }
+          if (s === join('/workspace', 'package.json')) {
+            return JSON.stringify({ devDependencies: { vitest: '^5.0.5' } });
+          }
+          throw new Error('ENOENT');
+        });
+
+        expect(detectJsTestRunner('/workspace')).toBe('vitest');
+      });
+
+      it('falls back to the command runner on vitest 5 when the runner cannot be found', () => {
+        // Unknown counts as too old: the native path cannot work without the
+        // runner, and the command runner is the one that fails loudly.
+        mockReadFileSync.mockImplementation((p) => {
+          const s = String(p);
+          if (s === join('/workspace', 'node_modules', 'vitest', 'package.json')) {
+            return JSON.stringify({ version: '5.0.5' });
+          }
+          if (s === join('/workspace', 'package.json')) {
+            return JSON.stringify({ devDependencies: { vitest: '^5.0.5' } });
+          }
+          throw new Error('ENOENT');
+        });
+
+        expect(detectJsTestRunner('/workspace')).toBe('command');
+      });
+
       it('falls back to the command runner on a vitest major beyond 5', () => {
-        // The gate is a ceiling, not an equality check on 5. A major nobody has
+        // The gate is a ceiling, not an equality check on one major. A major nobody has
         // tested against the runner is unverified by definition, so it takes the
         // same safe path until someone measures it and raises the ceiling.
         mockReadFileSync.mockImplementation((p) => {
