@@ -5,7 +5,7 @@
 **Break your code on purpose, and find out what your tests never noticed.**
 
 [![Release](https://img.shields.io/github/v/release/AraneaDev/Chaos-MCP?label=release)](https://github.com/AraneaDev/Chaos-MCP/releases)
-[![Tool page](https://img.shields.io/badge/tool%20page-aranea--development.nl-0b7285)](https://aranea-development.nl/en/tools/chaos-mcp)
+[![Tool page](https://img.shields.io/badge/tool%20page-aranea.dev-0b7285)](https://aranea.dev/en/tools/chaos-mcp)
 [![CI](https://img.shields.io/github/actions/workflow/status/AraneaDev/Chaos-MCP/ci.yml?label=CI)](https://github.com/AraneaDev/Chaos-MCP/actions/workflows/ci.yml)
 [![Coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FAraneaDev%2FChaos-MCP%2Fgh-pages%2Fcoverage.json)](https://github.com/AraneaDev/Chaos-MCP/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/AraneaDev/Chaos-MCP?label=license&color=yellow)](./LICENSE)
@@ -1022,4 +1022,4 @@ MIT. See [LICENSE](LICENSE) for details.
 ---
 
 Built by [Tim Schipper](https://tim-schipper.nl/en) and released as open source under
-[Aranea Development](https://aranea-development.nl).
+[aranea.dev](https://aranea.dev).
